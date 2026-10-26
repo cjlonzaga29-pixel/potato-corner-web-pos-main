@@ -385,15 +385,17 @@ describe.skipIf(!isLocalDatabase)('POS-PERF-P38 automatic selected-branch setup 
     expect(await publishedAt(productId)).toEqual([]);
   });
 
-  it('a failure at one branch rolls back the entire operation, including setup already done at the other', async () => {
+  // POS-PERF-P38R2 — availability is written for every branch in one batched
+  // step; the failure is injected after it has really written both rows.
+  it('a failure after setup and availability are written at both branches rolls back the entire operation', async () => {
     const i = await makeBranch('I');
     const j = await makeBranch('J');
     const { productId } = await createProduct('Rollback', [i, j]);
 
-    const original = productsRepository.upsertBranchProductAvailability.bind(productsRepository);
-    const spy = vi.spyOn(productsRepository, 'upsertBranchProductAvailability').mockImplementation(async (branchId, ...rest) => {
-      if (branchId === j) throw new Error('simulated failure at branch J');
-      return original(branchId, ...rest);
+    const original = productsRepository.publishBranchProductAvailability.bind(productsRepository);
+    const spy = vi.spyOn(productsRepository, 'publishBranchProductAvailability').mockImplementation(async (...args) => {
+      await original(...args);
+      throw new Error('simulated failure at branch J');
     });
     try {
       await expect(productsService.publishProductToBranches(productId, [i, j], supervisor, null)).rejects.toThrow('simulated failure at branch J');

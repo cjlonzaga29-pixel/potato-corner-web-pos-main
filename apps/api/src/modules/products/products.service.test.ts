@@ -16,6 +16,9 @@ vi.mock('./products.repository.js', () => ({
     updateVariant: vi.fn(),
     findVariantById: vi.fn(),
     upsertBranchProductAvailability: vi.fn(),
+    // POS-PERF-P38R2 — publication's lean target read and batched availability write.
+    findPublicationTarget: vi.fn(),
+    publishBranchProductAvailability: vi.fn(),
     // Default empty — notifyVariantBranches (CR-005 Sub-phase 3c) iterates
     // this on every lifecycle transition; only tests asserting branch-room
     // broadcasts need to override it.
@@ -117,6 +120,7 @@ vi.mock('../product-readiness/product-readiness.service.js', () => ({
   productReadinessService: {
     evaluateProductVariantReadinessBatch: vi.fn(),
     evaluateProductReadiness: vi.fn(),
+    evaluateProductReadinessForBranches: vi.fn(),
     // Task 191 — approveVariant's ProductComponent BOM gate.
     evaluateVariantComponentReadiness: vi.fn(),
   },
@@ -233,7 +237,8 @@ const { productReadinessService } = await import('../product-readiness/product-r
 const { stockAvailabilityService } = await import('../stock-availability/stock-availability.service.js');
 const { universalInventoryRepository } = await import('../universal-inventory/universal-inventory.repository.js');
 const { prisma } = await import('../../lib/prisma.js');
-const { hasBranchAccess } = await import('../../lib/branch-access.js');
+const { hasBranchAccess, getAccessibleBranchIds } = await import('../../lib/branch-access.js');
+const { config } = await import('../../config/index.js');
 const { branchesRepository } = await import('../branches/branches.repository.js');
 
 // Task 209.x — the signed-URL reuse cache (products.service.ts) is
@@ -834,6 +839,16 @@ describe('productsService.getProductReadiness (Phase D1 — Admin Readiness pane
 });
 
 describe('productsService.publishProduct (Phase D1)', () => {
+  // POS-PERF-P38R2 — publication evaluates every branch in one batched call.
+  // These tests stub per-branch readiness; this feeds those stubs through
+  // the batched API (its equivalence to per-branch readiness is proven
+  // against real Postgres in products.publication-budget.integration.test.ts).
+  beforeEach(() => {
+    vi.mocked(productReadinessService.evaluateProductReadinessForBranches).mockImplementation(async ({ productId, branchIds }) => {
+      const results = await Promise.all(branchIds.map((branchId) => productReadinessService.evaluateProductReadiness({ productId, branchId })));
+      return new Map(branchIds.map((branchId, i) => [branchId, results[i] as ProductReadinessResult]));
+    });
+  });
   it('blocks publish and returns the exact blocking issues when the configuration is incomplete', async () => {
     vi.mocked(productReadinessService.evaluateProductReadiness).mockResolvedValue(
       productReadinessResult({
@@ -855,7 +870,7 @@ describe('productsService.publishProduct (Phase D1)', () => {
         ],
       }),
     );
-    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'active' }) as never);
+    vi.mocked(productsRepository.findPublicationTarget).mockResolvedValue(buildProduct({ status: 'active' }) as never);
 
     await expect(productsService.publishProduct('prod-1', 'branch-a', SUPER_ADMIN, null)).rejects.toMatchObject({
       code: 'PRODUCT_NOT_READY',
@@ -864,7 +879,7 @@ describe('productsService.publishProduct (Phase D1)', () => {
         blocking_issues: [expect.objectContaining({ code: 'RECIPE_MISSING' })],
       },
     });
-    expect(productsRepository.upsertBranchProductAvailability).not.toHaveBeenCalled();
+    expect(productsRepository.publishBranchProductAvailability).not.toHaveBeenCalled();
   });
 
   // POS-PERF-P38R — the product page's Publish runs the same setup as the builder's Add to POS.
@@ -888,7 +903,7 @@ describe('productsService.publishProduct (Phase D1)', () => {
         ],
       }),
     );
-    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'active' }) as never);
+    vi.mocked(productsRepository.findPublicationTarget).mockResolvedValue(buildProduct({ status: 'active' }) as never);
     vi.mocked(productsRepository.findPublicationDependencies).mockResolvedValueOnce([
       {
         id: 'variant-1',
@@ -903,23 +918,39 @@ describe('productsService.publishProduct (Phase D1)', () => {
     vi.mocked(productsRepository.findStockPairs)
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ branchId: 'branch-a', inventoryItemId: 'item-1' }] as never);
-    vi.mocked(productsRepository.upsertBranchProductAvailability).mockResolvedValue({
-      id: 'row-1',
-      branchId: 'branch-a',
-      isAvailable: true,
-      updatedAt: new Date(),
-      branch: { code: 'PC-A', name: 'Branch A', city: 'Manila' },
-    } as never);
+    vi.mocked(productsRepository.publishBranchProductAvailability).mockResolvedValue([
+      {
+        id: 'row-1',
+        branchId: 'branch-a',
+        isAvailable: true,
+        updatedAt: new Date(),
+        branch: { code: 'PC-A', name: 'Branch A', city: 'Manila' },
+      },
+    ] as never);
 
     const result = await productsService.publishProduct('prod-1', 'branch-a', SUPERVISOR, null);
 
     expect(universalInventoryRepository.createStockRows).toHaveBeenCalledWith([{ branchId: 'branch-a', inventoryItemId: 'item-1' }], txMock);
-    expect(productsRepository.upsertBranchProductAvailability).toHaveBeenCalledTimes(1);
-    expect(productsRepository.upsertBranchProductAvailability).toHaveBeenCalledWith('branch-a', 'prod-1', true, SUPERVISOR.id, txMock);
+    expect(productsRepository.publishBranchProductAvailability).toHaveBeenCalledTimes(1);
+    expect(productsRepository.publishBranchProductAvailability).toHaveBeenCalledWith(['branch-a'], 'prod-1', SUPERVISOR.id, txMock);
     expect(recordAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'INVENTORY_ITEM_BRANCH_ASSIGNED', afterState: expect.objectContaining({ assigned: ['branch-a'] }) }),
     );
     expect((result as { branch_id: string }).branch_id).toBe('branch-a');
+
+    // POS-PERF-P38R2 — every publication read uses the locked transaction's
+    // own connection, under the configured transaction budget.
+    expect(productsRepository.findPublicationTarget).toHaveBeenCalledWith('prod-1', txMock);
+    expect(productsRepository.findActiveBranchesByIds).toHaveBeenCalledWith(['branch-a'], txMock);
+    expect(getAccessibleBranchIds).toHaveBeenCalledWith(expect.objectContaining({ user_id: SUPERVISOR.id }), txMock);
+    expect(productsRepository.findPublicationDependencies).toHaveBeenCalledWith('prod-1', txMock);
+    expect(productsRepository.findStockPairs).toHaveBeenNthCalledWith(1, ['branch-a'], ['item-1'], txMock);
+    expect(productReadinessService.evaluateProductReadinessForBranches).toHaveBeenCalledWith({ productId: 'prod-1', branchIds: ['branch-a'] }, txMock);
+    expect(productReadinessService.evaluateProductReadiness).not.toHaveBeenCalledWith(expect.anything(), expect.anything());
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
+      maxWait: config.posTransaction.maxWaitMs,
+      timeout: config.posTransaction.timeoutMs,
+    });
   });
 
   it('blocks publish when the product has no eligible variants at all, even with zero other blocking issues', async () => {
@@ -930,7 +961,7 @@ describe('productsService.publishProduct (Phase D1)', () => {
     await expect(productsService.publishProduct('prod-1', 'branch-a', SUPER_ADMIN, null)).rejects.toMatchObject({
       code: 'PRODUCT_NOT_READY',
     });
-    expect(productsRepository.upsertBranchProductAvailability).not.toHaveBeenCalled();
+    expect(productsRepository.publishBranchProductAvailability).not.toHaveBeenCalled();
   });
 
   it('never gates on BRANCH_NOT_AVAILABLE alone — that is exactly what publishing resolves', async () => {
@@ -953,18 +984,20 @@ describe('productsService.publishProduct (Phase D1)', () => {
         ],
       }),
     );
-    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'active' }) as never);
-    vi.mocked(productsRepository.upsertBranchProductAvailability).mockResolvedValue({
-      id: 'row-1',
-      branchId: 'branch-a',
-      isAvailable: true,
-      updatedAt: new Date(),
-      branch: { code: 'PC-A', name: 'Branch A', city: 'Manila' },
-    } as never);
+    vi.mocked(productsRepository.findPublicationTarget).mockResolvedValue(buildProduct({ status: 'active' }) as never);
+    vi.mocked(productsRepository.publishBranchProductAvailability).mockResolvedValue([
+      {
+        id: 'row-1',
+        branchId: 'branch-a',
+        isAvailable: true,
+        updatedAt: new Date(),
+        branch: { code: 'PC-A', name: 'Branch A', city: 'Manila' },
+      },
+    ] as never);
 
     const result = await productsService.publishProduct('prod-1', 'branch-a', SUPER_ADMIN, null);
 
-    expect(productsRepository.upsertBranchProductAvailability).toHaveBeenCalledWith('branch-a', 'prod-1', true, SUPER_ADMIN.id, txMock);
+    expect(productsRepository.publishBranchProductAvailability).toHaveBeenCalledWith(['branch-a'], 'prod-1', SUPER_ADMIN.id, txMock);
     expect((result as { is_available: boolean }).is_available).toBe(true);
     expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'PRODUCT_BRANCH_AVAILABILITY_CHANGED' }));
   });
@@ -975,7 +1008,7 @@ describe('productsService.publishProduct (Phase D1)', () => {
   // its own exclusiveBranchId. super_admin is unrestricted.
   it('rejects a supervisor publishing a branch-exclusive product to a branch other than its exclusiveBranchId', async () => {
     vi.mocked(productReadinessService.evaluateProductReadiness).mockResolvedValue(productReadinessResult());
-    vi.mocked(productsRepository.findById).mockResolvedValue(
+    vi.mocked(productsRepository.findPublicationTarget).mockResolvedValue(
       buildProduct({ status: 'active', branchExclusive: true, exclusiveBranchId: 'branch-a' }) as never,
     );
 
@@ -983,21 +1016,23 @@ describe('productsService.publishProduct (Phase D1)', () => {
       code: 'PRODUCT_BRANCH_EXCLUSIVE',
       statusCode: 403,
     });
-    expect(productsRepository.upsertBranchProductAvailability).not.toHaveBeenCalled();
+    expect(productsRepository.publishBranchProductAvailability).not.toHaveBeenCalled();
   });
 
   it('allows a supervisor to publish a branch-exclusive product to its own exclusiveBranchId', async () => {
     vi.mocked(productReadinessService.evaluateProductReadiness).mockResolvedValue(productReadinessResult());
-    vi.mocked(productsRepository.findById).mockResolvedValue(
+    vi.mocked(productsRepository.findPublicationTarget).mockResolvedValue(
       buildProduct({ status: 'active', branchExclusive: true, exclusiveBranchId: 'branch-a' }) as never,
     );
-    vi.mocked(productsRepository.upsertBranchProductAvailability).mockResolvedValue({
-      id: 'row-1',
-      branchId: 'branch-a',
-      isAvailable: true,
-      updatedAt: new Date(),
-      branch: { code: 'PC-A', name: 'Branch A', city: 'Manila' },
-    } as never);
+    vi.mocked(productsRepository.publishBranchProductAvailability).mockResolvedValue([
+      {
+        id: 'row-1',
+        branchId: 'branch-a',
+        isAvailable: true,
+        updatedAt: new Date(),
+        branch: { code: 'PC-A', name: 'Branch A', city: 'Manila' },
+      },
+    ] as never);
 
     const result = await productsService.publishProduct('prod-1', 'branch-a', SUPERVISOR, null);
 
@@ -1006,14 +1041,16 @@ describe('productsService.publishProduct (Phase D1)', () => {
 
   it('publishes a READY product, reusing updateBranchProductAvailability (existing BranchProductAvailability model, no new writes)', async () => {
     vi.mocked(productReadinessService.evaluateProductReadiness).mockResolvedValue(productReadinessResult());
-    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'active' }) as never);
-    vi.mocked(productsRepository.upsertBranchProductAvailability).mockResolvedValue({
-      id: 'row-1',
-      branchId: 'branch-a',
-      isAvailable: true,
-      updatedAt: new Date(),
-      branch: { code: 'PC-A', name: 'Branch A', city: 'Manila' },
-    } as never);
+    vi.mocked(productsRepository.findPublicationTarget).mockResolvedValue(buildProduct({ status: 'active' }) as never);
+    vi.mocked(productsRepository.publishBranchProductAvailability).mockResolvedValue([
+      {
+        id: 'row-1',
+        branchId: 'branch-a',
+        isAvailable: true,
+        updatedAt: new Date(),
+        branch: { code: 'PC-A', name: 'Branch A', city: 'Manila' },
+      },
+    ] as never);
 
     const result = await productsService.publishProduct('prod-1', 'branch-a', SUPER_ADMIN, null);
 
@@ -1022,12 +1059,12 @@ describe('productsService.publishProduct (Phase D1)', () => {
 
   it('refuses to publish a globally discontinued/archived product', async () => {
     vi.mocked(productReadinessService.evaluateProductReadiness).mockResolvedValue(productReadinessResult());
-    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ status: 'archived' }) as never);
+    vi.mocked(productsRepository.findPublicationTarget).mockResolvedValue(buildProduct({ status: 'archived' }) as never);
 
     await expect(productsService.publishProduct('prod-1', 'branch-a', SUPER_ADMIN, null)).rejects.toMatchObject({
       code: 'PRODUCT_GLOBALLY_UNAVAILABLE',
     });
-    expect(productsRepository.upsertBranchProductAvailability).not.toHaveBeenCalled();
+    expect(productsRepository.publishBranchProductAvailability).not.toHaveBeenCalled();
   });
 });
 

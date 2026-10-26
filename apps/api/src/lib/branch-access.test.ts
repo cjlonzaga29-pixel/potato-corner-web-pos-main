@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import type { Prisma } from '@prisma/client';
 import { ROLES } from '@potato-corner/shared';
 
 /**
@@ -74,7 +75,17 @@ describe('getAccessibleBranchIds', () => {
     const result = await getAccessibleBranchIds(supervisor([], userId));
 
     expect(result).toEqual([assignedBranch]);
-    expect(branchesRepository.findAllActiveBranchIds).toHaveBeenCalledWith(userId);
+    expect(branchesRepository.findAllActiveBranchIds).toHaveBeenCalledWith(userId, undefined);
+  });
+
+  it('supervisor assignments are read through the given transaction client (POS-PERF-P38R2)', async () => {
+    const userId = randomUUID();
+    const tx = {} as Prisma.TransactionClient;
+    vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue([]);
+
+    await getAccessibleBranchIds(supervisor([], userId), tx);
+
+    expect(branchesRepository.findAllActiveBranchIds).toHaveBeenCalledWith(userId, tx);
   });
 
   it('an assignment added by an Admin becomes visible to Supervisor immediately on the next call — no relogin needed', async () => {

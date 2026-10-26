@@ -1,3 +1,4 @@
+import type { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { transactionsRepository } from '../transactions/transactions.repository.js';
 import { productsRepository } from '../products/products.repository.js';
@@ -14,6 +15,7 @@ import type {
 } from './product-readiness.types.js';
 
 type SaleVariantRow = Awaited<ReturnType<typeof transactionsRepository.findVariantsForSale>>[number];
+type ReadClient = Prisma.TransactionClient | typeof prisma;
 
 interface ComponentRow {
   productVariantId: string;
@@ -40,7 +42,7 @@ interface ReadinessData {
  * InventoryStock (the authoritative inventory pipeline) — legacy
  * ProductInventory is never read here.
  */
-async function fetchReadinessData(branchId: string, variants: SaleVariantRow[]): Promise<ReadinessData> {
+function collectReadinessKeys(variants: SaleVariantRow[]) {
   const snackVariantIds = variants.flatMap((v) => (v.flavorSlots ?? []).flatMap((s) => s.snackOptions.map((so) => so.snackProductVariant.id)));
   const allVariantIds = [...new Set([...variants.map((v) => v.id), ...snackVariantIds])];
 
@@ -63,6 +65,28 @@ async function fetchReadinessData(branchId: string, variants: SaleVariantRow[]):
       ]),
     ),
   ];
+  return { allVariantIds, productIds, flavorIds };
+}
+
+function groupComponentsByVariant(componentRows: ComponentRow[]): Map<string, ComponentRow[]> {
+  const componentsByVariant = new Map<string, ComponentRow[]>();
+  for (const row of componentRows) {
+    const list = componentsByVariant.get(row.productVariantId) ?? [];
+    list.push(row);
+    componentsByVariant.set(row.productVariantId, list);
+  }
+  return componentsByVariant;
+}
+
+const readinessComponentSelect = {
+  productVariantId: true,
+  inventoryItemId: true,
+  quantityRequired: true,
+  inventoryItem: { select: { deletedAt: true } },
+} as const;
+
+async function fetchReadinessData(branchId: string, variants: SaleVariantRow[]): Promise<ReadinessData> {
+  const { allVariantIds, productIds, flavorIds } = collectReadinessKeys(variants);
 
   const [productAvailabilityRows, flavorAvailabilityRows, componentRows] = await Promise.all([
     productIds.length ? transactionsRepository.findBranchProductAvailabilityMap(branchId, productIds) : Promise.resolve([]),
@@ -70,22 +94,12 @@ async function fetchReadinessData(branchId: string, variants: SaleVariantRow[]):
     allVariantIds.length
       ? prisma.productComponent.findMany({
           where: { productVariantId: { in: allVariantIds }, isActive: true },
-          select: {
-            productVariantId: true,
-            inventoryItemId: true,
-            quantityRequired: true,
-            inventoryItem: { select: { deletedAt: true } },
-          },
+          select: readinessComponentSelect,
         })
       : Promise.resolve([]),
   ]);
 
-  const componentsByVariant = new Map<string, ComponentRow[]>();
-  for (const row of componentRows) {
-    const list = componentsByVariant.get(row.productVariantId) ?? [];
-    list.push(row);
-    componentsByVariant.set(row.productVariantId, list);
-  }
+  const componentsByVariant = groupComponentsByVariant(componentRows);
 
   const itemIds = [...new Set(componentRows.map((r) => r.inventoryItemId))];
   const stockRows = itemIds.length
@@ -99,6 +113,54 @@ async function fetchReadinessData(branchId: string, variants: SaleVariantRow[]):
     componentsByVariant,
     stockedItemIds: new Set(stockRows.map((r) => r.inventoryItemId)),
   };
+}
+
+/**
+ * POS-PERF-P38R2 — fetchReadinessData for several branches at once, through
+ * `client` (a transaction client inside publication). The same rows, read
+ * with `branchId IN (...)` in a fixed number of statements instead of one
+ * full fetch per branch, then split per branch. Recipe components are
+ * branch-independent and shared.
+ */
+async function fetchReadinessDataForBranches(branchIds: string[], variants: SaleVariantRow[], client: ReadClient): Promise<Map<string, ReadinessData>> {
+  const { allVariantIds, productIds, flavorIds } = collectReadinessKeys(variants);
+
+  const productAvailabilityRows = productIds.length
+    ? await client.branchProductAvailability.findMany({
+        where: { branchId: { in: branchIds }, productId: { in: productIds } },
+        select: { branchId: true, productId: true, isAvailable: true },
+      })
+    : [];
+  const flavorAvailabilityRows = flavorIds.length
+    ? await client.branchFlavorAvailability.findMany({
+        where: { branchId: { in: branchIds }, flavorId: { in: flavorIds } },
+        select: { branchId: true, flavorId: true, isAvailable: true },
+      })
+    : [];
+  const componentRows = allVariantIds.length
+    ? await client.productComponent.findMany({ where: { productVariantId: { in: allVariantIds }, isActive: true }, select: readinessComponentSelect })
+    : [];
+  const componentsByVariant = groupComponentsByVariant(componentRows);
+  const itemIds = [...new Set(componentRows.map((r) => r.inventoryItemId))];
+  const stockRows = itemIds.length
+    ? await client.inventoryStock.findMany({
+        where: { branchId: { in: branchIds }, inventoryItemId: { in: itemIds } },
+        select: { branchId: true, inventoryItemId: true },
+      })
+    : [];
+
+  return new Map(
+    branchIds.map((branchId) => [
+      branchId,
+      {
+        branchId,
+        productAvailabilityMap: new Map(productAvailabilityRows.filter((r) => r.branchId === branchId).map((r) => [r.productId, r.isAvailable])),
+        flavorAvailabilityMap: new Map(flavorAvailabilityRows.filter((r) => r.branchId === branchId).map((r) => [r.flavorId, r.isAvailable])),
+        componentsByVariant,
+        stockedItemIds: new Set(stockRows.filter((r) => r.branchId === branchId).map((r) => r.inventoryItemId)),
+      },
+    ]),
+  );
 }
 
 /** Shared by buildReadinessResult and evaluateVariantComponentReadiness so both check the exact same validity rule. */
@@ -591,5 +653,38 @@ export const productReadinessService = {
     });
 
     return buildProductReadinessResult(input.productId, input.branchId, allVariants.length, variantResults, variantNames);
+  },
+
+  /**
+   * POS-PERF-P38R2 — evaluateProductReadiness at several branches, keyed by
+   * branch id, with identical results. The product's variants are read once
+   * instead of once per branch, and the branch-scoped rows in a fixed number
+   * of statements, so the cost does not grow with the branch count. Reads
+   * through `client`: publication passes its transaction client so it never
+   * needs a second pool connection while it holds the product lock.
+   */
+  async evaluateProductReadinessForBranches(
+    input: { productId: string; branchIds: string[] },
+    client: ReadClient = prisma,
+  ): Promise<Map<string, ProductReadinessResult>> {
+    const allVariants = await productsRepository.findVariantsForReadiness(input.productId, client);
+    const eligibleIds = allVariants.filter((v) => v.isActive && v.lifecycleStatus === 'ACTIVE').map((v) => v.id);
+    const variantNames = new Map(allVariants.map((v) => [v.id, v.name]));
+    const variants = eligibleIds.length > 0 ? await transactionsRepository.findVariantsForSale(eligibleIds, client) : [];
+    const variantMap = new Map(variants.map((v) => [v.id, v]));
+    const dataByBranch = eligibleIds.length > 0 ? await fetchReadinessDataForBranches(input.branchIds, variants, client) : new Map<string, ReadinessData>();
+
+    const results = new Map<string, ProductReadinessResult>();
+    for (const branchId of input.branchIds) {
+      const data = dataByBranch.get(branchId);
+      const variantResults = data
+        ? eligibleIds.map((id) => {
+            const variant = variantMap.get(id);
+            return variant ? buildReadinessResult(variant, data) : notFoundResult(branchId, id);
+          })
+        : [];
+      results.set(branchId, await buildProductReadinessResult(input.productId, branchId, allVariants.length, variantResults, variantNames));
+    }
+    return results;
   },
 };

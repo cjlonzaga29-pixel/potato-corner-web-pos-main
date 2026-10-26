@@ -199,8 +199,9 @@ export const branchesRepository = {
    * zero active assignments correctly gets back an empty array (fail-closed
    * — see branch-access.ts), never every branch.
    */
-  async findAllActiveBranchIds(userId: string): Promise<string[]> {
-    const assignments = await prisma.userBranchAssignment.findMany({
+  /** `client`: POS-PERF-P38R2 publication re-checks assignments through its transaction client. */
+  async findAllActiveBranchIds(userId: string, client: Prisma.TransactionClient | typeof prisma = prisma): Promise<string[]> {
+    const assignments = await client.userBranchAssignment.findMany({
       where: { userId, removedAt: null, branch: { status: 'active' } },
       select: { branchId: true },
       orderBy: { assignedAt: 'asc' },

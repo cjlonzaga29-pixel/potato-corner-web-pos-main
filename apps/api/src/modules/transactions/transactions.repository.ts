@@ -197,8 +197,9 @@ export const transactionsRepository = {
   },
 
   /** Batch lookup for cart pricing/validation — one query for every distinct variant in the cart. */
-  findVariantsForSale(variantIds: string[]) {
-    return prisma.productVariant.findMany({
+  /** `client`: POS-PERF-P38R2 publication reads through its transaction client; every other caller uses the default. */
+  findVariantsForSale(variantIds: string[], client: Prisma.TransactionClient | typeof prisma = prisma) {
+    return client.productVariant.findMany({
       where: { id: { in: variantIds } },
       include: {
         product: { select: { id: true, name: true, status: true } },

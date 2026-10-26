@@ -1,3 +1,4 @@
+import type { Prisma } from '@prisma/client';
 import { ROLES, type JwtPayload } from '@potato-corner/shared';
 import { branchesRepository } from '../modules/branches/branches.repository.js';
 
@@ -17,10 +18,14 @@ type BranchErrorCtor = new (code: string, message: string, statusCode?: number, 
  *
  * branch/staff remain scoped to their JWT branch_ids (always exactly one) —
  * unchanged by this rule, since those roles are still assignment-scoped.
+ *
+ * `client`: read through a transaction client instead (POS-PERF-P38R2
+ * publication re-checks a supervisor's assignments inside its locked
+ * transaction without taking a second pool connection).
  */
-export async function getAccessibleBranchIds(actor: JwtPayload): Promise<string[] | 'all'> {
+export async function getAccessibleBranchIds(actor: JwtPayload, client?: Prisma.TransactionClient): Promise<string[] | 'all'> {
   if (actor.role === ROLES.SUPER_ADMIN) return 'all';
-  if (actor.role === ROLES.SUPERVISOR) return branchesRepository.findAllActiveBranchIds(actor.user_id);
+  if (actor.role === ROLES.SUPERVISOR) return branchesRepository.findAllActiveBranchIds(actor.user_id, client);
   return actor.branch_ids;
 }
 

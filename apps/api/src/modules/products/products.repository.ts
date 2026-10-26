@@ -102,8 +102,8 @@ export const productsRepository = {
   },
 
   /** Lightweight variant list for productReadinessService's product-level aggregation — avoids detailInclude's flavor/branch joins the readiness engine already fetches itself. */
-  findVariantsForReadiness(productId: string) {
-    return prisma.productVariant.findMany({
+  findVariantsForReadiness(productId: string, client: Prisma.TransactionClient | typeof prisma = prisma) {
+    return client.productVariant.findMany({
       where: { productId },
       select: { id: true, name: true, isActive: true, lifecycleStatus: true },
     });
@@ -546,8 +546,8 @@ export const productsRepository = {
   },
 
   /** POS-PERF-P37 — the subset of these ids that reference an active branch (an absent id is unknown or inactive). */
-  findActiveBranchesByIds(branchIds: string[]) {
-    return prisma.branch.findMany({ where: { id: { in: branchIds }, status: 'active' }, select: { id: true, name: true } });
+  findActiveBranchesByIds(branchIds: string[], client: Prisma.TransactionClient | typeof prisma = prisma) {
+    return client.branch.findMany({ where: { id: { in: branchIds }, status: 'active' }, select: { id: true, name: true } });
   },
 
   /**
@@ -556,8 +556,8 @@ export const productsRepository = {
    * productReadinessService evaluates): active recipe components and the
    * option groups whose mapped inventory checkout deducts. Read-only.
    */
-  findPublicationDependencies(productId: string) {
-    return prisma.productVariant.findMany({
+  findPublicationDependencies(productId: string, client: Prisma.TransactionClient | typeof prisma = prisma) {
+    return client.productVariant.findMany({
       where: { productId, isActive: true, lifecycleStatus: 'ACTIVE' },
       select: {
         id: true,
@@ -585,17 +585,58 @@ export const productsRepository = {
   },
 
   /** POS-PERF-P38 — every conversion that could bridge these units for these items, in two queries (item-specific, then global). */
-  findUnitConversionsFor(inventoryItemIds: string[], unitIds: string[]) {
+  findUnitConversionsFor(inventoryItemIds: string[], unitIds: string[], client: Prisma.TransactionClient | typeof prisma = prisma) {
     return Promise.all([
-      prisma.inventoryItemUnitConversion.findMany({
+      client.inventoryItemUnitConversion.findMany({
         where: { inventoryItemId: { in: inventoryItemIds } },
         select: { inventoryItemId: true, fromUnitId: true, toUnitId: true },
       }),
-      prisma.unitConversion.findMany({
+      client.unitConversion.findMany({
         where: { fromUnitId: { in: unitIds }, toUnitId: { in: unitIds } },
         select: { fromUnitId: true, toUnitId: true },
       }),
     ]);
+  },
+
+  /**
+   * POS-PERF-P38R2 — only what publication's target check reads (status and
+   * branch-spread scope), instead of findById's full detail include.
+   */
+  findPublicationTarget(productId: string, client: Prisma.TransactionClient | typeof prisma = prisma) {
+    return client.product.findUnique({
+      where: { id: productId },
+      select: {
+        id: true,
+        status: true,
+        branchExclusive: true,
+        exclusiveBranchId: true,
+        branchSelectionScoped: true,
+        branchAvailability: { select: { branchId: true, isAvailable: true } },
+      },
+    });
+  },
+
+  /**
+   * POS-PERF-P38R2 — upsertBranchProductAvailability(…, true, …) for several
+   * branches in a fixed number of statements: insert the absent rows, set
+   * every row available (updatedBy/updatedAt as an upsert would), then read
+   * them back in `branchIds` order with the same shape as the upsert.
+   */
+  async publishBranchProductAvailability(branchIds: string[], productId: string, updatedBy: string, tx: Prisma.TransactionClient) {
+    await tx.branchProductAvailability.createMany({
+      data: branchIds.map((branchId) => ({ branchId, productId, isAvailable: true, updatedBy })),
+      skipDuplicates: true,
+    });
+    await tx.branchProductAvailability.updateMany({
+      where: { productId, branchId: { in: branchIds } },
+      data: { isAvailable: true, updatedBy },
+    });
+    const rows = await tx.branchProductAvailability.findMany({
+      where: { productId, branchId: { in: branchIds } },
+      include: { branch: { select: { id: true, code: true, name: true, city: true } } },
+    });
+    const byBranch = new Map(rows.map((row) => [row.branchId, row]));
+    return branchIds.flatMap((branchId) => byBranch.get(branchId) ?? []);
   },
 
   /** POS-PERF-P38 — which (branch, item) InventoryStock rows already exist. Pass the transaction client to read inside one. */

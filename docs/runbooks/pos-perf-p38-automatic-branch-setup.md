@@ -159,6 +159,10 @@ sale succeed.
 
 ## Rollout compatibility
 
+> Superseded for this release by **P38R2 → Release overlap** below. This
+> table describes P38 alone. With P38R's web in the same push, the product
+> page's Publish is also disabled against a pre-P38 API.
+
 | Combination | Behavior |
 | --- | --- |
 | New web + old API (the normal window, until migrate + Render finish; see P37R) | Review calls `/publication-check`, which the old API doesn't have (404). Review shows "Couldn't check this product" and **Add to POS stays disabled**. Nothing is written. Builder publishing is unavailable in this window; create/sizes/recipe/choices work. Product page per-branch Publish still works. |
@@ -179,8 +183,9 @@ sale succeed.
 
 ## Known limitations
 
-- Readiness is still evaluated through the global Prisma client while the
-  transaction holds the product lock, the same as P36R2/P37. Concurrent
+- ~~Readiness is still evaluated through the global Prisma client while the
+  transaction holds the product lock, the same as P36R2/P37.~~ Fixed in
+  **P38R2**: every publication read goes through the transaction. Concurrent
   configuration writes that take the same lock are serialized. Stock rows
   are created and verified inside the transaction.
 - The new configuration checks (conversions, required choices, archived
@@ -391,9 +396,13 @@ No schema change, no migration.
 
 ## Deploy overlap
 
+> Superseded by **P38R2 → Release overlap** below. "Deploy the API first"
+> was wrong: the workflow cannot do that. Vercel deploys the web on push,
+> before CI and approval let the API deploy.
+
 | Combination | Behavior |
 | --- | --- |
-| New web + old API | The product page calls `/publication-check`. On a pre-P38 API (404) it shows "Couldn't check this product", and Publish stays disabled. Nothing is written. On a P38 API the check works, so Publish can be enabled for a missing-link product. The P38 `POST /publish` then returns 409 `PRODUCT_NOT_READY` (`INVENTORY_STOCK_MISSING`), shown inline. Nothing is written. Deploy the API first. |
+| New web + old API | The product page calls `/publication-check`. On a pre-P38 API (404) it shows "Couldn't check this product", and Publish stays disabled. Nothing is written. On a P38 API the check works, so Publish can be enabled for a missing-link product. The P38 `POST /publish` then returns 409 `PRODUCT_NOT_READY` (`INVENTORY_STOCK_MISSING`), shown inline. Nothing is written. ~~Deploy the API first.~~ |
 | Old web + new API | Works. The old page gates on readiness, so missing-link products keep Publish disabled, as before. If it is clicked anyway (e.g. links exist), the new API publishes with the same result. The old page's toast shows errors. |
 | Write gate (P16) | `POST /publish` gets 503. The page shows the persistent maintenance message, and nothing is set up. `publication-check` (GET) is not gated. |
 
@@ -411,11 +420,12 @@ No schema change, no migration.
 
 ## Known limitations (P38R)
 
-- Readiness and the plan still read through the global Prisma client inside
+- ~~Readiness and the plan still read through the global Prisma client inside
   the locked transaction (P36R2/P37/P38). Single publish now does the
   plan's extra reads (dependencies, stock pairs, conversions) inside the
   5 s interactive-transaction window, which is still one branch's worth of
-  work.
+  work.~~ Measured and fixed in **P38R2**: the 5 s window did not fit at a
+  remote round trip, and the global-client reads could starve the pool.
 - A repeat `POST /publish` to an already-published branch still writes a
   `PRODUCT_BRANCH_AVAILABILITY_CHANGED` entry, as before P38R. It never
   writes an assignment entry, because nothing is linked. The page hides
@@ -513,3 +523,340 @@ billing, or credentials were touched. No `prisma migrate` was run.
 
 Local leftovers in `pos_verify`: P38R spec branches (deactivated in
 `afterAll`) and its products/items, as with earlier phases.
+
+---
+
+# POS-PERF-P38R2 — Publication Transaction Budget and Release Readiness
+
+## What was measured
+
+`publishWithinLock` runs inside one interactive `prisma.$transaction` under
+`productCatalogLockId`. At P38R (`893bb73`) that transaction:
+
+- used Prisma's defaults: **2 s `maxWait`, 5 s `timeout`** (no options
+  passed). Checkout, `closeShift`, refund and void pass
+  `config.posTransaction` instead.
+- read almost everything through the **global** Prisma client while holding
+  a transaction connection: `findById` (detail include, 7 statements),
+  branches, live assignments, publication dependencies (13), conversions (2),
+  stock pairs, and **`evaluateProductReadiness` once per branch** (about 15
+  statements each, about 11 of them re-reading the same variants).
+- wrote availability with one upsert per branch (4 statements each).
+- after commit, wrote hash-chained audit entries (a read of the last entry
+  plus an insert each): one per linked item and one per branch.
+
+Harness: `products.publication-budget.measure.test.ts`. It is opt-in
+(`PUBLICATION_BUDGET_MEASURE=1`) and runs only against local Postgres. It
+uses a Prisma client with query events and `connection_limit=5`
+(production's pool, per `db-round-trip-diagnostics.ts`).
+`PUBLICATION_BUDGET_RTT_MS` routes it through a local TCP proxy that delays
+every packet by half the RTT in each direction. Scenarios:
+
+| | Branches | Sizes | Components (recipe rows) | Distinct items (incl. option-mapped) |
+| --- | --- | --- | --- | --- |
+| S1 | 1 | 1 | 3 | 3 |
+| S2 | 2 | 2 | 14 (ingredients, packaging, 2 flavor seasonings, 1 kg-entered item) | 10 (+1 required option group × 3 mapped options) |
+| S3 | 4 | 3 | 33 | 19 (4 flavors, 2 option groups × 4) |
+| S4 | 8 | 3 | 33 | 19 |
+
+"First" is the first publish (it creates every link). "Repeat" publishes
+again (no links). "In tx" counts the statements between `BEGIN` and
+`COMMIT`. "Total" also counts the post-commit audit entries.
+
+### Local Postgres, 0 ms added latency (127.0.0.1 Docker, `pos_verify`)
+
+| Scenario | Before: in tx / total statements | Before: tx ms | After: in tx / total | After: tx ms |
+| --- | --- | --- | --- | --- |
+| S1 first | 35 / 43 | 301 | 30 / 38 | 164 |
+| S1 repeat | 33 / 35 | 134 | 28 / 30 | 73 |
+| S2 first | 66 / 90 | 609 | 42 / 66 | 367 |
+| S2 repeat | 64 / 68 | 272 | 40 / 44 | 77 |
+| S3 first | 104 / 150 | 827 | 42 / 88 | 154 |
+| S3 repeat | 102 / 110 | 571 | 40 / 48 | 113 |
+| S4 first | 180 / 234 | 857 | 42 / 96 | 202 |
+| S4 repeat | 178 / 194 | 678 | 40 / 56 | 108 |
+
+Before, the transaction grew by about 19 statements per branch. After, it
+is **constant**: 28–30 for a single-branch product, 40–42 for this
+configuration at any branch count. The post-commit audit chain still grows:
+2 statements × (linked items + branches).
+
+### Controlled latency (local proxy, same machine)
+
+| Scenario | Before @100 ms: tx | After @100 ms: tx / request | After @150 ms: tx / request |
+| --- | --- | --- | --- |
+| S1 first | **P2028** at 9.0 s | 7.1 s / 8.2 s | 9.5 s / 11.1 s |
+| S1 repeat | **P2028** at 6.4 s | 3.9 s / 4.2 s | 5.1 s / 5.4 s |
+| S2 first | **P2028** at 12.3 s | 10.1 s / 13.3 s | 12.1 s / 17.0 s |
+| S2 repeat | **P2028** at 9.5 s | 5.4 s / 5.9 s | 7.5 s / 8.3 s |
+| S3 first | **P2028** at 15.5 s | 8.9 s / 15.3 s | 11.4 s / 19.4 s |
+| S3 repeat | **P2028** at 12.4 s | 5.4 s / 6.4 s | 7.0 s / 8.5 s |
+| S4 first | **P2028** at 19.7 s | 10.1 s / 17.2 s | 8.6 s / 17.6 s |
+| S4 repeat | **P2028** at 17.3 s | 5.6 s / 8.4 s | 7.0 s / 9.9 s |
+
+Before, every scenario failed at 100 ms, including the simplest single-branch
+product. (P2028 is reported after Prisma's 5 s window. Elapsed times past
+5 s are the time until the stalled reads returned.) After, every scenario
+commits. Statements cost about 1.4 round trips each when warm (repeat) and
+about 2.4 on the first run of a new SQL shape (prepare plus execute). That
+gives tx ≈ 30–42 statements × 1.4–2.4 × RTT.
+
+### Product-lock contention (same product, concurrent single-branch publishes)
+
+| | Before | After |
+| --- | --- | --- |
+| 4 concurrent, 0 ms | All succeed, 1.3–5.1 s end to end (two runs) | All succeed, 0.8 s |
+| 6 concurrent, 0 ms, pool 5 | **All 6 fail** (5 × P2028, 1 × P2024 pool timeout) after 10 s | All succeed, 1.1 s |
+| 4 concurrent, 100 ms | **All 4 fail** (P2028) | 3 succeed; the 4th exceeds 30 s (P2028, rolled back) |
+| 4 concurrent, 150 ms | n/a | 2 succeed; 2 exceed 30 s (P2028, rolled back) |
+
+The 6-way failure at **zero latency** is a deadlock-like pool starvation, not
+slowness. Each waiter holds a pool connection while blocked on the advisory
+lock. The lock holder's global-client reads need one more connection, and
+none is free until `pool_timeout`.
+
+### Production evidence in this repository (not measured here)
+
+- Database: Supabase, Sydney region (`docs/SYSTEM_OVERVIEW.md`). The Render
+  region is not in version control.
+- `f2cb843` (Task 209.55A): a real `closeShift` against "the QA
+  environment's realistic DB latency" threw "Transaction already closed …
+  5137 ms passed" under the 5 s default. The identical retry took 6602 ms.
+  That transaction is about 6–7 statements. If that per-statement cost
+  (~0.8–1 s) were representative of production, a 40-statement publication
+  would need about 35–40 s.
+- `f33e1a5` (P25): production Render checkout diagnostics showed latency
+  "dominated by per-round-trip network latency".
+- Phase 19 load test: HTTP median 90 ms, p95 1.11 s (whole requests, not
+  database round trips).
+- **No per-round-trip production figure is recorded in the repository.** The
+  opt-in `DATABASE_ROUND_TRIP_DIAGNOSTICS_ENABLED` probe exists to measure
+  it. It was not enabled for this task.
+
+### Estimate (not a measurement)
+
+An uncontended publication's transaction takes about 30–42 statements ×
+1.4–2.4 round trips. That is roughly **40–100 × RTT**: 4–10 s at 100 ms,
+6–15 s at 150 ms, and 30 s at about 300 ms.
+
+The proxy adds fixed per-packet delay only. It does not model jitter, the
+Supabase transaction pooler (PgBouncer) or TLS, and the database is local
+and idle. Fast local Postgres proves nothing about the production budget.
+These numbers bound the statement count, not production time.
+
+## Changes (P38R2)
+
+Transactions, the product lock, live authorization, branch-spread guards,
+selected-branch restriction, all-or-nothing publication and the plan's
+decisions are unchanged.
+
+1. **Every publication read goes through `tx`.** `loadPublicationTarget`,
+   `assertBranchSelectionAuthorized` (including the supervisor's live
+   assignments via `getAccessibleBranchIds(actor, tx)`),
+   `findPublicationDependencies`, unit conversions, stock pairs and
+   readiness all take an optional client. `publication-check` (a GET, no
+   transaction) still uses the global client. This removes the pool
+   starvation. The checks stay inside the locked transaction.
+2. **Readiness for all branches in one pass:**
+   `productReadinessService.evaluateProductReadinessForBranches`. Variants
+   are read once; product/flavor availability and stock are read with
+   `branch_id IN (…)`, then split per branch through the same
+   `buildReadinessResult`. Results are `toEqual` per-branch
+   `evaluateProductReadiness` (regression-tested at branches in different
+   states). Checkout's single-branch `fetchReadinessData` queries are
+   unchanged; only its pure key/grouping code was extracted for sharing.
+3. **Lean target read:** `productsRepository.findPublicationTarget` (status,
+   exclusivity, scope, availability rows), 2 statements instead of
+   `findById`'s 7.
+4. **Batched availability write:**
+   `productsRepository.publishBranchProductAvailability`. It runs
+   `createMany … skipDuplicates`, then `updateMany` (`is_available = true`,
+   `updated_by`, `updated_at`), then one read with the branch. That is 4
+   statements in place of 4 per branch. The rows, order and response shape
+   are unchanged.
+5. **Transaction budget:** both publish endpoints pass
+   `{ maxWait: config.posTransaction.maxWaitMs, timeout: config.posTransaction.timeoutMs }`
+   (defaults 10 s / 30 s; `PRISMA_TRANSACTION_MAX_WAIT_MS` /
+   `PRISMA_TRANSACTION_TIMEOUT_MS`).
+
+Not changed: missing-link creation was already one `createMany`. Audit
+entries keep their per-item shape, one `INVENTORY_ITEM_BRANCH_ASSIGNED` per
+item that this call actually linked (with its branch list), plus the
+per-branch availability entries. Both stay after commit. They were not
+batched: `recordAuditLog` chains each entry to the newest existing one, and
+rows inserted by one statement would share `created_at`, which breaks that
+"newest" lookup.
+
+### Why the timeout change is justified (and its tradeoff)
+
+- **Measured budget:** after the statement reductions, a publication is
+  still 30–42 sequential statements. That is about 4–10 s at a 100 ms round
+  trip and failed every scenario under 5 s. Reducing statements alone cannot
+  fit 5 s at a realistic remote round trip.
+- **Bounded size:** the transaction's statement count no longer depends on
+  the branch count. Row volume is bounded by the product's own
+  configuration (links = branches × distinct items, inserted by one
+  statement).
+- **Lock duration:** the transaction holds `productCatalogLockId` for one
+  product only. It delays configuration writes and publications of that
+  product. **Checkout never takes this lock.** The only row locks are on
+  newly inserted `inventory_stocks` pairs and on that product's
+  `branch_product_availability` rows, which checkout reads without locking.
+  A waiter's 30 s includes its wait for the lock, so same-product
+  publications queue at 30 s divided by the per-publication time (see
+  contention above). A timed-out waiter rolls back and is safe to retry.
+- It reuses the existing configured budget, as `closeShift` did in
+  `f2cb843`. It does not invent a new value.
+
+## Release overlap (this release: `157deac` → P38 + P38R + P38R2)
+
+`origin/main` was `157deac` (P37R) when this was written. The release diff
+contains **no Prisma schema or migration change** (`git diff
+157deac..HEAD -- apps/api/prisma` is empty). Production's `migrate deploy`
+step is therefore a no-op.
+
+**Actual deploy behavior** (`.github/workflows/deploy-production.yml`):
+
+1. On push to `main`, Vercel's GitHub integration builds and serves the new
+   `apps/web` **independently**. It is not part of the workflow.
+2. The workflow runs full CI (type-check, lint, all tests, build), then
+   **waits for manual approval** (the `production` environment).
+3. It runs `prisma migrate deploy` (no-op here), then `curl`s the Render
+   deploy hook. That only means Render accepted the request; Render then
+   builds and swaps asynchronously.
+
+The new web is therefore normally live **before** the new API, from minutes
+after the push until approval plus the Render deploy finish. "Deploy the API
+first" is not something this pipeline does, and nothing here changes the
+automation.
+
+| Combination | When | Behavior (verified by) |
+| --- | --- | --- |
+| **New web + pre-P38 API** (P37R) | The normal window above | Builder Review and the product page both call `GET /publication-check`. The old API returns `404 NOT_FOUND`. Review shows "Couldn't check this product", and **Add to POS is disabled** (`canAddToPos` requires a plan). The product page shows "Couldn't check this product: …", and **Publish is disabled** (`canPublish` requires `plan.ready`; new page test). **Nothing is written.** Creating products and editing sizes, recipe and choices work, as does Unpublish. It is a publishing outage, not a data risk. Before this release the old page could still publish fully linked products; in this window it cannot. |
+| **New web + P38 API (before P38R)** | Only if `e4442d9` is deployed alone, or the API is rolled back to it. One push of this release builds only `HEAD`. | Builder Add to POS works, with setup. The product page's check works, so Publish is enabled for a missing-link product. P38's `POST /publish` still gates on raw readiness and returns `409 PRODUCT_NOT_READY` (`INVENTORY_STOCK_MISSING`), thrown before any write and shown inline (`product-publish-error`; page test). Fully linked products publish. P38's transaction keeps the 5 s default and the per-branch reads (budget above). |
+| **Old web + new API** | Vercel rollback, or a tab still on the old bundle | Works. The old builder and page gate on readiness: missing-link products keep their buttons disabled, as before. When enabled, the new `publish-branches` / `POST /publish` publish with setup. Response shapes are unchanged (the batched write returns the same row shape); `setup` is an extra field. The old UI shows errors as toasts. |
+| **Old and new API instances** | Render swap overlap | Both use the same tables and the same `productCatalogLockId`, so publications serialize across instances. |
+
+**Form retention and recovery once the API is live:**
+
+- Builder: `productId`, `step` and `draftBranchIds` persist in localStorage
+  (`potato-corner:product-builder-draft`). Every step's data is already
+  saved on the server, so a reload returns to Review with nothing lost.
+- The failed check is not re-run automatically. The query client uses
+  `retry: 2` and `refetchOnWindowFocus: false`, so after the 2 retries the
+  error stays until the Review step or page remounts. **Recovery:** reload
+  the page, or in the builder go Back and then to Review again. The check
+  then succeeds, and Add to POS or Publish becomes available.
+- A product created during the window stays unpublished (its branch rows
+  are unavailable) until someone publishes it. No partial publication is
+  possible.
+
+**Write gate (P16):** `POST /publish` and `/publish-branches` (all
+`/api/products` writes) and checkout/inventory writes get
+`503 SERVICE_WRITE_GATE_CLOSED`. `GET /publication-check` is not gated. The
+builder and product page keep the persistent inline "paused for
+maintenance" message, with the form and page intact (re-verified in today's
+P38/P38R browser runs).
+
+- The gate does not cover the new-web/old-API window. That window starts at
+  the push. Closing the gate for the whole of CI plus approval would also
+  stop every checkout, and nothing is written in that window anyway.
+- Its use is the API swap: close it just before approving the production
+  run, let migrate (no-op) and Render finish, confirm the new API is
+  serving, then reopen it.
+- **Evidence rules:**
+  - Gate state is what `GET /api/settings/write-gate` (Super Admin) returns,
+    `enabled` plus `activeGatedRequests` on the serving instance. A `401`
+    only says the request was unauthenticated.
+  - A successful hook `curl` only says Render accepted a deploy.
+  - Workflow, Vercel or Render timestamps do not prove which commit is
+    serving. `GET /health` returns only `{ status: 'ok' }`; the API exposes
+    no version.
+  - Confirm the running API commit in Render's dashboard (the live deploy's
+    commit). A `200` from `GET /api/products/:id/publication-check` shows
+    only that the API is P38 or later. P38, P38R and P38R2 cannot be told
+    apart over HTTP.
+
+**Rollback:**
+
+- **Web only (Vercel):** safe. This is "old web + new API" above.
+- **API back to P38R:** functionally identical, minus this budget work. The
+  5 s default and the per-branch reads return, and so does the starvation
+  risk under concurrent publishes.
+- **API back to P37R:** safe for data. Zero-stock links created by P38/P38R
+  are ordinary rows; leave them. Published products stay published. The old
+  API's `POST /publish` blocks again on still-missing links. The current web
+  then behaves as "new web + pre-P38 API": publication is disabled and
+  nothing is written. Rolling back the web as well restores P37R behavior.
+- There is no schema to roll back. To list the links publication created:
+  `audit_logs WHERE action = 'INVENTORY_ITEM_BRANCH_ASSIGNED' AND
+  after_state->>'source' = 'product_publication'`.
+
+## Remaining limitations
+
+- **Production round-trip latency is not measured.** Everything above about
+  production time is an estimate. If the `f2cb843` QA figure (~0.8–1 s per
+  statement) reflected production, publication would exceed 30 s. Before
+  relying on Add to POS in the pilot, read one `DATABASE_ROUND_TRIP_DIAGNOSTICS_ENABLED`
+  probe, or time one real publication on the deployed API. Turning that
+  flag on is a Render environment change and was not made here.
+- **Same-product concurrency:** publications of one product serialize on its
+  lock. At 150 ms, 2 of 4 simultaneous publications exceeded 30 s; they
+  rolled back cleanly and are safe to retry.
+- **Request time after commit:** the hash-chained audit entries cost 2
+  statements each, after the transaction. On a first publish of S4 that was
+  about 9 s of extra response time at 150 ms. The data is already committed;
+  a client that gives up early sees an error for a publication that
+  succeeded, and a retry is a no-op. The web client sets no request timeout.
+- A publication holds one pool connection (of 5) for the whole transaction:
+  about 4–15 s at 100–150 ms. Several simultaneous publications of different
+  products compete with checkout for the pool. This was not load-tested.
+
+## Verification (P38R2, local `127.0.0.1:5432/pos_verify` only)
+
+`DATABASE_URL`/`DIRECT_URL` were checked as `127.0.0.1:5432/pos_verify`
+(host, port and database printed; no credentials). No `prisma migrate` was
+run. No production data, configuration, billing, credentials, region, pool
+or `autoDeploy` setting was touched.
+
+- **New `products.publication-budget.integration.test.ts`: 4/4** against real
+  Postgres, with a 5-connection pool and SQL capture. All 4 fail on the
+  pre-P38R2 code (verified by stashing the production changes: 140 vs 46
+  in-transaction statements; all 6 concurrent publishes rejected):
+  - batched readiness `toEqual` per-branch readiness at a published/stocked
+    branch, a branch with no links, and a branch with the flavor turned off;
+  - publication to 6 branches issues the same number of in-transaction
+    statements as to 1 (both ≤ 45);
+  - 6 concurrent publications of one product all succeed, with each link
+    created and audited exactly once;
+  - the batched availability write flips an existing unavailable row,
+    creates the absent one, and keeps branch order and row shape.
+- **Updated:** `products.service.test.ts` (publish tests use the new
+  repository and readiness calls, and assert every publication read goes
+  through `tx` with the configured transaction options).
+  `branch-access.test.ts` (+1: the client pass-through). The P38/P38R
+  rollback integration tests now inject the failure after the batched
+  availability write has written every branch, and still roll back setup
+  and availability.
+- **Web:** product page test **6/6** (+1: a failed publication check, the
+  pre-P38-API case, keeps Publish disabled and the page intact).
+- **Affected API suites:** products, product-readiness, transactions
+  (checkout shares the readiness module), branches and `src/lib`: **44
+  files, 981 passed**, 80 skipped (env-gated, as before), 0 failed.
+- `pnpm type-check` 4/4. ESLint on every changed file: 0 problems. `apps/api`
+  build (`tsc`) passes. The web build was not re-run: no web source changed
+  (only a test), and the existing `.next` build is newer than every web and
+  shared source file.
+- **Browser** (built `apps/api` `node dist/server.js`, fresh per spec;
+  `next start`; `--project="Admin Dashboard (Desktop)"`): **P38R product
+  page Publish 2/2** (4.0 min), **P38 builder Add to POS 2/2** (6.2 min),
+  both with the default config.
+- **Not executed:** the P37 multi-branch and P36R/P36R6 browser specs (they
+  share `publish-branches` with the P38 spec, which passed), the
+  mobile/PWA projects, the full API and web suites (changes are limited to
+  publication, readiness's shared helpers and three repository signatures,
+  all covered above), and any production measurement.
+
+Local leftovers in `pos_verify`: the `P38R2 …` test branches are deleted
+(regression suite) or deactivated (measurement harness) in `afterAll`; the
+browser specs' data stays, as with earlier phases.

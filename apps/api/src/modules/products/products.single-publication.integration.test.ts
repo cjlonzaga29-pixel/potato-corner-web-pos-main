@@ -399,7 +399,7 @@ describe.skipIf(!isLocalDatabase)('POS-PERF-P38R consistent single-branch public
   it('a failure during the single-branch publish rolls back its setup', async () => {
     const q = await makeBranch('Q');
     const { productId } = await createProduct('Rollback', [q]);
-    const spy = vi.spyOn(productsRepository, 'upsertBranchProductAvailability').mockRejectedValueOnce(new Error('simulated failure'));
+    const spy = vi.spyOn(productsRepository, 'publishBranchProductAvailability').mockRejectedValueOnce(new Error('simulated failure'));
     try {
       await expect(productsService.publishProduct(productId, q, supervisor, null)).rejects.toThrow('simulated failure');
     } finally {

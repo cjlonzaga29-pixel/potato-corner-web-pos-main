@@ -11,6 +11,7 @@ import {
 } from './products.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { prisma } from '../../lib/prisma.js';
+import { config } from '../../config/index.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { notifySuperAdmin, notifyBranch } from '../../lib/notify.js';
 import { productCategoriesRepository } from '../product-categories/product-categories.repository.js';
@@ -120,8 +121,12 @@ function assertSupervisorMayEnableAtBranch(
  * database, never the JWT's branch_ids snapshot). One bad id rejects the
  * entire selection. Returns the branches in the caller's (deduplicated) order.
  */
-async function assertBranchSelectionAuthorized(branchIds: string[], actor: ActorContext): Promise<{ id: string; name: string }[]> {
-  const activeBranches = await productsRepository.findActiveBranchesByIds(branchIds);
+async function assertBranchSelectionAuthorized(
+  branchIds: string[],
+  actor: ActorContext,
+  client?: Prisma.TransactionClient,
+): Promise<{ id: string; name: string }[]> {
+  const activeBranches = await productsRepository.findActiveBranchesByIds(branchIds, client);
   const activeById = new Map(activeBranches.map((b) => [b.id, b]));
   const invalidIds = branchIds.filter((id) => !activeById.has(id));
   if (invalidIds.length > 0) {
@@ -131,7 +136,7 @@ async function assertBranchSelectionAuthorized(branchIds: string[], actor: Actor
   }
 
   if (actor.role === ROLES.SUPERVISOR) {
-    const accessible = await getAccessibleBranchIds({ user_id: actor.id, role: actor.role, branch_ids: [] } as unknown as JwtPayload);
+    const accessible = await getAccessibleBranchIds({ user_id: actor.id, role: actor.role, branch_ids: [] } as unknown as JwtPayload, client);
     const deniedIds = accessible === 'all' ? [] : branchIds.filter((id) => !accessible.includes(id));
     if (deniedIds.length > 0) {
       throw new ProductError('BRANCH_ACCESS_DENIED', 'You do not have an active assignment to every selected branch', 403, {
@@ -225,7 +230,7 @@ type PublicationDependencies = Awaited<ReturnType<typeof productsRepository.find
  * items that need a branch link: archived items are never included, so
  * setup can never revive one.
  */
-async function evaluatePublicationConfiguration(variants: PublicationDependencies) {
+async function evaluatePublicationConfiguration(variants: PublicationDependencies, client?: Prisma.TransactionClient) {
   const issues: PublicationIssue[] = [];
   const items = new Map<string, string>();
   const conversionNeeds: { size: string; itemId: string; itemName: string; fromUnitId: string; fromCode: string; toUnitId: string; toCode: string; fix: PublicationFixStep }[] = [];
@@ -297,6 +302,7 @@ async function evaluatePublicationConfiguration(variants: PublicationDependencie
     const [itemConversions, globalConversions] = await productsRepository.findUnitConversionsFor(
       [...new Set(conversionNeeds.map((n) => n.itemId))],
       [...new Set(conversionNeeds.flatMap((n) => [n.fromUnitId, n.toUnitId]))],
+      client,
     );
     const itemPairs = new Set(itemConversions.map((c) => `${c.inventoryItemId}:${c.fromUnitId}:${c.toUnitId}`));
     const globalPairs = new Set(globalConversions.map((c) => `${c.fromUnitId}:${c.toUnitId}`));
@@ -328,23 +334,34 @@ async function evaluatePublicationConfiguration(variants: PublicationDependencie
  * a valid recipe/option item is setup Add to POS performs — neither is a
  * blocker. A flavor turned off at a branch is reported as a notice; checkout
  * keeps refusing it there. Read-only: never writes.
+ *
+ * POS-PERF-P38R2 — `client` is the publication transaction when called
+ * under the product lock, so every read uses that one connection, and
+ * readiness is evaluated for all branches in one pass (a fixed number of
+ * statements whatever the branch count).
  */
 async function buildPublicationPlan(
   product: { id: string; branchAvailability: { branchId: string; isAvailable: boolean }[] },
   branches: { id: string; name: string }[],
+  client?: Prisma.TransactionClient,
 ): Promise<PublicationPlan> {
-  const variants = await productsRepository.findPublicationDependencies(product.id);
+  const variants = await productsRepository.findPublicationDependencies(product.id, client);
   const variantNames = new Map(variants.map((v) => [v.id, v.name]));
-  const configuration = await evaluatePublicationConfiguration(variants);
+  const configuration = await evaluatePublicationConfiguration(variants, client);
   const itemIds = [...configuration.items.keys()];
   const existingPairs = new Set(
-    (await productsRepository.findStockPairs(branches.map((b) => b.id), itemIds)).map((r) => `${r.branchId}:${r.inventoryItemId}`),
+    (await productsRepository.findStockPairs(branches.map((b) => b.id), itemIds, client)).map((r) => `${r.branchId}:${r.inventoryItemId}`),
+  );
+  const readinessByBranch = await productReadinessService.evaluateProductReadinessForBranches(
+    { productId: product.id, branchIds: branches.map((b) => b.id) },
+    client,
   );
 
   const sharedIssues: PublicationIssue[] = [...configuration.issues];
   const branchPlans: PublicationBranchPlan[] = [];
   for (const branch of branches) {
-    const readiness = await productReadinessService.evaluateProductReadiness({ productId: product.id, branchId: branch.id });
+    const readiness = readinessByBranch.get(branch.id);
+    if (!readiness) throw new Error(`Readiness was not evaluated for branch ${branch.id}`);
     const branchIssues: PublicationIssue[] = [];
     const notices = new Set<string>();
     // The guard publishProduct had before P38R, kept even if readiness ever omits the issue for it.
@@ -385,13 +402,13 @@ async function buildPublicationPlan(
 }
 
 /** Shared by Add to POS and its read-only check: the product exists and is publishable, and the actor may publish at every branch (live assignment + branch-spread guard). */
-async function loadPublicationTarget(productId: string, branchIds: string[], actor: ActorContext) {
-  const existing = await productsRepository.findById(productId);
+async function loadPublicationTarget(productId: string, branchIds: string[], actor: ActorContext, client?: Prisma.TransactionClient) {
+  const existing = await productsRepository.findPublicationTarget(productId, client);
   if (!existing) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
   if (existing.status === 'discontinued' || existing.status === 'archived') {
     throw new ProductError('PRODUCT_GLOBALLY_UNAVAILABLE', 'Cannot enable a globally discontinued or archived product for a branch', 409);
   }
-  const branches = await assertBranchSelectionAuthorized(branchIds, actor);
+  const branches = await assertBranchSelectionAuthorized(branchIds, actor, client);
   for (const branch of branches) {
     assertSupervisorMayEnableAtBranch(existing, branch.id, true, actor);
   }
@@ -408,10 +425,16 @@ async function loadPublicationTarget(productId: string, branchIds: string[], act
  * skipDuplicates insert — never touches an existing row), verifies every
  * planned link is present, then flips availability at those branches only.
  * Any throw rolls the whole transaction back.
+ *
+ * POS-PERF-P38R2 — every read and write goes through `tx`. Reading through
+ * the global client here needed a second pool connection while this one
+ * held the lock; with the pool full of publications waiting on that lock,
+ * the holder could never get one (measured: 6 concurrent publications of
+ * one product on a 5-connection pool all failed with P2028/P2024).
  */
 async function publishWithinLock(tx: Prisma.TransactionClient, productId: string, branchIds: string[], actor: ActorContext) {
-  const { existing, branches } = await loadPublicationTarget(productId, branchIds, actor);
-  const plan = await buildPublicationPlan(existing, branches);
+  const { existing, branches } = await loadPublicationTarget(productId, branchIds, actor, tx);
+  const plan = await buildPublicationPlan(existing, branches, tx);
   if (!plan.ready) {
     const blocked = plan.branches.filter((b) => !b.is_published);
     const blockingIssues = [...plan.issues, ...blocked.flatMap((b) => b.issues)];
@@ -442,12 +465,27 @@ async function publishWithinLock(tx: Prisma.TransactionClient, productId: string
     }
   }
 
-  const rows = [];
-  for (const branch of branches) {
-    rows.push(await productsRepository.upsertBranchProductAvailability(branch.id, productId, true, actor.id, tx));
-  }
+  const rows = await productsRepository.publishBranchProductAvailability(
+    branches.map((b) => b.id),
+    productId,
+    actor.id,
+    tx,
+  );
   return { rows, stockLinks: links };
 }
+
+/**
+ * POS-PERF-P38R2 — publication's interactive-transaction budget. Prisma's
+ * defaults (2 s maxWait, 5 s timeout) count every statement's round trip
+ * and the wait for this product's lock. Publication is a fixed ~25–45
+ * statements whatever the branch count (see the P38 runbook's budget
+ * table), which is several seconds at a remote round trip, and a second
+ * publication of the same product waits for the first. It uses the same
+ * configured budget as checkout, closeShift, refund and void. The lock is
+ * per product, so holding it longer only delays configuration writes and
+ * publications of that one product, never checkout.
+ */
+const PUBLICATION_TRANSACTION_OPTIONS = { maxWait: config.posTransaction.maxWaitMs, timeout: config.posTransaction.timeoutMs };
 
 /** After commit: one INVENTORY_ITEM_BRANCH_ASSIGNED per item publication actually linked. A retry that links nothing writes none. */
 async function recordPublicationSetupAudit(
@@ -2125,7 +2163,7 @@ export const productsService = {
     const { rows, stockLinks } = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(${productCatalogLockId(productId)})`;
       return publishWithinLock(tx, productId, [branchId], actor);
-    });
+    }, PUBLICATION_TRANSACTION_OPTIONS);
     // Exactly one row: publishWithinLock only ever touches the branches it was given.
     const product = rows[0] as (typeof rows)[number];
 
@@ -2175,7 +2213,7 @@ export const productsService = {
     const { rows, stockLinks } = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(${productCatalogLockId(productId)})`;
       return publishWithinLock(tx, productId, uniqueBranchIds, actor);
-    });
+    }, PUBLICATION_TRANSACTION_OPTIONS);
 
     await recordPublicationSetupAudit(productId, stockLinks, actor, ipAddress);
 

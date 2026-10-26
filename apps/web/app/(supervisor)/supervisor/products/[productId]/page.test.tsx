@@ -198,6 +198,17 @@ describe('SupervisorProductDetailPage Publish (POS-PERF-P38R)', () => {
     expect(screen.getByTestId('publication-issues')).toHaveTextContent('no conversion from kg to g');
   });
 
+  // POS-PERF-P38R2 — rollout overlap: this web against a pre-P38 API, which has no publication-check route (404).
+  it('keeps Publish disabled and the page intact when the publication check fails', async () => {
+    const { ProductApiError } = await import('@/hooks/queries/use-products');
+    mockUsePublicationCheck.mockReturnValue({ data: undefined, isLoading: false, error: new ProductApiError('Failed to check this product', 'NOT_FOUND') });
+    await renderVariantsTab();
+
+    expect(screen.getByTestId('publication-summary')).toHaveTextContent("Couldn't check this product: Failed to check this product");
+    expect(screen.getByRole('button', { name: 'Publish' })).toBeDisabled();
+    expect(mockPublish).not.toHaveBeenCalled();
+  });
+
   it('keeps a failed publish on screen with its own message, not a maintenance notice', async () => {
     const { ProductApiError } = await import('@/hooks/queries/use-products');
     mockPublish.mockRejectedValue(new ProductApiError('Product setup is incomplete. Nothing was published.', 'PRODUCT_NOT_READY'));

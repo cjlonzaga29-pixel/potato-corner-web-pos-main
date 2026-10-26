@@ -17,6 +17,7 @@ import { productCategoriesRepository } from '../product-categories/product-categ
 import { productReadinessService } from '../product-readiness/product-readiness.service.js';
 import type { ProductVariantReadinessResult, ReadinessIssue, ReadinessIssueCode } from '../product-readiness/product-readiness.types.js';
 import { stockAvailabilityService } from '../stock-availability/stock-availability.service.js';
+import { universalInventoryRepository } from '../universal-inventory/universal-inventory.repository.js';
 import type { VariantStockResult } from '../stock-availability/stock-availability.types.js';
 import { getAccessibleBranchIds, hasBranchAccess } from '../../lib/branch-access.js';
 import { hasActiveCatalogAuthorityForProduct } from '../../lib/catalog-authority.js';
@@ -140,6 +141,257 @@ async function assertBranchSelectionAuthorized(branchIds: string[], actor: Actor
   }
 
   return branchIds.map((id) => activeById.get(id) as { id: string; name: string });
+}
+
+/**
+ * POS-PERF-P38 — the builder step a supervisor fixes each kind of missing
+ * setup in. null: nothing in the builder fixes it (e.g. product status).
+ */
+type PublicationFixStep = 'details' | 'sizes' | 'ingredients' | 'choices';
+
+interface PublicationIssue {
+  code: string;
+  message: string;
+  fix_step: PublicationFixStep | null;
+}
+
+interface PublicationBranchPlan {
+  branch_id: string;
+  branch_name: string;
+  is_published: boolean;
+  status: 'on_pos' | 'ready' | 'missing_setup';
+  issues: PublicationIssue[];
+  notices: string[];
+  setup_items: { inventory_item_id: string; name: string }[];
+}
+
+interface PublicationPlan {
+  product_id: string;
+  ready: boolean;
+  issues: PublicationIssue[];
+  branches: PublicationBranchPlan[];
+}
+
+/**
+ * Readiness codes a first publication resolves or does not depend on:
+ * BRANCH_NOT_AVAILABLE is the flag Add to POS flips, and
+ * INVENTORY_STOCK_MISSING is the zero-stock branch link Add to POS creates.
+ */
+const PUBLICATION_SETUP_CODES = new Set<ReadinessIssueCode>(['BRANCH_NOT_AVAILABLE', 'INVENTORY_STOCK_MISSING']);
+
+/** Readiness codes that depend on the branch's own current state rather than the shared configuration. */
+const BRANCH_SPECIFIC_CODES = new Set<ReadinessIssueCode>(['MIX_MAX_SLOT_INCOMPLETE']);
+
+const READINESS_FIX_STEP: Partial<Record<ReadinessIssueCode, PublicationFixStep>> = {
+  NO_ELIGIBLE_VARIANTS: 'sizes',
+  VARIANT_INACTIVE: 'sizes',
+  VARIANT_LIFECYCLE_BLOCKED: 'sizes',
+  PRICE_MISSING: 'sizes',
+  RECIPE_MISSING: 'ingredients',
+  INVALID_COMPONENT: 'ingredients',
+  MIX_MAX_SLOT_INCOMPLETE: 'choices',
+  MIX_MAX_SNACK_UNAVAILABLE: 'choices',
+};
+
+function publicationIssueFromReadiness(issue: ReadinessIssue, variantNames: Map<string, string>): PublicationIssue {
+  const size = issue.productVariantId ? variantNames.get(issue.productVariantId) : undefined;
+  const prefix = size ? `${size}: ` : '';
+  const messages: Partial<Record<ReadinessIssueCode, string>> = {
+    PRODUCT_INACTIVE: 'This product is not active. Change its status to Active from the product page.',
+    NO_ELIGIBLE_VARIANTS: 'Add at least one active size with a price.',
+    VARIANT_INACTIVE: `${prefix}this size is turned off.`,
+    VARIANT_LIFECYCLE_BLOCKED: `${prefix}this size is not approved for sale yet.`,
+    PRICE_MISSING: `${prefix}set a price above ₱0.`,
+    RECIPE_MISSING: `${prefix}add at least one ingredient or packaging item.`,
+    INVALID_COMPONENT: `${prefix}an ingredient is archived or has a zero quantity. Replace or fix it.`,
+  };
+  return { code: issue.code, message: messages[issue.code] ?? issue.message, fix_step: READINESS_FIX_STEP[issue.code] ?? null };
+}
+
+function dedupeIssues(issues: PublicationIssue[]): PublicationIssue[] {
+  const seen = new Map<string, PublicationIssue>();
+  for (const issue of issues) seen.set(`${issue.code}|${issue.message}`, issue);
+  return [...seen.values()];
+}
+
+type PublicationDependencies = Awaited<ReturnType<typeof productsRepository.findPublicationDependencies>>;
+
+/**
+ * Configuration checks readiness does not make but checkout depends on:
+ * every recipe/option unit must convert to its item's base unit (checkout
+ * fails closed with RECIPE_INVENTORY_UNIT_MISMATCH otherwise), an active
+ * option must not deduct an archived item, and a required choice must
+ * offer at least one active option. Returns the issues plus the inventory
+ * items that need a branch link: archived items are never included, so
+ * setup can never revive one.
+ */
+async function evaluatePublicationConfiguration(variants: PublicationDependencies) {
+  const issues: PublicationIssue[] = [];
+  const items = new Map<string, string>();
+  const conversionNeeds: { size: string; itemId: string; itemName: string; fromUnitId: string; fromCode: string; toUnitId: string; toCode: string; fix: PublicationFixStep }[] = [];
+
+  for (const variant of variants) {
+    for (const component of variant.productComponents) {
+      const item = component.inventoryItem;
+      if (item.deletedAt !== null) continue; // INVALID_COMPONENT already reports it
+      items.set(item.id, item.name);
+      const fromUnitId = component.recipeUnitId ?? item.baseUnitId;
+      if (fromUnitId !== item.baseUnitId) {
+        conversionNeeds.push({
+          size: variant.name,
+          itemId: item.id,
+          itemName: item.name,
+          fromUnitId,
+          fromCode: component.recipeUnit?.code ?? fromUnitId,
+          toUnitId: item.baseUnitId,
+          toCode: item.baseUnit.code,
+          fix: 'ingredients',
+        });
+      }
+    }
+
+    for (const assignment of variant.optionGroupAssignments) {
+      const group = assignment.optionGroup;
+      if (!group.isActive) continue;
+      // Empty allowedOptions means "every option in the group" — same rule as checkout's resolveSelectedOptions.
+      const offered = (assignment.allowedOptions.length > 0 ? assignment.allowedOptions.map((a) => a.productOption) : group.options).filter(
+        (option) => option.isActive,
+      );
+      const minimum = Math.max(group.minSelections, (assignment.required ?? group.required) ? 1 : 0);
+      if (offered.length < minimum) {
+        issues.push({
+          code: 'REQUIRED_CHOICE_EMPTY',
+          message: `${variant.name}: the required choice "${group.name}" needs at least ${minimum} active option${minimum === 1 ? '' : 's'}.`,
+          fix_step: 'choices',
+        });
+      }
+      for (const option of offered) {
+        const mapping = option.inventoryMapping;
+        if (!mapping) continue;
+        if (mapping.inventoryItem.deletedAt !== null) {
+          issues.push({
+            code: 'OPTION_INVENTORY_ITEM_ARCHIVED',
+            message: `Option "${option.name}" uses the archived item "${mapping.inventoryItem.name}". Choose an active item for it.`,
+            fix_step: 'choices',
+          });
+          continue;
+        }
+        items.set(mapping.inventoryItem.id, mapping.inventoryItem.name);
+        if (mapping.deductionUnitId !== mapping.inventoryItem.baseUnitId) {
+          conversionNeeds.push({
+            size: variant.name,
+            itemId: mapping.inventoryItem.id,
+            itemName: mapping.inventoryItem.name,
+            fromUnitId: mapping.deductionUnitId,
+            fromCode: mapping.deductionUnit.code,
+            toUnitId: mapping.inventoryItem.baseUnitId,
+            toCode: mapping.inventoryItem.baseUnit.code,
+            fix: 'choices',
+          });
+        }
+      }
+    }
+  }
+
+  if (conversionNeeds.length > 0) {
+    const [itemConversions, globalConversions] = await productsRepository.findUnitConversionsFor(
+      [...new Set(conversionNeeds.map((n) => n.itemId))],
+      [...new Set(conversionNeeds.flatMap((n) => [n.fromUnitId, n.toUnitId]))],
+    );
+    const itemPairs = new Set(itemConversions.map((c) => `${c.inventoryItemId}:${c.fromUnitId}:${c.toUnitId}`));
+    const globalPairs = new Set(globalConversions.map((c) => `${c.fromUnitId}:${c.toUnitId}`));
+    for (const need of conversionNeeds) {
+      // Same lookup order as unit-conversion.util.ts#convertQuantity: item-specific, then global, either direction.
+      const convertible =
+        itemPairs.has(`${need.itemId}:${need.fromUnitId}:${need.toUnitId}`) ||
+        itemPairs.has(`${need.itemId}:${need.toUnitId}:${need.fromUnitId}`) ||
+        globalPairs.has(`${need.fromUnitId}:${need.toUnitId}`) ||
+        globalPairs.has(`${need.toUnitId}:${need.fromUnitId}`);
+      if (!convertible) {
+        issues.push({
+          code: 'UNIT_CONVERSION_MISSING',
+          message: `${need.size}: "${need.itemName}" is entered in ${need.fromCode}, but there is no conversion from ${need.fromCode} to ${need.toCode}. Use ${need.toCode} or add the conversion.`,
+          fix_step: need.fix,
+        });
+      }
+    }
+  }
+
+  return { issues, items };
+}
+
+/**
+ * POS-PERF-P38 — the single decision Review's status and Add to POS share.
+ * Separates configuration completeness (what this product needs before any
+ * branch can sell it) from current branch availability: being unpublished
+ * is the state Add to POS changes, and a missing zero-stock branch link for
+ * a valid recipe/option item is setup Add to POS performs — neither is a
+ * blocker. A flavor turned off at a branch is reported as a notice; checkout
+ * keeps refusing it there. Read-only: never writes.
+ */
+async function buildPublicationPlan(
+  product: { id: string; branchAvailability: { branchId: string; isAvailable: boolean }[] },
+  branches: { id: string; name: string }[],
+): Promise<PublicationPlan> {
+  const variants = await productsRepository.findPublicationDependencies(product.id);
+  const variantNames = new Map(variants.map((v) => [v.id, v.name]));
+  const configuration = await evaluatePublicationConfiguration(variants);
+  const itemIds = [...configuration.items.keys()];
+  const existingPairs = new Set(
+    (await productsRepository.findStockPairs(branches.map((b) => b.id), itemIds)).map((r) => `${r.branchId}:${r.inventoryItemId}`),
+  );
+
+  const sharedIssues: PublicationIssue[] = [...configuration.issues];
+  const branchPlans: PublicationBranchPlan[] = [];
+  for (const branch of branches) {
+    const readiness = await productReadinessService.evaluateProductReadiness({ productId: product.id, branchId: branch.id });
+    const branchIssues: PublicationIssue[] = [];
+    const notices = new Set<string>();
+    for (const issue of readiness.blockingIssues) {
+      if (PUBLICATION_SETUP_CODES.has(issue.code)) continue;
+      if (issue.code === 'FLAVOR_NOT_AVAILABLE_AT_BRANCH') {
+        notices.add(`Flavor "${issue.flavorName ?? 'unknown'}" is turned off at this branch, so sizes offering it can't be sold here until it's turned back on.`);
+      } else if (BRANCH_SPECIFIC_CODES.has(issue.code)) {
+        branchIssues.push(publicationIssueFromReadiness(issue, variantNames));
+      } else {
+        sharedIssues.push(publicationIssueFromReadiness(issue, variantNames));
+      }
+    }
+    const isPublished = product.branchAvailability.some((r) => r.branchId === branch.id && r.isAvailable);
+    const issues = dedupeIssues(branchIssues);
+    branchPlans.push({
+      branch_id: branch.id,
+      branch_name: branch.name,
+      is_published: isPublished,
+      status: isPublished ? 'on_pos' : issues.length > 0 ? 'missing_setup' : 'ready',
+      issues,
+      notices: [...notices],
+      setup_items: itemIds
+        .filter((id) => !existingPairs.has(`${branch.id}:${id}`))
+        .map((id) => ({ inventory_item_id: id, name: configuration.items.get(id) ?? id })),
+    });
+  }
+
+  const issues = dedupeIssues(sharedIssues);
+  const ready = issues.length === 0 && branchPlans.every((b) => b.issues.length === 0);
+  if (!ready) {
+    for (const plan of branchPlans) if (!plan.is_published) plan.status = 'missing_setup';
+  }
+  return { product_id: product.id, ready, issues, branches: branchPlans };
+}
+
+/** Shared by Add to POS and its read-only check: the product exists and is publishable, and the actor may publish at every branch (live assignment + branch-spread guard). */
+async function loadPublicationTarget(productId: string, branchIds: string[], actor: ActorContext) {
+  const existing = await productsRepository.findById(productId);
+  if (!existing) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
+  if (existing.status === 'discontinued' || existing.status === 'archived') {
+    throw new ProductError('PRODUCT_GLOBALLY_UNAVAILABLE', 'Cannot enable a globally discontinued or archived product for a branch', 409);
+  }
+  const branches = await assertBranchSelectionAuthorized(branchIds, actor);
+  for (const branch of branches) {
+    assertSupervisorMayEnableAtBranch(existing, branch.id, true, actor);
+  }
+  return { existing, branches };
 }
 
 /** Every branch this product currently has a branch_product_availability row for — the "branch rooms" a variant lifecycle event is broadcast to. */
@@ -1841,60 +2093,76 @@ export const productsService = {
    * never left published at only part of the selection. A retry after
    * success is a no-op upsert of the same unique (branch, product) rows.
    *
-   * Readiness, not stock level, is the gate: a branch missing InventoryStock
-   * setup for a recipe item (INVENTORY_STOCK_MISSING) blocks publication,
-   * while a branch that simply has low or zero stock does not — shortage
-   * stays a checkout-time INSUFFICIENT_STOCK outcome, never a
-   * configuration error.
+   * Readiness, not stock level, is the gate: a branch that simply has low or
+   * zero stock publishes — shortage stays a checkout-time INSUFFICIENT_STOCK
+   * outcome, never a configuration error.
+   *
+   * POS-PERF-P38 — the gate is buildPublicationPlan, the same decision
+   * Review shows. A selected branch with no InventoryStock row for a valid
+   * recipe/option item is not a blocker any more: this transaction creates
+   * that row at zero (createStockRows' skipDuplicates insert — the same
+   * primitive branch/item provisioning uses; never a receipt, movement, or
+   * change to an existing row), only at the authorized selected branches,
+   * then publishes. Any failure rolls both back.
    */
   async publishProductToBranches(productId: string, branchIds: string[], actor: ActorContext, ipAddress: string | null) {
     const uniqueBranchIds = [...new Set(branchIds)];
 
-    const rows = await prisma.$transaction(async (tx) => {
+    const { rows, stockLinks } = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(${productCatalogLockId(productId)})`;
 
-      const existing = await productsRepository.findById(productId);
-      if (!existing) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
-      if (existing.status === 'discontinued' || existing.status === 'archived') {
-        throw new ProductError(
-          'PRODUCT_GLOBALLY_UNAVAILABLE',
-          'Cannot enable a globally discontinued or archived product for a branch',
-          409,
-        );
-      }
-
-      const branches = await assertBranchSelectionAuthorized(uniqueBranchIds, actor);
-      for (const branch of branches) {
-        assertSupervisorMayEnableAtBranch(existing, branch.id, true, actor);
-      }
-
-      const notReady: { branch_id: string; branch_name: string; blocking_issues: ReturnType<typeof toAdminReadinessIssue>[] }[] = [];
-      for (const branch of branches) {
-        const readiness = await productReadinessService.evaluateProductReadiness({ productId, branchId: branch.id });
-        const gatingBlockers = readiness.blockingIssues.filter((i) => i.code !== 'BRANCH_NOT_AVAILABLE');
-        if (readiness.eligibleVariantCount === 0 || gatingBlockers.length > 0) {
-          notReady.push({
-            branch_id: branch.id,
-            branch_name: branch.name,
-            blocking_issues: (gatingBlockers.length > 0 ? gatingBlockers : readiness.blockingIssues).map(toAdminReadinessIssue),
-          });
-        }
-      }
-      if (notReady.length > 0) {
+      const { existing, branches } = await loadPublicationTarget(productId, uniqueBranchIds, actor);
+      const plan = await buildPublicationPlan(existing, branches);
+      if (!plan.ready) {
+        const blocked = plan.branches.filter((b) => !b.is_published);
+        const blockingIssues = [...plan.issues, ...blocked.flatMap((b) => b.issues)];
         throw new ProductError(
           'PRODUCT_NOT_READY',
-          `Product is not ready to publish at ${notReady.map((b) => b.branch_name).join(', ')}. Nothing was published.`,
+          `Product setup is incomplete${plan.issues.length === 0 ? ` at ${blocked.filter((b) => b.issues.length > 0).map((b) => b.branch_name).join(', ')}` : ''}. Nothing was published.`,
           409,
-          { branches: notReady, blocking_issues: notReady.flatMap((b) => b.blocking_issues) },
+          {
+            issues: plan.issues,
+            branches: blocked.map((b) => ({ branch_id: b.branch_id, branch_name: b.branch_name, blocking_issues: [...plan.issues, ...b.issues] })),
+            blocking_issues: dedupeIssues(blockingIssues),
+          },
         );
+      }
+
+      const links = plan.branches.flatMap((b) => b.setup_items.map((item) => ({ branchId: b.branch_id, inventoryItemId: item.inventory_item_id })));
+      if (links.length > 0) {
+        await universalInventoryRepository.createStockRows(links, tx);
+        const present = new Set(
+          (await productsRepository.findStockPairs(
+            [...new Set(links.map((l) => l.branchId))],
+            [...new Set(links.map((l) => l.inventoryItemId))],
+            tx,
+          )).map((r) => `${r.branchId}:${r.inventoryItemId}`),
+        );
+        if (links.some((l) => !present.has(`${l.branchId}:${l.inventoryItemId}`))) {
+          throw new ProductError('PRODUCT_SETUP_FAILED', 'Branch inventory setup could not be completed. Nothing was published.', 409);
+        }
       }
 
       const written = [];
       for (const branch of branches) {
         written.push(await productsRepository.upsertBranchProductAvailability(branch.id, productId, true, actor.id, tx));
       }
-      return written;
+      return { rows: written, stockLinks: links };
     });
+
+    const linksByItem = new Map<string, string[]>();
+    for (const link of stockLinks) linksByItem.set(link.inventoryItemId, [...(linksByItem.get(link.inventoryItemId) ?? []), link.branchId]);
+    for (const [inventoryItemId, assigned] of linksByItem) {
+      await recordAuditLog({
+        action: 'INVENTORY_ITEM_BRANCH_ASSIGNED',
+        entityType: 'inventory_stock',
+        entityId: inventoryItemId,
+        actorId: actor.id,
+        actorRole: actor.role,
+        afterState: { inventory_item_id: inventoryItemId, assigned, source: 'product_publication', product_id: productId },
+        ipAddress,
+      });
+    }
 
     for (const row of rows) {
       await recordAuditLog({
@@ -1909,7 +2177,22 @@ export const productsService = {
       });
     }
 
-    return { product_id: productId, branches: rows.map(toBranchAvailabilityRow) };
+    return {
+      product_id: productId,
+      branches: rows.map(toBranchAvailabilityRow),
+      setup: { stock_links: stockLinks.map((l) => ({ branch_id: l.branchId, inventory_item_id: l.inventoryItemId })) },
+    };
+  },
+
+  /**
+   * POS-PERF-P38 — Review's read-only view of exactly what Add to POS would
+   * do at these branches: shared missing setup (with the builder step that
+   * fixes it), per-branch status, and the zero-stock links it would create.
+   * Same authorization as publishProductToBranches. Writes nothing.
+   */
+  async getPublicationCheck(productId: string, branchIds: string[], actor: ActorContext) {
+    const { existing, branches } = await loadPublicationTarget(productId, [...new Set(branchIds)], actor);
+    return buildPublicationPlan(existing, branches);
   },
 
   /** Unpublish = disable BranchProductAvailability only — never deletes configuration, archives variants, or touches ProductInventory. No readiness gate needed to turn something off. */

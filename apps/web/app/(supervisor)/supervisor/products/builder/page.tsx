@@ -6,8 +6,8 @@ import Link from 'next/link';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { ArrowLeft, Check, Loader2, Plus, Trash2 } from 'lucide-react';
-import type { ProductDetailResponse, ProductVariantResponse } from '@potato-corner/shared';
+import { AlertTriangle, ArrowLeft, Check, Loader2, Plus, Trash2 } from 'lucide-react';
+import type { ProductDetailResponse, ProductVariantResponse, PublicationCheckResponse, PublicationIssue } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Form } from '@/components/ui/form';
@@ -24,6 +24,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { ImageUpload } from '@/components/shared/forms/image-upload';
@@ -35,9 +36,9 @@ import {
   useCreateProduct,
   useUploadProductImage,
   useDeleteVariant,
-  useProductReadinessForBranches,
+  usePublicationCheck,
   usePublishProductToBranches,
-  isReadyToPublish,
+  ProductApiError,
 } from '@/hooks/queries/use-products';
 import {
   useVariantOptionGroups,
@@ -48,7 +49,6 @@ import { FlavorSlotPanel } from '@/components/admin/products/flavor-slot-panel';
 import { VariantFormDialog } from '@/components/admin/products/variant-form-dialog';
 import { LinkFlavorDialog } from '@/components/admin/products/link-flavor-dialog';
 import { AssignOptionGroupDialog } from '@/components/admin/products/assign-option-group-dialog';
-import { ReadinessChecklist } from '@/components/admin/products/readiness-checklist';
 import {
   BUILDER_STEPS,
   useProductBuilderStore,
@@ -304,6 +304,7 @@ function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) =
   });
   const [pendingImage, setPendingImage] = useState<File | null>(null);
   const [createdProductId, setCreatedProductId] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<Error | null>(null);
   const selectedBranchIds = form.watch('branch_ids');
 
   // Once assigned branches resolve: restore a persisted draft selection
@@ -331,6 +332,16 @@ function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) =
   const selectedBranchNames = myBranches.filter((b) => selectedBranchIds.includes(b.id)).map((b) => b.name);
 
   async function onSubmit(values: DetailsFormValues) {
+    setSubmitError(null);
+    try {
+      await createAndContinue(values);
+    } catch (error) {
+      // The form, branch selection and any created product id stay as they are.
+      setSubmitError(error instanceof Error ? error : new Error('Failed to save this product.'));
+    }
+  }
+
+  async function createAndContinue(values: DetailsFormValues) {
     let productId = createdProductId;
     if (!productId) {
       // POS-PERF-P36R — Product.status must be 'active', not 'draft':
@@ -455,6 +466,10 @@ function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) =
                 onImageSelected={setPendingImage}
               />
             </div>
+
+            {submitError && (
+              <BuilderWriteError error={submitError} failedTitle="Couldn't save this product" pausedTitle="Saving is paused for maintenance" />
+            )}
 
             <Button type="submit" disabled={isSubmitting || branchesLoading || selectedBranchIds.length === 0}>
               {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
@@ -588,10 +603,11 @@ function IngredientsStep({
     );
   }
 
-  // A single-branch product shows that branch's inventory badge inline; a
-  // multi-branch selection is checked branch by branch on Review instead.
+  // POS-PERF-P38 — no per-branch inventory badge here: before Add to POS a
+  // selected branch may not stock an item yet, which Add to POS sets up
+  // itself, so that badge would report setup the supervisor doesn't have to
+  // do. Review shows each branch's real status.
   const branches = builderBranches(product);
-  const branchId = branches.length === 1 ? (branches[0]?.id ?? null) : null;
   const variants = [...product.variants].sort(
     (a, b) => (a.display_order ?? 0) - (b.display_order ?? 0),
   );
@@ -605,7 +621,8 @@ function IngredientsStep({
       {branches.length > 1 && (
         <p className="text-muted-foreground text-sm">
           This recipe is shared by {branches.map((b) => b.name).join(', ')}. Each branch deducts its
-          own stock; Review checks that every selected branch has inventory set up for these items.
+          own stock. If a selected branch doesn&apos;t stock one of these items yet, Add to POS adds it
+          to that branch&apos;s inventory at zero stock.
         </p>
       )}
       {variants.map((variant) => (
@@ -613,7 +630,6 @@ function IngredientsStep({
           key={variant.id}
           productVariantId={variant.id}
           variantLabel={`${variant.name} (${variant.size_label})`}
-          branchId={branchId}
         />
       ))}
       <div className="flex justify-between pt-2">
@@ -771,6 +787,52 @@ function ChoicesForVariant({
 
 // --- Step 5: Review ---
 
+const BRANCH_STATUS_LABELS: Record<
+  PublicationCheckResponse['branches'][number]['status'],
+  { label: string; variant: 'active' | 'pending' | 'warning' }
+> = {
+  on_pos: { label: 'On POS', variant: 'active' },
+  ready: { label: 'Ready to add to POS', variant: 'pending' },
+  missing_setup: { label: 'Missing setup', variant: 'warning' },
+};
+
+/**
+ * POS-PERF-P38 — a failed builder write stays on screen until the next
+ * attempt (a toast disappears). Only an actual SERVICE_WRITE_GATE_CLOSED
+ * response is described as maintenance; anything else shows its own message.
+ */
+function BuilderWriteError({ error, failedTitle, pausedTitle }: { error: Error; failedTitle: string; pausedTitle: string }) {
+  const paused = error instanceof ProductApiError && error.code === 'SERVICE_WRITE_GATE_CLOSED';
+  return (
+    <Alert variant={paused ? 'default' : 'destructive'} data-testid="builder-write-error">
+      <AlertTriangle className="h-4 w-4" />
+      <AlertTitle>{paused ? pausedTitle : failedTitle}</AlertTitle>
+      <AlertDescription>
+        {paused
+          ? 'Changes are temporarily paused while the system is updated. Nothing was changed, and everything you entered is still here. Try again in a few minutes.'
+          : `${error.message} Nothing you entered was lost.`}
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+function PublicationIssueList({ issues, onFix }: { issues: PublicationIssue[]; onFix: (step: BuilderStep) => void }) {
+  return (
+    <ul className="space-y-2">
+      {issues.map((issue) => (
+        <li key={`${issue.code}-${issue.message}`} className="flex items-start justify-between gap-3 rounded-md border p-3 text-sm">
+          <span>{issue.message}</span>
+          {issue.fix_step && (
+            <Button variant="outline" size="sm" onClick={() => issue.fix_step && onFix(issue.fix_step)}>
+              Fix
+            </Button>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function ReviewStep({
   productId,
   onBack,
@@ -783,8 +845,9 @@ function ReviewStep({
   const { data: product, isLoading } = useProduct(productId);
   const branches = product ? builderBranches(product) : [];
   const branchIds = branches.map((b) => b.id);
-  const readinessByBranch = useProductReadinessForBranches(productId, branchIds);
+  const check = usePublicationCheck(productId, branchIds);
   const publishProduct = usePublishProductToBranches(productId);
+  const [publishError, setPublishError] = useState<Error | null>(null);
   const { reset } = useProductBuilderStore();
   const router = useRouter();
 
@@ -796,19 +859,20 @@ function ReviewStep({
     );
   }
 
-  const isPublished =
-    branchIds.length > 0 &&
-    branchIds.every((id) => product.branch_availability.some((row) => row.branch_id === id && row.is_available));
-  const readinessLoading = readinessByBranch.some((query) => query.isLoading);
-  const allBranchesReady =
-    branchIds.length > 0 &&
-    readinessByBranch.every(
-      (query) => query.data && query.data.scope === 'branch' && isReadyToPublish(query.data),
-    );
+  const plan = check.data;
+  const isPublished = !!plan && plan.branches.length > 0 && plan.branches.every((b) => b.is_published);
+  const canAddToPos = !!plan && plan.ready && !isPublished && !publishProduct.isPending;
 
   async function handlePublish() {
     if (branchIds.length === 0) return;
-    await publishProduct.mutateAsync(branchIds);
+    setPublishError(null);
+    try {
+      await publishProduct.mutateAsync(branchIds);
+    } catch (error) {
+      // Keep the builder exactly as it is; the inline error explains what happened.
+      setPublishError(error instanceof Error ? error : new Error('Failed to add this product to POS.'));
+      return;
+    }
     reset();
     router.push(`/supervisor/products/${productId}`);
   }
@@ -845,58 +909,87 @@ function ReviewStep({
           <CardDescription>
             {branches.length === 0
               ? 'This product is not tied to a builder branch selection. Publish it per branch from its product page.'
-              : `Add to POS publishes at these ${branches.length === 1 ? 'branch' : `${branches.length} branches`} only — all at once, or none if any branch isn't ready. Save Draft keeps it off the POS everywhere.`}
+              : `Sizes, recipe, flavors and options are set up once and shared by ${branches.length === 1 ? 'this branch' : `these ${branches.length} branches`}. Stock is tracked separately at each branch. Add to POS adds it at all of them at once, or at none if something is missing.`}
           </CardDescription>
         </CardHeader>
         {branches.length > 0 && (
-          <CardContent className="flex flex-wrap gap-1.5" data-testid="review-selected-branches">
-            {branches.map((branch) => {
-              const published = product.branch_availability.some(
-                (row) => row.branch_id === branch.id && row.is_available,
-              );
-              return (
-                <Badge key={branch.id} variant={published ? 'active' : 'outline'}>
+          <CardContent className="space-y-3">
+            <div className="flex flex-wrap gap-1.5" data-testid="review-selected-branches">
+              {branches.map((branch) => (
+                <Badge key={branch.id} variant="outline">
                   {branch.name}
-                  {published ? ' · on POS' : ''}
                 </Badge>
-              );
-            })}
+              ))}
+            </div>
+            {check.isLoading ? (
+              <div className="flex justify-center py-4">
+                <LoadingSpinner />
+              </div>
+            ) : check.error ? (
+              <Alert variant="destructive">
+                <AlertTriangle className="h-4 w-4" />
+                <AlertTitle>Couldn&apos;t check this product</AlertTitle>
+                <AlertDescription>{check.error.message}</AlertDescription>
+              </Alert>
+            ) : (
+              plan && (
+                <ul className="space-y-2">
+                  {plan.branches.map((branchPlan) => {
+                    const status = BRANCH_STATUS_LABELS[branchPlan.status];
+                    return (
+                      <li key={branchPlan.branch_id} className="space-y-2 rounded-md border p-3 text-sm" data-testid="review-branch-status">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="font-medium">{branchPlan.branch_name}</span>
+                          <Badge variant={status.variant}>{status.label}</Badge>
+                        </div>
+                        {!branchPlan.is_published && branchPlan.setup_items.length > 0 && (
+                          <p className="text-muted-foreground text-xs">
+                            Add to POS also adds {branchPlan.setup_items.length === 1 ? 'this item' : `these ${branchPlan.setup_items.length} items`} to
+                            this branch&apos;s inventory at zero stock: {branchPlan.setup_items.map((item) => item.name).join(', ')}.
+                          </p>
+                        )}
+                        {branchPlan.notices.map((notice) => (
+                          <p key={notice} className="text-muted-foreground text-xs">
+                            {notice}
+                          </p>
+                        ))}
+                        {branchPlan.issues.length > 0 && <PublicationIssueList issues={branchPlan.issues} onFix={onJumpToStep} />}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )
+            )}
           </CardContent>
         )}
       </Card>
 
-      {readinessLoading ? (
-        <div className="flex justify-center py-8">
-          <LoadingSpinner />
-        </div>
-      ) : (
-        branches.map((branch, index) => {
-          const data = readinessByBranch[index]?.data;
-          if (!data || data.scope !== 'branch') return null;
-          return (
-            <div key={branch.id} className="space-y-2">
-              {branches.length > 1 && <h3 className="text-sm font-semibold">{branch.name}</h3>}
-              <ReadinessChecklist
-                data={data}
-                onNavigateToTab={(tab) => onJumpToStep(tab === 'variants' ? 'ingredients' : 'sizes')}
-              />
-            </div>
-          );
-        })
+      {plan && plan.issues.length > 0 && (
+        <Card data-testid="review-missing-setup">
+          <CardHeader>
+            <CardTitle className="text-base">Missing setup</CardTitle>
+            <CardDescription>Fix these before adding this product to POS. Everything else is saved.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <PublicationIssueList issues={plan.issues} onFix={onJumpToStep} />
+          </CardContent>
+        </Card>
       )}
 
-      <div className="flex flex-wrap justify-between gap-3 pt-2">
+      {publishError && (
+        <BuilderWriteError error={publishError} failedTitle="Couldn't add to POS" pausedTitle="Add to POS is paused for maintenance" />
+      )}
+
+      <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
         <Button variant="outline" onClick={onBack}>
           Back
         </Button>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {plan && !isPublished && <span className="text-muted-foreground text-sm">Not added to POS yet</span>}
           <Button variant="outline" onClick={handleSaveDraft}>
             Save Draft
           </Button>
-          <Button
-            onClick={() => void handlePublish()}
-            disabled={isPublished || !allBranchesReady || publishProduct.isPending}
-          >
+          <Button onClick={() => void handlePublish()} disabled={!canAddToPos}>
             {publishProduct.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             {isPublished ? 'Already on POS' : 'Add to POS'}
           </Button>

@@ -217,19 +217,22 @@ describe.skipIf(!isLocalDatabase)('POS-PERF-P37 multi-branch product selection (
     expect(await prisma.product.count({ where: { name: `P37 Publish ${suffix}` } })).toBe(1);
   });
 
-  it('a branch missing inventory setup blocks the whole publication, leaving every selected branch unpublished', async () => {
-    // C has no InventoryStock row for the recipe item.
-    const { productId } = await createConfiguredProduct('Missing Setup', [branchA, branchC]);
+  // POS-PERF-P38 — this used to be a publication blocker (INVENTORY_STOCK_MISSING);
+  // Add to POS now creates the missing zero-stock link itself. Full coverage
+  // lives in products.publication-setup.integration.test.ts.
+  it('a branch missing the inventory link for a valid recipe item is linked at zero stock by Add to POS, not blocked', async () => {
+    const unlinked = await makeBranch('M');
+    await assign(supervisor, unlinked);
+    const { productId } = await createConfiguredProduct('Missing Setup', [branchA, unlinked]);
 
-    const error = await productsService.publishProductToBranches(productId, [branchA, branchC], supervisor, null).catch((e: unknown) => e);
-    expect(error).toMatchObject({ code: 'PRODUCT_NOT_READY', statusCode: 409 });
-    const details = (error as { details: { branches: { branch_id: string; blocking_issues: { code: string }[] }[] } }).details;
-    expect(details.branches.map((b) => b.branch_id)).toEqual([branchC]);
-    expect(details.branches[0]?.blocking_issues.map((i) => i.code)).toContain('INVENTORY_STOCK_MISSING');
+    const result = await productsService.publishProductToBranches(productId, [branchA, unlinked], supervisor, null);
+    expect(result.branches.every((b) => b.is_available)).toBe(true);
+    expect(result.setup.stock_links).toEqual([{ branch_id: unlinked, inventory_item_id: itemId }]);
 
-    const rows = await availabilityRows(productId);
-    expect(rows.every((r) => r.isAvailable === false)).toBe(true);
-    // No stock row was invented at C to make it pass.
+    const created = await prisma.inventoryStock.findUnique({ where: { branchId_inventoryItemId: { branchId: unlinked, inventoryItemId: itemId } } });
+    expect(created?.quantityOnHand.toNumber()).toBe(0);
+    expect(created?.quantityReserved.toNumber()).toBe(0);
+    // Never at an unselected branch.
     expect(await prisma.inventoryStock.count({ where: { branchId: branchC, inventoryItemId: itemId } })).toBe(0);
   });
 

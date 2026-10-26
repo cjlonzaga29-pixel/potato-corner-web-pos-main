@@ -19,7 +19,8 @@ const {
   useProductReadiness,
   usePublishProduct,
   usePublishProductToBranches,
-  useProductReadinessForBranches,
+  usePublicationCheck,
+  ProductApiError,
   useUnpublishProduct,
 } = await import('./use-products.js');
 
@@ -228,19 +229,32 @@ describe('POS-PERF-P37 — multi-branch Add to POS', () => {
     const { result } = renderHook(() => usePublishProductToBranches('product-1'), { wrapper: clientWrapper(queryClient) });
     await expect(result.current.mutateAsync(['branch-a', 'branch-b'])).rejects.toThrow(/Branch B/);
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['product', 'product-1', 'readiness'] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['product', 'product-1', 'publication-check'] });
   });
 
-  it('loads readiness once per selected branch under the single-branch cache keys', async () => {
+  it('POS-PERF-P38: keeps the maintenance code on the thrown error so Review can show it inline', async () => {
     const queryClient = newClient();
-    vi.mocked(apiClient).mockImplementation(async (path: string) => ({ data: { scope: 'branch', path }, error: null, meta: null }) as never);
-
-    const { result } = renderHook(() => useProductReadinessForBranches('product-1', ['branch-a', 'branch-b']), {
-      wrapper: clientWrapper(queryClient),
+    vi.mocked(apiClient).mockResolvedValue({
+      data: null,
+      error: { code: 'SERVICE_WRITE_GATE_CLOSED', message: 'Temporarily unavailable for maintenance. Please try again shortly.' },
+      meta: null,
     });
 
-    await waitFor(() => expect(result.current.every((q) => q.isSuccess)).toBe(true));
-    expect(apiClient).toHaveBeenCalledWith('/api/products/product-1/readiness?branch_id=branch-a');
-    expect(apiClient).toHaveBeenCalledWith('/api/products/product-1/readiness?branch_id=branch-b');
-    expect(queryClient.getQueryData(['product', 'product-1', 'readiness', 'branch-b'])).toBeTruthy();
+    const { result } = renderHook(() => usePublishProductToBranches('product-1'), { wrapper: clientWrapper(queryClient) });
+    const error = await result.current.mutateAsync(['branch-a']).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ProductApiError);
+    expect(error).toMatchObject({ code: 'SERVICE_WRITE_GATE_CLOSED' });
+  });
+
+  it('POS-PERF-P38: loads one publication check for the whole selection, order-independent', async () => {
+    const queryClient = newClient();
+    vi.mocked(apiClient).mockResolvedValue({ data: { product_id: 'product-1', ready: true, issues: [], branches: [] }, error: null, meta: null });
+
+    const { result } = renderHook(() => usePublicationCheck('product-1', ['branch-b', 'branch-a']), { wrapper: clientWrapper(queryClient) });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(apiClient).toHaveBeenCalledTimes(1);
+    expect(apiClient).toHaveBeenCalledWith(`/api/products/product-1/publication-check?branch_ids=${encodeURIComponent('branch-a,branch-b')}`);
+    expect(queryClient.getQueryData(['product', 'product-1', 'publication-check', 'branch-a,branch-b'])).toBeTruthy();
   });
 });

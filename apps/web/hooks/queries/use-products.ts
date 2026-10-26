@@ -1,6 +1,6 @@
 'use client';
 
-import { useMutation, useQueries, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
   SOCKET_EVENTS,
@@ -19,6 +19,7 @@ import {
   type ProductReadiness,
   type ProductStatus,
   type ProductVariantResponse,
+  type PublicationCheckResponse,
   type UpdateProductInput,
   type UpdateVariantFlavorInput,
   type UpdateVariantInput,
@@ -45,6 +46,31 @@ interface ApiErrorShape {
 function errorMessage(response: ApiErrorShape, fallback: string): string {
   if (!response.error) return fallback;
   return typeof response.error === 'string' ? response.error : (response.error.message ?? response.error.code);
+}
+
+/**
+ * POS-PERF-P38 — keeps the API's error code next to its message, so the
+ * Product Builder can tell a maintenance pause (SERVICE_WRITE_GATE_CLOSED)
+ * apart from a real rejection and show it inline instead of guessing from
+ * the text. Still an Error, so existing `error.message` callers are unchanged.
+ */
+export class ProductApiError extends Error {
+  constructor(
+    message: string,
+    public readonly code: string | undefined,
+  ) {
+    super(message);
+    this.name = 'ProductApiError';
+  }
+}
+
+function errorCode(response: ApiErrorShape): string | undefined {
+  if (!response.error) return undefined;
+  return typeof response.error === 'string' ? undefined : response.error.code;
+}
+
+function productApiError(response: ApiErrorShape, fallback: string): ProductApiError {
+  return new ProductApiError(errorMessage(response, fallback), errorCode(response));
 }
 
 function buildQueryString(filters: ProductFilters): string {
@@ -142,7 +168,7 @@ export function useCreateProduct() {
         method: 'POST',
         body: JSON.stringify(input),
       });
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to create product'));
+      if (!response.data) throw productApiError(response, 'Failed to create product');
       return response.data;
     },
     onSuccess: () => {
@@ -349,9 +375,24 @@ export function useProductReadiness(productId: string | null | undefined, branch
   return useQuery(productReadinessQuery(productId, branchId));
 }
 
-/** POS-PERF-P37 — one readiness query per selected branch, sharing useProductReadiness's cache keys. */
-export function useProductReadinessForBranches(productId: string | null | undefined, branchIds: string[]) {
-  return useQueries({ queries: branchIds.map((branchId) => productReadinessQuery(productId, branchId)) });
+/**
+ * POS-PERF-P38 — Review's single source of truth: the server's own plan for
+ * Add to POS at these branches (the exact decision publish-branches makes),
+ * so the button can never disagree with the server about what blocks it.
+ */
+export function usePublicationCheck(productId: string | null | undefined, branchIds: string[]) {
+  const key = [...branchIds].sort().join(',');
+  return useQuery({
+    queryKey: ['product', productId, 'publication-check', key],
+    queryFn: async () => {
+      const response = await apiClient<PublicationCheckResponse>(
+        `/api/products/${productId}/publication-check?branch_ids=${encodeURIComponent(key)}`,
+      );
+      if (!response.data) throw productApiError(response, 'Failed to check this product');
+      return response.data;
+    },
+    enabled: Boolean(productId) && branchIds.length > 0,
+  });
 }
 
 /**
@@ -404,22 +445,25 @@ export function usePublishProductToBranches(productId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (branchIds: string[]) => {
-      const response = await apiClient<{ product_id: string; branches: BranchProductAvailabilityRow[] }>(
-        `/api/products/${productId}/publish-branches`,
-        { method: 'POST', body: JSON.stringify({ branch_ids: branchIds }) },
-      );
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to publish product'));
+      const response = await apiClient<{
+        product_id: string;
+        branches: BranchProductAvailabilityRow[];
+        setup: { stock_links: { branch_id: string; inventory_item_id: string }[] };
+      }>(`/api/products/${productId}/publish-branches`, { method: 'POST', body: JSON.stringify({ branch_ids: branchIds }) });
+      if (!response.data) throw productApiError(response, 'Failed to publish product');
       return response.data;
     },
     onSuccess: (_data, branchIds) => {
       for (const branchId of branchIds) invalidateAfterPublishChange(queryClient, productId, branchId);
-      toast.success(branchIds.length === 1 ? 'Product published at this branch' : `Product published at ${branchIds.length} branches`);
+      void queryClient.invalidateQueries({ queryKey: ['product', productId, 'publication-check'] });
+      toast.success(branchIds.length === 1 ? 'Product added to POS at this branch' : `Product added to POS at ${branchIds.length} branches`);
     },
-    onError: (error: Error) => {
-      // A failed publish may mean readiness changed underneath the Review
-      // screen — refetch so its checklist shows the current blockers.
+    onError: () => {
+      // A failed publish may mean the setup changed underneath Review —
+      // refetch so it shows the current state. Review shows the error
+      // itself, inline and persistent (POS-PERF-P38), so no toast here.
       void queryClient.invalidateQueries({ queryKey: ['product', productId, 'readiness'] });
-      toast.error(error.message);
+      void queryClient.invalidateQueries({ queryKey: ['product', productId, 'publication-check'] });
     },
   });
 }

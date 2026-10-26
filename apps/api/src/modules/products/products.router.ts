@@ -14,6 +14,7 @@ import {
   updateVariantOptionGroupSchema,
   publishProductSchema,
   publishProductToBranchesSchema,
+  publicationCheckQuerySchema,
   unpublishProductSchema,
   forkProductToBranchSchema,
   replaceSourceWithCopySchema,
@@ -388,6 +389,37 @@ router.patch(
 // unpublish are supervisor-only writes (POS-PERF-P35) and branch-scoped,
 // so they get branchGuard the same way the branch-availability PATCH
 // routes above do.
+
+// POS-PERF-P38 — Review's read-only preview of Add to POS (publish-branches):
+// same role gate and the same in-service authorization, never writes.
+router.get(
+  '/:productId/publication-check',
+  authenticate,
+  supervisorOnly,
+  requireActiveSupervisor,
+  requirePasswordChange,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const parsed = publicationCheckQuerySchema.safeParse(req.query);
+      if (!parsed.success) {
+        res.status(422).json({
+          data: null,
+          error: { code: 'VALIDATION_ERROR', fields: parsed.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })) },
+          meta: null,
+        });
+        return;
+      }
+      const check = await productsService.getPublicationCheck(req.params.productId as string, parsed.data.branch_ids, {
+        id: req.user.user_id,
+        role: req.user.role,
+      });
+      res.status(200).json({ data: check, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
 
 router.get('/:productId/readiness', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {

@@ -74,6 +74,8 @@ export type ProductReadiness = ProductReadinessResponse | ProductReadinessAllBra
 export type PublishProductInput = z.infer<typeof schemas.publishProductSchema>;
 export type UnpublishProductInput = z.infer<typeof schemas.unpublishProductSchema>;
 export type PublishProductToBranchesInput = z.infer<typeof schemas.publishProductToBranchesSchema>;
+export type PublicationCheckResponse = z.infer<typeof schemas.publicationCheckResponseSchema>;
+export type PublicationIssue = PublicationCheckResponse['issues'][number];
 export type ForkProductToBranchInput = z.infer<typeof schemas.forkProductToBranchSchema>;
 export type ReplaceSourceWithCopyInput = z.infer<typeof schemas.replaceSourceWithCopySchema>;
 

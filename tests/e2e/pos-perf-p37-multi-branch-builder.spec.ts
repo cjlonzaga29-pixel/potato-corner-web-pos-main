@@ -381,7 +381,9 @@ test('checkout at Branch A deducts only A stock; checkout at Branch B deducts on
   expect(afterB[branchC]).toBeNull();
 });
 
-test('a selected branch missing inventory setup keeps Add to POS disabled, and the API refuses to publish any branch', async ({ page, request, baseURL }) => {
+// POS-PERF-P38 — replaces P37's "missing inventory setup keeps Add to POS
+// disabled": Add to POS now links the missing item at C itself, at zero stock.
+test('a selected branch missing the inventory link is ready on Review, and Add to POS links it at zero stock', async ({ page, request, baseURL }) => {
   const url = baseURL ?? 'http://localhost:3000';
   const multi = await apiLogin(request, multiSup.email, multiSup.password);
   const created = await authedPost<{ id: string }>(request, url, '/api/products', multi.accessToken, {
@@ -411,15 +413,19 @@ test('a selected branch missing inventory setup keeps Add to POS disabled, and t
   await page.getByRole('button', { name: 'Continue to Ingredients & Packaging' }).click();
   await page.getByRole('button', { name: 'Continue to Choices' }).click();
   await page.getByRole('button', { name: 'Continue to Review' }).click();
-  await expect(page.getByRole('heading', { name: names.c })).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByRole('button', { name: 'Add to POS' })).toBeDisabled();
+  const statusC = page.getByTestId('review-branch-status').filter({ hasText: names.c });
+  await expect(statusC).toContainText('Ready to add to POS', { timeout: 15_000 });
+  await expect(statusC).toContainText('zero stock');
+  await expect(page.getByRole('button', { name: 'Add to POS' })).toBeEnabled();
 
-  const attempt = await authedPost<null>(request, url, `/api/products/${id}/publish-branches`, multi.accessToken, { branch_ids: [branchA, branchC] });
-  expect(attempt.status).toBe(409);
-  expect(JSON.stringify(attempt.error)).toContain('INVENTORY_STOCK_MISSING');
+  const attempt = await authedPost<{ setup: { stock_links: { branch_id: string }[] } }>(request, url, `/api/products/${id}/publish-branches`, multi.accessToken, {
+    branch_ids: [branchA, branchC],
+  });
+  expect(attempt.status).toBe(200);
+  expect(attempt.data?.setup.stock_links.map((l) => l.branch_id)).toEqual([branchC]);
   const detail = await authedGet<{ branch_availability: { is_available: boolean }[] }>(request, `/api/products/${id}`, multi.accessToken);
-  expect(detail.data?.branch_availability.every((r) => !r.is_available)).toBe(true);
-  expect(readStock()[branchC]).toBeNull();
+  expect(detail.data?.branch_availability.every((r) => r.is_available)).toBe(true);
+  expect(readStock()[branchC]).toBe(0);
 });
 
 test('a single-branch supervisor gets their branch preselected and creates a branch-exclusive product as before', async ({ page }) => {

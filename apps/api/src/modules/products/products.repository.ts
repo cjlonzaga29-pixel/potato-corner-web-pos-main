@@ -16,6 +16,19 @@ const creatorInclude = {
   productCategory: { select: { id: true, name: true } },
 } satisfies Prisma.ProductInclude;
 
+const publicationItemSelect = {
+  select: { id: true, name: true, deletedAt: true, baseUnitId: true, baseUnit: { select: { code: true } } },
+} satisfies Prisma.InventoryItemDefaultArgs;
+
+const publicationOptionSelect = {
+  id: true,
+  name: true,
+  isActive: true,
+  inventoryMapping: {
+    select: { deductionUnitId: true, deductionUnit: { select: { code: true } }, inventoryItem: publicationItemSelect },
+  },
+} satisfies Prisma.ProductOptionSelect;
+
 const detailInclude = {
   ...creatorInclude,
   variants: {
@@ -535,6 +548,63 @@ export const productsRepository = {
   /** POS-PERF-P37 — the subset of these ids that reference an active branch (an absent id is unknown or inactive). */
   findActiveBranchesByIds(branchIds: string[]) {
     return prisma.branch.findMany({ where: { id: { in: branchIds }, status: 'active' }, select: { id: true, name: true } });
+  },
+
+  /**
+   * POS-PERF-P38 — the shared configuration a publication depends on, for the
+   * product's eligible variants (isActive + lifecycle ACTIVE, the same set
+   * productReadinessService evaluates): active recipe components and the
+   * option groups whose mapped inventory checkout deducts. Read-only.
+   */
+  findPublicationDependencies(productId: string) {
+    return prisma.productVariant.findMany({
+      where: { productId, isActive: true, lifecycleStatus: 'ACTIVE' },
+      select: {
+        id: true,
+        name: true,
+        productComponents: {
+          where: { isActive: true },
+          select: {
+            inventoryItemId: true,
+            recipeUnitId: true,
+            recipeUnit: { select: { code: true } },
+            inventoryItem: publicationItemSelect,
+          },
+        },
+        optionGroupAssignments: {
+          select: {
+            required: true,
+            optionGroup: {
+              select: { name: true, isActive: true, required: true, minSelections: true, options: { select: publicationOptionSelect } },
+            },
+            allowedOptions: { select: { productOption: { select: publicationOptionSelect } } },
+          },
+        },
+      },
+    });
+  },
+
+  /** POS-PERF-P38 — every conversion that could bridge these units for these items, in two queries (item-specific, then global). */
+  findUnitConversionsFor(inventoryItemIds: string[], unitIds: string[]) {
+    return Promise.all([
+      prisma.inventoryItemUnitConversion.findMany({
+        where: { inventoryItemId: { in: inventoryItemIds } },
+        select: { inventoryItemId: true, fromUnitId: true, toUnitId: true },
+      }),
+      prisma.unitConversion.findMany({
+        where: { fromUnitId: { in: unitIds }, toUnitId: { in: unitIds } },
+        select: { fromUnitId: true, toUnitId: true },
+      }),
+    ]);
+  },
+
+  /** POS-PERF-P38 — which (branch, item) InventoryStock rows already exist. Pass the transaction client to read inside one. */
+  findStockPairs(branchIds: string[], inventoryItemIds: string[], tx: Prisma.TransactionClient | typeof prisma = prisma) {
+    if (branchIds.length === 0 || inventoryItemIds.length === 0) return Promise.resolve([]);
+    return tx.inventoryStock.findMany({
+      where: { branchId: { in: branchIds }, inventoryItemId: { in: inventoryItemIds } },
+      select: { branchId: true, inventoryItemId: true },
+    });
   },
 
   /** Phase 10 POS terminal catalog — active products, available at this branch, with only active variants and available flavors. */

@@ -595,6 +595,38 @@ export const publishProductToBranchesSchema = z.object({
   branch_ids: z.array(z.uuid()).min(1, 'Select at least one branch').max(MAX_PRODUCT_BRANCH_SELECTION),
 });
 
+// POS-PERF-P38 — Review's read-only "what would Add to POS do" check; the
+// same selection as publishProductToBranchesSchema, as a comma-separated query value.
+export const publicationCheckQuerySchema = z.object({
+  branch_ids: z
+    .string()
+    .transform((value) => value.split(',').map((id) => id.trim()).filter(Boolean))
+    .pipe(z.array(z.uuid()).min(1, 'Select at least one branch').max(MAX_PRODUCT_BRANCH_SELECTION)),
+});
+
+const publicationIssueSchema = z.object({
+  code: z.string(),
+  message: z.string(),
+  fix_step: z.enum(['details', 'sizes', 'ingredients', 'choices']).nullable(),
+});
+
+export const publicationCheckResponseSchema = z.object({
+  product_id: z.uuid(),
+  ready: z.boolean(),
+  issues: z.array(publicationIssueSchema),
+  branches: z.array(
+    z.object({
+      branch_id: z.uuid(),
+      branch_name: z.string(),
+      is_published: z.boolean(),
+      status: z.enum(['on_pos', 'ready', 'missing_setup']),
+      issues: z.array(publicationIssueSchema),
+      notices: z.array(z.string()),
+      setup_items: z.array(z.object({ inventory_item_id: z.uuid(), name: z.string() })),
+    }),
+  ),
+});
+
 // POS-PERF-P36R4 — a supervisor with authority over only some of a shared
 // product's branches cannot edit it in place (that would change every
 // branch at once); forking gives them a branch-exclusive copy, scoped to

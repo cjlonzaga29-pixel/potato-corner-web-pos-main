@@ -25,6 +25,7 @@ vi.mock('./products.service.js', () => ({
     uploadProductImage: vi.fn(),
     deleteProductImage: vi.fn(),
     publishProductToBranches: vi.fn(),
+    getPublicationCheck: vi.fn(),
   },
 }));
 
@@ -293,7 +294,7 @@ describe('POST /api/products/:productId/publish-branches — Supervisor only, va
   it('passes the whole selection to the service for a supervisor', async () => {
     const branchA = randomUUID();
     const branchB = randomUUID();
-    vi.mocked(productsService.publishProductToBranches).mockResolvedValue({ product_id: 'prod-1', branches: [] });
+    vi.mocked(productsService.publishProductToBranches).mockResolvedValue({ product_id: 'prod-1', branches: [], setup: { stock_links: [] } });
     const handlers = getRouteHandlers(productsRouter, 'post', '/:productId/publish-branches');
     const req = mockReq({ ...authHeader(generateSupervisorToken([branchA, branchB])), params: { productId: 'prod-1' }, body: { branch_ids: [branchA, branchB] } });
     const res = mockRes();
@@ -301,6 +302,46 @@ describe('POST /api/products/:productId/publish-branches — Supervisor only, va
     await runHandlers(handlers, req, res);
 
     expect(productsService.publishProductToBranches).toHaveBeenCalledWith('prod-1', [branchA, branchB], expect.objectContaining({ role: 'supervisor' }), null);
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+});
+
+// POS-PERF-P38 — Review's read-only preview of Add to POS: same role gate as
+// publish-branches; the service performs the live branch authorization.
+describe('GET /api/products/:productId/publication-check — Supervisor only, validated branch_ids', () => {
+  it('rejects a super_admin actor with 403, never reaching the service', async () => {
+    const handlers = getRouteHandlers(productsRouter, 'get', '/:productId/publication-check');
+    const req = mockReq({ ...authHeader(generateSuperAdminToken()), params: { productId: 'prod-1' }, query: { branch_ids: randomUUID() } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(productsService.getPublicationCheck).not.toHaveBeenCalled();
+  });
+
+  it.each([[{}], [{ branch_ids: '' }], [{ branch_ids: 'not-a-uuid' }]])('rejects an invalid query %j with 422', async (query) => {
+    const handlers = getRouteHandlers(productsRouter, 'get', '/:productId/publication-check');
+    const req = mockReq({ ...authHeader(generateSupervisorToken([randomUUID()])), params: { productId: 'prod-1' }, query });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(productsService.getPublicationCheck).not.toHaveBeenCalled();
+  });
+
+  it('splits the comma-separated selection and passes it to the service', async () => {
+    const branchA = randomUUID();
+    const branchB = randomUUID();
+    vi.mocked(productsService.getPublicationCheck).mockResolvedValue({ product_id: 'prod-1', ready: true, issues: [], branches: [] });
+    const handlers = getRouteHandlers(productsRouter, 'get', '/:productId/publication-check');
+    const req = mockReq({ ...authHeader(generateSupervisorToken([branchA, branchB])), params: { productId: 'prod-1' }, query: { branch_ids: `${branchA},${branchB}` } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(productsService.getPublicationCheck).toHaveBeenCalledWith('prod-1', [branchA, branchB], expect.objectContaining({ role: 'supervisor' }));
     expect(res.status).toHaveBeenCalledWith(200);
   });
 });

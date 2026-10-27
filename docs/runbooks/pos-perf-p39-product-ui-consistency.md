@@ -102,8 +102,8 @@ row there). The branch is the one picked in the sidebar's branch selector, and t
 it with `hasBranchAccess` (403 otherwise).
 
 - **Drafts**: `status = 'draft'`, or `status = 'active'`, on POS at no branch, and no
-  availability or lifecycle audit entry (checked in both `audit_logs` and the pending
-  `audit_outbox`).
+  availability or lifecycle audit entry (checked in both `audit_logs` and `audit_outbox`, in
+  any outbox status; see section 7).
 - **Active**: not a draft, `status = 'active'` and available at this branch. This is the same
   rule the POS catalog uses.
 - **Inactive**: everything else configured at the branch. That covers off POS here, temporarily
@@ -249,8 +249,10 @@ The geometry table in section 1. All four layouts were measured on the final bui
 
 - **Draft detection depends on audit history.** No "ever published" column exists, so a
   builder draft is told apart from a product taken off POS everywhere by its audit entries
-  (`audit_logs` plus the pending `audit_outbox`). If audit rows were ever purged, such a product
+  (`audit_logs` plus `audit_outbox` in any status). If audit rows were ever purged, such a product
   would show under Drafts. No schema change was made to avoid this, as the spec preferred.
+  Section 7 has the delivery-timing analysis and the one write path that can still lose this
+  history.
 - **Scope is the selected branch.** The tabs list products set up for the branch picked in the
   sidebar. A product not configured there doesn't appear until it is set up for that branch
   (Create Product or the product page).
@@ -275,3 +277,126 @@ The geometry table in section 1. All four layouts were measured on the final bui
 - Local leftovers in `pos_verify`: the P39 spec and the probes created test branches (since
   deactivated), a supervisor and products whose names carry a run suffix. Nothing outside the
   disposable local database was written.
+
+## 7. P39R — Draft classification while audit delivery is pending
+
+Starting HEAD: `29a8bb901ff9040ea02040d2f9e35cf63d574718` (P39), clean tree. No product code,
+schema or migration changed. One test file was added, and this runbook was updated. Nothing was
+pushed or deployed, and nothing touched production data.
+
+### Finding
+
+The reported risk was that a product published and then taken off POS could be classed as a
+Draft until its publication audit entries reached `audit_logs`. **It does not happen.** Audit
+delivery alone, in any state, never changes a product's tab or the counts. No defect was found
+on that path, so no fix was made. The new regression test is the evidence.
+
+### Classification rules (`productsRepository.findAll` / `findDraftIds` / `branchViewOf`)
+
+One read selects every product with a `branch_product_availability` row at the selected branch
+(plus the search/category filters), with all of its availability rows at every branch. Each
+product is then classified once, in memory:
+
+1. **Drafts**: `status = 'draft'`. Or `status = 'active'`, `is_available` false at every branch,
+   and no history entry. A history entry is any `audit_logs` **or** `audit_outbox` row, in any
+   outbox status, with one of these targets:
+   - `entity_type = 'branch_product_availability'` and `entity_id` set to one of the product's
+     availability rows. This covers publication (outbox), unpublish and per-branch status changes
+     (`recordAuditLog`).
+   - `entity_type = 'product'` and an action in `PRODUCT_STATUS_CHANGED`,
+     `PRODUCT_CATALOG_REMOVAL_CASCADE`, `PRODUCT_CATALOG_RESTORE_CASCADE` or
+     `PRODUCT_REPLACED_AT_BRANCH`.
+2. **Active**: not a draft, `status = 'active'` and `is_available` at the selected branch. This
+   is the POS catalog's own predicate (`findCatalogForBranch`).
+3. **Inactive**: every other product configured at the branch. That covers off POS here
+   (including "published only at another branch"), temporarily unavailable, discontinued and
+   archived. The real `status` is returned, so the chip stays explicit.
+
+Rows, the three counts, `total` and pagination all come from that single classification (the
+listed page is `id IN idsByView[view]`, ordered by the sort field and then `id`). They cannot
+disagree. History is two batched queries over all candidate ids (`audit_logs`, then
+`audit_outbox`), never one lookup per product. They run only for active products that are
+off POS everywhere.
+
+Branch copies (`forkProductCascade`) are created with `status = 'draft'`, so they are Drafts until
+they are set active. The POS catalog requires `status = 'active'`, so a draft-status copy is never
+sold, even after `replaceSharedProductAtBranch` turns its availability row on. Draft is reachable
+only at creation (`GLOBAL_TRANSITIONS` has no transition back to `draft`).
+
+### Why delivery timing cannot move a product
+
+- `publishWithinLock` enqueues its `PRODUCT_BRANCH_AVAILABILITY_CHANGED` intents (entity = the
+  availability row) **in the publication's own transaction**. When the publication is visible,
+  so is its history.
+- `findDraftIds` reads `audit_outbox` with **no status filter**. Pending, processing, stuck and
+  delivered rows all count.
+- `deliverGroup` flips the rows to `delivered` and inserts the `audit_logs` entries in one
+  transaction. It never deletes outbox rows. Because a delivered entry is in both tables, the two
+  non-snapshot reads cannot miss it in a race. If delivery commits between them, the outbox read
+  still sees the row.
+- Retention: no production code, migration, trigger or script deletes from `audit_outbox` or
+  `audit_logs` (searched `apps/api/src`, `apps/api/prisma/migrations`, `scripts`). Only test
+  cleanups do. **Assumption for any future retention job:** delivered outbox rows are history
+  for this check, and so are `audit_logs` rows on availability rows and products. Pruning
+  either one without a replacement marker would move previously published products into Drafts.
+
+### Evidence: `products.branch-views-audit-delivery.integration.test.ts` (real Postgres)
+
+Local `127.0.0.1:5432/pos_verify` only (host and database checked before running). Fixtures carry a
+run suffix and are deleted afterwards. Delivery is paused for the file's own intents: they are
+written with a far-future `next_attempt_at`, so no worker can claim them until the test releases
+them. That includes the P39 probe API that was still running on `:4000` against the same database.
+The first, unpaused version of this test was in fact delivered by that worker partway through.
+Publication goes through the real `publishProductToBranches`. Deactivation goes through the real
+`unpublishProduct`, with **every `audit_logs` insert failing** (the direct writer swallows the
+error), so the outbox is the only history left.
+
+| Stage | P (published at A+B) outbox | A: Active / Drafts / Inactive | B: Active / Drafts / Inactive |
+| --- | --- | --- | --- |
+| Genuine draft + P just published | pending, nothing in `audit_logs` | P / draft / — | P / draft / — |
+| P off at A (audit_logs down) | pending | — / draft / P | P / draft / — |
+| P off at both; Q published at B only; L has history in `audit_logs` only | pending | 0 / 1 / 3 (L, P, Q) | 1 (Q) / 1 / 1 (P) |
+| P's group claimed, not delivered | processing | 0 / 1 / 3 | 1 / 1 / 1 |
+| P's group exhausted (`recordFailure` → stuck) | stuck | 0 / 1 / 3 | 1 / 1 / 1 |
+| Requeued and delivered (P and Q) | delivered, one `audit_logs` entry per row | 0 / 1 / 3 | 1 / 1 / 1 |
+| P archived, Q discontinued | — | 0 / 1 / 3, real status kept | 0 / 1 / 2 (`archived`, `discontinued`) |
+| P restored | — | P Active | P Active |
+
+Every stage also checks that the counts are the same on all three tabs and that `total` equals
+the listed rows.
+
+| Check | Result |
+| --- | --- |
+| New file, serial with `products.branch-views` + `audit-outbox` integration suites | 3 files, 22 / 22 passed |
+| New file, those three files in parallel with the `:4000` worker polling | 12 runs. The new file passed in all 11 where per-file results were captured; one run had a failure without the failing file recorded |
+| `app/(supervisor)/supervisor/products/page.test.tsx` (tabs/counts UI) | 9 / 9 passed |
+| API `tsc --noEmit`; `eslint` on the new file | clean |
+
+No UI or API behaviour changed, so no new browser run was needed. Section 5's browser spec
+already covers Deactivate moving a product from Active to Inactive.
+
+### Migration and rollout
+
+None. No schema, no data backfill, no change to publication, checkout, stock deduction or
+audit delivery.
+
+### Remaining limitations (concrete)
+
+- **Best-effort history on the direct availability paths.** `updateBranchProductAvailability`,
+  `bulkUpdateBranchProductAvailability`, the branch-scoped `changeProductStatus`,
+  `replaceSharedProductAtBranch` and the restore cascade commit first. They then write their
+  audit entry with `recordAuditLog`, which logs and swallows errors. Suppose a product is turned
+  on **only** through one of these paths, that one audit write fails, and the product is later
+  taken off POS at every branch. It then reads as a Draft (Continue Setup). The tested pending
+  publication, by contrast, stays Inactive. Products published through Add to POS or Publish
+  here (the outbox path) are not affected. Closing this would need either the outbox on those
+  paths (a change to audit delivery, out of scope here) or an additive "ever on POS" marker on
+  `branch_product_availability`, set in the same statement that turns a row on. A marker could
+  be backfilled reliably only from `is_available = true` and existing history entries, and
+  carries no fabricated date. Not done; it needs a decision.
+- **Pre-existing flaky test:** `audit-outbox.integration.test.ts` "concurrent workers alongside
+  concurrent legacy audit writers" sometimes fails when run in parallel with other database
+  suites. It failed once in 3 parallel runs of only the HEAD files, and in some runs with the new
+  file. It passed every serial run. Not changed here.
+- Local leftovers: the P39 `dist/server.js` on `:4000` and `next start` on `:3000` are still
+  running against `pos_verify`. They were not stopped.

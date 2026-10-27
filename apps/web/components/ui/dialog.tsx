@@ -5,7 +5,55 @@ import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-const Dialog = DialogPrimitive.Root;
+/**
+ * POS-PERF-P39 — a region inside a dialog (the supervisor product editor)
+ * that hosts the dialogs its own children open — Add Size, recipe lines,
+ * flavors, Mix & Max slots, option groups, confirmations — as panels over
+ * that region instead of a second modal stacked on the first. A hosted
+ * dialog is non-modal: no second overlay or focus trap (the host's own modal
+ * dialog already traps focus), Escape closes only the top panel, clicks
+ * elsewhere in the host never dismiss it, and focus returns to the control
+ * that opened it. Outside a host every dialog is unchanged.
+ */
+interface DialogHostValue {
+  container: HTMLElement | null;
+  topId: string | null;
+  register: (id: string) => () => void;
+}
+
+const DialogHostContext = React.createContext<DialogHostValue | null>(null);
+
+interface DialogHostProps {
+  /** The positioned element hosted panels render into; each panel fills it. */
+  container: HTMLElement | null;
+  /** Called with whether any hosted panel is open, e.g. to make the content underneath inert. */
+  onActiveChange?: (active: boolean) => void;
+  children: React.ReactNode;
+}
+
+function DialogHost({ container, onActiveChange, children }: DialogHostProps) {
+  const [stack, setStack] = React.useState<string[]>([]);
+  const register = React.useCallback((id: string) => {
+    setStack((current) => [...current, id]);
+    return () => setStack((current) => current.filter((entry) => entry !== id));
+  }, []);
+  const active = stack.length > 0;
+  React.useEffect(() => {
+    onActiveChange?.(active);
+  }, [active, onActiveChange]);
+  const value = React.useMemo(() => ({ container, topId: stack.at(-1) ?? null, register }), [container, stack, register]);
+  return <DialogHostContext.Provider value={value}>{children}</DialogHostContext.Provider>;
+}
+
+/** True inside a DialogHost — for components (like ConfirmDialog) built on another primitive that must switch to this one when hosted. */
+function useIsDialogHosted(): boolean {
+  return React.useContext(DialogHostContext) !== null;
+}
+
+function Dialog({ modal, ...props }: React.ComponentProps<typeof DialogPrimitive.Root>) {
+  const host = React.useContext(DialogHostContext);
+  return <DialogPrimitive.Root modal={host ? false : modal} {...props} />;
+}
 const DialogTrigger = DialogPrimitive.Trigger;
 const DialogPortal = DialogPrimitive.Portal;
 const DialogClose = DialogPrimitive.Close;
@@ -27,32 +75,103 @@ interface DialogContentProps extends React.ComponentPropsWithoutRef<typeof Dialo
   showCloseButton?: boolean;
 }
 
+function DialogCloseButton({ label = 'Close' }: { label?: string }) {
+  return (
+    <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none print:hidden">
+      <X className="h-4 w-4" />
+      <span className="sr-only">{label}</span>
+    </DialogPrimitive.Close>
+  );
+}
+
+/** Mounted only while its dialog is open (the Portal's presence gates it), so the host's stack is exactly what is shown. */
+function HostedPanel({ host, children }: { host: DialogHostValue; children: (opener: HTMLElement | null) => React.ReactNode }) {
+  const id = React.useId();
+  // Read during the first render, before Radix moves focus into the panel.
+  const [opener] = React.useState(() => (typeof document === 'undefined' ? null : (document.activeElement as HTMLElement | null)));
+  const { register } = host;
+  React.useEffect(() => register(id), [register, id]);
+  return (
+    <div className="pointer-events-auto absolute inset-0 overflow-y-auto bg-card" inert={host.topId !== id} data-hosted-dialog="">
+      {children(opener)}
+    </div>
+  );
+}
+
+const HostedDialogContent = React.forwardRef<React.ElementRef<typeof DialogPrimitive.Content>, DialogContentProps & { host: DialogHostValue }>(
+  ({ host, className, children, showCloseButton = true, onInteractOutside, onCloseAutoFocus, ...props }, ref) => {
+    if (!host.container) return null;
+    return (
+      <DialogPortal container={host.container}>
+        <HostedPanel host={host}>
+          {(opener) => (
+            <DialogPrimitive.Content
+              ref={ref}
+              className={cn('relative mx-auto grid w-full max-w-2xl gap-4 p-4 sm:p-6', className, 'max-h-none overflow-visible')}
+              onInteractOutside={(event) => {
+                onInteractOutside?.(event);
+                // A click on the host's header or tabs never discards what was typed here.
+                event.preventDefault();
+              }}
+              onCloseAutoFocus={(event) => {
+                onCloseAutoFocus?.(event);
+                if (event.defaultPrevented) return;
+                event.preventDefault();
+                // Once the host has re-rendered without this panel and made the content underneath interactive again
+                // (an inert ancestor refuses focus, so retry for a few frames).
+                let attempts = 0;
+                const restore = () => {
+                  if (!opener?.isConnected) return;
+                  opener.focus();
+                  if (document.activeElement !== opener && ++attempts < 5) requestAnimationFrame(restore);
+                };
+                requestAnimationFrame(restore);
+              }}
+              {...props}
+            >
+              {children}
+              {/* Distinct from the host dialog's own Close, which stays on screen alongside it. */}
+              {showCloseButton && <DialogCloseButton label="Close this form" />}
+            </DialogPrimitive.Content>
+          )}
+        </HostedPanel>
+      </DialogPortal>
+    );
+  },
+);
+HostedDialogContent.displayName = 'HostedDialogContent';
+
 const DialogContent = React.forwardRef<React.ElementRef<typeof DialogPrimitive.Content>, DialogContentProps>(
-  ({ className, children, showCloseButton = true, ...props }, ref) => (
-    <DialogPortal>
-      <DialogOverlay />
-      <DialogPrimitive.Content
-        ref={ref}
-        className={cn(
-          // print:* here matters beyond just this component: any dialog that contains a
-          // #receipt-print-area (see globals.css) relies on this fixed/transformed/clipped
-          // box being neutralized for print, otherwise the printable content collapses to
-          // a blank/near-zero box even though it's marked visible.
-          'app-dialog-padding fixed left-[50%] top-[50%] z-50 grid max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 overflow-y-auto rounded-xl border border-border/60 bg-card shadow-2xl shadow-black/10 duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 dark:shadow-black/50 print:static print:left-0 print:top-0 print:z-auto print:h-auto print:max-h-none print:w-auto print:max-w-none print:translate-x-0 print:translate-y-0 print:overflow-visible print:rounded-none print:border-none print:bg-transparent print:p-0 print:shadow-none',
-          className,
-        )}
-        {...props}
-      >
-        {children}
-        {showCloseButton && (
-          <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none print:hidden">
-            <X className="h-4 w-4" />
-            <span className="sr-only">Close</span>
-          </DialogPrimitive.Close>
-        )}
-      </DialogPrimitive.Content>
-    </DialogPortal>
-  ),
+  ({ className, children, showCloseButton = true, ...props }, ref) => {
+    const host = React.useContext(DialogHostContext);
+    if (host) {
+      return (
+        <HostedDialogContent ref={ref} host={host} className={className} showCloseButton={showCloseButton} {...props}>
+          {children}
+        </HostedDialogContent>
+      );
+    }
+    return (
+      <DialogPortal>
+        <DialogOverlay />
+        <DialogPrimitive.Content
+          ref={ref}
+          className={cn(
+            // print:* here matters beyond just this component: any dialog that contains a
+            // #receipt-print-area (see globals.css) relies on this fixed/transformed/clipped
+            // box being neutralized for print, otherwise the printable content collapses to
+            // a blank/near-zero box even though it's marked visible.
+            'app-dialog-padding fixed left-[50%] top-[50%] z-50 grid max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 overflow-y-auto rounded-xl border border-border/60 bg-card shadow-2xl shadow-black/10 duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 dark:shadow-black/50 print:static print:left-0 print:top-0 print:z-auto print:h-auto print:max-h-none print:w-auto print:max-w-none print:translate-x-0 print:translate-y-0 print:overflow-visible print:rounded-none print:border-none print:bg-transparent print:p-0 print:shadow-none',
+            className,
+          )}
+          {...props}
+        >
+          {children}
+          {showCloseButton && <DialogCloseButton />}
+        </DialogPrimitive.Content>
+      </DialogPortal>
+    );
+  },
 );
 DialogContent.displayName = DialogPrimitive.Content.displayName;
 
@@ -84,6 +203,8 @@ DialogDescription.displayName = DialogPrimitive.Description.displayName;
 
 export {
   Dialog,
+  DialogHost,
+  useIsDialogHosted,
   DialogPortal,
   DialogOverlay,
   DialogClose,

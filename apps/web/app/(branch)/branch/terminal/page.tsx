@@ -14,6 +14,7 @@ import { Badge } from '@/components/ui/badge';
 import { AddOnsDialog, multiGroupTarget, type AddOnsDialogGroup, type AddOnSelections } from '@/components/pos/add-ons-dialog';
 import { PinKeypad } from '@/components/pos/pin-keypad';
 import { ProductCard } from '@/components/pos/product-card';
+import { ProductCardSkeleton } from '@/components/pos/product-card-skeleton';
 import { CartLineItem, type CartLine } from '@/components/pos/cart-line-item';
 import type { DiscountChoice } from '@/components/pos/payment-footer';
 import { CheckoutWorkspace } from '@/components/pos/checkout-workspace';
@@ -23,7 +24,6 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
-import { Skeleton } from '@/components/ui/skeleton';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { ErrorState } from '@/components/shared/feedback/error-state';
@@ -149,6 +149,8 @@ function formatPeso(amount: number): string {
 // viewport width. `pb-24`/`lg:pb-4`
 // leaves room for the mobile sticky "View Cart" bar, which overlaps the
 // bottom of this scroll region below `lg`.
+const EMPTY_CATALOG: PosCatalogProduct[] = [];
+
 function productGridClasses(densityMode: DensityMode): string {
   return `grid content-start gap-1.5 p-3 pb-24 lg:gap-2 lg:p-4 lg:pb-4 ${DENSITY_POS_GRID_COLUMNS[densityMode]}`;
 }
@@ -452,6 +454,7 @@ export default function TerminalPage() {
   const {
     data: liveCatalog,
     isLoading: isCatalogLoading,
+    isFetching: isCatalogFetching,
     isError: isCatalogError,
     refetch: refetchCatalog,
   } = useCatalog(branchId);
@@ -543,7 +546,8 @@ export default function TerminalPage() {
     }
   }
 
-  const [cachedProducts, setCachedProducts] = useState<PosCatalogProduct[]>([]);
+  // POS-PERF-P39 — tagged with the branch it was read for, so a branch change never shows the previous branch's cached catalog.
+  const [cachedCatalog, setCachedCatalog] = useState<{ branchId: string; products: PosCatalogProduct[] } | null>(null);
   const [activeCategory, setActiveCategory] = useState<string>('all');
   // Task 196 (visual redesign) — cashier-facing product search, purely a
   // client-side display filter layered on top of the existing category
@@ -1131,21 +1135,26 @@ export default function TerminalPage() {
   // Refresh the offline cache whenever the live catalog loads — Architecture
   // doc §10.1: refreshed on connect and at least every 30 minutes.
   useEffect(() => {
-    if (!liveCatalog) return;
-    void cacheProductCatalog(liveCatalog.products.map((p) => ({ id: p.id, data: p })));
-  }, [liveCatalog]);
+    if (!liveCatalog || !branchId) return;
+    void cacheProductCatalog(branchId, liveCatalog.products.map((p) => ({ id: p.id, data: p })));
+  }, [liveCatalog, branchId]);
 
   // Fall back to the Dexie-cached catalog when offline or before the first
-  // live fetch resolves.
+  // live fetch resolves — only ever this branch's own snapshot.
   useEffect(() => {
-    if (liveCatalog) return;
+    if (liveCatalog || !branchId) return;
+    let cancelled = false;
     void (async () => {
-      const cached = await getCachedProductCatalog();
-      const products = cached.map((row) => row.data as PosCatalogProduct);
-      setCachedProducts(products);
+      const cached = await getCachedProductCatalog(branchId);
+      if (cancelled) return;
+      setCachedCatalog({ branchId, products: cached.map((row) => row.data as PosCatalogProduct) });
     })();
-  }, [liveCatalog]);
+    return () => {
+      cancelled = true;
+    };
+  }, [liveCatalog, branchId]);
 
+  const cachedProducts = cachedCatalog && cachedCatalog.branchId === branchId ? cachedCatalog.products : EMPTY_CATALOG;
   const catalog = liveCatalog?.products ?? cachedProducts;
   const categories = useMemo(
     () => [...new Set(catalog.map((p) => p.category).filter((c): c is string => Boolean(c)))].sort(),
@@ -2704,6 +2713,27 @@ export default function TerminalPage() {
       <div className="relative flex flex-col lg:min-h-0 lg:flex-1 lg:overflow-hidden lg:border-r">
         {activeMainTab === 'products' && (
         <>
+        {/* POS-PERF-P39 — a background refresh keeps the tiles on screen; this
+            pill (absolutely positioned, so it never moves the grid) is the
+            only sign of it. A failed refresh that still has a catalog to show
+            says so instead of silently showing it as current. */}
+        {catalog.length > 0 && (isCatalogFetching || (isCatalogError && !liveCatalog)) && (
+          <div className="absolute right-3 top-3 z-10" role="status" aria-live="polite">
+            {isCatalogFetching ? (
+              <span className="pointer-events-none inline-flex items-center gap-1.5 rounded-full border bg-background/95 px-2.5 py-1 text-xs text-muted-foreground shadow-sm">
+                <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                Updating…
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-2 rounded-full border border-warning/50 bg-background/95 px-2.5 py-1 text-xs text-foreground shadow-sm">
+                Showing the last saved catalog
+                <button type="button" className="font-medium text-primary underline-offset-2 hover:underline" onClick={() => void refetchCatalog()}>
+                  Retry
+                </button>
+              </span>
+            )}
+          </div>
+        )}
         <div className="space-y-2 border-b bg-card p-3">
           <h1 className="sr-only">POS Terminal — product catalog</h1>
           <SearchInput
@@ -2732,7 +2762,7 @@ export default function TerminalPage() {
           {isCatalogLoading && catalog.length === 0 ? (
             <div className={productGridClasses(densityMode)} aria-hidden="true">
               {Array.from({ length: 12 }, (_, i) => (
-                <Skeleton key={i} className="app-pos-card rounded-xl" />
+                <ProductCardSkeleton key={i} />
               ))}
             </div>
           ) : isCatalogError && catalog.length === 0 ? (
@@ -2762,7 +2792,7 @@ export default function TerminalPage() {
               }
             />
           ) : (
-            <div className={productGridClasses(densityMode)}>
+            <div className={productGridClasses(densityMode)} data-testid="pos-product-grid">
               {visibleProducts.map((product) =>
                 product.variants.map((variant) => (
                   <ProductCard key={variant.id} product={product} variant={variant} message={readinessMessage(variant)} onTap={handleProductTap} />

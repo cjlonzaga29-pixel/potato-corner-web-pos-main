@@ -15,6 +15,7 @@ import {
   type PosCatalogResponse,
   type ProductDetailResponse,
   type ProductImageResponse,
+  type ProductBranchView,
   type ProductListResponse,
   type ProductReadiness,
   type ProductStatus,
@@ -37,6 +38,10 @@ export interface ProductFilters {
   limit?: number;
   sortBy?: 'name' | 'created_at' | 'updated_at' | 'display_order' | 'status';
   sortOrder?: 'asc' | 'desc';
+  /** POS-PERF-P39 — list only products configured at this branch, with per-tab counts. */
+  branchId?: string;
+  /** POS-PERF-P39 — one of the branch tabs; needs branchId. */
+  view?: ProductBranchView;
 }
 
 interface ApiErrorShape {
@@ -145,12 +150,14 @@ function buildQueryString(filters: ProductFilters): string {
   if (filters.isSeasonal !== undefined) params.set('is_seasonal', String(filters.isSeasonal));
   if (filters.sortBy) params.set('sort_by', filters.sortBy);
   if (filters.sortOrder) params.set('sort_order', filters.sortOrder);
+  if (filters.branchId) params.set('branch_id', filters.branchId);
+  if (filters.view) params.set('view', filters.view);
   params.set('page', String(filters.page ?? 1));
   params.set('limit', String(filters.limit ?? 25));
   return params.toString();
 }
 
-export function useProducts(filters: ProductFilters = {}) {
+export function useProducts(filters: ProductFilters = {}, options: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: ['products', filters],
     queryFn: async () => {
@@ -160,6 +167,7 @@ export function useProducts(filters: ProductFilters = {}) {
     },
     staleTime: 30 * 1000,
     placeholderData: keepPreviousData,
+    enabled: options.enabled ?? true,
   });
 }
 
@@ -251,7 +259,8 @@ export function useUpdateProduct(productId: string) {
         method: 'PATCH',
         body: JSON.stringify(input),
       });
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to update product'));
+      // POS-PERF-P39 — keeps the code so the editor can tell a PRODUCT_CONFLICT (newer saved version) apart.
+      if (!response.data) throw productApiError(response, 'Failed to update product');
       return response.data;
     },
     onSuccess: () => {
@@ -342,7 +351,7 @@ export function useChangeProductStatus(productId: string) {
         method: 'PATCH',
         body: JSON.stringify(input),
       });
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to change product status'));
+      if (!response.data) throw productApiError(response, 'Failed to change product status');
       return response.data;
     },
     onSuccess: () => {
@@ -487,6 +496,8 @@ function invalidateAfterPublishChange(queryClient: ReturnType<typeof useQueryCli
   void queryClient.invalidateQueries({ queryKey: ['product', productId, 'readiness'] });
   void queryClient.invalidateQueries({ queryKey: ['product', productId, 'branch-availability'] });
   void queryClient.invalidateQueries({ queryKey: ['catalog', branchId] });
+  // POS-PERF-P39 — the Products page's Active/Inactive tabs and counts follow publication.
+  void queryClient.invalidateQueries({ queryKey: ['products'] });
 }
 
 /**
@@ -701,7 +712,8 @@ export function useDeleteProduct() {
   return useMutation({
     mutationFn: async (productId: string) => {
       const response = await apiClient<null>(`/api/products/${productId}`, { method: 'DELETE' });
-      if (response.error) throw new Error(errorMessage(response, 'Failed to delete product'));
+      // POS-PERF-P39 — keeps the code: PRODUCT_HAS_DEPENDENCIES means offer Archive instead.
+      if (response.error) throw productApiError(response, 'Failed to delete product');
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['products'] });

@@ -745,7 +745,7 @@ function toProductBase(product: {
 type ListRow = Parameters<typeof toProductBase>[0] & {
   _count: { variants: number };
   variants: { isActive: boolean }[];
-  branchAvailability: { isAvailable: boolean }[];
+  branchAvailability: { isAvailable: boolean; branchId: string; branch: { name: string } }[];
 };
 
 /**
@@ -764,6 +764,9 @@ function toProductListItem(product: ListRow, imageUrl: string | null) {
     variant_count: product._count.variants,
     active_variant_count: product.variants.filter((v) => v.isActive).length,
     active_branch_count: product.branchAvailability.filter((b) => b.isAvailable).length,
+    branches: product.branchAvailability
+      .map((b) => ({ branch_id: b.branchId, branch_name: b.branch.name, is_available: b.isAvailable }))
+      .sort((a, b) => a.branch_name.localeCompare(b.branch_name)),
   };
 }
 
@@ -1262,8 +1265,14 @@ async function getSignedProductImageUrls(imagePaths: string[]): Promise<Map<stri
 }
 
 export const productsService = {
-  async getAllProducts(_requestingUser: JwtPayload, filters: ProductListFilters) {
-    const { products, total } = await productsRepository.findAll(filters);
+  async getAllProducts(requestingUser: JwtPayload, filters: ProductListFilters) {
+    // POS-PERF-P39 — a branch-scoped list (the supervisor Products page's
+    // tabs) reveals what is on POS at that branch, so it follows the same
+    // branch access as every other branch read.
+    if (filters.branch_id && !(await hasBranchAccess(requestingUser, filters.branch_id))) {
+      throw new ProductError('BRANCH_ACCESS_DENIED', 'You do not have access to this branch', 403);
+    }
+    const { products, total, counts } = await productsRepository.findAll(filters);
 
     // One batched Storage call for every image-bearing product on this page,
     // instead of the frontend minting one signed URL per product via
@@ -1281,6 +1290,7 @@ export const productsService = {
       total,
       page: filters.page,
       limit: filters.limit,
+      ...(counts && { counts }),
     };
   },
 

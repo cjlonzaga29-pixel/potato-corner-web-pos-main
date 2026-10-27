@@ -3,7 +3,8 @@
 import { memo, useRef, useState } from 'react';
 import { AlertTriangle, Utensils } from 'lucide-react';
 import type { PosCatalogProduct } from '@potato-corner/shared';
-import { Card, CardContent } from '@/components/ui/card';
+import { Card } from '@/components/ui/card';
+import { POS_CARD_CLASSES } from './product-card-layout';
 
 function formatPeso(amount: number): string {
   return `₱${amount.toFixed(2)}`;
@@ -35,6 +36,12 @@ interface ProductCardProps {
  * available. Falls back to the same Utensils icon tile used before this
  * task whenever there's no image, the image fails to load, or the signed
  * URL expired — a broken photo never blocks a sale.
+ *
+ * POS-PERF-P39 — the tile's box comes from POS_CARD_CLASSES (shared with
+ * ProductCardSkeleton): a fixed-ratio image area that the photo, the
+ * placeholder and the skeleton all fill identically, and fixed-height text
+ * rows. Text that doesn't fit is truncated visually only — the full name,
+ * size and reason stay in the accessible label and the hover title.
  */
 export const ProductCard = memo(function ProductCard({ product, variant, message, onTap }: ProductCardProps) {
   // Test-only visibility into actual re-render count (React.memo bails out
@@ -69,7 +76,7 @@ export const ProductCard = memo(function ProductCard({ product, variant, message
       aria-disabled={!isAvailable}
       aria-label={ariaLabel}
       data-render-count={renderCountRef.current}
-      className={`group app-pos-card flex flex-col self-start overflow-hidden rounded-xl border shadow-none outline-none transition-all duration-150 touch-target focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
+      className={`group ${POS_CARD_CLASSES.frame} outline-none transition-all duration-150 touch-target focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
         isAvailable
           ? 'cursor-pointer hover:-translate-y-0.5 hover:border-primary hover:shadow-md active:translate-y-0 active:scale-[0.98]'
           : 'cursor-not-allowed opacity-60'
@@ -82,7 +89,7 @@ export const ProductCard = memo(function ProductCard({ product, variant, message
         }
       }}
     >
-      <div className="app-pos-card-image relative flex items-center justify-center overflow-hidden bg-muted/40">
+      <div className={POS_CARD_CLASSES.image}>
         {showImage ? (
           // eslint-disable-next-line @next/next/no-img-element -- short-lived signed Supabase Storage URL, not an optimizable static/remote asset (see next.config.ts)
           <img
@@ -119,43 +126,34 @@ export const ProductCard = memo(function ProductCard({ product, variant, message
         )}
       </div>
 
-      {/* Task 209.24 — p-2 (was p-2.5) and min-h-[2.25rem] (was 2rem, one
-          rounding tick short of a real 2-line `leading-tight` text-sm block)
-          free up the few px this region needs to stop clipping against the
-          Card's `overflow-hidden` at the tightest (5-column `compact`)
-          grid tier — paired with the image-area/aspect-ratio share change
-          in globals.css's `.app-pos-card`/`.app-pos-card-image`. */}
-      <CardContent className="flex min-h-0 flex-1 flex-col gap-1 p-2">
-        <p className="line-clamp-2 min-h-[2.25rem] text-sm font-semibold leading-tight text-foreground">{product.name}</p>
-        <p className="truncate text-xs text-muted-foreground">{variant.name}</p>
-
-        <div className="mt-auto flex items-end justify-between gap-1 pt-0.5">
-          <p className="text-sm font-bold tabular-nums text-foreground">{formatPeso(variant.price)}</p>
+      {/* POS-PERF-P39 — every row has a fixed height (POS_CARD_CLASSES), so a
+          one-line name, a missing size, a long size label or an unavailable
+          reason never changes the tile's height (Task 209.24/209.56E reserved
+          some of these with min-heights, which still let a long reason or
+          name grow one tile past its row). A plain div, not CardContent:
+          CardContent's responsive `sm:p-6 sm:pt-0` survived the `p-2`
+          override and gave the tile 0 top / 24px side padding from 640px up. */}
+      <div className={POS_CARD_CLASSES.body}>
+        <p className={`${POS_CARD_CLASSES.name} line-clamp-2 text-sm font-semibold leading-tight text-foreground`} title={product.name}>
+          {product.name}
+        </p>
+        <p className={`${POS_CARD_CLASSES.size} truncate text-xs leading-4 text-muted-foreground`} title={variant.name}>
+          {variant.name}
+        </p>
+        <div className={`${POS_CARD_CLASSES.price} flex items-center justify-between gap-1`}>
+          <p className="text-sm font-bold leading-5 tabular-nums text-foreground">{formatPeso(variant.price)}</p>
         </div>
-
-        {/* Task 209.56E — this slot always renders, message or not, same
-            min-height reservation pattern the title above already uses.
-            Previously the message paragraph only rendered (and only took up
-            space) for unavailable items, so an unavailable card was taller
-            than every available card around it in the same grid row — the
-            grid opts every card out of row-stretch (`self-start` on Card,
-            see globals.css comment) specifically so a genuinely long title
-            doesn't stretch its neighbors, which means nothing else compensates
-            for a per-card height difference like this one. line-clamp-1 (not
-            2) keeps the reserved height to a single line's worth, since
-            readiness-rejection reasons are short phrases in practice — a rare
-            two-line reason still displays in full (line-clamp only caps
-            visual truncation, not layout height), it just makes that one
-            card very slightly taller than its siblings instead of every
-            unavailable card being taller. */}
-        <div className="min-h-[1.5rem]">
+        <div className={POS_CARD_CLASSES.message}>
           {message && (
-            <p className="line-clamp-1 rounded-md bg-destructive/10 px-1.5 py-1 text-[11px] font-medium leading-snug text-destructive">
+            <p
+              className="line-clamp-1 rounded-md bg-destructive/10 px-1.5 py-1 text-[11px] font-medium leading-snug text-destructive"
+              title={message}
+            >
               {message}
             </p>
           )}
         </div>
-      </CardContent>
+      </div>
     </Card>
   );
 });

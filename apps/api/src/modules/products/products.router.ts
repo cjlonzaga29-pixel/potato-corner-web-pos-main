@@ -24,6 +24,7 @@ import {
   reorderFlavorSlotsSchema,
   addSnackOptionSchema,
   PRODUCT_STATUS,
+  PRODUCT_BRANCH_VIEWS,
   type ProductStatus,
 } from '@potato-corner/shared';
 import { productsService, toFlavorSlotResponse } from './products.service.js';
@@ -57,19 +58,24 @@ const productImageUpload = multer({
 
 const productStatusValues = Object.values(PRODUCT_STATUS) as [ProductStatus, ...ProductStatus[]];
 
-const listQuerySchema = z.object({
-  status: z.enum(productStatusValues).optional(),
-  category: z.string().min(1).optional(),
-  search: z.string().min(1).optional(),
-  is_seasonal: z
-    .enum(['true', 'false'])
-    .transform((v) => v === 'true')
-    .optional(),
-  page: z.coerce.number().int().positive().default(1),
-  limit: z.coerce.number().int().positive().max(100).default(25),
-  sort_by: z.enum(['name', 'created_at', 'updated_at', 'display_order', 'status']).optional(),
-  sort_order: z.enum(['asc', 'desc']).optional(),
-});
+const listQuerySchema = z
+  .object({
+    status: z.enum(productStatusValues).optional(),
+    category: z.string().min(1).optional(),
+    search: z.string().min(1).optional(),
+    is_seasonal: z
+      .enum(['true', 'false'])
+      .transform((v) => v === 'true')
+      .optional(),
+    page: z.coerce.number().int().positive().default(1),
+    limit: z.coerce.number().int().positive().max(100).default(25),
+    sort_by: z.enum(['name', 'created_at', 'updated_at', 'display_order', 'status']).optional(),
+    sort_order: z.enum(['asc', 'desc']).optional(),
+    // POS-PERF-P39 — the supervisor Products page's branch tabs.
+    branch_id: z.uuid().optional(),
+    view: z.enum(PRODUCT_BRANCH_VIEWS).optional(),
+  })
+  .refine((query) => !query.view || query.branch_id, { message: 'view requires branch_id', path: ['view'] });
 
 const branchAvailabilityBodySchema = z.object({ is_available: z.boolean() });
 

@@ -6,8 +6,8 @@ import Link from 'next/link';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { AlertTriangle, ArrowLeft, Check, Loader2, Plus, Trash2 } from 'lucide-react';
-import type { ProductDetailResponse, ProductVariantResponse, PublicationCheckResponse, PublicationIssue } from '@potato-corner/shared';
+import { AlertTriangle, ArrowLeft, Check, Loader2 } from 'lucide-react';
+import type { ProductDetailResponse, PublicationCheckResponse, PublicationIssue } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Form } from '@/components/ui/form';
@@ -35,22 +35,15 @@ import {
   useProduct,
   useCreateProduct,
   useUploadProductImage,
-  useDeleteVariant,
   usePublicationCheck,
   usePublishProductToBranches,
   useConfirmPublication,
   PublicationNotConfirmedError,
 } from '@/hooks/queries/use-products';
-import {
-  useVariantOptionGroups,
-  useUnassignVariantOptionGroup,
-} from '@/hooks/queries/use-product-options';
 import { RecipeBomPanel } from '@/components/products/recipe-bom-panel';
 import { ProductWriteError } from '@/components/products/product-write-error';
-import { FlavorSlotPanel } from '@/components/admin/products/flavor-slot-panel';
-import { VariantFormDialog } from '@/components/admin/products/variant-form-dialog';
-import { LinkFlavorDialog } from '@/components/admin/products/link-flavor-dialog';
-import { AssignOptionGroupDialog } from '@/components/admin/products/assign-option-group-dialog';
+import { ProductSizesPanel } from '@/components/products/product-sizes-panel';
+import { VariantChoicesCard } from '@/components/products/variant-choices-card';
 import {
   BUILDER_STEPS,
   useProductBuilderStore,
@@ -496,11 +489,6 @@ function SizesStep({
   onNext: () => void;
 }) {
   const { data: product, isLoading } = useProduct(productId);
-  const deleteVariant = useDeleteVariant(productId);
-  const [variantDialog, setVariantDialog] = useState<{
-    open: boolean;
-    variant?: ProductVariantResponse;
-  }>({ open: false });
 
   if (isLoading || !product) {
     return (
@@ -510,76 +498,24 @@ function SizesStep({
     );
   }
 
-  const variants = [...product.variants].sort(
-    (a, b) => (a.display_order ?? 0) - (b.display_order ?? 0),
-  );
-
   return (
     <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0">
-        <div>
-          <CardTitle className="text-base">Sizes &amp; Prices</CardTitle>
-          <CardDescription>Add every size this product is sold in, with its price.</CardDescription>
-        </div>
-        <Button size="sm" onClick={() => setVariantDialog({ open: true })}>
-          <Plus className="mr-2 h-4 w-4" />
-          Add Size
-        </Button>
+      <CardHeader>
+        <CardTitle className="text-base">Sizes &amp; Prices</CardTitle>
+        <CardDescription>Add every size this product is sold in, with its price.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
-        {variants.length === 0 ? (
-          <EmptyState
-            title="No sizes yet"
-            description="Add at least one size and price to continue."
-          />
-        ) : (
-          variants.map((variant) => (
-            <div
-              key={variant.id}
-              className="flex items-center justify-between gap-3 rounded-md border p-3"
-            >
-              <div>
-                <p className="font-medium">
-                  {variant.name} — {variant.size_label}
-                </p>
-                <p className="text-muted-foreground text-sm">₱{variant.base_price.toFixed(2)}</p>
-              </div>
-              <div className="flex gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setVariantDialog({ open: true, variant })}
-                >
-                  Edit
-                </Button>
-                <Button
-                  size="sm"
-                  variant="danger"
-                  onClick={() => void deleteVariant.mutateAsync(variant.id)}
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </Button>
-              </div>
-            </div>
-          ))
-        )}
+        <ProductSizesPanel product={product} />
 
         <div className="flex justify-between pt-2">
           <Button variant="outline" onClick={onBack}>
             Back
           </Button>
-          <Button onClick={onNext} disabled={variants.length === 0}>
+          <Button onClick={onNext} disabled={product.variants.length === 0}>
             Continue to Ingredients &amp; Packaging
           </Button>
         </div>
       </CardContent>
-
-      <VariantFormDialog
-        open={variantDialog.open}
-        onOpenChange={(open) => setVariantDialog((prev) => ({ ...prev, open }))}
-        productId={productId}
-        variant={variantDialog.variant}
-      />
     </Card>
   );
 }
@@ -676,7 +612,7 @@ function ChoicesStep({
         ingredient consumption are configured on the assigned option group itself.
       </p>
       {variants.map((variant) => (
-        <ChoicesForVariant key={variant.id} productId={productId} variant={variant} />
+        <VariantChoicesCard key={variant.id} productId={productId} variant={variant} />
       ))}
       <div className="flex justify-between pt-2">
         <Button variant="outline" onClick={onBack}>
@@ -684,105 +620,6 @@ function ChoicesStep({
         </Button>
         <Button onClick={onNext}>Continue to Review</Button>
       </div>
-    </div>
-  );
-}
-
-function ChoicesForVariant({
-  productId,
-  variant,
-}: {
-  productId: string;
-  variant: ProductVariantResponse;
-}) {
-  const { data: assignedGroups } = useVariantOptionGroups(productId, variant.id);
-  const unassign = useUnassignVariantOptionGroup(productId, variant.id);
-  const [assignOpen, setAssignOpen] = useState(false);
-  const [linkFlavorOpen, setLinkFlavorOpen] = useState(false);
-
-  return (
-    <div className="space-y-3">
-    <Card>
-      <CardHeader className="flex flex-row items-start justify-between space-y-0">
-        <div>
-          <CardTitle className="text-base">
-            {variant.name} ({variant.size_label})
-          </CardTitle>
-          <CardDescription>Flavors and option groups available for this size.</CardDescription>
-        </div>
-        <div className="flex gap-2">
-          <Button size="sm" variant="outline" onClick={() => setLinkFlavorOpen(true)}>
-            Link Flavor
-          </Button>
-          <Button size="sm" onClick={() => setAssignOpen(true)}>
-            Assign Option Group
-          </Button>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {variant.flavors.length > 0 && (
-          <div className="flex flex-wrap gap-1.5">
-            {variant.flavors.map((flavor) => (
-              <Badge key={flavor.flavor_id} variant="outline">
-                {flavor.name}
-              </Badge>
-            ))}
-          </div>
-        )}
-        {(assignedGroups ?? []).length === 0 && variant.flavors.length === 0 ? (
-          <EmptyState
-            title="No choices configured"
-            description="Optional — skip if this size has no flavors or add-ons."
-          />
-        ) : (
-          <div className="space-y-2">
-            {(assignedGroups ?? []).map((group) => (
-              <div
-                key={group.id}
-                className="flex items-center justify-between rounded-md border p-2.5 text-sm"
-              >
-                <div>
-                  <p className="font-medium">{group.name}</p>
-                  <p className="text-muted-foreground text-xs">
-                    {group.required ? 'Required' : 'Optional'} ·{' '}
-                    {group.selection_type === 'SINGLE' ? 'Pick one' : 'Pick multiple'}
-                  </p>
-                </div>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => void unassign.mutateAsync(group.id)}
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </Button>
-              </div>
-            ))}
-          </div>
-        )}
-      </CardContent>
-
-      <AssignOptionGroupDialog
-        open={assignOpen}
-        onOpenChange={setAssignOpen}
-        productId={productId}
-        variantId={variant.id}
-        assignedGroupIds={(assignedGroups ?? []).map((g) => g.option_group_id)}
-      />
-      <LinkFlavorDialog
-        open={linkFlavorOpen}
-        onOpenChange={setLinkFlavorOpen}
-        productId={productId}
-        variantId={variant.id}
-        linkedFlavorIds={variant.flavors.map((f) => f.flavor_id)}
-      />
-    </Card>
-
-    <FlavorSlotPanel
-      productId={productId}
-      variantId={variant.id}
-      variantLabel={`${variant.name} (${variant.size_label})`}
-      lifecycleStatus={variant.lifecycle_status}
-    />
     </div>
   );
 }

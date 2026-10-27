@@ -328,6 +328,10 @@ export const productResponseSchema = z.object({
   // POS-PERF-P36R — optimistic-concurrency token for updateProductSchema's
   // expected_version.
   version: z.number().int(),
+  // POS-PERF-P39 — list rows only: every branch this product is configured
+  // at and whether it is on POS there. Optional because the detail response
+  // carries the fuller branch_availability instead.
+  branches: z.array(z.object({ branch_id: z.uuid(), branch_name: z.string(), is_available: z.boolean() })).optional(),
 });
 
 export const productDetailResponseSchema = productResponseSchema.extend({
@@ -338,11 +342,26 @@ export const productDetailResponseSchema = productResponseSchema.extend({
     .nullable(),
 });
 
+/**
+ * POS-PERF-P39 — the supervisor Products page's tabs at one branch. A product
+ * is in exactly one of them for that branch (see products.repository.ts's
+ * findBranchViewDraftIds for what counts as a draft):
+ * - drafts: still being set up — status draft, or never put on POS anywhere.
+ * - active: on POS at this branch (the same rule the POS catalog uses).
+ * - inactive: everything else configured at this branch — off POS here,
+ *   temporarily unavailable, discontinued or archived.
+ */
+export const PRODUCT_BRANCH_VIEWS = ['active', 'drafts', 'inactive'] as const;
+export type ProductBranchView = (typeof PRODUCT_BRANCH_VIEWS)[number];
+
 export const productListResponseSchema = z.object({
   products: z.array(productResponseSchema),
   total: z.number().int(),
   page: z.number().int(),
   limit: z.number().int(),
+  // POS-PERF-P39 — present only for a branch-scoped request (branch_id), and
+  // computed with the same search/category filters as `products`.
+  counts: z.object({ active: z.number().int(), drafts: z.number().int(), inactive: z.number().int() }).optional(),
 });
 
 // ---------------------------------------------------------------------------

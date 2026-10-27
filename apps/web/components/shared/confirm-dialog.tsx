@@ -11,7 +11,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { buttonVariants } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, useIsDialogHosted } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { LoadingSpinner } from './feedback/loading-spinner';
 import { cn } from '@/lib/utils';
@@ -50,6 +51,9 @@ export function ConfirmDialog({
   const [isConfirming, setIsConfirming] = useState(false);
   const [typedValue, setTypedValue] = useState('');
   const canConfirm = !requireTypedConfirmation || typedValue === requireTypedConfirmation;
+  // POS-PERF-P39 — inside the product editor this confirmation is a panel
+  // over the editor's content (see DialogHost), not a second modal on top.
+  const hosted = useIsDialogHosted();
 
   // Radix's AlertDialogAction closes the dialog automatically on click —
   // preventDefault suppresses that so the dialog stays open with a
@@ -73,6 +77,52 @@ export function ConfirmDialog({
     onOpenChange(nextOpen);
   }
 
+  const typedConfirmation = requireTypedConfirmation && (
+    <div className="space-y-2">
+      <p className="text-sm text-muted-foreground">
+        Type <span className="font-mono font-semibold text-foreground">{requireTypedConfirmation}</span> to confirm.
+      </p>
+      <Input
+        value={typedValue}
+        onChange={(event) => setTypedValue(event.target.value)}
+        disabled={isConfirming}
+        autoComplete="off"
+        autoFocus
+        aria-label={`Type ${requireTypedConfirmation} to confirm`}
+      />
+    </div>
+  );
+
+  if (hosted) {
+    return (
+      <Dialog open={open} onOpenChange={handleOpenChange}>
+        <DialogContent role="alertdialog" showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>{title}</DialogTitle>
+            {description && <DialogDescription>{description}</DialogDescription>}
+          </DialogHeader>
+          {typedConfirmation}
+          <DialogFooter className="gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={isConfirming}
+              onClick={() => {
+                onCancel?.();
+                handleOpenChange(false);
+              }}
+            >
+              {cancelLabel}
+            </Button>
+            <Button type="button" variant={variant === 'danger' ? 'danger' : 'default'} onClick={handleConfirm} disabled={isConfirming || !canConfirm}>
+              {isConfirming ? <LoadingSpinner size="sm" className="text-current" /> : confirmLabel}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
   return (
     <AlertDialog open={open} onOpenChange={handleOpenChange}>
       <AlertDialogContent>
@@ -80,21 +130,7 @@ export function ConfirmDialog({
           <AlertDialogTitle>{title}</AlertDialogTitle>
           {description && <AlertDialogDescription>{description}</AlertDialogDescription>}
         </AlertDialogHeader>
-        {requireTypedConfirmation && (
-          <div className="space-y-2">
-            <p className="text-sm text-muted-foreground">
-              Type <span className="font-mono font-semibold text-foreground">{requireTypedConfirmation}</span> to confirm.
-            </p>
-            <Input
-              value={typedValue}
-              onChange={(event) => setTypedValue(event.target.value)}
-              disabled={isConfirming}
-              autoComplete="off"
-              autoFocus
-              aria-label={`Type ${requireTypedConfirmation} to confirm`}
-            />
-          </div>
-        )}
+        {typedConfirmation}
         <AlertDialogFooter>
           <AlertDialogCancel onClick={onCancel} disabled={isConfirming}>
             {cancelLabel}

@@ -10,7 +10,10 @@ interface OfflineTransaction {
 }
 
 interface CachedProduct {
+  /** POS-PERF-P39 — `<branchId>:<productId>`; rows cached before P39 used the bare product id and carry no branchId. */
   id: string;
+  /** POS-PERF-P39 — the branch whose catalog this row came from (prices and availability are per branch). Not indexed, so no schema version bump. */
+  branchId?: string;
   data: unknown;
   cachedAt: number;
 }

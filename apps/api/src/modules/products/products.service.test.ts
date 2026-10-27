@@ -3183,7 +3183,7 @@ describe('productsService.getAllProducts — product images (Task 209.x N+1 fix)
       updatedAt: new Date('2026-01-01T00:00:00Z'),
       _count: { variants: 1 },
       variants: [{ isActive: true }],
-      branchAvailability: [{ isAvailable: true }],
+      branchAvailability: [{ isAvailable: true, branchId: 'branch-1', branch: { name: 'Branch One' } }],
       ...overrides,
     };
   }
@@ -3203,6 +3203,9 @@ describe('productsService.getAllProducts — product images (Task 209.x N+1 fix)
     const result = await productsService.getAllProducts({ user_id: 'admin-1', role: ROLES.SUPER_ADMIN } as never, baseFilters);
 
     expect(result.products[0]).toMatchObject({ has_image: true, image_url: 'https://example.com/product-1.webp' });
+    // POS-PERF-P39 — each list row names the branches it is configured at.
+    expect(result.products[0]?.branches).toEqual([{ branch_id: 'branch-1', branch_name: 'Branch One', is_available: true }]);
+    expect(result).not.toHaveProperty('counts');
     expect(storageMock.createSignedUrls).toHaveBeenCalledWith(['product-images/product-1/image.webp'], 60 * 60);
     expect(storageMock.createSignedUrls).toHaveBeenCalledTimes(1);
   });

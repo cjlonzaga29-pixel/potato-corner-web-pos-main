@@ -13,6 +13,7 @@ import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { ConfirmDialog } from '@/components/shared/confirm-dialog';
 import { ImageUpload } from '@/components/shared/forms/image-upload';
 import { formatDateTime } from '@/lib/utils';
+import { canEditProductInPlace } from '@/lib/product-authority';
 import { useAuth } from '@/hooks/use-auth';
 import {
   useProduct,
@@ -86,12 +87,9 @@ export default function SupervisorProductDetailPage({ params }: SupervisorProduc
   // (and silently-failing writes) to a supervisor who only partially
   // covered a shared product, instead of the read-only banner.
   const activeBranchIds = user?.branchIds ?? [];
-  const configuredBranchIds = product.branch_availability.map((row) => row.branch_id);
   const isOwner =
     Boolean(user) &&
-    (product.branch_exclusive
-      ? Boolean(product.exclusive_branch_id) && activeBranchIds.includes(product.exclusive_branch_id as string)
-      : configuredBranchIds.length === 0 || configuredBranchIds.every((id) => activeBranchIds.includes(id)));
+    canEditProductInPlace({ ...product, configuredBranchIds: product.branch_availability.map((row) => row.branch_id) }, activeBranchIds);
   // Supervisor-created products are always branch-exclusive (POS-PERF-P34R) —
   // configuration and publishing both target that one branch directly, no
   // branch selector needed.

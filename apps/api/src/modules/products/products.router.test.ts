@@ -26,6 +26,7 @@ vi.mock('./products.service.js', () => ({
     deleteProductImage: vi.fn(),
     publishProductToBranches: vi.fn(),
     getPublicationCheck: vi.fn(),
+    getAllProducts: vi.fn(),
   },
 }));
 
@@ -342,6 +343,38 @@ describe('GET /api/products/:productId/publication-check — Supervisor only, va
     await runHandlers(handlers, req, res);
 
     expect(productsService.getPublicationCheck).toHaveBeenCalledWith('prod-1', [branchA, branchB], expect.objectContaining({ role: 'supervisor' }));
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+});
+
+describe('GET /api/products — POS-PERF-P39 branch tabs', () => {
+  it.each([[{ view: 'active' }], [{ branch_id: 'not-a-uuid', view: 'active' }], [{ branch_id: randomUUID(), view: 'archived' }]])(
+    'rejects an invalid query %j with 422, never reaching the service',
+    async (query) => {
+      const handlers = getRouteHandlers(productsRouter, 'get', '/');
+      const req = mockReq({ ...authHeader(generateSupervisorToken([randomUUID()])), query });
+      const res = mockRes();
+
+      await runHandlers(handlers, req, res);
+
+      expect(res.status).toHaveBeenCalledWith(422);
+      expect(productsService.getAllProducts).not.toHaveBeenCalled();
+    },
+  );
+
+  it('passes branch_id and view to the service', async () => {
+    const branchId = randomUUID();
+    vi.mocked(productsService.getAllProducts).mockResolvedValue({ products: [], total: 0, page: 1, limit: 25, counts: { active: 0, drafts: 0, inactive: 0 } });
+    const handlers = getRouteHandlers(productsRouter, 'get', '/');
+    const req = mockReq({ ...authHeader(generateSupervisorToken([branchId])), query: { branch_id: branchId, view: 'drafts' } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(productsService.getAllProducts).toHaveBeenCalledWith(
+      expect.objectContaining({ role: 'supervisor' }),
+      expect.objectContaining({ branch_id: branchId, view: 'drafts', page: 1, limit: 25 }),
+    );
     expect(res.status).toHaveBeenCalledWith(200);
   });
 });

@@ -1,5 +1,5 @@
 import type { Prisma, VariantLifecycleStatus } from '@prisma/client';
-import type { ProductStatus } from '@potato-corner/shared';
+import type { ProductBranchView, ProductStatus } from '@potato-corner/shared';
 
 export interface ProductListFilters {
   status?: ProductStatus;
@@ -10,6 +10,10 @@ export interface ProductListFilters {
   limit: number;
   sort_by?: 'name' | 'created_at' | 'updated_at' | 'display_order' | 'status';
   sort_order?: 'asc' | 'desc';
+  /** POS-PERF-P39 — scope the list to products configured at this branch (with tab counts). */
+  branch_id?: string;
+  /** POS-PERF-P39 — one of the branch tabs; requires branch_id. */
+  view?: ProductBranchView;
 }
 
 export interface CreateProductData {

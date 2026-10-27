@@ -486,52 +486,29 @@
     padding: var(--app-dialog-padding);
   }
 
-  /* POS terminal product tile min-height and the desktop cart/checkout panel width — density-aware equivalents of the old hardcoded `min-h-[104px]` / `lg:w-[30%]`. */
+  /* POS terminal product tile and the desktop cart/checkout panel width — density-aware equivalents of the old hardcoded `min-h-[104px]` / `lg:w-[30%]`. */
   .app-pos-card {
     min-height: var(--app-pos-card-min-height);
-    /* Task 209.14 — near-square box/tile instead of a wide short rectangle.
-     * `height: auto` (not stretched by the grid, see product-card.tsx's
-     * `self-start`) means this is a preferred size only: a card whose
-     * content genuinely needs more room (e.g. the unavailable-reason
-     * message) still grows past it instead of clipping.
-     * Task 209.24 — 4/5 measured out to name/variant/price genuinely not
-     * fitting the ~45% leftover after the image at the 1366x768 `compact`
-     * tier's 5-column grid (~142px card width -> 177px tall card, ~78px
-     * left for content against a ~97-102px real need). 3/4 buys back ~12px
-     * of height at that same width without re-inflating cards toward the
-     * "giant" complaint 209.16 fixed — see `.app-pos-card-image` below for
-     * the matching image-share reduction that does the rest. */
-    aspect-ratio: 3 / 4;
-    /* Task 209.16 — `self-start` only opts the card out of *vertical* grid
-     * stretch; the grid still stretches its *width* to fill the column
-     * track (default `justify-items: stretch`). With no upper bound, a wide
-     * desktop monitor produces a wide column, and `aspect-ratio` above then
-     * scales height right along with it — the actual root cause of the
-     * owner-reported giant product tiles/images (min-height is a floor
-     * only, never a ceiling). Capping width here bounds height too, since
-     * they're locked together by the aspect-ratio; `margin-inline: auto`
-     * keeps the now-narrower-than-its-column card centered in its cell
-     * instead of hugging the left edge. 200px comfortably covers every
-     * tier's own natural width at its own design viewport (so this is a
-     * no-op there) while stopping runaway growth on wider screens.
-     */
+    /* POS-PERF-P39 — every tile in a grid has the same box: it fills its
+     * column track (`width: 100%`), capped at 200px so a wide monitor never
+     * produces giant tiles (Task 209.16) and centered in its cell. Before
+     * P39 there was no width, and `margin-inline: auto` turns off a grid
+     * item's stretch, so each tile shrank to fit its own text — a long name
+     * made a wide (and, through the old aspect-ratio, tall) tile next to
+     * narrow ones, empty loading skeletons collapsed to about half a tile,
+     * and the narrowest tiles clipped their price on phones. Height now
+     * comes from the image area's fixed ratio plus the fixed-height text
+     * block in product-card.tsx, so it depends on the tile's width only. */
+    width: 100%;
     max-width: 200px;
     margin-inline: auto;
   }
 
-  /* Task 209.7/209.14 — POS product tile image area occupies the upper
-   * portion of the box as a proportion of the card's own height (not a
-   * fixed density-tier pixel value), so it scales with the aspect-ratio
-   * box above at every density tier automatically.
-   * Task 209.24 — 55% left name/variant/price too little of the box at the
-   * tightest (compact, 5-column) tier, and the Card's `overflow-hidden`
-   * (product-card.tsx) clipped whatever didn't fit rather than growing.
-   * 45% (within the owner's 45-52% image / 48-55% content target) plus the
-   * aspect-ratio change above gives content genuine room across every
-   * tier while keeping real-image and placeholder tiles identical, since
-   * both render inside this same region. */
+  /* POS-PERF-P39 — reserved before any image loads, identical for a photo,
+   * the no-photo/broken-photo placeholder and the loading skeleton. */
   .app-pos-card-image {
-    flex: 0 0 45%;
+    flex: none;
+    aspect-ratio: 16 / 9;
   }
 
   .app-pos-cart-width {

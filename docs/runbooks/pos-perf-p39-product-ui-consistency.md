@@ -89,7 +89,8 @@ behaviour.
 - `Product.status` is draft | active | temporarily_unavailable | discontinued | archived.
 - The builder creates products with `status: 'active'`. Its "draft" means every branch row is
   still `is_available = false` (it never changes the status; see the P36R comment in the builder).
-- No "ever published" column exists. A builder draft and a product later taken off POS
+- *(Superseded by §8, P39R2: `products.ever_published` now tells them apart and the tabs read
+  no audit history.)* No "ever published" column exists. A builder draft and a product later taken off POS
   everywhere look the same on the product row. The difference is history: every availability
   change is audited against the availability row (publish through the audit outbox, unpublish and
   per-branch status changes through `recordAuditLog`), and global lifecycle changes are audited
@@ -103,7 +104,8 @@ it with `hasBranchAccess` (403 otherwise).
 
 - **Drafts**: `status = 'draft'`, or `status = 'active'`, on POS at no branch, and no
   availability or lifecycle audit entry (checked in both `audit_logs` and `audit_outbox`, in
-  any outbox status; see section 7).
+  any outbox status; see section 7). *Since P39R2 (§8): never published (`ever_published`)
+  instead of "no audit entry".*
 - **Active**: not a draft, `status = 'active'` and available at this branch. This is the same
   rule the POS catalog uses.
 - **Inactive**: everything else configured at the branch. That covers off POS here, temporarily
@@ -247,7 +249,7 @@ The geometry table in section 1. All four layouts were measured on the final bui
 
 ## 6. Limitations
 
-- **Draft detection depends on audit history.** No "ever published" column exists, so a
+- **Draft detection depends on audit history.** *(Resolved by §8, P39R2.)* No "ever published" column exists, so a
   builder draft is told apart from a product taken off POS everywhere by its audit entries
   (`audit_logs` plus `audit_outbox` in any status). If audit rows were ever purged, such a product
   would show under Drafts. No schema change was made to avoid this, as the spec preferred.
@@ -382,7 +384,10 @@ audit delivery.
 
 ### Remaining limitations (concrete)
 
-- **Best-effort history on the direct availability paths.** `updateBranchProductAvailability`,
+- **Best-effort history on the direct availability paths.** *(Resolved for classification by
+  §8, P39R2: the marker is written in the activation's own transaction on every one of these
+  paths. Their audit entries are still best-effort, which now only limits the backfill of old
+  history.)* `updateBranchProductAvailability`,
   `bulkUpdateBranchProductAvailability`, the branch-scoped `changeProductStatus`,
   `replaceSharedProductAtBranch` and the restore cascade commit first. They then write their
   audit entry with `recordAuditLog`, which logs and swallows errors. Suppose a product is turned
@@ -399,4 +404,328 @@ audit delivery.
   suites. It failed once in 3 parallel runs of only the HEAD files, and in some runs with the new
   file. It passed every serial run. Not changed here.
 - Local leftovers: the P39 `dist/server.js` on `:4000` and `next start` on `:3000` are still
-  running against `pos_verify`. They were not stopped.
+  running against `pos_verify`. They were not stopped. *(P39R2 replaced both with fresh builds;
+  see §8.)*
+
+## 8. P39R2 — Reliable Draft / Active / Inactive state
+
+Starting HEAD: `aa06b75ebec93340d05af3784149f31820a67668` (P39R), clean tree. Nothing was pushed
+or deployed, nothing touched production data, and no production configuration changed.
+
+**Release state (read-only).** After `git fetch`, `origin/main` is `04117f7` (P38R4). HEAD is 2
+ahead and 0 behind, and `29a8bb9` (P39) is **not** an ancestor of `origin/main`. GitHub's
+deployments API and the "Deploy to Production" workflow both show `04117f7` as the latest
+production deployment (2026-10-26T14:21Z). So neither P39 nor P39R is deployed, and production has
+no Products tabs yet. This change ships with them.
+
+### Marker
+
+`products.ever_published` — `BOOLEAN NOT NULL DEFAULT false`. Meaning: **the product has
+successfully been available on POS at least once**, that is `status = 'active'` with at least one
+`branch_product_availability` row on. That is the POS catalog's own predicate
+(`findCatalogForBranch`) at some branch.
+
+- Set only by `productsRepository.markEverPublishedIfLive(productId, tx)`, inside the transaction of
+  the write that can make the product live, and after that write. It is a conditional
+  `updateMany` (`everPublished = false AND status = 'active' AND some row on`), so the marker
+  commits or rolls back with the activation. A product that isn't live, or is already marked, is
+  not written (no `updatedAt` or `version` change). A retry writes nothing.
+- Monotonic. Nothing clears it: deactivate, temporarily unavailable, discontinue, archive and
+  delete-refusal leave it true.
+- Not a timestamp. Old history can't honestly be dated, and no publication date was invented.
+- Not on the API. Classification is server-side, and no response schema changed.
+- New rows get `false`: builder creation, and `forkProductCascade` (it lists its columns, so a
+  copy never inherits the source's marker).
+- Lifecycle `active` alone never sets it, and neither does a row turned on while the product is
+  `draft` or `temporarily_unavailable`.
+
+### Activation paths covered
+
+| Path | Entry point | Transaction |
+| --- | --- | --- |
+| Single Publish | `publishProduct` → `publishWithinLock` | existing, under the product advisory lock. The marker comes after the rows and before the audit intents. |
+| Builder Add to POS | `publishProductToBranches` → `publishWithinLock` | same |
+| Per-branch enable | `updateBranchProductAvailability` | **new** `writeBranchAvailability` transaction. It was a bare upsert. |
+| Branch-scoped status → active | `changeProductStatus` with `branch_id` | same new helper |
+| Bulk enable | `bulkUpdateBranchProductAvailability` | existing. Checked once after the whole batch. |
+| Global status → `active` (from draft, temporarily unavailable, discontinued, archived) | `changeProductStatus` | **new** transaction for the status write, restore's cascade and the marker. They were separate statements. |
+| Restore cascade | `cascadeBranchAvailabilityOn`, in the transaction above | marks only if the cascade (or an existing row) leaves the product live |
+| Branch-copy replacement | `replaceSharedProductAtBranch` | existing, under both products' locks |
+
+Searched for every other `is_available = true` write. Inventory only turns rows off. Creation and
+fork insert them off. The two local dev scripts `scripts/seed-pos-demo-inventory.ts` and
+`scripts/checkout-perf-benchmark.ts` turn rows on directly without the marker. They are never run
+against production. A live product is never a Draft, and the reconciliation below marks them.
+
+Authorization, readiness gates, locks, branch-spread guards, replacement protections and audit
+writes are unchanged. Each marker call sits after the existing checks, inside the existing (or a
+new, wider) transaction. Discontinue and archive (`updateStatus` + `cascadeBranchAvailabilityOff`)
+are untouched and still not transactional, as before.
+
+Found along the way: `replaceSharedProductAtBranch`'s readiness gate refuses a **draft-status** copy
+(`PRODUCT_NOT_READY`). P39R said a draft copy could be turned on by replacement. Through the
+service it must be activated first. Activation with its rows off is not publication, and
+replacement then makes it live and marks it.
+
+### Classification (`branchViewOf`, one read, no audit tables)
+
+- **Drafts**: `status = 'draft'`. Or `status = 'active'`, `ever_published = false`, and on POS at
+  no branch.
+- **Active**: not a draft, `status = 'active'`, and available at the selected branch (POS's
+  predicate).
+- **Inactive**: every other product configured at the branch. That covers previously published
+  products now off here, products published only elsewhere, and temporarily unavailable,
+  discontinued and archived products, each with its real status chip. An archived product that
+  was never published is Inactive with the Archived chip (unchanged from P39).
+- The "on POS at no branch" guard means a product live anywhere is never a Draft even without the
+  marker. That is the deploy-overlap case below.
+- `findDraftIds` and its two audit queries are gone. Rows, the three counts, `total` and
+  pagination still come from one in-memory classification, so they cannot disagree.
+
+**Lifecycle `draft`.** A `status = 'draft'` product is always in Drafts and never sellable, even
+when a row is on: POS requires `active`. Its marker can't be true. The marker needs `active`, and
+`GLOBAL_TRANSITIONS` has no transition back to `draft`. So a previously published product can't
+become `draft`. If such a transition is ever added, that product would show in Drafts and stop
+selling. That would be a deliberate decision then, not something this code decides.
+
+### Migrations (additive)
+
+1. `20261027120000_pos_perf_p39r2_product_ever_published`: `ADD COLUMN IF NOT EXISTS` with a
+   constant default (metadata-only in Postgres 11+, no rewrite), plus the plpgsql function
+   `pos_backfill_product_ever_published(batch_size integer DEFAULT 500) RETURNS integer`.
+2. `20261027120100_pos_perf_p39r2_ever_published_backfill`: `SELECT
+   pos_backfill_product_ever_published();`. It's a separate file because `ADD COLUMN` holds an
+   ACCESS EXCLUSIVE lock on `products` until its migration commits. In the same file, the backfill
+   would block every catalog read and checkout for its whole duration. Separately, it takes row
+   locks only on the products it marks.
+
+The function rebuilds evidence once into temp tables, analyzes them, and marks in keyset batches
+of `batch_size` (only `false → true`). It returns the number marked. It is idempotent, and it is
+also the reconciliation step.
+
+**Evidence** (from rows that exist only after a committed change):
+
+1. Live now: `status = 'active'` and a row on.
+2. A row turned on while the product's status was `active`. That is
+   `PRODUCT_BRANCH_AVAILABILITY_CHANGED` with `after_state.isAvailable = true` (publication,
+   per-branch, bulk, branch-scoped status), or `PRODUCT_REPLACED_AT_BRANCH`
+   (`copyAvailableAtBranch = true`) for the copy.
+3. A `PRODUCT_STATUS_CHANGED` to `active` at a moment when one of its rows was on.
+
+Status at a moment is the `after_state.status` of the last status change at or before it; else the
+`before_state.status` of the first one after it; else the current status. A row's state is its last
+row fact at or before the moment, with off winning a tie. The removal cascade turns every row off,
+and replacement turns the source off at that branch. Events come from `audit_logs` and from
+`audit_outbox` in **any** status (pending, processing, stuck, delivered). An `audit_logs` row the
+outbox delivered (its `after_state.audit_event_id` names an outbox row) is skipped in favour of that
+outbox row. The copy's timestamp is the delivery time, which can fall after a later "off". A
+regression test proves dropping this rule wrongly marks a product (see tests).
+
+**Not evidence:** deactivation events, `PRODUCT_UPDATED` and other generic updates, the creator,
+lifecycle `active` alone, the restore-cascade entry (it doesn't record what it turned on), and
+anything for a product that is `draft` now.
+
+**Unknown history (stays unmarked; can't be reconstructed).** A product that was live and is now
+off everywhere, with `status = 'active'`, shows as a Draft if its only proof was lost. Cases:
+
+- It went live through the restore cascade, or was created with rows on before P34R. Neither
+  writes a per-row event.
+- It was enabled on a direct path whose `recordAuditLog` write failed (swallowed).
+- Its status-change history is incomplete, so its status at the time is misread.
+- Its only history is a deactivation. P39R counted any history and showed it Inactive; P39R2
+  doesn't treat deactivation as proof.
+
+Sales history (`transaction_items`) would be strong evidence for these. It wasn't used because it
+is outside the evidence this task allowed. It is the natural next source if pilot data turns up
+such products.
+
+### Populated migration results (local, disposable)
+
+**Local `pos_verify`** (target checked as `127.0.0.1:5432/pos_verify` before each `prisma migrate
+deploy`): 520 products before the migration.
+
+| status | ever_published | products |
+| --- | --- | --- |
+| draft | false | 33 (6 of them have a row on; status draft, so correctly unmarked) |
+| active | false | 240 |
+| active | true | 228 (216 live now, 12 from history only) |
+| archived | false | 18 |
+| archived | true | 1 (from history) |
+
+None of the 240 unmarked, active, off-everywhere products has any availability history in either
+audit table. The backfill hid nothing with evidence.
+
+**Clone `pos_p39r2_migration`**: a `pg_dump` of `pos_verify` taken before any change and restored
+into a new database in the same local container. On the pre-migration schema it was seeded with
+nine scenarios: current availability, `audit_logs`-only history, pending and stuck outbox intents, a
+status-draft product, a builder draft with only a `PRODUCT_UPDATED`, archived after being live,
+archived and never live, and a deactivation-only history (missing evidence). The real migrations
+were then applied with `prisma migrate deploy`.
+
+- Every scenario landed as expected: live now, `audit_logs`-only, outbox pending, outbox stuck and
+  archived-after-live were marked. Status-draft, builder draft, archived-never and deactivation-only
+  were not.
+- Integrity (row count + md5 of every row, before vs after): `inventory_stocks` 21,330,
+  `inventory_stock_movements` 190, `transactions` 107, `transaction_items` 107, `audit_logs`
+  17,037, `audit_outbox` 316, `branch_product_availability` 656, `products` (all columns except the
+  new one) 529, constraints 196, indexes 236. **All identical.**
+- Comparing P39R's audit-history rule with the marker over the whole clone, exactly one product
+  moves from Inactive to Drafts: the deactivation-only fixture.
+
+**Cost**, on the clone:
+
+| Audit size | Backfill | Notes |
+| --- | --- | --- |
+| Real (17k `audit_logs`, 316 outbox, 529 products) | 0.31–0.38 s | evidence is fully recomputed even when nothing is left to mark |
+| 1.22M `audit_logs` (200k availability events on ~650 rows) | 36 s → **17 s** | the first version joined the event temp table without statistics (21.7 s nested loop). An `ANALYZE` was added (that stage: 0.38 s). |
+| 517k `audit_logs` (200k availability events), through `prisma migrate deploy` | column migration 0.036–0.066 s, backfill migration 4.9–7.9 s | a poller read `products` every ~50 ms with `lock_timeout = 100ms` throughout: **196 reads, 0 blocked** |
+
+The remaining cost is one sequential scan of `audit_logs` (no index on `action`), and it grows
+with the number of availability events. Production's audit size wasn't measured, because this task
+has no production access. Before deploying, run read-only: `SELECT count(*) FROM audit_logs WHERE
+action IN ('PRODUCT_BRANCH_AVAILABILITY_CHANGED','PRODUCT_STATUS_CHANGED','PRODUCT_REPLACED_AT_BRANCH','PRODUCT_CATALOG_REMOVAL_CASCADE')`.
+
+### Old/new API overlap, reconciliation, rollback
+
+**The overlap.** Applying the migrations before the new API doesn't prevent overlap writes. Until
+the last old instance stops, an old instance can publish (outbox path) or enable (direct paths)
+without setting the marker. While such a product is on POS anywhere, the "on POS at no branch"
+guard keeps it out of Drafts. That guard is covered by a test. The gap is a product an old
+instance turned on and that is then turned off everywhere before reconciliation. It reads as a
+Draft until reconciled.
+
+**Procedure** (each step is a production action that needs explicit approval; none was done):
+
+1. Read-only, before deploying: the audit-size query above.
+2. `deploy-production.yml`, after its environment approval, runs `prisma migrate deploy` with
+   `PRODUCTION_DATABASE_URL_DIRECT` before the Render deploy hook. That applies both migrations, so
+   the backfill runs while the old P38R4 API is still serving. P38R4 has no Products tabs, so only
+   its writes matter here. Vercel deploys the web on push, independently; the web reads no marker.
+3. The Render hook deploys the new API. Wait until no old instance is serving (Render shows only
+   the new deploy live).
+4. Reconcile once, against the verified direct connection: `SELECT
+   pos_backfill_product_ever_published();`. It marks what old instances made live, using the same
+   evidence. The outbox intents old instances enqueued during the overlap count in any delivery
+   state. It is idempotent and only sets `false → true`, so it's safe beside live traffic.
+5. Verify, read-only: `SELECT count(*) FROM products p WHERE NOT p.ever_published AND p.status =
+   'active' AND EXISTS (SELECT 1 FROM branch_product_availability r WHERE r.product_id = p.id AND
+   r.is_available)` must be 0.
+
+One residual gap remains after reconciliation. An old instance enabled a product on a direct path,
+that path's swallowed audit write also failed, and the product was turned off everywhere before
+step 4. Then nothing proves it was live (same as the historical "unknown" cases). If that's
+unacceptable for the pilot, the controlled alternative is a **write gate**: freeze product
+publication and availability changes from step 2 until step 4. No such switch exists in the code,
+so this would be an operational freeze, announced to supervisors, and then the same
+reconciliation. A database trigger that set the marker for old instances was considered and not
+used: it would move this business rule out of the application layer (CLAUDE.md: Prisma
+repositories, no raw SQL in the app).
+
+**Rollback.**
+
+- To roll back the application to P39R or P38R4, leave the schema. The column is ignored, and old
+  inserts get the default.
+- Going forward again needs step 4 again, because the old code doesn't set the marker.
+- A schema rollback isn't needed, and isn't recommended. If it's ever required: `DROP FUNCTION
+  pos_backfill_product_ever_published(integer); ALTER TABLE products DROP COLUMN ever_published;`
+  and delete the two `_prisma_migrations` rows. That discards markers set by live activations since
+  the deploy. Re-applying the migrations recovers them only where evidence survives.
+
+### Verification
+
+All against local services only: Postgres `127.0.0.1:5432` (`pos_verify` and the disposable
+`pos_p39r2_migration`), a fresh API build on `:4000`, and a fresh `next build` + `next start` on
+`:3000`. The P39 servers left running were stopped and replaced.
+
+Real Postgres (`apps/api`, vitest):
+
+- `products.ever-published.integration.test.ts`, **20 / 20**. Each activation path sets the marker:
+  Single Publish, Add to POS (and its retry writes nothing, `updatedAt` unchanged), per-branch,
+  bulk (on + off in one batch), branch-scoped status, temporarily unavailable → active with a row
+  on, restore that enables rows, and replacement of an activated copy. These don't set it: a row on
+  while paused, a status-draft product turned on, draft → active with rows off, and a restore that
+  enables nothing (the source replaced at both of its branches).
+  - Copies start unpublished, including a copy of a published product.
+  - Rollback: not ready → nothing. A marker failure undoes publication's rows, zero-stock links and
+    audit intents. An outbox failure after the marker undoes the marker. A marker failure rolls
+    back per-branch, bulk and restore (status stays archived). A bulk batch with an unassigned
+    branch is refused before any write.
+  - Monotonic through deactivate, discontinue, archive, restore and bulk off.
+  - Deleting every `audit_logs` and outbox row about three products leaves the tabs and counts at
+    both branches unchanged.
+  - A marker-less product live at B (overlap) is Active at B and Inactive at A, never a Draft.
+  - Rows, counts, search and 2-per-page pagination agree. An unassigned branch is refused (403).
+- `products.ever-published-backfill.integration.test.ts`, **2 / 2**. Twenty pre-marker histories:
+  audit_logs-only; outbox pending, processing, stuck and delivered (with its audit_logs copy);
+  archived after live; copy activated after replacement; copy turned off before activation;
+  replacement sources; never published; deactivation-only; generic update; status-active-only; on
+  while paused; status draft with an on event; the delivery-copy trap; lost history; and an already
+  marked product. Each is marked exactly as specified, with `updatedAt` and `version` untouched. A
+  second run marks 0 and clears nothing.
+  - **Mutation check:** with the delivered-copy dedupe removed from the function, the trap product
+    is wrongly marked and the test fails. With the real function restored it passes.
+- `products.branch-views.integration.test.ts` (7 / 7) and
+  `products.branch-views-audit-delivery.integration.test.ts` (5 / 5) pass. The P39 fixture
+  `queued-audit` (an outbox row with no publication behind it) is now `audit-row-only` and
+  correctly a **Draft**; its counts and paging were updated.
+
+Real browser (Playwright, project "Admin Dashboard (Desktop)", one worker, built web + built API):
+
+- New `tests/e2e/pos-perf-p39r2-draft-active-inactive.spec.ts`, with fixture
+  `fixtures/p39r2-audit-history.cjs`. The flow:
+  1. A product created through the API is a Draft, and Continue Setup reopens the builder with
+     branches A and B.
+  2. The builder's Add to POS at A and B makes it Active (`ever_published` true).
+  3. Deactivate here at A and at B, in the Edit popup's Branches tab, makes it Inactive ("Off POS
+     at A").
+  4. Audit delivery is then made to fail: every outbox intent about it is set to `stuck` and every
+     `audit_logs` entry about it is deleted.
+  5. After `page.reload()` it is still Inactive (counts 0 / 1 / 1). The never-published product is
+     still the only Draft. The Edit popup reopens with all five tabs, Continue Setup still opens
+     the other draft, and the API's own counts agree.
+
+  | Run | Result |
+  | --- | --- |
+  | 1 | **failed** after the reload. The reload's token refresh hit the pre-existing `rotateRefreshTokenTx` 5 s timeout (P2028 → 500, §6), and the app fell back to the dashboard. No tab or count was wrong. The spec now records which way a reload went and reopens Products in-app after a fallback. |
+  | 2 | passed (1.7 min) |
+  | 3 | passed (1.2 min); annotation `reload stayed on Products` |
+
+- Regression `pos-perf-p39-products-management.spec.ts` against the new API: **4 passed
+  (5.5 min)**.
+
+Automated checks:
+
+| Check | Result |
+| --- | --- |
+| API, full `vitest run` | **175 files passed, 16 skipped** (environment-gated); **2988 tests passed, 232 skipped, 0 failed** (8.3 min). The audit-chain concurrency test that is sometimes flaky passed in this run. |
+| — `products.service.test.ts` / `products.router.test.ts` | 164 / 164, 26 / 26. Expectations now carry the transaction client and assert the marker call. |
+| Web, full `vitest run` | **Run 1: 1 failed**, `admin/reports/page.test.tsx` timed out at 5 s (147 files / 1272 tests passed). **Run 2: 10 failed in 6 files**, all `Test timed out in 5000ms`, under memory pressure (577 MB of 7.9 GB free, 1,095 s run). In isolation, that reports file passed 39 / 39 three times, and the six run-2 files 50 / 50. No web code changed in P39R2, and none of these files involve Products. Neither full web run was clean. |
+| — `supervisor/products/page.test.tsx` (tabs/counts UI) | 9 / 9 |
+| Shared, `vitest run` | 4 files, 30 tests passed |
+| Type-check: shared, API, web (`tsc --noEmit`) | clean |
+| Lint | API: 0 errors, 308 warnings (all pre-existing; none in changed files). Web: 0 errors, 1 warning (pre-existing). Shared: clean. |
+| Builds | API `tsc -p tsconfig.json` and web `next build` succeed. Both were served for the browser runs. |
+| `prisma migrate status` on `pos_verify` | 89 migrations, up to date |
+
+### Remaining limitations and blockers
+
+- **Production steps are not done.** Each needs explicit approval: push, the production migration
+  (CI), the post-cutover reconciliation (`SELECT pos_backfill_product_ever_published();`), and the
+  two read-only checks above.
+- **Production audit size is unmeasured.** The backfill's cost grows with availability events. It
+  was 4.9–17 s at 0.5–1.2M local audit rows and never blocked reads; measure production first.
+- **Unknown history stays unknown.** Products whose only proof of being live was lost (listed
+  above) show as Drafts. Sales history is the candidate extra evidence if the pilot data has any.
+- **Overlap residual.** An old-instance direct-path enable whose audit write also failed, and that
+  was deactivated before reconciliation, can't be recovered unless the write gate is used.
+- **Pre-existing, not changed:** the token-refresh P2028 timeout under load (§6) failed browser
+  run 1. Web 5-second test timeouts under load failed both full web runs.
+- **Environment:** the local Postgres container stopped and started once during this session
+  (`StartedAt` 10:22:34Z, `RestartCount` 0, not OOM-killed). The data survived, as checked after.
+  Docker later stopped responding for about two minutes while the machine was short on memory.
+  The cause of the stop/start wasn't determined; memory pressure is the likely one.
+- **Local leftovers.** `pos_verify` holds this session's fixtures (branches deactivated by the
+  specs, `P39R2*` products and a supervisor). The new API (`:4000`) and web (`:3000`) builds are
+  still running against it. The disposable clone `pos_p39r2_migration` was dropped. The
+  pre-migration dump `/tmp/pos_verify_pre_p39r2.dump` stays inside the container until this is
+  committed. Logs are in `.p39-local/` (not committed).

@@ -778,6 +778,16 @@ model Product {
   // allowed; mismatch is a 409 PRODUCT_CONFLICT, never a silent overwrite.
   version Int @default(1)
 
+  // POS-PERF-P39R2 — "has successfully been available on POS at least once":
+  // status 'active' with at least one branch_product_availability row on, the
+  // POS catalog's own predicate at some branch. Set in the same transaction as
+  // the write that makes the product live (productsRepository.
+  // markEverPublishedIfLive) and never cleared: deactivation, archive and
+  // discontinue leave it true. Not a timestamp — the backfill could not
+  // honestly date it. The supervisor Products tabs read it to tell a draft
+  // from a product taken off POS; see docs/runbooks/pos-perf-p39-product-ui-consistency.md §8.
+  everPublished Boolean @default(false) @map("ever_published")
+
   creator            User?                       @relation(fields: [createdBy], references: [id])
   manager            User?                       @relation("ProductManagedBy", fields: [managedBy], references: [id])
   exclusiveBranch    Branch?                     @relation("ProductExclusiveBranch", fields: [exclusiveBranchId], references: [id])

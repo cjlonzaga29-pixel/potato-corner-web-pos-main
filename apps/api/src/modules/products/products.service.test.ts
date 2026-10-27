@@ -25,6 +25,8 @@ vi.mock('./products.repository.js', () => ({
     findBranchProductAvailability: vi.fn().mockResolvedValue([]),
     cascadeBranchAvailabilityOff: vi.fn(),
     cascadeBranchAvailabilityOn: vi.fn(),
+    // POS-PERF-P39R2 — the ever-published marker, written in each activation's transaction.
+    markEverPublishedIfLive: vi.fn().mockResolvedValue({ count: 0 }),
     getProductsByGlobalStatus: vi.fn(),
     allActiveBranches: vi.fn(),
     findActiveBranch: vi.fn(),
@@ -586,7 +588,7 @@ describe('productsService.changeProductStatus — supervisor global transitions 
 
     const result = await productsService.changeProductStatus('prod-1', { status: 'active' }, SUPERVISOR, null);
 
-    expect(productsRepository.updateStatus).toHaveBeenCalledWith('prod-1', 'active');
+    expect(productsRepository.updateStatus).toHaveBeenCalledWith('prod-1', 'active', txMock);
     expect((result as { status: string }).status).toBe('active');
   });
 
@@ -605,7 +607,7 @@ describe('productsService.changeProductStatus — supervisor global transitions 
 
     await productsService.changeProductStatus('prod-1', { status: 'active' }, SUPERVISOR, null);
 
-    expect(productsRepository.updateStatus).toHaveBeenCalledWith('prod-1', 'active');
+    expect(productsRepository.updateStatus).toHaveBeenCalledWith('prod-1', 'active', txMock);
   });
 
   it('any status can transition to archived', async () => {
@@ -625,8 +627,9 @@ describe('productsService.changeProductStatus — supervisor global transitions 
 
     await productsService.changeProductStatus('prod-1', { status: 'active' }, SUPERVISOR, null);
 
-    expect(productsRepository.updateStatus).toHaveBeenCalledWith('prod-1', 'active');
-    expect(productsRepository.cascadeBranchAvailabilityOn).toHaveBeenCalledWith('prod-1', SUPERVISOR.id);
+    expect(productsRepository.updateStatus).toHaveBeenCalledWith('prod-1', 'active', txMock);
+    expect(productsRepository.cascadeBranchAvailabilityOn).toHaveBeenCalledWith('prod-1', SUPERVISOR.id, txMock);
+    expect(productsRepository.markEverPublishedIfLive).toHaveBeenCalledWith('prod-1', txMock);
     expect(productsRepository.cascadeBranchAvailabilityOff).not.toHaveBeenCalled();
   });
 
@@ -739,7 +742,8 @@ describe('productsService.changeProductStatus — supervisor branch-scoped chang
       null,
     );
 
-    expect(productsRepository.upsertBranchProductAvailability).toHaveBeenCalledWith('branch-a', 'prod-1', false, SUPERVISOR.id);
+    expect(productsRepository.upsertBranchProductAvailability).toHaveBeenCalledWith('branch-a', 'prod-1', false, SUPERVISOR.id, txMock);
+    expect(productsRepository.markEverPublishedIfLive).not.toHaveBeenCalled();
     expect((result as { is_available: boolean }).is_available).toBe(false);
   });
 
@@ -755,7 +759,8 @@ describe('productsService.changeProductStatus — supervisor branch-scoped chang
 
     await productsService.changeProductStatus('prod-1', { status: 'active', branch_id: 'branch-a' }, SUPERVISOR, null);
 
-    expect(productsRepository.upsertBranchProductAvailability).toHaveBeenCalledWith('branch-a', 'prod-1', true, SUPERVISOR.id);
+    expect(productsRepository.upsertBranchProductAvailability).toHaveBeenCalledWith('branch-a', 'prod-1', true, SUPERVISOR.id, txMock);
+    expect(productsRepository.markEverPublishedIfLive).toHaveBeenCalledWith('prod-1', txMock);
   });
 
   it('cannot enable a globally discontinued product', async () => {
@@ -1094,7 +1099,8 @@ describe('productsService.unpublishProduct (Phase D1)', () => {
     const result = await productsService.unpublishProduct('prod-1', 'branch-a', SUPER_ADMIN, null);
 
     expect(productReadinessService.evaluateProductReadiness).not.toHaveBeenCalled();
-    expect(productsRepository.upsertBranchProductAvailability).toHaveBeenCalledWith('branch-a', 'prod-1', false, SUPER_ADMIN.id);
+    expect(productsRepository.upsertBranchProductAvailability).toHaveBeenCalledWith('branch-a', 'prod-1', false, SUPER_ADMIN.id, txMock);
+    expect(productsRepository.markEverPublishedIfLive).not.toHaveBeenCalled();
     expect((result as { is_available: boolean }).is_available).toBe(false);
   });
 });

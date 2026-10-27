@@ -485,6 +485,9 @@ async function publishWithinLock(
     actor.id,
     tx,
   );
+  // POS-PERF-P39R2 — the marker commits with the rows it describes; a
+  // product that is not 'active' is turned on here but not live, so stays unmarked.
+  await productsRepository.markEverPublishedIfLive(productId, tx);
   // POS-PERF-P38R3 — read under the lock in this transaction, so a retry (or
   // a concurrent duplicate) of a publication that already committed sees
   // those branches as published and audits nothing for them.
@@ -506,6 +509,20 @@ async function publishWithinLock(
       })),
   ]);
   return { rows, stockLinks: links };
+}
+
+/**
+ * POS-PERF-P39R2 — a single branch availability write and, when it turns the
+ * row on, the ever-published marker, in one transaction: if either fails,
+ * neither is kept. Used by the per-branch toggle and the branch-scoped status
+ * change, which used to be one bare upsert.
+ */
+function writeBranchAvailability(branchId: string, productId: string, isAvailable: boolean, actorId: string) {
+  return prisma.$transaction(async (tx) => {
+    const row = await productsRepository.upsertBranchProductAvailability(branchId, productId, isAvailable, actorId, tx);
+    if (isAvailable) await productsRepository.markEverPublishedIfLive(productId, tx);
+    return row;
+  });
 }
 
 /**
@@ -1531,7 +1548,18 @@ export const productsService = {
         );
       }
 
-      const updated = await productsRepository.updateStatus(productId, data.status);
+      // POS-PERF-P39R2 — a change to 'active' can make the product live (its
+      // rows are already on, or restore turns them on), so the status write,
+      // restore's cascade and the marker share one transaction.
+      const restoring = product.status === 'archived' && data.status === 'active';
+      const updated = data.status === 'active'
+        ? await prisma.$transaction(async (tx) => {
+          const row = await productsRepository.updateStatus(productId, data.status, tx);
+          if (restoring) await productsRepository.cascadeBranchAvailabilityOn(productId, actor.id, tx);
+          await productsRepository.markEverPublishedIfLive(productId, tx);
+          return row;
+        })
+        : await productsRepository.updateStatus(productId, data.status);
 
       if (data.status === 'discontinued' || data.status === 'archived') {
         await productsRepository.cascadeBranchAvailabilityOff(productId, actor.id);
@@ -1547,11 +1575,11 @@ export const productsService = {
           afterState: { cascadedTo: 'unavailable', triggeredBy: data.status },
           ipAddress,
         });
-      } else if (product.status === 'archived' && data.status === 'active') {
+      } else if (restoring) {
         // Task 34 — Restore. Re-enables branch availability at every active
         // branch, mirroring createWithCascade's default cascade, so restore
-        // needs no manual per-branch reconfiguration.
-        await productsRepository.cascadeBranchAvailabilityOn(productId, actor.id);
+        // needs no manual per-branch reconfiguration. The cascade ran in the
+        // status transaction above.
         await recordAuditLog({
           action: 'PRODUCT_CATALOG_RESTORE_CASCADE',
           entityType: 'product',
@@ -1602,7 +1630,7 @@ export const productsService = {
 
       const isAvailable = data.status === 'active';
       assertSupervisorMayEnableAtBranch(product, data.branch_id, isAvailable, actor);
-      const row = await productsRepository.upsertBranchProductAvailability(data.branch_id, productId, isAvailable, actor.id);
+      const row = await writeBranchAvailability(data.branch_id, productId, isAvailable, actor.id);
 
       await recordAuditLog({
         action: 'PRODUCT_BRANCH_AVAILABILITY_CHANGED',
@@ -2028,7 +2056,7 @@ export const productsService = {
     }
     assertSupervisorMayEnableAtBranch(product, branchId, isAvailable, actor);
 
-    const row = await productsRepository.upsertBranchProductAvailability(branchId, productId, isAvailable, actor.id);
+    const row = await writeBranchAvailability(branchId, productId, isAvailable, actor.id);
 
     await recordAuditLog({
       action: 'PRODUCT_BRANCH_AVAILABILITY_CHANGED',
@@ -2095,6 +2123,9 @@ export const productsService = {
           await productsRepository.upsertBranchProductAvailability(update.branch_id, productId, update.is_available, actor.id, tx),
         );
       }
+      // POS-PERF-P39R2 — checked after the whole batch, so a batch that turns
+      // one branch on and another off still marks a product left live.
+      if (updates.some((u) => u.is_available)) await productsRepository.markEverPublishedIfLive(productId, tx);
       return results;
     });
 
@@ -2602,6 +2633,10 @@ export const productsService = {
 
       const copyAvailability = await productsRepository.upsertBranchProductAvailability(branchId, copy.id, true, actor.id, tx);
       const sourceAvailability = await productsRepository.upsertBranchProductAvailability(branchId, source.id, false, actor.id, tx);
+      // POS-PERF-P39R2 — the copy is live now: the readiness gate above
+      // refuses a draft-status copy, and the marker's own predicate still
+      // requires 'active'.
+      await productsRepository.markEverPublishedIfLive(copy.id, tx);
       return { copyAvailability, sourceAvailability };
     });
 

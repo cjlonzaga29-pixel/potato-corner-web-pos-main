@@ -5,11 +5,11 @@ import { createProductSchema, type JwtPayload, type ProductBranchView } from '@p
 
 /**
  * POS-PERF-P39R — the Products tabs never depend on audit delivery, against
- * real Postgres. Publication's availability intents commit in the outbox with
- * the publication (P38R4) and the draft check reads every outbox status, so a
- * product published and then taken off POS is Inactive — never a Draft —
- * while its entries are pending, claimed, stuck or delivered, even when no
- * audit_logs write succeeds at all. Delivery is paused for this file's
+ * real Postgres. Since POS-PERF-P39R2 the draft check reads
+ * products.ever_published, committed with the publication, and no audit table
+ * at all, so a product published and then taken off POS is Inactive — never
+ * a Draft — while its entries are pending, claimed, stuck or delivered, even
+ * when no audit_logs write succeeds at all. Delivery is paused for this file's
  * intents: they are written with a far-future next_attempt_at, so no worker
  * (including an API left running against the same database) can claim them
  * until a test releases them.

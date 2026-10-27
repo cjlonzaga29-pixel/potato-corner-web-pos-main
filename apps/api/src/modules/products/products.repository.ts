@@ -59,17 +59,21 @@ function buildWhere(filters: Pick<ProductListFilters, 'status' | 'category' | 's
   };
 }
 
-/** POS-PERF-P39 — product-level audit actions that mean it has been managed on POS before (so it is no longer a draft). */
-const PRODUCT_PUBLICATION_HISTORY_ACTIONS = [
-  'PRODUCT_STATUS_CHANGED',
-  'PRODUCT_CATALOG_REMOVAL_CASCADE',
-  'PRODUCT_CATALOG_RESTORE_CASCADE',
-  'PRODUCT_REPLACED_AT_BRANCH',
-];
-
-/** POS-PERF-P39 — the tab a product configured at this branch belongs to; see productListResponseSchema's PRODUCT_BRANCH_VIEWS. */
-function branchViewOf(product: BranchScopedProduct, branchId: string, draftIds: Set<string>): ProductBranchView {
-  if (draftIds.has(product.id)) return 'drafts';
+/**
+ * POS-PERF-P39 — the tab a product configured at this branch belongs to; see
+ * productListResponseSchema's PRODUCT_BRANCH_VIEWS.
+ *
+ * POS-PERF-P39R2 — drafts come from product state alone, never audit history:
+ * status 'draft' (never sellable, whatever its rows say), or status 'active',
+ * never published (everPublished) and on POS nowhere. A product on POS at any
+ * branch is not a draft even if its marker is missing — an older API instance
+ * may have published it during a deploy overlap; the reconciliation run sets
+ * the marker.
+ */
+function branchViewOf(product: BranchScopedProduct, branchId: string): ProductBranchView {
+  if (product.status === 'draft') return 'drafts';
+  const onPosAnywhere = product.branchAvailability.some((row) => row.isAvailable);
+  if (product.status === 'active' && !product.everPublished && !onPosAnywhere) return 'drafts';
   const onPosHere = product.status === 'active' && product.branchAvailability.some((row) => row.branchId === branchId && row.isAvailable);
   return onPosHere ? 'active' : 'inactive';
 }
@@ -77,7 +81,8 @@ function branchViewOf(product: BranchScopedProduct, branchId: string, draftIds: 
 type BranchScopedProduct = {
   id: string;
   status: PrismaProductStatus;
-  branchAvailability: { id: string; branchId: string; isAvailable: boolean }[];
+  everPublished: boolean;
+  branchAvailability: { branchId: string; isAvailable: boolean }[];
 };
 
 const SORT_FIELD_MAP: Record<NonNullable<ProductListFilters['sort_by']>, string> = {
@@ -110,11 +115,10 @@ export const productsRepository = {
       const branchId = filters.branch_id;
       const scoped = await prisma.product.findMany({
         where: { AND: [base, { branchAvailability: { some: { branchId } } }] },
-        select: { id: true, status: true, branchAvailability: { select: { id: true, branchId: true, isAvailable: true } } },
+        select: { id: true, status: true, everPublished: true, branchAvailability: { select: { branchId: true, isAvailable: true } } },
       });
-      const draftIds = await productsRepository.findDraftIds(scoped);
       const idsByView: Record<ProductBranchView, string[]> = { active: [], drafts: [], inactive: [] };
-      for (const product of scoped) idsByView[branchViewOf(product, branchId, draftIds)].push(product.id);
+      for (const product of scoped) idsByView[branchViewOf(product, branchId)].push(product.id);
       counts = { active: idsByView.active.length, drafts: idsByView.drafts.length, inactive: idsByView.inactive.length };
       where = { id: { in: filters.view ? idsByView[filters.view] : scoped.map((product) => product.id) } };
     }
@@ -139,38 +143,20 @@ export const productsRepository = {
   },
 
   /**
-   * POS-PERF-P39 — which of these products are still drafts. There is no
-   * "ever published" column: the builder creates products with status
-   * 'active' and leaves every branch row off until Add to POS, so a builder
-   * draft and a product later taken off POS everywhere look the same on the
-   * product row. The difference is history: every availability change
-   * (publish, unpublish, temporarily unavailable) is audited against the
-   * availability row, and a global lifecycle change against the product. So
-   * a draft is a status 'draft' product, or a status 'active' product that
-   * is on POS nowhere and has no such audit entry — delivered or still
-   * queued in the audit outbox. `products` must carry every one of their
-   * availability rows (all branches), not just the selected branch's.
+   * POS-PERF-P39R2 — sets everPublished when the product is live after the
+   * caller's write: status 'active' with a branch row on, the POS catalog's
+   * predicate at some branch. Call it inside the transaction of every write
+   * that can make a product live (a row turned on, or a status change to
+   * 'active'), after that write, so the marker commits or rolls back with it.
+   * A product that is not live, or already marked, is left untouched (no
+   * updatedAt change), so retries and no-op publications write nothing.
+   * Never clears the marker.
    */
-  async findDraftIds(products: BranchScopedProduct[]): Promise<Set<string>> {
-    const neverOnPos = products.filter((product) => product.status === 'active' && !product.branchAvailability.some((row) => row.isAvailable));
-    const drafts = new Set(products.filter((product) => product.status === 'draft').map((product) => product.id));
-    if (neverOnPos.length === 0) return drafts;
-
-    const rowIds = neverOnPos.flatMap((product) => product.branchAvailability.map((row) => row.id));
-    const productIds = neverOnPos.map((product) => product.id);
-    const historyWhere = {
-      OR: [
-        { entityType: 'branch_product_availability', entityId: { in: rowIds } },
-        { entityType: 'product', entityId: { in: productIds }, action: { in: PRODUCT_PUBLICATION_HISTORY_ACTIONS } },
-      ],
-    };
-    const logged = await prisma.auditLog.findMany({ where: historyWhere, select: { entityId: true }, distinct: ['entityId'] });
-    const queued = await prisma.auditOutbox.findMany({ where: historyWhere, select: { entityId: true }, distinct: ['entityId'] });
-    const withHistory = new Set([...logged, ...queued].map((entry) => entry.entityId));
-    for (const product of neverOnPos) {
-      if (!withHistory.has(product.id) && !product.branchAvailability.some((row) => withHistory.has(row.id))) drafts.add(product.id);
-    }
-    return drafts;
+  markEverPublishedIfLive(productId: string, tx: Prisma.TransactionClient) {
+    return tx.product.updateMany({
+      where: { id: productId, everPublished: false, status: 'active', branchAvailability: { some: { isAvailable: true } } },
+      data: { everPublished: true },
+    });
   },
 
   async findById(productId: string) {
@@ -453,8 +439,8 @@ export const productsRepository = {
     return prisma.product.findUniqueOrThrow({ where: { id: productId }, include: detailInclude });
   },
 
-  updateStatus(productId: string, status: PrismaProductStatus) {
-    return prisma.product.update({
+  updateStatus(productId: string, status: PrismaProductStatus, client: Prisma.TransactionClient | typeof prisma = prisma) {
+    return client.product.update({
       where: { id: productId },
       data: { status },
       include: detailInclude,
@@ -583,8 +569,8 @@ export const productsRepository = {
    * ui-and-replacement.md §3. Every other branch this product sells at
    * (never replaced) still restores exactly as before.
    */
-  async cascadeBranchAvailabilityOn(productId: string, updatedBy: string) {
-    const replacingForks = await prisma.product.findMany({
+  async cascadeBranchAvailabilityOn(productId: string, updatedBy: string, client: Prisma.TransactionClient | typeof prisma = prisma) {
+    const replacingForks = await client.product.findMany({
       where: {
         forkedFromProductId: productId,
         branchExclusive: true,
@@ -595,7 +581,7 @@ export const productsRepository = {
     });
     const replacedBranchIds = replacingForks.map((p) => p.exclusiveBranchId as string);
 
-    return prisma.branchProductAvailability.updateMany({
+    return client.branchProductAvailability.updateMany({
       where: {
         productId,
         isAvailable: false,

@@ -7,7 +7,8 @@ import { createProductSchema, type JwtPayload, type ProductBranchView } from '@p
  * POS-PERF-P39 — the supervisor Products page's Active / Drafts / Inactive
  * tabs, against real Postgres: every product configured at the branch is in
  * exactly one tab, a product taken off POS is never mistaken for a draft
- * (audit history, delivered or still in the outbox), archived and
+ * (POS-PERF-P39R2: products.ever_published, not audit history — an audit row
+ * alone never makes a product non-draft), archived and
  * temporarily-unavailable products are Inactive, other branches' products are
  * not listed, counts follow search, pages neither repeat nor skip, and the
  * branch must be one the supervisor may read.
@@ -101,8 +102,8 @@ describe.skipIf(!isLocalDatabase)('POS-PERF-P39 product branch views (real Postg
     const paused = await create('temporarily-unavailable', [branchA]);
     await productsService.updateBranchProductAvailability(paused, branchA, true, supervisor, null);
     await productsService.changeProductStatus(paused, { status: 'temporarily_unavailable' }, supervisor, null);
-    // Published moments ago: its audit entry is still queued in the outbox, not yet in audit_logs.
-    const queued = await create('queued-audit', [branchA]);
+    // An availability audit intent with no publication behind it: still a Draft (P39R2 — audit rows are not the marker).
+    const queued = await create('audit-row-only', [branchA]);
     const queuedRow = await prisma.branchProductAvailability.findUniqueOrThrow({ where: { branchId_productId: { branchId: branchA, productId: queued } } });
     const groupId = randomUUID();
     outboxKeys.push(`${groupId}:0`);
@@ -140,8 +141,8 @@ describe.skipIf(!isLocalDatabase)('POS-PERF-P39 product branch views (real Postg
   it('puts every product configured at the branch in exactly one tab', async () => {
     expect(await tabs(branchA)).toEqual({
       active: ['on-pos-at-a'],
-      drafts: ['builder-draft', 'legacy-draft'],
-      inactive: ['archived', 'queued-audit', 'taken-off', 'temporarily-unavailable'],
+      drafts: ['audit-row-only', 'builder-draft', 'legacy-draft'],
+      inactive: ['archived', 'taken-off', 'temporarily-unavailable'],
     });
   });
 
@@ -164,19 +165,19 @@ describe.skipIf(!isLocalDatabase)('POS-PERF-P39 product branch views (real Postg
 
   it('returns the same counts on every tab, and they follow the search', async () => {
     const counts = (await list(branchA, 'active', { search: suffix })).counts;
-    expect(counts).toEqual({ active: 1, drafts: 2, inactive: 4 });
+    expect(counts).toEqual({ active: 1, drafts: 3, inactive: 3 });
     expect((await list(branchA, 'drafts', { search: suffix })).counts).toEqual(counts);
     expect((await list(branchA, 'inactive', { search: `taken-off ${suffix}` })).counts).toEqual({ active: 0, drafts: 0, inactive: 1 });
   });
 
   it('pages without repeating or skipping rows, and total matches the tab count', async () => {
-    const first = await list(branchA, 'inactive', { search: suffix, limit: 3, page: 1 });
-    const second = await list(branchA, 'inactive', { search: suffix, limit: 3, page: 2 });
-    expect(first.total).toBe(4);
-    expect(first.products).toHaveLength(3);
+    const first = await list(branchA, 'inactive', { search: suffix, limit: 2, page: 1 });
+    const second = await list(branchA, 'inactive', { search: suffix, limit: 2, page: 2 });
+    expect(first.total).toBe(3);
+    expect(first.products).toHaveLength(2);
     expect(second.products).toHaveLength(1);
     const all = [...first.products, ...second.products].map((p) => p.id);
-    expect(new Set(all).size).toBe(4);
+    expect(new Set(all).size).toBe(3);
   });
 
   it('refuses a branch the supervisor is not assigned to', async () => {

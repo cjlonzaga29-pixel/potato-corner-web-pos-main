@@ -15,27 +15,31 @@ const BYPASS_HEADER = 'x-maintenance-bypass';
  * `/api/branches/:branchId/...` path rather than owning their own top-level
  * prefix — see docs/runbooks/pos-perf-p16-write-gate.md for the full
  * enumeration this was built from.
+ *
+ * POS-PERF-P39R3 — every pattern is case-insensitive (`i`) because Express
+ * routing is: `POST /API/Products/:id/publish` reaches productsRouter, so a
+ * case-sensitive pattern let a mixed-case path past a closed gate.
  */
 const GATED_PATH_PATTERNS: RegExp[] = [
-  /^\/api\/transactions(\/|$)/,
-  /^\/api\/inventory(\/|$)/,
-  /^\/api\/inventory-approvals(\/|$)/,
-  /^\/api\/product-inventory(\/|$)/,
-  /^\/api\/universal-inventory(\/|$)/,
-  /^\/api\/product-components(\/|$)/,
-  /^\/api\/branches\/[^/]+\/inventory(\/|$)/,
-  /^\/api\/branches\/[^/]+\/inventory-stock(\/|$)/,
+  /^\/api\/transactions(\/|$)/i,
+  /^\/api\/inventory(\/|$)/i,
+  /^\/api\/inventory-approvals(\/|$)/i,
+  /^\/api\/product-inventory(\/|$)/i,
+  /^\/api\/universal-inventory(\/|$)/i,
+  /^\/api\/product-components(\/|$)/i,
+  /^\/api\/branches\/[^/]+\/inventory(\/|$)/i,
+  /^\/api\/branches\/[^/]+\/inventory-stock(\/|$)/i,
   // POS-PERF-P35 — product/catalog mutations moved fully to Supervisor;
   // closing the gate now also has to stop these from reaching their
   // handler mid-maintenance, same as the inventory-stock paths above.
-  /^\/api\/products(\/|$)/,
-  /^\/api\/flavors(\/|$)/,
-  /^\/api\/product-options(\/|$)/,
-  /^\/api\/product-categories(\/|$)/,
+  /^\/api\/products(\/|$)/i,
+  /^\/api\/flavors(\/|$)/i,
+  /^\/api\/product-options(\/|$)/i,
+  /^\/api\/product-categories(\/|$)/i,
   // POS-PERF-P35R — the catalog-management assignment write (POST) is a
   // catalog mutation (it changes who may write to a catalog/inventory
   // record) and must drain/block the same as every other gated write here.
-  /^\/api\/catalog-assignments(\/|$)/,
+  /^\/api\/catalog-assignments(\/|$)/i,
 ];
 
 function isGatedRequest(req: Request): boolean {

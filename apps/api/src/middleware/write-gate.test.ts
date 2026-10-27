@@ -139,6 +139,19 @@ describe('writeGate — which paths/methods it protects', () => {
     // write (it changes who may write to a catalog/inventory record), so
     // it must drain/block the same as every other gated write above.
     ['POST /api/catalog-assignments', 'POST', '/api/catalog-assignments'],
+    // POS-PERF-P39R3 — every path that can make a product live or set
+    // ever_published. Closing the gate is the release's write freeze.
+    ['POST /api/products/:id/publish', 'POST', '/api/products/p-1/publish'],
+    ['POST /api/products/:id/publish-branches (Add to POS)', 'POST', '/api/products/p-1/publish-branches'],
+    ['PATCH /api/products/:id/branch-availability/:branchId', 'PATCH', '/api/products/p-1/branch-availability/branch-1'],
+    ['PATCH /api/products/:id/branch-availability/bulk', 'PATCH', '/api/products/p-1/branch-availability/bulk'],
+    ['PATCH /api/products/:id/status (status / restore)', 'PATCH', '/api/products/p-1/status'],
+    ['POST /api/products/:id/replace-source (branch copy)', 'POST', '/api/products/p-1/replace-source'],
+    // Express routes case-insensitively, so these reach the same handlers.
+    ['POST /API/Products/:id/publish (mixed case)', 'POST', '/API/Products/p-1/publish'],
+    ['PATCH /Api/products/:id/branch-availability/:branchId (mixed case)', 'PATCH', '/Api/products/p-1/branch-availability/branch-1'],
+    ['POST /API/TRANSACTIONS (mixed case)', 'POST', '/API/TRANSACTIONS'],
+    ['POST /api/Branches/:id/Inventory-Stock/:itemId/adjust (mixed case)', 'POST', '/api/Branches/branch-1/Inventory-Stock/item-1/adjust'],
   ])('blocks %s with 503 while the gate is closed', async (_label, method, path) => {
     vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue({ value: { enabled: true, reason: 'deploy swap' } } as never);
     const req = mockReq({ method, path });

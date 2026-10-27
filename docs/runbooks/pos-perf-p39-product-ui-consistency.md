@@ -729,3 +729,166 @@ Automated checks:
   still running against it. The disposable clone `pos_p39r2_migration` was dropped. The
   pre-migration dump `/tmp/pos_verify_pre_p39r2.dump` stays inside the container until this is
   committed. Logs are in `.p39-local/` (not committed).
+
+## 9. P39R3 — Release verification and concrete release procedure
+
+Starting HEAD: `7679b96b09075928b7393ecc938c8bdd3a04905d` (P39R2), clean tree. `origin/main` is
+still `04117f73197acdd489dfef088a233a6fb2df0650` (P38R4, the production baseline). It's an ancestor
+of HEAD, which is 3 ahead and 0 behind. Nothing was pushed or deployed, the gate wasn't touched,
+and nothing was written to production.
+
+### Write-gate coverage of activation paths
+
+The P16 gate (`apps/api/src/middleware/write-gate.ts`) is identical in `04117f7` and `7679b96`
+(before this section's fix). It is mounted once in `app.ts`, before every router. It reads its
+state from `system_settings` on every gated request, so old and new instances share one decision.
+It blocks non-GET requests on gated prefixes with `503 SERVICE_WRITE_GATE_CLOSED`. A failed state
+read fails the request (500); it never fails open.
+
+Every write that can make a product live or set `ever_published` is in `products.service.ts`. Its
+only caller is `products.router.ts`, mounted at `/api/products`. No other module, job, worker or
+script in production code calls those service functions or the repository writers behind them
+(`upsertBranchProductAvailability`, `publishBranchProductAvailability`,
+`cascadeBranchAvailabilityOn`, `updateStatus`, `markEverPublishedIfLive`).
+
+| Path | Route | Gated in 04117f7 | Gated in 7679b96 |
+| --- | --- | --- | --- |
+| Single Publish | `POST /api/products/:id/publish` | yes | yes |
+| Builder Add to POS | `POST /api/products/:id/publish-branches` | yes | yes |
+| Per-branch availability | `PATCH /api/products/:id/branch-availability/:branchId` | yes | yes |
+| Bulk availability | `PATCH /api/products/:id/branch-availability/bulk` | yes | yes |
+| Global or branch-scoped status, restore cascade | `PATCH /api/products/:id/status` | yes | yes |
+| Branch-copy replacement | `POST /api/products/:id/replace-source` | yes | yes |
+| Create and fork-to-branch (rows off, marker `false`) | `POST /api/products`, `POST /api/products/:id/fork-to-branch` | yes | yes |
+| Inventory out-of-stock (turns rows **off** only) | `/api/transactions`, `/api/inventory*`, `/api/branches/:id/inventory*`, plus the in-process deduction worker | HTTP yes; worker not gated | same |
+| Background jobs, outbox delivery, schedulers | none activate a product | n/a | n/a |
+| `scripts/seed-pos-demo-inventory.ts`, `scripts/checkout-perf-benchmark.ts` | direct Prisma, local dev only, in no workflow | not gated | not gated |
+
+**Gap found and fixed (local, this commit).** Express routes case-insensitively, but the gate's
+patterns were case-sensitive. A probe with Express 5.2.1 confirmed it: `POST
+/API/Products/p1/publish` and `PATCH /Api/products/p1/branch-availability/b1` reached the products
+handlers, and `/^\/api\/products(\/|$)/` let them past the gate. This applied to every gated prefix,
+checkout and inventory included. Percent-encoded (`/api/%70roducts`) and double-slash paths return
+404 and never reach a handler. The web client always sends lowercase, so normal traffic was
+already frozen. Getting through needed a deliberately crafted, authenticated, CSRF-valid request.
+The fix adds the `i` flag to every pattern. `write-gate.test.ts` now lists every activation route
+plus four mixed-case paths. Against the old patterns, exactly those four fail.
+
+**Does closing the gate freeze activation during the release?** Yes, on every HTTP path. The
+in-process deduction worker isn't gated, but it only turns rows off, and that can't create an
+unmarked live product. During the overlap the **old 04117f7 instance still has the case-sensitive
+patterns**. Until it stops, the freeze holds against every normal client but not against a
+hand-crafted mixed-case request. The Super Admin `X-Maintenance-Bypass` header also gets past the
+gate. Nobody may use it on `/api/products` during the window.
+
+### Production volume (read-only, measured 2026-10-27)
+
+The target was checked first. The Supabase CLI is linked to `nliuhztaezaujzgtsrwp`
+(`potato-corner-web-pos-main`, ap-southeast-2, Postgres 17.6). Queries ran through `supabase db
+query --linked`, inside `BEGIN TRANSACTION READ ONLY` with `statement_timeout = 20s` and
+`lock_timeout = 2s`, ending in `ROLLBACK`. The same transaction confirmed `transaction_read_only =
+on`. They returned counts only, no payloads or personal data. The CLI printed "Initialising login
+role..." before each query. That is its own Management API session setup, not a statement from
+this task.
+
+| Measure | Value |
+| --- | --- |
+| `audit_logs` rows / size | 9,242 / 7.9 MB |
+| `PRODUCT_BRANCH_AVAILABILITY_CHANGED` / `PRODUCT_STATUS_CHANGED` / `PRODUCT_REPLACED_AT_BRANCH` / `PRODUCT_CATALOG_REMOVAL_CASCADE` | 57 / 9 / 0 / 0 |
+| `audit_outbox` rows (relevant / not delivered) | 2 (2 / 0) |
+| Products: total / active / draft / other | 13 / 12 / 1 / 0 |
+| Products live now (active + a row on) | 11 |
+| `branch_product_availability` rows (on) | 24 (22) |
+| Active products off everywhere / of those, with any availability event | 1 / 0 |
+| `ever_published` column / backfill function present | no / no |
+| Latest applied migration / unfinished | `20261026140000_pos_perf_p38r4_audit_outbox` / 0 |
+
+`EXPLAIN` (no `ANALYZE`) of the evidence scan: `Seq Scan on audit_logs` with the action filter,
+about 66 rows estimated, cost 899.
+
+**Expected result after release (derived, not measured).** The backfill marks the 11 live products.
+The status-`draft` product and the one active product with no availability history stay unmarked
+and show as **Drafts**. Production has no history-only products to recover.
+
+**Backfill cost estimate (an estimate, not a production measurement).** Locally the function took
+0.31–0.38 s on real-sized data (17k `audit_logs`, 316 outbox rows, 529 products) and 4.9–7.9 s at
+517k `audit_logs`. Production has about half the local audit rows and 2 % of the products. Expect
+well under 1 s, plus the network round-trip. The `ADD COLUMN` migration is metadata-only
+(0.04–0.07 s locally). Neither cost blocks the release.
+
+### Web/API overlap
+
+`deploy-production.yml` migrates before the Render hook, but Vercel deploys `apps/web` straight
+from the push, so the new web can go live before the new API. P38R4's list query is a plain
+`z.object`, so it strips the unknown `view` parameter and returns no `counts`. Until the new API
+serves, the new Supervisor Products page shows the same unfiltered list under every tab, with no
+counts. This is display-only. Every product write is gated during the window, so it can't cause a
+wrong write. The POS catalog is unaffected. Tell supervisors not to judge the Products tabs until
+step 5 below completes.
+
+### Release procedure (future steps; each needs explicit approval, none was done)
+
+Never infer gate state from a 401. Read it with `GET /api/settings/write-gate` and a valid Super
+Admin token, and check `enabled` explicitly.
+
+1. **Preflight.** Confirm `git status` is clean, HEAD is the intended release, and `origin/main` is
+   still `04117f7`. Read Render's current setting: the API service must show `autoDeploy: no`. If it
+   doesn't, turn it off before pushing. Otherwise Render's own trigger can start the new API before
+   CI runs the migration, and the new code would read `ever_published` from a schema that doesn't
+   have it. This task couldn't read the setting: the Render CLI is authenticated but has no
+   workspace selected. Then re-run the read-only volume query above.
+2. **Close the gate and drain.** Send `PUT /api/settings/write-gate` with `{ "enabled": true,
+   "reason": "POS-PERF-P39 ever_published release" }`. Confirm a mutating `/api/products` request
+   returns `503 SERVICE_WRITE_GATE_CLOSED`. Poll `GET /api/settings/write-gate` until
+   `activeGatedRequests = 0`. Announce the freeze to supervisors and branches: checkout and
+   inventory writes pause too, because the gate is one switch.
+3. **Push.** `deploy-production.yml` runs CI, then waits for the `production` environment approval,
+   then runs `prisma migrate deploy` with `PRODUCTION_DATABASE_URL_DIRECT`. That applies
+   `20261027120000_pos_perf_p39r2_product_ever_published` and
+   `20261027120100_pos_perf_p39r2_ever_published_backfill` while the old API is still serving and
+   the gate is closed. Only then does it call the Render deploy hook. Check the workflow log to
+   confirm both migrations applied before the hook step ran.
+4. **Vercel overlap.** Expect the display-only overlap described above. Watch the Vercel deployment
+   until it is `Ready` and promoted.
+5. **Wait for single-version serving.** Watch Render until the new deploy is `live` and the previous
+   one is deactivated, not merely started. Don't rely on the workflow's `sleep 45`. Confirm the new
+   instance's `GET /api/settings/write-gate` still reports `enabled: true`.
+6. **Reconcile once,** against the verified direct connection. Print and check the host, port
+   5432, and project `nliuhztaezaujzgtsrwp`. Run `SELECT pos_backfill_product_ever_published();`.
+   With the gate closed since step 2, it should return `0`, because the migration already marked
+   everything. Any other result means something activated during the window, so record it.
+7. **Read-only verification** (in a read-only transaction):
+   - `SELECT count(*) FROM products p WHERE NOT p.ever_published AND p.status = 'active' AND EXISTS
+     (SELECT 1 FROM branch_product_availability r WHERE r.product_id = p.id AND r.is_available);`
+     must return `0`.
+   - `SELECT count(*) FILTER (WHERE ever_published), count(*) FROM products;` should return `11, 13`
+     if nothing has changed since this measurement.
+   - `_prisma_migrations` shows both P39R2 rows finished and none unfinished.
+8. **Reopen the gate** (`PUT … { "enabled": false }`) only after steps 5–7 pass. Confirm a normal
+   product write succeeds and the Products tab counts match step 7.
+
+### Rollback
+
+- Roll back the application only. Redeploy P38R4 (or P39R) from the Render dashboard with the gate
+  closed. **Keep the column and the function.** Old code ignores the column, and its inserts get
+  the default `false`.
+- Old writers don't set the marker. While old code serves, any product it makes live is still
+  covered by the "on POS at no branch" guard. But a product it turns on and then off everywhere will
+  read as a Draft later. So when rolling forward again, repeat steps 2–8: close the gate, deploy,
+  wait for single-version serving, reconcile, verify, reopen.
+- A schema rollback isn't needed. §8 "Rollback" has the statements if one is ever required.
+
+### Verification (this task)
+
+| Check | Result |
+| --- | --- |
+| `write-gate.test.ts` | 45 / 45, with 12 new rows. Mutation check: against the old patterns, the 4 mixed-case rows fail |
+| Web, full `vitest run` (`--pool=forks`, 1 fork) | **148 / 148 files, 1273 / 1273 tests, exit 0**, one run, nothing excluded (557 s; no other node, build or browser process running; about 1 GB of 7.9 GB free) |
+| API type-check and lint | `tsc --noEmit` clean; `eslint` on both changed files clean |
+
+### Release blockers
+
+- Render's `autoDeploy` setting is unverified (step 1).
+- The push, the migration, the reconciliation and every gate action need explicit approval.
+- The old instance's case-sensitive gate is covered operationally, not by code, until it stops
+  serving.

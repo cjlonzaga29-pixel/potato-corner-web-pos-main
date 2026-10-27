@@ -3,6 +3,7 @@
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { ProofPhotoViewer } from '@/components/shared/transactions/proof-photo-viewer';
 import { useDiscountProof } from '@/hooks/queries/use-transactions';
+import { isProofFileMissing } from '@/lib/proof-errors';
 
 interface ViewDiscountProofDialogProps {
   transactionId: string | null;
@@ -18,7 +19,7 @@ interface ViewDiscountProofDialogProps {
  */
 export function ViewDiscountProofDialog({ transactionId, onOpenChange }: ViewDiscountProofDialogProps) {
   const open = transactionId !== null;
-  const { data, isLoading, isError, refetch } = useDiscountProof(transactionId, open);
+  const { data, isLoading, isError, error, refetch } = useDiscountProof(transactionId, open);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -36,6 +37,7 @@ export function ViewDiscountProofDialog({ transactionId, onOpenChange }: ViewDis
             uploadedAt={data?.uploaded_at}
             isLoading={isLoading}
             isError={isError}
+            isMissing={isProofFileMissing(error)}
             onReload={() => void refetch()}
           />
         )}

@@ -5,6 +5,7 @@ import { Download, Loader2, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { downloadProofPhoto } from '@/lib/transaction-export-client';
+import { isProofFileMissing } from '@/lib/proof-errors';
 import { formatManilaDateTime } from '@/lib/manila-date';
 
 const CAPTURE_MODE_LABEL: Record<string, string> = {
@@ -21,8 +22,22 @@ interface ProofPhotoViewerProps {
   uploadedAt: string | null | undefined;
   isLoading: boolean;
   isError: boolean;
+  /** POS-PERF-P40R — the API confirmed the file is gone from storage (410 PROOF_FILE_MISSING); retrying cannot help. */
+  isMissing?: boolean;
   /** Re-fetches a fresh signed view URL (used after a load failure, e.g. an expired link). */
   onReload: () => void;
+}
+
+function PhotoUnavailable({ label }: { label: string }) {
+  return (
+    <div className="space-y-1 rounded-md border border-dashed p-4 text-sm" role="status">
+      <p className="font-medium">Photo unavailable</p>
+      <p className="text-muted-foreground">
+        The {label} was recorded for this transaction, but the photo file is no longer in storage, so it can&apos;t be shown or
+        downloaded. Trying again won&apos;t bring it back.
+      </p>
+    </div>
+  );
 }
 
 /**
@@ -32,10 +47,10 @@ interface ProofPhotoViewerProps {
  * offers "Reload photo", which asks the API for a fresh one. "Download
  * photo" always requests its own fresh attachment URL.
  */
-export function ProofPhotoViewer({ kind, transactionId, url, captureType, uploadedAt, isLoading, isError, onReload }: ProofPhotoViewerProps) {
+export function ProofPhotoViewer({ kind, transactionId, url, captureType, uploadedAt, isLoading, isError, isMissing = false, onReload }: ProofPhotoViewerProps) {
   const label = kind === 'payment' ? 'payment proof' : 'discount proof';
   const [imageFailed, setImageFailed] = useState(false);
-  const [downloadState, setDownloadState] = useState<{ status: 'idle' | 'working' | 'error' | 'done'; message?: string }>({ status: 'idle' });
+  const [downloadState, setDownloadState] = useState<{ status: 'idle' | 'working' | 'error' | 'missing' | 'done'; message?: string }>({ status: 'idle' });
 
   // A new signed URL is a new attempt.
   useEffect(() => setImageFailed(false), [url]);
@@ -46,6 +61,10 @@ export function ProofPhotoViewer({ kind, transactionId, url, captureType, upload
       const filename = await downloadProofPhoto(kind, transactionId);
       setDownloadState({ status: 'done', message: `Downloading ${filename}` });
     } catch (error) {
+      if (isProofFileMissing(error)) {
+        setDownloadState({ status: 'missing' });
+        return;
+      }
       setDownloadState({ status: 'error', message: error instanceof Error ? error.message : 'The photo could not be downloaded.' });
     }
   }
@@ -56,6 +75,10 @@ export function ProofPhotoViewer({ kind, transactionId, url, captureType, upload
         <LoadingSpinner />
       </div>
     );
+  }
+
+  if (isMissing || downloadState.status === 'missing') {
+    return <PhotoUnavailable label={label} />;
   }
 
   if (isError) {

@@ -2,7 +2,16 @@ import { apiClient, fetchAuthenticated } from '@/lib/api-client';
 import { isValidPdfSignature, parseContentDisposition } from '@/lib/report-export-client';
 import { triggerBrowserDownload } from '@/lib/trigger-download';
 
-export class DownloadError extends Error {}
+export class DownloadError extends Error {
+  constructor(
+    message: string,
+    /** API error code when there was one, e.g. PROOF_FILE_MISSING. */
+    public readonly code?: string,
+  ) {
+    super(message);
+    this.name = 'DownloadError';
+  }
+}
 
 export interface TransactionPdfFilters {
   transaction_id?: string;
@@ -60,7 +69,14 @@ export async function downloadProofPhoto(kind: 'payment' | 'discount', transacti
   if (!response.data) {
     const error = response.error;
     const message = typeof error === 'string' ? error : (error?.message ?? error?.code);
-    throw new DownloadError(message ?? 'The photo could not be downloaded.');
+    throw new DownloadError(message ?? 'The photo could not be downloaded.', typeof error === 'string' ? undefined : error?.code);
+  }
+  // POS-PERF-P40R — Vercel ships this web build on push, before the API
+  // deploy is approved. An older API ignores ?download=1 and answers with
+  // the inline view URL, so there is no download_url; never navigate to
+  // "undefined".
+  if (typeof response.data.download_url !== 'string' || response.data.download_url === '') {
+    throw new DownloadError('Download photo is not available until the server update finishes. Please try again later.');
   }
   const link = document.createElement('a');
   link.href = response.data.download_url;

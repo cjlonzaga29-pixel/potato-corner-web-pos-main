@@ -238,6 +238,14 @@ describe('AdminAttendancePage', () => {
     expect(screen.getByText(/Sara Santos's current branches \(Main Branch\)/)).toBeInTheDocument();
   });
 
+  // POS-PERF-P40R — the filter must not read as historical supervisor ownership.
+  it('labels the supervisor filter as current branch assignments', () => {
+    render(<AdminAttendancePage />);
+
+    expect(screen.getByText('Supervisor (current branches)')).toBeInTheDocument();
+    expect(screen.getByText('Uses the branches this supervisor is assigned to now, not who supervised when each record was made.')).toBeInTheDocument();
+  });
+
   it('"Clocked in now" asks for open records of any start date and reconciles with the dashboard figure', () => {
     mockUseAdminAttendance.mockReturnValue(
       attendanceQuery(

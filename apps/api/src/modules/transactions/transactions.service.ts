@@ -90,16 +90,61 @@ function sanitizeFilename(name: string): string {
  * ever holds the storage key.
  */
 async function getSignedPaymentProofUrl(key: string): Promise<string> {
-  const { data, error } = await supabaseAdmin.storage.from(PAYMENT_PROOF_BUCKET).createSignedUrl(key, 60 * 60);
-  if (error || !data) throw new TransactionError('PAYMENT_PROOF_URL_FAILED', 'Could not generate payment proof URL', 500);
-  return data.signedUrl;
+  return signProofUrl(PAYMENT_PROOF_BUCKET, key, 60 * 60, 'PAYMENT_PROOF_URL_FAILED', 'Could not generate payment proof URL');
 }
 
 /** Same fresh-signed-URL rule as getSignedPaymentProofUrl, scoped to the discount-proofs bucket. */
 async function getSignedDiscountProofUrl(key: string): Promise<string> {
-  const { data, error } = await supabaseAdmin.storage.from(DISCOUNT_PROOF_BUCKET).createSignedUrl(key, 60 * 60);
-  if (error || !data) throw new TransactionError('DISCOUNT_PROOF_URL_FAILED', 'Could not generate discount proof URL', 500);
-  return data.signedUrl;
+  return signProofUrl(DISCOUNT_PROOF_BUCKET, key, 60 * 60, 'DISCOUNT_PROOF_URL_FAILED', 'Could not generate discount proof URL');
+}
+
+/**
+ * POS-PERF-P40R — Storage answers a sign request for a missing object with
+ * statusCode "404" / "Object not found". Exported for unit tests only.
+ */
+export function isStorageObjectNotFound(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const { statusCode, message } = error as { statusCode?: unknown; message?: unknown };
+  return String(statusCode) === '404' && typeof message === 'string' && /object not found/i.test(message);
+}
+
+/**
+ * Storage gives the same "Object not found" answer for a missing *bucket*,
+ * so that answer alone could turn a misconfigured bucket into "every photo
+ * is gone". The photo is reported permanently unavailable only once the
+ * bucket itself is confirmed to exist; a failed bucket lookup, network
+ * error or auth error stays a retryable failure.
+ */
+async function isProofObjectMissing(bucket: string, error: unknown): Promise<boolean> {
+  if (!isStorageObjectNotFound(error)) return false;
+  try {
+    const { data, error: bucketError } = await supabaseAdmin.storage.getBucket(bucket);
+    return !bucketError && Boolean(data);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Callers authorize the transaction's branch before reaching here, so the
+ * PROOF_FILE_MISSING answer (410) never tells an unauthorized caller
+ * whether a file exists, and neither error ever includes the storage key.
+ */
+async function signProofUrl(
+  bucket: string,
+  key: string,
+  expiresIn: number,
+  failureCode: string,
+  failureMessage: string,
+  options?: { download: string },
+): Promise<string> {
+  const storage = supabaseAdmin.storage.from(bucket);
+  const { data, error } = await (options ? storage.createSignedUrl(key, expiresIn, options) : storage.createSignedUrl(key, expiresIn));
+  if (data && !error) return data.signedUrl;
+  if (await isProofObjectMissing(bucket, error)) {
+    throw new TransactionError('PROOF_FILE_MISSING', 'This photo is no longer in storage, so it cannot be shown or downloaded.', 410);
+  }
+  throw new TransactionError(failureCode, failureMessage, 500);
 }
 
 /**
@@ -118,9 +163,7 @@ function proofDownloadFilename(kind: 'payment-proof' | 'discount-proof', transac
 }
 
 async function getProofDownloadUrl(bucket: string, key: string, filename: string, errorCode: string): Promise<string> {
-  const { data, error } = await supabaseAdmin.storage.from(bucket).createSignedUrl(key, PROOF_DOWNLOAD_TTL_SECONDS, { download: filename });
-  if (error || !data) throw new TransactionError(errorCode, 'Could not generate a download link for this photo', 500);
-  return data.signedUrl;
+  return signProofUrl(bucket, key, PROOF_DOWNLOAD_TTL_SECONDS, errorCode, 'Could not generate a download link for this photo', { download: filename });
 }
 
 function toCents(amount: number): number {

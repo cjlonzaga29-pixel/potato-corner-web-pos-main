@@ -128,7 +128,8 @@ export default function AdminAttendancePage() {
         </div>
 
         <div className="w-full sm:w-auto">
-          <Label htmlFor="attendance-supervisor-filter">Supervisor</Label>
+          {/* POS-PERF-P40R — current assignments only; never presented as who supervised a record at the time. */}
+          <Label htmlFor="attendance-supervisor-filter">Supervisor (current branches)</Label>
           <Select
             value={supervisorId}
             onValueChange={(value) => {
@@ -136,7 +137,12 @@ export default function AdminAttendancePage() {
               resetPage();
             }}
           >
-            <SelectTrigger id="attendance-supervisor-filter" className="w-full sm:w-[220px]" disabled={supervisors.isLoading}>
+            <SelectTrigger
+              id="attendance-supervisor-filter"
+              className="w-full sm:w-[220px]"
+              disabled={supervisors.isLoading}
+              aria-describedby="attendance-supervisor-filter-hint"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -148,6 +154,9 @@ export default function AdminAttendancePage() {
               ))}
             </SelectContent>
           </Select>
+          <p id="attendance-supervisor-filter-hint" className="mt-1 max-w-[220px] text-xs text-muted-foreground">
+            Uses the branches this supervisor is assigned to now, not who supervised when each record was made.
+          </p>
         </div>
 
         <div className="w-full sm:w-auto">

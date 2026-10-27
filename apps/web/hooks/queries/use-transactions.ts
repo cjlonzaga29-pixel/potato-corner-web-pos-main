@@ -18,6 +18,7 @@ import type {
   VoidTransactionRequest,
 } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
+import { isProofFileMissing } from '@/lib/proof-errors';
 import { useRealtimeInvalidate } from '@/hooks/use-realtime-invalidate';
 
 interface ApiErrorShape {
@@ -201,16 +202,22 @@ export function useUploadPaymentProof(accessTokenOverride?: string, refreshOverr
   });
 }
 
+/** POS-PERF-P40R — a confirmed-missing file is permanent, so it is not retried; everything else keeps the default 2 retries. */
+function retryProofFetch(failureCount: number, error: Error): boolean {
+  return !isProofFileMissing(error) && failureCount < 2;
+}
+
 /** Fetches a freshly-signed proof-photo URL — only enabled while the admin viewer dialog is open, never eagerly on the transaction list. */
 export function usePaymentProof(transactionId: string | null, enabled: boolean) {
   return useQuery({
     queryKey: ['transaction-payment-proof', transactionId],
     queryFn: async () => {
       const response = await apiClient<PaymentProofResponse>(`/api/transactions/${transactionId}/payment-proof`);
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to load payment proof'));
+      if (!response.data) throw new TransactionApiError(errorMessage(response, 'Failed to load payment proof'), errorCode(response));
       return response.data;
     },
     enabled: Boolean(transactionId) && enabled,
+    retry: retryProofFetch,
   });
 }
 
@@ -255,10 +262,11 @@ export function useDiscountProof(transactionId: string | null, enabled: boolean)
     queryKey: ['transaction-discount-proof', transactionId],
     queryFn: async () => {
       const response = await apiClient<DiscountProofResponse>(`/api/transactions/${transactionId}/discount-proof`);
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to load discount proof'));
+      if (!response.data) throw new TransactionApiError(errorMessage(response, 'Failed to load discount proof'), errorCode(response));
       return response.data;
     },
     enabled: Boolean(transactionId) && enabled,
+    retry: retryProofFetch,
   });
 }
 

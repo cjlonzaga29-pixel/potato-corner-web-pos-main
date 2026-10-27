@@ -205,8 +205,10 @@ const storageMock = {
   createSignedUrl: vi.fn().mockResolvedValue({ data: { signedUrl: 'https://example.com/proof.webp' }, error: null }),
 };
 
+const getBucketMock = vi.fn().mockResolvedValue({ data: { id: 'bucket' }, error: null });
+
 vi.mock('../../lib/supabase.js', () => ({
-  supabaseAdmin: { storage: { from: vi.fn(() => storageMock) } },
+  supabaseAdmin: { storage: { from: vi.fn(() => storageMock), getBucket: (...args: unknown[]) => getBucketMock(...args) } },
 }));
 
 vi.mock('sharp', () => ({
@@ -683,6 +685,67 @@ describe('transactionsService.getPaymentProofUrl', () => {
       payment_proof_type: 'live_capture',
       uploaded_at: '2026-07-25T10:00:00.000Z',
     });
+  });
+});
+
+// POS-PERF-P40R — error shapes below are the ones local Supabase Storage
+// actually returned (see docs/runbooks/pos-perf-p40-admin-management-and-downloads.md §11).
+describe('proof signing: missing object vs temporary failure', () => {
+  const OBJECT_NOT_FOUND = { name: 'StorageApiError', status: 400, statusCode: '404', message: 'Object not found' };
+
+  beforeEach(() => {
+    vi.mocked(transactionsRepository.findTransactionById).mockResolvedValue(
+      transactionRow({ paymentProofKey: 'branch-1/shift-1/secret-key.webp', discountProofKey: 'branch-1/shift-1/secret-key.webp' }) as never,
+    );
+    getBucketMock.mockResolvedValue({ data: { id: 'bucket' }, error: null });
+  });
+
+  it('reports a missing object in an existing bucket as PROOF_FILE_MISSING (410) without the storage key', async () => {
+    storageMock.createSignedUrl.mockResolvedValueOnce({ data: null, error: OBJECT_NOT_FOUND });
+
+    const error = await transactionsService.getPaymentProofUrl('txn-1').catch((e: unknown) => e);
+
+    expect(error).toMatchObject({ code: 'PROOF_FILE_MISSING', statusCode: 410 });
+    expect(JSON.stringify({ message: (error as Error).message })).not.toContain('secret-key');
+    expect(getBucketMock).toHaveBeenCalledWith('payment-proofs');
+  });
+
+  it('does the same for the discount-proof download link', async () => {
+    storageMock.createSignedUrl.mockResolvedValueOnce({ data: null, error: OBJECT_NOT_FOUND });
+
+    await expect(transactionsService.getDiscountProofDownload('txn-1')).rejects.toMatchObject({ code: 'PROOF_FILE_MISSING', statusCode: 410 });
+    expect(getBucketMock).toHaveBeenCalledWith('discount-proofs');
+  });
+
+  it('keeps "Object not found" retryable when the bucket itself is missing (Storage answers both the same way)', async () => {
+    storageMock.createSignedUrl.mockResolvedValueOnce({ data: null, error: OBJECT_NOT_FOUND });
+    getBucketMock.mockResolvedValueOnce({ data: null, error: { statusCode: '404', message: 'Bucket not found' } });
+
+    await expect(transactionsService.getPaymentProofDownload('txn-1')).rejects.toMatchObject({ code: 'PAYMENT_PROOF_URL_FAILED', statusCode: 500 });
+  });
+
+  it('keeps network and unknown storage failures retryable and never checks the bucket for them', async () => {
+    storageMock.createSignedUrl.mockResolvedValueOnce({ data: null, error: { name: 'StorageUnknownError', message: 'fetch failed' } });
+
+    await expect(transactionsService.getDiscountProofUrl('txn-1')).rejects.toMatchObject({ code: 'DISCOUNT_PROOF_URL_FAILED', statusCode: 500 });
+    expect(getBucketMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps it retryable when the bucket lookup itself throws', async () => {
+    storageMock.createSignedUrl.mockResolvedValueOnce({ data: null, error: OBJECT_NOT_FOUND });
+    getBucketMock.mockRejectedValueOnce(new Error('socket hang up'));
+
+    await expect(transactionsService.getPaymentProofUrl('txn-1')).rejects.toMatchObject({ code: 'PAYMENT_PROOF_URL_FAILED', statusCode: 500 });
+  });
+
+  it('only treats a 404 "Object not found" answer as a missing object', async () => {
+    const { isStorageObjectNotFound } = await import('./transactions.service.js');
+    expect(isStorageObjectNotFound(OBJECT_NOT_FOUND)).toBe(true);
+    expect(isStorageObjectNotFound({ statusCode: '404', message: 'Bucket not found' })).toBe(false);
+    expect(isStorageObjectNotFound({ statusCode: '400', message: 'Object not found' })).toBe(false);
+    expect(isStorageObjectNotFound({ statusCode: '400', message: '"exp" claim timestamp check failed' })).toBe(false);
+    expect(isStorageObjectNotFound(new Error('fetch failed'))).toBe(false);
+    expect(isStorageObjectNotFound(null)).toBe(false);
   });
 });
 

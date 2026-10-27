@@ -17,7 +17,13 @@ vi.mock('../lib/branch-access.js', () => ({
 }));
 vi.mock('./employees/employees.service.js', () => ({ employeesService: { createEmployee: vi.fn() } }));
 vi.mock('./settings/settings.service.js', () => ({
-  settingsService: { getBranchWorkHours: vi.fn(), setBranchWorkHours: vi.fn(), clearBranchWorkHours: vi.fn(), listBranchWorkHours: vi.fn() },
+  settingsService: {
+    getBranchWorkHours: vi.fn(),
+    setBranchWorkHours: vi.fn(),
+    clearBranchWorkHours: vi.fn(),
+    listBranchWorkHours: vi.fn(),
+    updateWorkHoursPolicy: vi.fn(),
+  },
 }));
 vi.mock('./branches/branches.service.js', () => ({ branchesService: { getBranchPresence: vi.fn() } }));
 vi.mock('./attendance/attendance.service.js', () => ({ attendanceService: { getForAdmin: vi.fn() } }));
@@ -162,6 +168,30 @@ describe('Work Hours per branch', () => {
     expect(list.statusCode).toBe(403);
   });
 
+  // POS-PERF-P40R — the global default stays Super Admin only.
+  it('refuses a supervisor writing the global default, and lets Super Admin do it', async () => {
+    const denied = await run(settingsRouter, 'put', '/work-hours', mockReq(supervisor(), { body: { regularHours: 6 } }));
+    expect(denied.statusCode).toBe(403);
+    expect(settingsService.updateWorkHoursPolicy).not.toHaveBeenCalled();
+
+    vi.mocked(settingsService.updateWorkHoursPolicy).mockResolvedValue({ regularHours: 6 } as never);
+    const allowed = await run(settingsRouter, 'put', '/work-hours', mockReq(admin(), { body: { regularHours: 6 } }));
+    expect(allowed.statusCode).toBe(200);
+  });
+
+  it('strips anything but regularHours from a supervisor branch write, so it cannot reach the global row', async () => {
+    vi.mocked(settingsService.setBranchWorkHours).mockResolvedValue({} as never);
+    const res = await run(
+      settingsRouter,
+      'put',
+      '/work-hours/branches/:branchId',
+      mockReq(supervisor(), { params: { branchId: BRANCH_1 }, body: { regularHours: 9, key: 'work_hours_policy', scope: 'global' } }),
+    );
+    expect(res.statusCode).toBe(200);
+    expect(settingsService.setBranchWorkHours).toHaveBeenCalledWith(BRANCH_1, { regularHours: 9 }, expect.anything(), null);
+    expect(settingsService.updateWorkHoursPolicy).not.toHaveBeenCalled();
+  });
+
   it('rejects out-of-range hours before touching the service', async () => {
     const res = await run(settingsRouter, 'put', '/work-hours/branches/:branchId', mockReq(admin(), { params: { branchId: BRANCH_1 }, body: { regularHours: 0 } }));
     expect(res.statusCode).toBe(422);
@@ -234,5 +264,28 @@ describe('proof download', () => {
     const denied = await run(transactionsRouter, 'get', '/:transactionId/discount-proof', mockReq(supervisor(), { params: { transactionId: 't2' }, query: { download: '1' } }));
     expect(denied.statusCode).toBe(403);
     expect(transactionsService.getDiscountProofDownload).not.toHaveBeenCalled();
+  });
+
+  // POS-PERF-P40R — a permanently missing file gets its own status; the
+  // branch check still runs first, so an outsider learns nothing about it.
+  it('answers 410 PROOF_FILE_MISSING for an authorized caller and 403 for anyone else', async () => {
+    const { TransactionError } = await import('./transactions/transactions.types.js');
+    const missing = new TransactionError('PROOF_FILE_MISSING', 'This photo is no longer in storage, so it cannot be shown or downloaded.', 410);
+    vi.mocked(transactionsService.getPaymentProofUrl).mockRejectedValue(missing);
+    vi.mocked(transactionsService.getPaymentProofDownload).mockRejectedValue(missing);
+
+    vi.mocked(transactionsService.getTransactionById).mockResolvedValue({ branch_id: BRANCH_1 } as never);
+    const view = await run(transactionsRouter, 'get', '/:transactionId/payment-proof', mockReq(supervisor(), { params: { transactionId: 't1' } }));
+    expect(view.statusCode).toBe(410);
+    expect(view.jsonBody).toMatchObject({ data: null, error: { code: 'PROOF_FILE_MISSING' } });
+    const download = await run(transactionsRouter, 'get', '/:transactionId/payment-proof', mockReq(supervisor(), { params: { transactionId: 't1' }, query: { download: '1' } }));
+    expect(download.statusCode).toBe(410);
+
+    vi.mocked(transactionsService.getPaymentProofUrl).mockClear();
+    vi.mocked(transactionsService.getTransactionById).mockResolvedValue({ branch_id: BRANCH_2 } as never);
+    const outsider = await run(transactionsRouter, 'get', '/:transactionId/payment-proof', mockReq(supervisor(), { params: { transactionId: 't2' } }));
+    expect(outsider.statusCode).toBe(403);
+    expect(outsider.jsonBody).toEqual({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
+    expect(transactionsService.getPaymentProofUrl).not.toHaveBeenCalled();
   });
 });

@@ -10,5 +10,7 @@ export interface NavItem {
   label: string;
   icon: LucideIcon;
   href?: string;
+  /** Other route prefixes that belong to this item (old URLs it replaced); see isNavItemActive. */
+  activePrefixes?: ReadonlyArray<string>;
   children?: ReadonlyArray<NavChildItem>;
 }

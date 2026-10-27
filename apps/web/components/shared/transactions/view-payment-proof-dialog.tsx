@@ -3,6 +3,7 @@
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { ProofPhotoViewer } from '@/components/shared/transactions/proof-photo-viewer';
 import { usePaymentProof } from '@/hooks/queries/use-transactions';
+import { isProofFileMissing } from '@/lib/proof-errors';
 
 interface ViewPaymentProofDialogProps {
   transactionId: string | null;
@@ -17,7 +18,7 @@ interface ViewPaymentProofDialogProps {
  */
 export function ViewPaymentProofDialog({ transactionId, onOpenChange }: ViewPaymentProofDialogProps) {
   const open = transactionId !== null;
-  const { data, isLoading, isError, refetch } = usePaymentProof(transactionId, open);
+  const { data, isLoading, isError, error, refetch } = usePaymentProof(transactionId, open);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -35,6 +36,7 @@ export function ViewPaymentProofDialog({ transactionId, onOpenChange }: ViewPaym
             uploadedAt={data?.uploaded_at}
             isLoading={isLoading}
             isError={isError}
+            isMissing={isProofFileMissing(error)}
             onReload={() => void refetch()}
           />
         )}

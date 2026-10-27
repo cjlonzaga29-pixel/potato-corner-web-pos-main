@@ -276,14 +276,14 @@ test('reports: wide transaction panel, server pagination, PDF downloads, proof p
   expect(Buffer.compare(fs.readFileSync(photoPath), expected)).toBe(0);
   await page.keyboard.press('Escape');
 
-  // Discount proof missing from storage: Storage refuses to sign a link for a
-  // missing object, so the dialog shows its error state with a retry instead
-  // of a broken image (no photo is invented).
+  // Discount proof missing from storage: since P40R the API answers 410
+  // PROOF_FILE_MISSING and the dialog says the photo is unavailable, with no
+  // retry and no broken image (no photo is invented).
   fixture(['remove-object', 'discount-proofs', seed.proof.discountKey]);
   await pwdRow.getByRole('button', { name: 'View Proof' }).last().click();
   const discount = page.getByRole('dialog', { name: 'Discount Proof' });
-  await expect(discount.getByText('Failed to load the discount proof.')).toBeVisible({ timeout: 15_000 });
-  await expect(discount.getByRole('button', { name: 'Try again' })).toBeVisible();
+  await expect(discount.getByText('Photo unavailable')).toBeVisible({ timeout: 15_000 });
+  await expect(discount.getByRole('button', { name: 'Try again' })).toHaveCount(0);
   await expect(discount.getByRole('img', { name: 'Discount proof' })).toHaveCount(0);
   await page.screenshot({ path: path.join(OUT, 'discount-proof-unavailable.png') });
 });

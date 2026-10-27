@@ -410,6 +410,8 @@ reach any branch through Branches (server-paged) and the Branch Status counts (s
 
 ### 11.7 Not done / remaining
 
+*(P40R2 closed most of this list; see §12 for what is still open.)*
+
 - **Browser checks were not run in P40R.**
   - During this pass the machine was at 100% CPU with about 100 MB of free RAM, and a single
     `psql` query to the local Postgres container did not return within 2 minutes.
@@ -434,3 +436,132 @@ reach any branch through Branches (server-paged) and the Branch Status counts (s
   instead.
 - Out of scope, unchanged: P41 cart/product dialogs, token-refresh performance, audit-chain
   concurrency, branch-picker pagination.
+
+## 12. P40R2 — closing the verification gaps (2026-10-28)
+
+Ran on `review/pos-perf-p40r` at `4de80b3ea77f88b4502957c249c658bbdf8caa00`, in the isolated worktree
+(`C:/Users/kaile/Downloads/PTTO/p40r-review`). Not touched: the shared checkout and its P41 work,
+`pos_verify`, and the other session's processes. No Docker or WSL restart.
+
+**Machine.** 4 cores, 8 GB.
+- At the start: about 0.4 GB free RAM, 94–100% CPU, and commit charge at 29.2 of 32.3 GB.
+- The other session was running a Playwright test server, `next start -p 3100` and an API on `:4100`.
+- Everything expensive ran one at a time, with one worker.
+
+### 12.1 Full web suite on the final code
+
+`apps/web`, `vitest run --pool=forks --poolOptions.forks.maxForks=1 --poolOptions.forks.minForks=1`. No
+exclusions, default timeouts. The `apps/web` tree was identical to `4de80b3` for all three runs.
+
+| Run | Exit | Test files | Tests | Duration | Failure |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 1 | 1 failed, 151 passed (152) | 1 failed, 1,315 passed (1,316) | 1,077 s | `write-gate-settings-section` "shows Closed status…": timed out at 5000 ms (took 11.4 s) |
+| 2 | 1 | 1 failed, 151 passed (152) | 1 failed, 1,315 passed (1,316) | 834 s | `expenses-view` "shows No Proof…": timed out at 5000 ms |
+| **3** | **0** | **152 passed (152)** | **1,316 passed (1,316)** | 1,214 s | none |
+
+Neither failure is a P40/P40R regression:
+- **First file.** It mocks `use-settings` entirely, and its component has no P40 change.
+- **Second file.** The only P40 change in its import graph is one added `Intl.DateTimeFormat` formatter in
+  `lib/manila-date.ts`.
+- **Both files, run alone with one fork.** They pass on P40R (`4de80b3`) and on the pre-P40 parent
+  `45aab2a`: 4/4 in about 0.55 s on both, and 7/7 in 5.4 s / 4.5 s.
+
+No code was changed for these failures. Run 3 is the clean full-suite result.
+
+### 12.2 Real API + real Storage (end to end)
+
+**Setup.**
+- **Database:** new disposable `p40r2_verify` on the local Postgres (`127.0.0.1:5432`). The target was
+  checked before each migration or write, and every script refuses any other database name.
+  `prisma migrate deploy` applied 89 migrations, then `prisma/seed.ts` ran.
+- **API:** built `apps/api` (`tsc`), run as `node dist/server.js` on `:4400`.
+- **Storage:** `SUPABASE_URL` pointed at `tests/e2e/fixtures/storage-fault-proxy.cjs` (`:54400`), which
+  forwards to the healthy local Supabase Storage (`:54321`).
+- **Fixtures:**
+  - one 68-byte PNG (`gcash-test.png`) uploaded at `payment-proofs/p40r2-fixture/<uuid>.png`;
+  - a second key under the same prefix that was never uploaded;
+  - two GCash transactions pointing at those keys;
+  - a second branch, with a supervisor assigned only to it.
+
+**Requests.** Real HTTP: login, then `GET /api/transactions/:id/payment-proof[?download=1]`, through the
+router, the service and real Storage. Every response body was checked for the storage key, the fixture
+prefix, Storage host/port, `/storage/v1` and `token=`. None were found in any response. **20/20 scenarios
+passed.** The first attempt never reached a scenario: my script left out the required `device_id` at login
+(422).
+
+| Scenario | Result |
+| --- | --- |
+| Valid proof, Super Admin and assigned Supervisor: view link | API 200; Storage 200, `image/png`, 68 bytes, byte-identical |
+| Valid proof: download link | API 200, filename `payment-proof-PC-P40R2-20261028-0001.png`; Storage 200, `Content-Disposition: attachment`, byte-identical |
+| Missing object in an existing bucket (view, download) | **410 `PROOF_FILE_MISSING`**. Proxy log: sign → Storage 400, then `getBucket` → 200 |
+| Missing bucket (proxy renames the bucket; real Storage answers), valid key / missing key / download | **retryable 500 `PAYMENT_PROOF_URL_FAILED`**. Proxy log: sign → 400, `getBucket` → 400 |
+| Storage unreachable (proxy drops the socket), valid key / missing key / download | **retryable 500 `PAYMENT_PROOF_URL_FAILED`** in 17–28 ms |
+| Storage back | valid again, byte-identical |
+| Expired signed link | Storage 400 `InvalidJWT` ("exp" claim timestamp check failed); a new API call returns a fresh link that serves the identical bytes |
+| Cross-branch supervisor, valid and missing keys, view and download | **403 `BRANCH_ACCESS_DENIED`** with **0 Storage calls** during the request, so the same answer whether or not the file exists |
+| Cross-branch while Storage is down | still 403 (authorization comes before Storage) |
+| No token | 401, 0 Storage calls |
+
+### 12.3 Browser (built web `:3400` → built API `:4400`, Chromium, one worker)
+
+New spec: `tests/e2e/pos-perf-p40r2-proof-and-nav.spec.ts`.
+- It reuses the P40 seed. `P40_SEED_SUFFIX` + `P40_SEED_JSON` can reuse an existing seed instead.
+- The Storage-outage test runs only with `E2E_STORAGE_PROXY_URL`. `PLAYWRIGHT_BASE_URL` selects the web app.
+
+Screenshots are in `.p39-local/p40r2/` (local only). All four were opened and checked.
+
+| Check | Result |
+| --- | --- |
+| Supervisors highlighted and breadcrumb "Admin › Supervisors" on `/admin/supervisors` and on `/admin/employees/:id` (no id in the breadcrumb); `/admin/employees` redirects and stays highlighted; Branches not highlighted | **passed** (`supervisor-detail-nav.png`) |
+| `/admin/branch-accounts` → `/admin/branches`, Branches highlighted, breadcrumb "Branches" | **passed** |
+| Phone (390 px): mobile navigation sheet highlights Supervisors on a person page; Escape closes it | **passed** (`supervisor-detail-nav-phone.png`) |
+| Attendance label "Supervisor (current branches)", exact hint text, `aria-describedby`; supervisor picked with the keyboard; choice and scope line kept after switching to "By date"; no horizontal scroll at 390 px | **passed** (`attendance-supervisor-label.png`, `-phone.png`). Cosmetic: the hint is capped at 220 px on phone |
+| Valid proof download, Photo unavailable (one request, no retry or download button), Try again on outage and recovery, old-API download refused (no navigation, no `/undefined` request) | **not run, blocked by local Storage (§12.4)** |
+
+Mistakes in the test itself, found and fixed while running it:
+- The breadcrumb is also a `navigation`, so the sidebar is now located as `complementary`.
+- The Attendance trigger is disabled while supervisors load, so the test now waits for it to be enabled.
+  The first run pressed Enter too early and hung until the 600 s test timeout.
+
+**P40 spec corrected.** `pos-perf-p40-admin-management.spec.ts` still expected the pre-P40R "Failed to load…
+Try again" for a missing photo. It now expects "Photo unavailable" with no Try again. Typechecked, but not
+run in a browser in P40R2.
+
+### 12.4 Remaining blockers
+
+- **Local Supabase was restarted outside this session at about 19:33 UTC** (all `supabase_*` containers and
+  `potato-corner-pos-postgres-1`).
+  - Afterwards, Kong on `127.0.0.1:54321` (and `localhost`) accepted connections but returned empty replies.
+    This was polled for 20 minutes and still true at 20:24 UTC.
+  - Every container reported healthy. Postgres on `:5432` kept working.
+  - Docker was not restarted, per the rules.
+- As a result, the proof-photo browser checks did not run: the P40 seed needs to upload proofs.
+- To finish once Storage answers again:
+  1. Create a new database (`migrate deploy` + seed).
+  2. Run the API with `SUPABASE_URL` set to the fault proxy, and run the web build.
+  3. Run `npx playwright test -c tests/e2e/playwright.config.ts tests/e2e/pos-perf-p40r2-proof-and-nav.spec.ts "--project=Admin Dashboard (Desktop)" --workers=1`
+     with `PLAYWRIGHT_BASE_URL` and `E2E_STORAGE_PROXY_URL` set.
+  4. Run the P40 spec's reports test, which expects API `:4000` and web `:3000`.
+- **Not re-run (out of scope):** the full API suite and the real-Postgres integration tests. No API code
+  changed in P40R2.
+
+### 12.5 Cleanup
+
+- **Removed:**
+  - the P40R fixture `payment-proofs/p40r-fixture/ccf256f1-e80e-4f62-bd6c-de01f0584dc8.png`. Before removal
+    it was confirmed to be the only object there: 70 bytes, `image/png`, created 2026-10-27T16:00Z;
+  - database `p40r2_verify`;
+  - `test-results/`;
+  - the processes P40R2 started (web `:3400`, API `:4400`, proxy `:54400`), stopped through their own
+    sessions.
+- **Retained, could not be removed** (Storage not answering):
+  - `payment-proofs/p40r2-fixture/e35480b7-4e64-433f-b3c2-6e2f05140b5e.png` (68 bytes, local only).
+    Delete it once Storage answers again.
+  - `discount-proofs` / `payment-proofs` under `p40/r349cm/` were never written, because the upload failed.
+- **Kept locally:** the logs and screenshots in `.p39-local/p40r2/`, and the `apps/web/.next` and
+  `apps/api/dist` build outputs (git-ignored).
+- **Incident.** The session scratchpad (`%TEMP%\claude\…\scratchpad`) was deleted by something outside this
+  session while the API was writing its log there.
+  - With its stdout pipe gone, the API answered logins with 500 `INTERNAL_ERROR`.
+  - It was restarted with the log under `.p39-local/`, and logins worked again.
+  - The full-suite and API results above had already been recorded before the deletion.

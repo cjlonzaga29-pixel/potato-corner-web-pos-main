@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, within, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, within, cleanup, fireEvent, act } from '@testing-library/react';
 
 const mockUseTransaction = vi.fn();
 const mockUseTransactions = vi.fn();
@@ -73,13 +73,44 @@ describe('DailySalesDrilldown', () => {
     expect(screen.getByText('PC-GMA-001-20260731-000002')).toBeInTheDocument();
   });
 
-  it('filters rows by receipt number search', () => {
+  // POS-PERF-P40 — the search runs on the server (debounced) so it covers
+  // every page, and returns to page 1.
+  it('sends the receipt number search to the server and resets to the first page', async () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <DailySalesDrilldown open branchId="branch-1" branchName="Puregold GMA" reportDate="2026-07-30" onOpenChange={vi.fn()} />,
+      );
+      fireEvent.change(screen.getByLabelText('Receipt Number'), { target: { value: '000002' } });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(350);
+      });
+      expect(mockUseTransactions).toHaveBeenLastCalledWith(expect.objectContaining({ receipt_search: '000002', page: 1 }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('paginates on the server using the total, not the rows already loaded', () => {
+    mockUseTransactions.mockReturnValue({
+      data: { transactions: [CASH_TXN, GCASH_TXN], total: 140, page: 1, limit: 25 },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
     render(
       <DailySalesDrilldown open branchId="branch-1" branchName="Puregold GMA" reportDate="2026-07-30" onOpenChange={vi.fn()} />,
     );
-    fireEvent.change(screen.getByLabelText('Receipt Number'), { target: { value: '000002' } });
-    expect(screen.queryByText('PC-GMA-001-20260731-000001')).not.toBeInTheDocument();
-    expect(screen.getByText('PC-GMA-001-20260731-000002')).toBeInTheDocument();
+    expect(mockUseTransactions).toHaveBeenLastCalledWith(expect.objectContaining({ page: 1, limit: 25 }));
+    expect(screen.getByText('140 transactions match the filters below.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Download PDF \(140 matching\)/ })).toBeInTheDocument();
+  });
+
+  it('offers a per-transaction PDF download labelled with its receipt number', () => {
+    render(
+      <DailySalesDrilldown open branchId="branch-1" branchName="Puregold GMA" reportDate="2026-07-30" onOpenChange={vi.fn()} />,
+    );
+    expect(screen.getByRole('button', { name: 'Download PDF of PC-GMA-001-20260731-000002' })).toBeInTheDocument();
   });
 
   it('shows "View Proof" only for non-cash transactions that have a payment proof', () => {

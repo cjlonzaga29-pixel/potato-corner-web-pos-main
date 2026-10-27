@@ -6,10 +6,13 @@ import {
   SOCKET_EVENTS,
   MOVEMENT_TYPE,
   PAYMENT_METHOD,
+  ROLES,
+  TRANSACTION_PDF_MAX_ROWS,
   type ImageProofType,
 } from '@potato-corner/shared';
 import { manilaDateKey } from '../../lib/manila-time.js';
-import { transactionsRepository, type SelectedOptionSnapshot } from './transactions.repository.js';
+import { transactionsRepository, type SelectedOptionSnapshot, type TransactionExportFilters } from './transactions.repository.js';
+import { generateTransactionsPdf, buildTransactionExportFilename, type TransactionExportRow } from '../../lib/reports/transactions-export.js';
 import {
   TransactionError,
   HOLD_ORDER_LIMIT_PER_TERMINAL,
@@ -96,6 +99,27 @@ async function getSignedPaymentProofUrl(key: string): Promise<string> {
 async function getSignedDiscountProofUrl(key: string): Promise<string> {
   const { data, error } = await supabaseAdmin.storage.from(DISCOUNT_PROOF_BUCKET).createSignedUrl(key, 60 * 60);
   if (error || !data) throw new TransactionError('DISCOUNT_PROOF_URL_FAILED', 'Could not generate discount proof URL', 500);
+  return data.signedUrl;
+}
+
+/**
+ * POS-PERF-P40 — "Download Photo". A separate, short-lived signed URL whose
+ * response carries Content-Disposition: attachment (Supabase's `download`
+ * option), so the browser saves the file even though Storage is
+ * cross-origin and would ignore an <a download> attribute. Minted on each
+ * click and never stored; the bucket stays private.
+ */
+const PROOF_DOWNLOAD_TTL_SECONDS = 5 * 60;
+
+function proofDownloadFilename(kind: 'payment-proof' | 'discount-proof', transactionNumber: string, key: string): string {
+  const extension = /\.([A-Za-z0-9]{2,5})$/.exec(key)?.[1]?.toLowerCase() ?? 'webp';
+  const safeNumber = transactionNumber.replace(/[^A-Za-z0-9_-]+/g, '-').slice(0, 80);
+  return `${kind}-${safeNumber}.${extension}`;
+}
+
+async function getProofDownloadUrl(bucket: string, key: string, filename: string, errorCode: string): Promise<string> {
+  const { data, error } = await supabaseAdmin.storage.from(bucket).createSignedUrl(key, PROOF_DOWNLOAD_TTL_SECONDS, { download: filename });
+  if (error || !data) throw new TransactionError(errorCode, 'Could not generate a download link for this photo', 500);
   return data.signedUrl;
 }
 
@@ -1617,6 +1641,112 @@ export const transactionsService = {
     };
   },
 
+  async getBranchName(branchId: string): Promise<string | null> {
+    return (await transactionsRepository.findBranchName(branchId))?.name ?? null;
+  },
+
+  /**
+   * POS-PERF-P40 — Download Transaction PDF. Either the full filtered set
+   * (same where-clause as GET /transactions, every page) or one transaction.
+   * Customer ID is decrypted only for super_admin/supervisor — the only roles
+   * the route admits — and the access is audited exactly like the
+   * discount-audit endpoint. Missing values print as "—"; nothing is
+   * recomputed, so historical amounts appear as they were stored.
+   */
+  async exportTransactionsPdf(
+    filters: TransactionExportFilters,
+    scopeLabels: { branchName: string | null },
+    actor: { id: string; role: string },
+    ipAddress: string | null,
+  ): Promise<{ buffer: Buffer; filename: string; rowCount: number }> {
+    const total = await transactionsRepository.countForExport(filters);
+    if (total > TRANSACTION_PDF_MAX_ROWS) {
+      throw new TransactionError(
+        'EXPORT_TOO_LARGE',
+        `This export would include ${total} transactions; the PDF limit is ${TRANSACTION_PDF_MAX_ROWS}. Narrow the date range or filters and try again.`,
+        422,
+      );
+    }
+    const rows = await transactionsRepository.findForExport(filters);
+    const canSeeCustomerId = actor.role === ROLES.SUPER_ADMIN || actor.role === ROLES.SUPERVISOR;
+    let decrypted = false;
+    const dash = '—';
+    const money = (value: { toNumber(): number }) => value.toNumber().toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const humanize = (value: string) => value.split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+
+    const exportRows: TransactionExportRow[] = rows.map((row) => {
+      let customerId = dash;
+      if (row.discountCustomerIdEncrypted && canSeeCustomerId) {
+        try {
+          customerId = decryptField(row.discountCustomerIdEncrypted);
+          decrypted = true;
+        } catch (error) {
+          console.error('[transaction-export] failed to decrypt discountCustomerId', {
+            transactionId: row.id,
+            error: error instanceof Error ? error.message : error,
+          });
+          customerId = 'Unreadable';
+        }
+      }
+      return {
+        created_at: row.createdAt.toISOString(),
+        branch: row.branch.name,
+        receipt_number: row.transactionNumber,
+        cashier: row.cashier ? `${row.cashier.firstName} ${row.cashier.lastName}`.trim() || dash : dash,
+        payment: humanize(row.paymentMethod),
+        reference: row.gcashReference ?? dash,
+        subtotal: money(row.subtotal),
+        vat: money(row.vatAmount),
+        discount: row.discountAmount.toNumber() > 0 ? money(row.discountAmount) : dash,
+        discount_type: row.discountType ? humanize(row.discountType) : dash,
+        customer_id: customerId,
+        total: money(row.totalAmount),
+        status: humanize(row.status),
+      };
+    });
+
+    if (decrypted) {
+      await recordAuditLog({
+        action: 'DISCOUNT_AUDIT_PII_ACCESSED',
+        entityType: 'transaction',
+        entityId: filters.transactionId ?? null,
+        actorId: actor.id,
+        actorRole: actor.role,
+        branchId: filters.branchId ?? null,
+        afterState: { source: 'transaction_pdf_export', rowCount: exportRows.length },
+        ipAddress,
+      });
+    }
+
+    const single = Boolean(filters.transactionId);
+    const filterLines = single
+      ? [`Receipt No.: ${exportRows[0]?.receipt_number ?? 'not found'}`, `Branch: ${exportRows[0]?.branch ?? scopeLabels.branchName ?? dash}`]
+      : [
+          `Branch: ${scopeLabels.branchName ?? 'All branches you can access'}`,
+          `Date: ${filters.dateFrom ?? 'any'} to ${filters.dateTo ?? 'any'} (Manila business dates)`,
+          `Status: ${filters.status ? humanize(filters.status) : 'All'} | Payment: ${filters.paymentMethod ? humanize(filters.paymentMethod) : 'All'}${
+            filters.receiptSearch ? ` | Receipt contains: "${filters.receiptSearch}"` : ''
+          }`,
+        ];
+    const buffer = await generateTransactionsPdf(exportRows, { kind: single ? 'single' : 'filtered', filterLines, totalCount: total }, 'POTATO CORNER');
+    const filenameLabel = single
+      ? (exportRows[0]?.receipt_number ?? 'transaction')
+      : [scopeLabels.branchName ?? 'all-branches', filters.dateFrom, filters.dateTo].filter(Boolean).join('_');
+    return { buffer, filename: buildTransactionExportFilename(single ? 'single' : 'filtered', filenameLabel), rowCount: exportRows.length };
+  },
+
+  async getPaymentProofDownload(transactionId: string) {
+    const transaction = (await transactionsRepository.findTransactionById(transactionId)) as TransactionRow | null;
+    if (!transaction) throw new TransactionError('TRANSACTION_NOT_FOUND', 'Transaction not found', 404);
+    if (!transaction.paymentProofKey) throw new TransactionError('PROOF_NOT_FOUND', 'No payment proof was captured for this transaction', 404);
+    const filename = proofDownloadFilename('payment-proof', transaction.transactionNumber, transaction.paymentProofKey);
+    return {
+      download_url: await getProofDownloadUrl(PAYMENT_PROOF_BUCKET, transaction.paymentProofKey, filename, 'PAYMENT_PROOF_URL_FAILED'),
+      filename,
+      expires_in_seconds: PROOF_DOWNLOAD_TTL_SECONDS,
+    };
+  },
+
   /**
    * Task 209.5 — uploads a PWD/Senior Citizen discount-proof photo ahead of
    * transaction creation, same "no Prisma write here" rationale as
@@ -1680,6 +1810,18 @@ export const transactionsService = {
       discount_proof_url: await getSignedDiscountProofUrl(transaction.discountProofKey),
       discount_proof_type: transaction.discountProofType,
       uploaded_at: transaction.discountProofUploadedAt?.toISOString() ?? null,
+    };
+  },
+
+  async getDiscountProofDownload(transactionId: string) {
+    const transaction = (await transactionsRepository.findTransactionById(transactionId)) as TransactionRow | null;
+    if (!transaction) throw new TransactionError('TRANSACTION_NOT_FOUND', 'Transaction not found', 404);
+    if (!transaction.discountProofKey) throw new TransactionError('PROOF_NOT_FOUND', 'No discount proof was captured for this transaction', 404);
+    const filename = proofDownloadFilename('discount-proof', transaction.transactionNumber, transaction.discountProofKey);
+    return {
+      download_url: await getProofDownloadUrl(DISCOUNT_PROOF_BUCKET, transaction.discountProofKey, filename, 'DISCOUNT_PROOF_URL_FAILED'),
+      filename,
+      expires_in_seconds: PROOF_DOWNLOAD_TTL_SECONDS,
     };
   },
 

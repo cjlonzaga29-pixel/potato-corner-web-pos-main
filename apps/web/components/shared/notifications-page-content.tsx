@@ -54,7 +54,8 @@ export function NotificationsPageContent() {
   const markRead = useMarkNotificationRead();
   const markAllRead = useMarkAllNotificationsRead();
 
-  const unreadCount = notifications?.filter((notification) => !notification.read).length ?? 0;
+  // POS-PERF-P40 — account-wide unread count from the server, not just this page's unread rows.
+  const unreadCount = data?.unreadCount ?? notifications?.filter((notification) => !notification.read).length ?? 0;
 
   // Filters/search apply only to the currently-loaded page of real
   // notifications from useNotifications — no fabricated data, and no new

@@ -123,6 +123,7 @@ function buildListWhere(filters: TransactionListFilters): Prisma.TransactionWher
     ...(filters.shiftId && { shiftId: filters.shiftId }),
     ...(filters.status && { status: filters.status }),
     ...(filters.paymentMethod && { paymentMethod: filters.paymentMethod }),
+    ...(filters.receiptSearch && { transactionNumber: { contains: filters.receiptSearch, mode: 'insensitive' as const } }),
     ...((filters.dateFrom || filters.dateTo) && {
       createdAt: {
         // dateFrom/dateTo are bare Manila business dates (YYYY-MM-DD) —
@@ -132,6 +133,19 @@ function buildListWhere(filters: TransactionListFilters): Prisma.TransactionWher
         ...(filters.dateTo && { lte: resolveDateRangeBoundary(filters.dateTo, 'end') }),
       },
     }),
+  };
+}
+
+export type TransactionExportFilters = Omit<TransactionListFilters, 'page' | 'limit' | 'shiftId'> & {
+  branchIds?: string[];
+  transactionId?: string;
+};
+
+function buildExportWhere(filters: TransactionExportFilters): Prisma.TransactionWhereInput {
+  return {
+    ...buildListWhere({ ...filters, page: 1, limit: 1 }),
+    ...(filters.transactionId && { id: filters.transactionId }),
+    ...(!filters.branchId && filters.branchIds && { branchId: { in: filters.branchIds } }),
   };
 }
 
@@ -395,6 +409,28 @@ export const transactionsRepository = {
    */
   findByIdempotencyKey(idempotencyKey: string) {
     return prisma.transaction.findUnique({ where: { idempotencyKey }, include: transactionInclude });
+  },
+
+  /**
+   * POS-PERF-P40 — every row matching the list filters (no pagination), for
+   * the transaction PDF. `branchIds` narrows to the caller's accessible
+   * branches when no single branch was chosen. Branch name is joined for the
+   * Branch column. The caller counts first and refuses oversized exports.
+   */
+  findBranchName(branchId: string) {
+    return prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } });
+  },
+
+  countForExport(filters: TransactionExportFilters) {
+    return prisma.transaction.count({ where: buildExportWhere(filters) });
+  },
+
+  findForExport(filters: TransactionExportFilters) {
+    return prisma.transaction.findMany({
+      where: buildExportWhere(filters),
+      include: { ...transactionInclude, branch: { select: { name: true, code: true } } },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
   },
 
   async listTransactions(filters: TransactionListFilters) {

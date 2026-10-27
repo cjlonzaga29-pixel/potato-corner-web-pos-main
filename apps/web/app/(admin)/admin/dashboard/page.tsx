@@ -4,7 +4,7 @@ import { Suspense } from 'react';
 import { useSocketStore } from '@/stores/socket.store';
 import { useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
-import { useBranchRealtimeSync, useAllBranchStats, useBranches, type PaymentBreakdown } from '@/hooks/queries/use-branches';
+import { useBranchRealtimeSync, useAllBranchStats, useBranches, useBranchPresence, type PaymentBreakdown } from '@/hooks/queries/use-branches';
 import { useInventoryStockRealtimeSync } from '@/hooks/queries/use-universal-inventory';
 import { useAdminInventoryRollup, useAdminInventoryRollupRealtimeSync } from '@/hooks/queries/use-admin-inventory-rollup';
 import { useSelectedBranch } from '@/hooks/use-selected-branch';
@@ -15,11 +15,8 @@ import { manilaToday, manilaMonthStart } from '@/lib/manila-date';
 import { BranchSelector } from '@/components/admin/branch-selector';
 import { DashboardKpiRow } from '@/components/admin/dashboard-kpi-row';
 import { DashboardPaymentBreakdown } from '@/components/admin/dashboard-payment-breakdown';
-import { DashboardLowStockCard } from '@/components/admin/dashboard-low-stock-card';
 import { DashboardActiveBranchesCard } from '@/components/admin/dashboard-active-branches-card';
 import { DashboardBranchPerformanceTable } from '@/components/admin/dashboard-branch-performance-table';
-import { DashboardLowStockSummary } from '@/components/admin/dashboard-low-stock-summary';
-import { DashboardRecentActivity } from '@/components/admin/dashboard-recent-activity';
 import { SalesAnalyticsSection } from '@/components/shared/dashboard/sales-analytics-section';
 import { WidgetErrorBoundary } from '@/components/shared/widget-error-boundary';
 import { DashboardPageHeader, DashboardConnectionBadge } from '@/components/shared/dashboard/dashboard-page-header';
@@ -27,6 +24,10 @@ import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { TrendingDown, Users, PackageSearch, BellRing } from 'lucide-react';
 import { MAX_LIST_LIMIT } from '@potato-corner/shared';
 
+// POS-PERF-P40 — the Low Stock Inventory card, Low Stock Summary and Recent
+// Activity sections were removed from this page. Their components, hooks
+// and APIs are untouched (Supervisor inventory still uses the same data);
+// they are simply no longer rendered on the Admin dashboard.
 function AdminDashboardPageContent() {
   const isConnected = useSocketStore((s) => s.isConnected);
   const isReconnecting = useSocketStore((s) => s.isReconnecting);
@@ -43,8 +44,13 @@ function AdminDashboardPageContent() {
   useExpensesRealtimeSync();
   useAdminInventoryRollupRealtimeSync();
 
-  const { data: branchStats, isLoading: isLoadingBranchStats } = useAllBranchStats(branchFilter);
+  const branchStatsQuery = useAllBranchStats(branchFilter);
+  const { data: branchStats, isLoading: isLoadingBranchStats } = branchStatsQuery;
   const { data: branchList, isLoading: isLoadingBranchList } = useBranches({ limit: MAX_LIST_LIMIT });
+  const activeTotal = useBranches({ status: 'active', limit: 1 });
+  const inactiveTotal = useBranches({ status: 'inactive', limit: 1 });
+  const closedTotal = useBranches({ status: 'closed', limit: 1 });
+  const presence = useBranchPresence();
   const { data: inventoryRollup, isLoading: isLoadingInventoryRollup } = useAdminInventoryRollup();
   const monthTrend = useDashboardSalesTrendReport({
     date_from: manilaMonthStart(),
@@ -82,8 +88,13 @@ function AdminDashboardPageContent() {
     { cash: { total: 0, count: 0 }, gcash: { total: 0, count: 0 }, maya: { total: 0, count: 0 }, other: { total: 0, count: 0 } },
   );
 
-  const activeBranchCount = branchList?.branches.filter((b) => b.status === 'active').length;
-  const inactiveBranchCount = branchList?.branches.filter((b) => b.status !== 'active').length;
+  // POS-PERF-P40 — per-status totals from the server (not a count of the
+  // 100-row list page), and "closed" no longer folded into Inactive.
+  const branches = branchList?.branches ?? [];
+  const activeBranchCount = activeTotal.data?.total;
+  const inactiveBranchCount = inactiveTotal.data?.total;
+  const closedBranchCount = closedTotal.data?.total;
+  const selectedBranchName = branchFilter ? branches.find((b) => b.id === branchFilter)?.name : undefined;
 
   return (
     <div className="app-section app-section-gap">
@@ -130,24 +141,29 @@ function AdminDashboardPageContent() {
         <SalesAnalyticsSection branchId={branchFilter} />
       </WidgetErrorBoundary>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <DashboardPaymentBreakdown breakdown={paymentBreakdown} isLoading={isLoadingBranchStats} />
-        <DashboardLowStockCard totalItems={lowStockCount} isLoading={isLoadingBranchStats} />
         <DashboardActiveBranchesCard
           activeCount={activeBranchCount}
           inactiveCount={inactiveBranchCount}
-          isLoading={isLoadingBranchList}
+          closedCount={closedBranchCount}
+          isLoading={activeTotal.isLoading || inactiveTotal.isLoading || closedTotal.isLoading}
         />
       </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <WidgetErrorBoundary label="Branch Performance">
-          <DashboardBranchPerformanceTable branchId={branchFilter} />
-        </WidgetErrorBoundary>
-        <DashboardLowStockSummary branchId={branchFilter} />
-      </div>
-
-      <DashboardRecentActivity branchId={branchFilter} />
+      <WidgetErrorBoundary label="Branch Performance">
+        <DashboardBranchPerformanceTable
+          branches={branches}
+          stats={branchStats ?? []}
+          presence={presence.data}
+          branchId={branchFilter}
+          branchName={selectedBranchName}
+          businessDate={manilaToday()}
+          isLoading={isLoadingBranchStats || isLoadingBranchList}
+          isError={branchStatsQuery.isError}
+          onRetry={() => void branchStatsQuery.refetch()}
+        />
+      </WidgetErrorBoundary>
     </div>
   );
 }

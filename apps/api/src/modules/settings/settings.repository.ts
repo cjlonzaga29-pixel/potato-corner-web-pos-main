@@ -11,6 +11,15 @@ export const settingsRepository = {
     return prisma.systemSetting.findUnique({ where: { key } });
   },
 
+  findSystemSettingsByPrefix(prefix: string) {
+    return prisma.systemSetting.findMany({ where: { key: { startsWith: prefix } } });
+  },
+
+  /** deleteMany (not delete) so clearing an override that is already absent is a no-op rather than a P2025 error. */
+  deleteSystemSetting(key: string) {
+    return prisma.systemSetting.deleteMany({ where: { key } });
+  },
+
   upsertSystemSetting(key: string, value: Prisma.InputJsonValue, updatedBy: string, description?: string) {
     return prisma.systemSetting.upsert({
       where: { key },

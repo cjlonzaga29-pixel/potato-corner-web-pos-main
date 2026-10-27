@@ -6,8 +6,10 @@ import {
   updatePaymentMethodConfigSchema,
   updateDiscountPolicySchema,
   updateWorkHoursPolicySchema,
+  updateBranchWorkHoursSchema,
   updateWriteGateSchema,
 } from '@potato-corner/shared';
+import { z } from 'zod';
 import { settingsService } from './settings.service.js';
 import { SettingsError } from './settings.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
@@ -161,6 +163,78 @@ router.put(
     }
   },
 );
+
+/**
+ * POS-PERF-P40 — per-branch Work Hours overrides. Supervisors manage only
+ * branches they are actively assigned to (hasBranchAccess, database-sourced);
+ * Super Admin keeps access to every branch. A write never touches the global
+ * row or any other branch's row. The cross-branch list is Super Admin only
+ * (read-only visibility on Admin Settings).
+ */
+const branchIdParamSchema = z.uuid();
+
+async function resolveWorkHoursBranch(req: Request, res: Response): Promise<string | null> {
+  if (!requireUser(req, res)) return null;
+  const parsed = branchIdParamSchema.safeParse(req.params.branchId);
+  if (!parsed.success) {
+    res.status(422).json({ data: null, error: { code: 'VALIDATION_ERROR', message: 'branchId must be a UUID' }, meta: null });
+    return null;
+  }
+  if (!(await hasBranchAccess(req.user, parsed.data))) {
+    res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
+    return null;
+  }
+  return parsed.data;
+}
+
+router.get('/work-hours/branches', authenticate, adminOnly, requirePasswordChange, async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const result = await settingsService.listBranchWorkHours();
+    res.status(200).json({ data: result, error: null, meta: null });
+  } catch (error) {
+    handleSettingsError(error, res, next);
+  }
+});
+
+router.get('/work-hours/branches/:branchId', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const branchId = await resolveWorkHoursBranch(req, res);
+    if (!branchId) return;
+    const result = await settingsService.getBranchWorkHours(branchId);
+    res.status(200).json({ data: result, error: null, meta: null });
+  } catch (error) {
+    handleSettingsError(error, res, next);
+  }
+});
+
+router.put(
+  '/work-hours/branches/:branchId',
+  authenticate,
+  adminOrSupervisor,
+  requirePasswordChange,
+  validate(updateBranchWorkHoursSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const branchId = await resolveWorkHoursBranch(req, res);
+      if (!branchId || !req.user) return;
+      const result = await settingsService.setBranchWorkHours(branchId, req.body, req.user, req.ip ?? null);
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleSettingsError(error, res, next);
+    }
+  },
+);
+
+router.delete('/work-hours/branches/:branchId', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const branchId = await resolveWorkHoursBranch(req, res);
+    if (!branchId || !req.user) return;
+    const result = await settingsService.clearBranchWorkHours(branchId, req.user, req.ip ?? null);
+    res.status(200).json({ data: result, error: null, meta: null });
+  } catch (error) {
+    handleSettingsError(error, res, next);
+  }
+});
 
 /**
  * POS-PERF-P16 — operational write gate. adminOnly on both verbs: GET is

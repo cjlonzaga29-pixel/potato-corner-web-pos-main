@@ -5,7 +5,7 @@ import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { NotificationPreferencesSection } from '@/components/settings/notification-preferences-section';
 import { DiscountSettingsSection } from '@/components/settings/discount-settings-section';
-import { WorkHoursSettingsSection } from '@/components/settings/work-hours-settings-section';
+import { WorkHoursOverviewSection } from '@/components/settings/work-hours-overview-section';
 import { WriteGateSettingsSection } from '@/components/settings/write-gate-settings-section';
 
 const TABS = ['notifications', 'discounts', 'work-hours', 'write-gate'] as const;
@@ -53,8 +53,9 @@ function SettingsPageContent() {
           <DiscountSettingsSection />
         </TabsContent>
 
+        {/* POS-PERF-P40 — read-only here; supervisors edit per branch in their console. */}
         <TabsContent value="work-hours">
-          <WorkHoursSettingsSection />
+          <WorkHoursOverviewSection />
         </TabsContent>
 
         <TabsContent value="write-gate">

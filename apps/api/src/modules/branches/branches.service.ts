@@ -13,6 +13,7 @@ import { universalInventoryService } from '../universal-inventory/universal-inve
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { getIO, joinUserToBranchRoom, leaveUserFromBranchRoom } from '../../socket/socket.server.js';
 import { SUPER_ADMIN_ROOM, userRoom } from '../../socket/rooms.js';
+import { getBranchPresenceSnapshot } from '../../socket/presence.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { getAccessibleBranchIds, assertBranchAccess } from '../../lib/branch-access.js';
 import { prisma } from '../../lib/prisma.js';
@@ -132,6 +133,29 @@ async function uploadGcashQrToStorage(
 }
 
 export const branchesService = {
+  /**
+   * POS-PERF-P40 — connectivity per branch for the Admin dashboard's Branch
+   * Performance table. `available: false` means this process has no socket
+   * server, so connectivity is unknown rather than reported as offline.
+   */
+  async getBranchPresence(requestingUser: JwtPayload) {
+    if (requestingUser.role !== ROLES.SUPER_ADMIN) {
+      throw new BranchError('BRANCH_ACCESS_DENIED', 'Only super_admin may view cross-branch presence', 403);
+    }
+    const io = getIO();
+    const checkedAt = new Date().toISOString();
+    if (!io) return { available: false, checked_at: checkedAt, branches: [] };
+    const branches = await branchesRepository.findAllIds();
+    return {
+      available: true,
+      checked_at: checkedAt,
+      branches: getBranchPresenceSnapshot(
+        io,
+        branches.map((b) => b.id),
+      ),
+    };
+  },
+
   async getAllAccounts(requestingUser: JwtPayload) {
     if (requestingUser.role !== ROLES.SUPER_ADMIN) {
       throw new BranchError('BRANCH_ACCESS_DENIED', 'Only super_admin may view cross-branch accounts', 403);

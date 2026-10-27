@@ -75,6 +75,8 @@ export interface TransactionListFilters {
   paymentMethod?: PaymentMethod;
   dateFrom?: string;
   dateTo?: string;
+  /** POS-PERF-P40 — case-insensitive receipt-number substring. */
+  receiptSearch?: string;
   page: number;
   limit: number;
 }

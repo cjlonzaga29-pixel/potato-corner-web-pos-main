@@ -69,6 +69,31 @@ export interface BranchAccountOverview {
   branch_code: string;
 }
 
+export interface BranchPresenceResponse {
+  /** false when the API process has no socket server — connectivity is then unknown, not offline. */
+  available: boolean;
+  checked_at: string;
+  branches: { branch_id: string; connectivity: 'online' | 'offline'; connected_sessions: number }[];
+}
+
+/**
+ * POS-PERF-P40 — connectivity (signed-in session presence), deliberately a
+ * separate query from branch status: an active branch can be offline and an
+ * inactive one can still have a session open.
+ */
+export function useBranchPresence() {
+  return useQuery({
+    queryKey: ['branches', 'presence'],
+    queryFn: async () => {
+      const response = await apiClient<BranchPresenceResponse>('/api/branches/presence');
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load branch connectivity'));
+      return response.data;
+    },
+    staleTime: 15 * 1000,
+    refetchInterval: 30 * 1000,
+  });
+}
+
 /** Cross-branch roster (super_admin only) — GET /api/branches/accounts. */
 export function useBranchAccountsOverview() {
   return useQuery({

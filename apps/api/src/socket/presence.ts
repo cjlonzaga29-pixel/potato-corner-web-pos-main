@@ -70,6 +70,29 @@ export function onBranchSocketJoined(branchId: string): void {
   }
 }
 
+export type BranchConnectivity = 'online' | 'offline';
+
+export interface BranchPresenceSnapshot {
+  branch_id: string;
+  connectivity: BranchConnectivity;
+  connected_sessions: number;
+}
+
+/**
+ * POS-PERF-P40 — read-only snapshot of the same signal the branch_offline /
+ * branch_online notifications are built on: whether any signed-in session is
+ * currently joined to the branch's socket room on this API instance. A
+ * connectivity signal only — independent of the branch's administrative
+ * status (active/inactive/closed) and, like those notifications, not a
+ * hardware/network uptime probe.
+ */
+export function getBranchPresenceSnapshot(io: Server, branchIds: readonly string[]): BranchPresenceSnapshot[] {
+  return branchIds.map((branchId) => {
+    const connectedSessions = connectedCount(io, branchId);
+    return { branch_id: branchId, connectivity: connectedSessions > 0 ? 'online' : 'offline', connected_sessions: connectedSessions };
+  });
+}
+
 /** Test-only: clears module-level presence state between unit tests. Never called from production code. */
 export function resetPresenceStateForTests(): void {
   for (const timer of offlineTimers.values()) clearTimeout(timer);

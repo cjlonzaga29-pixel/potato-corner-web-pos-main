@@ -1,9 +1,10 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
-import { clockInSchema, clockOutSchema, manualOverrideSchema, attendanceQuerySchema } from '@potato-corner/shared';
+import { clockInSchema, clockOutSchema, manualOverrideSchema, attendanceQuerySchema, adminAttendanceQuerySchema } from '@potato-corner/shared';
 import { attendanceService } from './attendance.service.js';
 import { AttendanceError } from './attendance.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOrSupervisor, allRoles } from '../../middleware/authorize.js';
+import { adminOnly, adminOrSupervisor, allRoles } from '../../middleware/authorize.js';
+import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
 import { requireActiveEmployee } from '../../middleware/require-active-employee.js';
 import { validate } from '../../middleware/validate.js';
@@ -108,6 +109,39 @@ router.post(
     }
   },
 );
+
+// POS-PERF-P40 — Admin cross-branch monitoring with branch / supervisor /
+// employee / date filters, plus the open-now view. Read-only.
+router.get('/admin', authenticate, adminOnly, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    const parsed = adminAttendanceQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(422).json({
+        data: null,
+        error: { code: 'VALIDATION_ERROR', fields: parsed.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })) },
+        meta: null,
+      });
+      return;
+    }
+    const result = await attendanceService.getForAdmin(
+      {
+        branchId: parsed.data.branch_id,
+        supervisorId: parsed.data.supervisor_id,
+        employeeId: parsed.data.employee_id,
+        openOnly: parsed.data.open_only,
+        from: parsed.data.from ? resolveDateRangeBoundary(parsed.data.from, 'start') : undefined,
+        to: parsed.data.to ? resolveDateRangeBoundary(parsed.data.to, 'end') : undefined,
+        page: parsed.data.page,
+        limit: parsed.data.limit,
+      },
+      req.user,
+    );
+    res.status(200).json({ data: result, error: null, meta: null });
+  } catch (error) {
+    handleAttendanceError(error, res, next);
+  }
+});
 
 // POS-PERF-P26 — the Branch Account's Attendance and Reports pages (the
 // only branch-role callers of this endpoint) were removed.

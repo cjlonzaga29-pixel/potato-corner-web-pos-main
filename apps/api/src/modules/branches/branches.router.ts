@@ -84,6 +84,18 @@ router.get('/', authenticate, adminSupervisorOrBranch, requirePasswordChange, as
   }
 });
 
+// POS-PERF-P40 — connectivity (signed-in session presence) per branch, kept
+// separate from administrative status. Must precede '/:branchId'.
+router.get('/presence', authenticate, adminOnly, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    const presence = await branchesService.getBranchPresence(req.user);
+    res.status(200).json({ data: presence, error: null, meta: null });
+  } catch (error) {
+    handleBranchError(error, res, next);
+  }
+});
+
 router.get('/accounts', authenticate, adminOnly, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;

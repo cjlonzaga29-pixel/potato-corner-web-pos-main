@@ -149,8 +149,29 @@ export const transactionListQuerySchema = z.object({
   payment_method: z.enum(paymentMethodValues).optional(),
   date_from: z.iso.date().optional(),
   date_to: z.iso.date().optional(),
+  // POS-PERF-P40 — receipt-number substring search, applied server-side so
+  // it covers every page instead of only the rows already loaded.
+  receipt_search: z.string().trim().min(1).max(64).optional(),
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(25),
+});
+
+/**
+ * POS-PERF-P40 — Download Transaction PDF. Same filters as the list (minus
+ * pagination: the export always covers every matching row), or a single
+ * transaction_id. Exports above TRANSACTION_PDF_MAX_ROWS are refused with a
+ * clear message rather than silently truncated.
+ */
+export const TRANSACTION_PDF_MAX_ROWS = 2000;
+
+export const transactionExportQuerySchema = z.object({
+  transaction_id: z.uuid().optional(),
+  branch_id: z.uuid().optional(),
+  status: z.enum(transactionStatusValues).optional(),
+  payment_method: z.enum(paymentMethodValues).optional(),
+  date_from: z.iso.date().optional(),
+  date_to: z.iso.date().optional(),
+  receipt_search: z.string().trim().min(1).max(64).optional(),
 });
 
 export const discountAuditQuerySchema = z.object({

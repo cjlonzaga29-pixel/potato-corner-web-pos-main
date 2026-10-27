@@ -6,8 +6,8 @@ import type { AttendanceResponse } from '@potato-corner/shared';
 import { Badge } from '@/components/ui/badge';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { formatDateTime, formatDuration } from '@/lib/utils';
-import { manilaDateString, manilaToday } from '@/lib/manila-date';
+import { formatDuration } from '@/lib/utils';
+import { formatManilaDateTime, manilaDateString, manilaToday } from '@/lib/manila-date';
 
 const CORRECTION_REASON_TRUNCATE_LENGTH = 40;
 
@@ -47,7 +47,10 @@ export function createAttendanceColumns({ employeeNames, branchNames, employeeRo
     {
       id: 'branch_id',
       header: 'Branch',
-      cell: ({ row }) => branchNames.get(row.original.branch_id) ?? truncateId(row.original.branch_id),
+      cell: ({ row }) =>
+        ('branch_name' in row.original && typeof row.original.branch_name === 'string' ? row.original.branch_name : undefined) ??
+        branchNames.get(row.original.branch_id) ??
+        truncateId(row.original.branch_id),
     },
     {
       id: 'role',
@@ -60,13 +63,23 @@ export function createAttendanceColumns({ employeeNames, branchNames, employeeRo
     {
       id: 'clock_in_server_time',
       header: 'Clock In',
-      cell: ({ row }) => formatDateTime(row.original.clock_in_server_time),
+      // POS-PERF-P40 — always Asia/Manila, not the viewer's device timezone.
+      cell: ({ row }) => <span className="whitespace-nowrap">{formatManilaDateTime(row.original.clock_in_server_time)}</span>,
     },
     {
       id: 'clock_out_server_time',
       header: 'Clock Out',
       cell: ({ row }) => {
-        if (row.original.clock_out_server_time) return formatDateTime(row.original.clock_out_server_time);
+        const clockOut = row.original.clock_out_server_time;
+        if (clockOut) {
+          const overnight = manilaDateString(new Date(clockOut)) !== manilaDateString(new Date(row.original.clock_in_server_time));
+          return (
+            <span className="whitespace-nowrap">
+              {formatManilaDateTime(clockOut)}
+              {overnight && <Badge variant="outline" className="ml-1.5">Overnight</Badge>}
+            </span>
+          );
+        }
         if (isStaleOpenShift(row.original)) {
           return (
             <TooltipProvider>

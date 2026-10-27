@@ -8,7 +8,8 @@ import type {
   UpdateNotificationPreferencesInput,
   UpdateDiscountPolicyInput,
   WorkHoursPolicyResponse,
-  UpdateWorkHoursPolicyInput,
+  BranchWorkHoursResponse,
+  UpdateBranchWorkHoursInput,
   WriteGateResponse,
   UpdateWriteGateInput,
 } from '@potato-corner/shared';
@@ -82,17 +83,67 @@ export function useWorkHoursPolicy() {
   });
 }
 
-export function useUpdateWorkHoursPolicy() {
+/**
+ * POS-PERF-P40 — per-branch Work Hours. The supervisor screen reads/writes
+ * one assigned branch; the server enforces the assignment (hasBranchAccess).
+ * The Admin view is a read-only roll-up of every branch.
+ */
+export function useBranchWorkHours(branchId: string | null) {
+  const { accessToken, isLoading } = useAuth();
+  return useQuery({
+    queryKey: ['settings', 'work-hours', 'branch', branchId],
+    queryFn: async () => {
+      const response = await apiClient<BranchWorkHoursResponse>(`/api/settings/work-hours/branches/${branchId}`);
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load work hours for this branch'));
+      return response.data;
+    },
+    enabled: !!accessToken && !isLoading && Boolean(branchId),
+  });
+}
+
+export function useAllBranchWorkHours() {
+  const { accessToken, isLoading } = useAuth();
+  return useQuery({
+    queryKey: ['settings', 'work-hours', 'branches'],
+    queryFn: async () => {
+      const response = await apiClient<{ global: WorkHoursPolicyResponse; branches: BranchWorkHoursResponse[] }>('/api/settings/work-hours/branches');
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load branch work hours'));
+      return response.data;
+    },
+    enabled: !!accessToken && !isLoading,
+  });
+}
+
+export function useSetBranchWorkHours(branchId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: UpdateWorkHoursPolicyInput) => {
-      const response = await apiClient<WorkHoursPolicyResponse>('/api/settings/work-hours', { method: 'PUT', body: JSON.stringify(input) });
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to update work hours settings'));
+    mutationFn: async (input: UpdateBranchWorkHoursInput) => {
+      const response = await apiClient<BranchWorkHoursResponse>(`/api/settings/work-hours/branches/${branchId}`, {
+        method: 'PUT',
+        body: JSON.stringify(input),
+      });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to save work hours'));
       return response.data;
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['settings', 'work-hours'] });
-      toast.success('Work hours settings updated');
+      toast.success('Work hours saved for this branch');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+export function useClearBranchWorkHours(branchId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const response = await apiClient<BranchWorkHoursResponse>(`/api/settings/work-hours/branches/${branchId}`, { method: 'DELETE' });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to reset work hours'));
+      return response.data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['settings', 'work-hours'] });
+      toast.success('This branch now uses the default work hours');
     },
     onError: (error: Error) => toast.error(error.message),
   });

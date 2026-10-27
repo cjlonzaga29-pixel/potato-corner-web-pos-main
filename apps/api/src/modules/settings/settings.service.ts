@@ -7,6 +7,8 @@ import {
   type DiscountPolicy,
   type DiscountPolicyResponse,
   type WorkHoursPolicyResponse,
+  type BranchWorkHoursResponse,
+  type UpdateBranchWorkHoursInput,
   type WriteGateResponse,
   type UpdateNotificationPreferencesInput,
   type UpdatePaymentMethodConfigInput,
@@ -31,6 +33,8 @@ import {
   DISCOUNT_POLICY_KEY,
   DEFAULT_WORK_HOURS_POLICY,
   WORK_HOURS_POLICY_KEY,
+  BRANCH_WORK_HOURS_KEY_PREFIX,
+  branchWorkHoursKey,
   WRITE_GATE_KEY,
   resolveWriteGateState,
   type WriteGateStateValue,
@@ -343,9 +347,112 @@ export const settingsService = {
    * back to DEFAULT_WORK_HOURS_POLICY (480 minutes) on a missing row, same
    * fallback semantics as getWorkHoursPolicy.
    */
-  async getRegularShiftMinutes(): Promise<number> {
+  async getRegularShiftMinutes(branchId?: string): Promise<number> {
+    if (branchId) {
+      const effective = await settingsService.getBranchWorkHours(branchId);
+      return Math.round(effective.regularHours * 60);
+    }
     const policy = await settingsService.getWorkHoursPolicy();
     return Math.round(policy.regularHours * 60);
+  },
+
+  /**
+   * POS-PERF-P40 — effective regular hours for one branch: its own override
+   * row when present, otherwise the global policy (itself defaulting to 8h).
+   * Access is checked by the caller (router hasBranchAccess) for reads that
+   * originate from a request; attendance's internal calls pass a branch the
+   * record already belongs to.
+   */
+  async getBranchWorkHours(branchId: string, branchName: string | null = null): Promise<BranchWorkHoursResponse> {
+    const [global, override] = await Promise.all([
+      settingsService.getWorkHoursPolicy(),
+      settingsRepository.findSystemSetting(branchWorkHoursKey(branchId)),
+    ]);
+    const overrideHours = override ? (override.value as unknown as { regularHours: number }).regularHours : null;
+    return {
+      branchId,
+      branchName,
+      regularHours: overrideHours ?? global.regularHours,
+      source: overrideHours !== null ? 'branch' : 'global',
+      overrideHours,
+      globalHours: global.regularHours,
+      updatedAt: override ? override.updatedAt.toISOString() : global.updatedAt,
+      updatedBy: override ? override.updatedBy : global.updatedBy,
+    };
+  },
+
+  /** Read-only roll-up for the Admin Settings view: every branch's effective value and where it comes from. */
+  async listBranchWorkHours(): Promise<{ global: WorkHoursPolicyResponse; branches: BranchWorkHoursResponse[] }> {
+    const [global, overrides, branches] = await Promise.all([
+      settingsService.getWorkHoursPolicy(),
+      settingsRepository.findSystemSettingsByPrefix(BRANCH_WORK_HOURS_KEY_PREFIX),
+      branchesRepository.findAllNames(),
+    ]);
+    const overrideByBranch = new Map(overrides.map((row) => [row.key.slice(BRANCH_WORK_HOURS_KEY_PREFIX.length), row]));
+    return {
+      global,
+      branches: branches.map((branch) => {
+        const row = overrideByBranch.get(branch.id);
+        const overrideHours = row ? (row.value as unknown as { regularHours: number }).regularHours : null;
+        return {
+          branchId: branch.id,
+          branchName: branch.name,
+          regularHours: overrideHours ?? global.regularHours,
+          source: overrideHours !== null ? 'branch' : 'global',
+          overrideHours,
+          globalHours: global.regularHours,
+          updatedAt: row ? row.updatedAt.toISOString() : global.updatedAt,
+          updatedBy: row ? row.updatedBy : global.updatedBy,
+        };
+      }),
+    };
+  },
+
+  async setBranchWorkHours(
+    branchId: string,
+    data: UpdateBranchWorkHoursInput,
+    actor: ActorContext,
+    ipAddress: string | null,
+  ): Promise<BranchWorkHoursResponse> {
+    const before = await settingsService.getBranchWorkHours(branchId);
+    await settingsRepository.upsertSystemSetting(
+      branchWorkHoursKey(branchId),
+      data as unknown as Prisma.InputJsonValue,
+      actor.user_id,
+      'Branch override of regular work hours before overtime accrues',
+    );
+    await recordAuditLog({
+      action: 'BRANCH_WORK_HOURS_UPDATED',
+      entityType: 'system_setting',
+      entityId: branchWorkHoursKey(branchId),
+      actorId: actor.user_id,
+      actorRole: actor.role,
+      branchId,
+      beforeState: before,
+      afterState: data,
+      ipAddress,
+    });
+    return settingsService.getBranchWorkHours(branchId);
+  },
+
+  /** Removes the override so the branch falls back to the global value again. */
+  async clearBranchWorkHours(branchId: string, actor: ActorContext, ipAddress: string | null): Promise<BranchWorkHoursResponse> {
+    const before = await settingsService.getBranchWorkHours(branchId);
+    await settingsRepository.deleteSystemSetting(branchWorkHoursKey(branchId));
+    if (before.source === 'branch') {
+      await recordAuditLog({
+        action: 'BRANCH_WORK_HOURS_CLEARED',
+        entityType: 'system_setting',
+        entityId: branchWorkHoursKey(branchId),
+        actorId: actor.user_id,
+        actorRole: actor.role,
+        branchId,
+        beforeState: before,
+        afterState: { regularHours: before.globalHours, source: 'global' },
+        ipAddress,
+      });
+    }
+    return settingsService.getBranchWorkHours(branchId);
   },
 
   /** POS-PERF-P16 — current operational write-gate state, plus this process's own in-flight gated-request count (see middleware/write-gate.ts). */

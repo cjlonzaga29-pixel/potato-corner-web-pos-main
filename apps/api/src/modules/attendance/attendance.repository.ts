@@ -105,6 +105,49 @@ export const attendanceRepository = {
     return prisma.attendanceRecord.update({ where: { id }, data: { deletedAt: new Date() } });
   },
 
+  /**
+   * POS-PERF-P40 — Admin cross-branch list. One query filtered by
+   * `branchId IN (...)`, so a record is returned at most once even when the
+   * selected supervisors' branch assignments overlap. The employee's active
+   * assignments are included so the service can apply the exact rule the
+   * dashboard's "Staff Clocked In" count uses (countStaffTimedInByBranch).
+   */
+  async findForAdmin(filters: AttendanceListFilters & { branchIds?: string[]; openOnly?: boolean }) {
+    const range = filters.openOnly ? undefined : dateRangeWhere(filters.from, filters.to);
+    const where: Prisma.AttendanceRecordWhereInput = {
+      deletedAt: null,
+      ...(filters.branchIds && { branchId: { in: filters.branchIds } }),
+      ...(filters.employeeId && { employeeId: filters.employeeId }),
+      ...(filters.openOnly && { clockOutServerTime: null }),
+      ...(range && { clockInServerTime: range }),
+    };
+
+    const [records, total] = await Promise.all([
+      prisma.attendanceRecord.findMany({
+        where,
+        include: {
+          employee: {
+            select: {
+              firstName: true,
+              lastName: true,
+              employeeId: true,
+              status: true,
+              isActive: true,
+              branchAssignments: { where: { removedAt: null }, select: { branchId: true } },
+            },
+          },
+          branch: { select: { name: true, status: true } },
+        },
+        orderBy: [{ clockInServerTime: 'desc' }, { id: 'asc' }],
+        skip: (filters.page - 1) * filters.limit,
+        take: filters.limit,
+      }),
+      prisma.attendanceRecord.count({ where }),
+    ]);
+
+    return { records, total };
+  },
+
   async findByBranch(branchId: string, filters: AttendanceListFilters) {
     const where: Prisma.AttendanceRecordWhereInput = {
       branchId,

@@ -74,9 +74,15 @@ function num(payload: Payload, key: string): number {
  * notification-detail page. Returns null (no navigation) when a role has no
  * matching page for the event, rather than guessing a route that may 404.
  */
-function hrefFor(type: string, role: string | undefined): string | undefined {
+export function hrefFor(type: string, role: string | undefined, branchId?: string): string | undefined {
   const base = role === ROLES.SUPER_ADMIN ? '/admin' : role === ROLES.SUPERVISOR ? '/supervisor' : role === ROLES.BRANCH ? '/branch' : null;
   if (!base) return undefined;
+  // POS-PERF-P40 — outage and account alerts open the affected branch's
+  // Manage panel. Admin only: the Branches page is a super_admin route
+  // (middleware ROLE_PATH_OWNERSHIP + server-side adminOnly APIs), so other
+  // roles get no link rather than one that would be refused.
+  const manageBranch = (tab: 'details' | 'account') =>
+    base === '/admin' ? `/admin/branches${branchId ? `?manage=${encodeURIComponent(branchId)}&tab=${tab}` : ''}` : undefined;
   switch (type) {
     case 'sale_completed':
     case 'refund_completed':
@@ -101,9 +107,11 @@ function hrefFor(type: string, role: string | undefined): string | undefined {
     case 'eod_summary':
       return base === '/admin' ? `${base}/reports` : undefined;
     case 'branch_status_changed':
-      return base === '/admin' ? `${base}/branches` : undefined;
+    case 'branch_offline':
+    case 'branch_online':
+      return manageBranch('details');
     case 'branch_credentials_updated':
-      return base === '/admin' ? `${base}/branch-accounts` : undefined;
+      return manageBranch('account');
     default:
       return undefined;
   }
@@ -182,10 +190,19 @@ function describe(row: NotificationRow): { icon: LucideIcon; severity: Notificat
   }
 }
 
+/** What makes two alerts of the same type at the same branch "the same alert" for grouping. */
+function subjectKeyFor(row: NotificationRow): string {
+  const p = (row.payload ?? {}) as Payload;
+  return str(p, 'ingredientName') || str(p, 'discountType') || '';
+}
+
 function toItem(row: NotificationRow, role: string | undefined): NotificationItem {
   const { icon, severity, title, detail } = describe(row);
   return {
     id: row.id,
+    type: row.type,
+    branchId: row.branch_id,
+    subjectKey: subjectKeyFor(row),
     icon,
     severity,
     message: title,
@@ -193,7 +210,7 @@ function toItem(row: NotificationRow, role: string | undefined): NotificationIte
     detail,
     createdAt: row.created_at,
     read: row.read,
-    href: hrefFor(row.type, role),
+    href: hrefFor(row.type, role, row.branch_id),
   };
 }
 
@@ -206,16 +223,22 @@ export function useNotifications(page = 1, limit = 25) {
   const accessToken = useAuthStore((s) => s.accessToken);
   const isLoading = useAuthStore((s) => s.isLoading);
   const role = useAuthStore((s) => s.user?.role);
+  const userId = useAuthStore((s) => s.user?.id);
 
+  // POS-PERF-P40 — keyed by the signed-in user: a different account (or a
+  // re-login on a shared POS device) never reads another account's cached
+  // list or unread count. Within one account, the previous data stays on
+  // screen during a refetch, and a failed refetch keeps it (TanStack keeps
+  // `data` and leaves `dataUpdatedAt` at the last SUCCESSFUL fetch).
   const query = useQuery({
-    queryKey: ['notifications', page, limit],
+    queryKey: ['notifications', userId ?? 'anonymous', page, limit],
     queryFn: async () => {
       const response = await apiClient<NotificationListResponse>(`/api/notifications?page=${page}&limit=${limit}`);
       if (!response.data) throw new Error(errorMessage(response, 'Failed to load notifications'));
-      return { rows: response.data.notifications, total: response.data.total };
+      return { rows: response.data.notifications, total: response.data.total, unreadCount: response.data.unread_count };
     },
     staleTime: 15_000,
-    enabled: !!accessToken && !isLoading,
+    enabled: !!accessToken && !isLoading && Boolean(userId),
   });
 
   // Task 220 — item shaping (icon/severity/href) depends on `role`, which
@@ -225,7 +248,18 @@ export function useNotifications(page = 1, limit = 25) {
   // notification must not rerender the entire POS catalog).
   const items = useMemo(() => query.data?.rows.map((row) => toItem(row, role)), [query.data, role]);
 
-  return { ...query, data: items ? { items, total: query.data?.total ?? 0 } : undefined };
+  return {
+    ...query,
+    data: items
+      ? {
+          items,
+          total: query.data?.total ?? 0,
+          // Account-wide unread count from the server — not just the unread rows on this page.
+          unreadCount: query.data?.unreadCount ?? items.filter((item) => !item.read).length,
+        }
+      : undefined,
+    lastSuccessfulFetchAt: query.dataUpdatedAt > 0 ? new Date(query.dataUpdatedAt) : null,
+  };
 }
 
 export function useNotificationsRealtimeSync(): void {
@@ -242,6 +276,7 @@ export function useNotificationsRealtimeSync(): void {
       SOCKET_EVENTS.OFFLINE_TRANSACTIONS_SYNCED,
       SOCKET_EVENTS.EOD_SUMMARY,
       SOCKET_EVENTS.BRANCH_OFFLINE,
+      SOCKET_EVENTS.BRANCH_ONLINE,
       // Task 220 — new operational-visibility event types ride the SAME
       // socket events their originating service call site already
       // broadcasts (transaction/expense/inventory-movement), so no new
@@ -258,9 +293,12 @@ export function useNotificationsRealtimeSync(): void {
 export function useMarkNotificationRead() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (id: string) => {
-      const response = await apiClient(`/api/notifications/${id}/read`, { method: 'PATCH' });
-      if (response.error) throw new Error(errorMessage(response, 'Failed to mark notification read'));
+    // POS-PERF-P40 — accepts one id or a group's ids (each is still its own PATCH; history stays per-notification).
+    mutationFn: async (ids: string | string[]) => {
+      for (const id of Array.isArray(ids) ? ids : [ids]) {
+        const response = await apiClient(`/api/notifications/${id}/read`, { method: 'PATCH' });
+        if (response.error) throw new Error(errorMessage(response, 'Failed to mark notification read'));
+      }
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['notifications'] });

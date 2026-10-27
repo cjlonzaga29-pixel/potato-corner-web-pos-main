@@ -64,6 +64,7 @@ function buildQueryString(filters: TransactionFilters): string {
   if (filters.payment_method) params.set('payment_method', filters.payment_method);
   if (filters.date_from) params.set('date_from', filters.date_from);
   if (filters.date_to) params.set('date_to', filters.date_to);
+  if (filters.receipt_search) params.set('receipt_search', filters.receipt_search);
   params.set('page', String(filters.page ?? 1));
   params.set('limit', String(filters.limit ?? 25));
   return params.toString();

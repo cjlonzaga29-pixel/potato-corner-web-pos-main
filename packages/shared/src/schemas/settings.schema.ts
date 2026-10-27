@@ -125,6 +125,28 @@ export const workHoursPolicyResponseSchema = workHoursPolicySchema.extend({
 });
 
 /**
+ * POS-PERF-P40 — additive per-branch override of the global policy above,
+ * managed by that branch's supervisors. Stored as its own SystemSetting row
+ * (key `work_hours_policy:branch:<branchId>`); with no row the branch keeps
+ * using the global value. Only clock-outs and corrections saved after a
+ * change use the new value — overtime is stored on each attendance record
+ * when it is computed, so existing records are never recalculated.
+ */
+export const updateBranchWorkHoursSchema = workHoursPolicySchema;
+
+export const branchWorkHoursResponseSchema = z.object({
+  branchId: z.uuid(),
+  branchName: z.string().nullable(),
+  /** The value clock-out uses for this branch right now. */
+  regularHours: z.number(),
+  source: z.enum(['branch', 'global']),
+  overrideHours: z.number().nullable(),
+  globalHours: z.number(),
+  updatedAt: z.iso.datetime().nullable(),
+  updatedBy: z.string().nullable(),
+});
+
+/**
  * POS-PERF-P16 — operational write gate. Stored as
  * SystemSetting(key='operational_write_gate').value, same KV pattern as the
  * other policies above. When `enabled`, the server rejects checkout and

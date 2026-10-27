@@ -248,6 +248,8 @@ export type DiscountPolicyResponse = z.infer<typeof schemas.discountPolicyRespon
 export type WorkHoursPolicy = z.infer<typeof schemas.workHoursPolicySchema>;
 export type UpdateWorkHoursPolicyInput = z.infer<typeof schemas.updateWorkHoursPolicySchema>;
 export type WorkHoursPolicyResponse = z.infer<typeof schemas.workHoursPolicyResponseSchema>;
+export type UpdateBranchWorkHoursInput = z.infer<typeof schemas.updateBranchWorkHoursSchema>;
+export type BranchWorkHoursResponse = z.infer<typeof schemas.branchWorkHoursResponseSchema>;
 export type UpdateWriteGateInput = z.infer<typeof schemas.updateWriteGateSchema>;
 export type WriteGateResponse = z.infer<typeof schemas.writeGateResponseSchema>;
 

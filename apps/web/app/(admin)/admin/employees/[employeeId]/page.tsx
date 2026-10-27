@@ -44,9 +44,9 @@ export default function EmployeeDetailPage({ params }: EmployeeDetailPageProps) 
   return (
     <div className="app-section app-section-gap">
       <Button variant="ghost" size="sm" asChild className="-ml-2">
-        <Link href="/admin/employees">
+        <Link href="/admin/supervisors">
           <ArrowLeft className="mr-2 h-4 w-4" />
-          Back to employees
+          Back to supervisors
         </Link>
       </Button>
 

@@ -76,6 +76,13 @@ export const DEFAULT_WORK_HOURS_POLICY: WorkHoursPolicy = {
   regularHours: 8,
 };
 
+/** POS-PERF-P40 — per-branch override rows sit beside the global one; an absent row means the branch uses the global value. */
+export const BRANCH_WORK_HOURS_KEY_PREFIX = `${WORK_HOURS_POLICY_KEY}:branch:`;
+
+export function branchWorkHoursKey(branchId: string): string {
+  return `${BRANCH_WORK_HOURS_KEY_PREFIX}${branchId}`;
+}
+
 /** Key of the single SystemSetting row that stores the operational write-gate state (POS-PERF-P16). */
 export const WRITE_GATE_KEY = 'operational_write_gate';
 

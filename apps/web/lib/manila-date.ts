@@ -19,6 +19,21 @@ export function manilaDateString(date: Date): string {
   return manilaDateFormatter.format(date);
 }
 
+const manilaDateTimeFormatter = new Intl.DateTimeFormat('en-PH', {
+  timeZone: MANILA_TIME_ZONE,
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+  hour12: true,
+});
+
+/** POS-PERF-P40 — "Oct 27, 2026, 9:05 PM" in Asia/Manila regardless of the viewer's device timezone. */
+export function formatManilaDateTime(value: string | Date): string {
+  return manilaDateTimeFormatter.format(typeof value === 'string' ? new Date(value) : value);
+}
+
 /** Today's date in Asia/Manila, as YYYY-MM-DD. */
 export function manilaToday(): string {
   return manilaDateString(new Date());

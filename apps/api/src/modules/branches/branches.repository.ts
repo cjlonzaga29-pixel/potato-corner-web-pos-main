@@ -398,6 +398,14 @@ export const branchesRepository = {
     };
   },
 
+  findAllIds() {
+    return prisma.branch.findMany({ select: { id: true } });
+  },
+
+  findAllNames() {
+    return prisma.branch.findMany({ select: { id: true, name: true }, orderBy: { name: 'asc' } });
+  },
+
   async findAllAccounts() {
     return prisma.userBranchAssignment.findMany({
       where: { removedAt: null, user: { role: 'branch' } },

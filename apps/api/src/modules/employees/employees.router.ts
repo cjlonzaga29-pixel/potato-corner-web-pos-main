@@ -2,6 +2,7 @@
 import { z } from 'zod';
 import {
   createEmployeeSchema,
+  createSupervisorSchema,
   updateEmployeeSchema,
   deactivateEmployeeSchema,
   resetEmployeePasswordSchema,
@@ -156,6 +157,28 @@ router.post(
   adminOrSupervisor,
   requirePasswordChange,
   validate(createEmployeeSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const employee = await employeesService.createEmployee(req.body, req.user, req.ip ?? null);
+      res.status(201).json({ data: employee, error: null, meta: null });
+    } catch (error) {
+      handleEmployeeError(error, res, next);
+    }
+  },
+);
+
+// POS-PERF-P40 — the Admin Supervisors screen's only create path. Super
+// Admin only, and createSupervisorSchema rejects every role but supervisor,
+// so this route can never mint a staff, branch, or super_admin account even
+// if the client is modified. Reuses createEmployee (audit, welcome email,
+// branch assignment) unchanged.
+router.post(
+  '/supervisors',
+  authenticate,
+  adminOnly,
+  requirePasswordChange,
+  validate(createSupervisorSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;

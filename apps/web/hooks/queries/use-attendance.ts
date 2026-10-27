@@ -25,6 +25,53 @@ export interface AttendanceListFilters {
   limit?: number;
 }
 
+/** POS-PERF-P40 — GET /api/attendance/admin (super_admin). from/to are Manila business dates (YYYY-MM-DD). */
+export interface AdminAttendanceFilters extends AttendanceListFilters {
+  branch_id?: string;
+  supervisor_id?: string;
+  open_only?: boolean;
+}
+
+export interface AdminAttendanceRecord extends AttendanceResponse {
+  branch_name: string;
+  /** Mirrors the dashboard's "Staff Clocked In" rule; null for closed records. */
+  counts_toward_clocked_in: boolean | null;
+}
+
+export interface AdminAttendanceResponse {
+  records: AdminAttendanceRecord[];
+  total: number;
+  page: number;
+  limit: number;
+  scope: {
+    branch_ids: string[] | null;
+    supervisor: { id: string; name: string; branch_ids: string[] } | null;
+    open_only: boolean;
+  };
+}
+
+export function useAdminAttendance(filters: AdminAttendanceFilters, enabled = true) {
+  return useQuery({
+    queryKey: ['attendance-admin', filters],
+    queryFn: async () => {
+      const params = new URLSearchParams(buildAttendanceQueryString(filters));
+      if (filters.branch_id) params.set('branch_id', filters.branch_id);
+      if (filters.supervisor_id) params.set('supervisor_id', filters.supervisor_id);
+      if (filters.open_only) {
+        params.set('open_only', 'true');
+        params.delete('from');
+        params.delete('to');
+      }
+      const response = await apiClient<AdminAttendanceResponse>(`/api/attendance/admin?${params.toString()}`);
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load attendance'));
+      return response.data;
+    },
+    enabled,
+    staleTime: 15 * 1000,
+    placeholderData: keepPreviousData,
+  });
+}
+
 function buildAttendanceQueryString(filters: AttendanceListFilters): string {
   const params = new URLSearchParams();
   if (filters.from) params.set('from', filters.from);

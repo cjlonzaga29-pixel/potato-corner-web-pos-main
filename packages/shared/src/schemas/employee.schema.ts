@@ -80,6 +80,17 @@ export const createEmployeeSchema = z
     path: ['branch_ids'],
   });
 
+/**
+ * POS-PERF-P40 — the Admin Supervisors screen's provisioning payload. Same
+ * shape and rules as createEmployeeSchema, but the role is pinned to
+ * supervisor server-side: hiding the role selector in the UI is not the
+ * boundary, POST /api/employees/supervisors rejects any other role.
+ */
+export const createSupervisorSchema = createEmployeeSchema.refine((data) => data.role === ROLES.SUPERVISOR, {
+  message: 'This screen can only create supervisor accounts',
+  path: ['role'],
+});
+
 /** role and email are deliberately absent — both are immutable after creation (locked rule). */
 export const updateEmployeeSchema = z.object({
   first_name: z.string().min(2).max(50).optional(),

@@ -46,9 +46,10 @@ import type { NavItem } from '@/components/shared/nav-types';
 // Branch/supervisor assignment itself still lives under Branches.
 export const ADMIN_NAV_ITEMS: ReadonlyArray<NavItem> = [
   { label: 'Dashboard', href: '/admin/dashboard', icon: LayoutDashboard },
+  // POS-PERF-P40 — Branch Accounts merged into Branches (Manage → Account);
+  // Employees renamed Supervisors. Old URLs redirect (see their page.tsx).
   { label: 'Branches', href: '/admin/branches', icon: Building2 },
-  { label: 'Branch Accounts', href: '/admin/branch-accounts', icon: Users },
-  { label: 'Employees', href: '/admin/employees', icon: Users },
+  { label: 'Supervisors', href: '/admin/supervisors', icon: Users },
   { label: 'Attendance', href: '/admin/attendance', icon: ClipboardCheck },
   { label: 'Reports', href: '/admin/reports', icon: BarChart3 },
   { label: 'Settings', href: '/admin/settings', icon: Settings },
@@ -58,7 +59,7 @@ export const ADMIN_NAV_ITEMS: ReadonlyArray<NavItem> = [
 const SECTION_LABELS: Record<string, string> = {
   Dashboard: 'Overview',
   Branches: 'Management',
-  Employees: 'People',
+  Supervisors: 'People',
   Settings: 'System',
 };
 

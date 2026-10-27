@@ -6,6 +6,7 @@ import {
   refundTransactionRequestSchema,
   transactionListQuerySchema,
   discountAuditQuerySchema,
+  transactionExportQuerySchema,
   createHoldOrderSchema,
   syncOfflineTransactionsSchema,
   paymentProofUploadRequestSchema,
@@ -493,10 +494,71 @@ router.get('/', authenticate, allRoles, requireActiveEmployee, requirePasswordCh
       paymentMethod: parsed.data.payment_method,
       dateFrom: parsed.data.date_from,
       dateTo: parsed.data.date_to,
+      receiptSearch: parsed.data.receipt_search,
       page: parsed.data.page,
       limit: parsed.data.limit,
     });
     res.status(200).json({ data: result, error: null, meta: null });
+  } catch (error) {
+    handleModuleError(error, res, next);
+  }
+});
+
+// POS-PERF-P40 — Download Transaction PDF (Reports transaction panel).
+// adminOrSupervisor: the same roles that can see Customer ID in the panel.
+// A chosen branch must be accessible; without one, the export is limited to
+// the caller's accessible branches. A single transaction_id is checked
+// against its own branch. Declared before '/:transactionId'.
+router.get('/export/pdf', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    const parsed = transactionExportQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(422).json({
+        data: null,
+        error: { code: 'VALIDATION_ERROR', fields: parsed.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })) },
+        meta: null,
+      });
+      return;
+    }
+    const query = parsed.data;
+    let branchIds: string[] | undefined;
+    let branchName: string | null = null;
+    if (query.transaction_id) {
+      const transaction = await transactionsService.getTransactionById(query.transaction_id);
+      if (!(await hasBranchAccess(req.user, transaction.branch_id))) {
+        res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
+        return;
+      }
+    } else if (query.branch_id) {
+      if (!(await hasBranchAccess(req.user, query.branch_id))) {
+        res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
+        return;
+      }
+      branchName = await transactionsService.getBranchName(query.branch_id);
+    } else {
+      const accessible = await getAccessibleBranchIds(req.user);
+      branchIds = accessible === 'all' ? undefined : accessible;
+    }
+    const result = await transactionsService.exportTransactionsPdf(
+      {
+        transactionId: query.transaction_id,
+        branchId: query.transaction_id ? undefined : query.branch_id,
+        branchIds,
+        status: query.transaction_id ? undefined : query.status,
+        paymentMethod: query.transaction_id ? undefined : query.payment_method,
+        dateFrom: query.transaction_id ? undefined : query.date_from,
+        dateTo: query.transaction_id ? undefined : query.date_to,
+        receiptSearch: query.transaction_id ? undefined : query.receipt_search,
+      },
+      { branchName },
+      { id: req.user.user_id, role: req.user.role },
+      req.ip ?? null,
+    );
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(200).send(result.buffer);
   } catch (error) {
     handleModuleError(error, res, next);
   }
@@ -715,7 +777,11 @@ router.get('/:transactionId/payment-proof', authenticate, allRoles, requireActiv
       res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
       return;
     }
-    const result = await transactionsService.getPaymentProofUrl(req.params.transactionId as string);
+    // POS-PERF-P40 — ?download=1 returns a fresh attachment-disposition URL instead of the inline one.
+    const result =
+      req.query.download === '1'
+        ? await transactionsService.getPaymentProofDownload(req.params.transactionId as string)
+        : await transactionsService.getPaymentProofUrl(req.params.transactionId as string);
     res.status(200).json({ data: result, error: null, meta: null });
   } catch (error) {
     handleModuleError(error, res, next);
@@ -734,7 +800,10 @@ router.get('/:transactionId/discount-proof', authenticate, allRoles, requireActi
       res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED' }, meta: null });
       return;
     }
-    const result = await transactionsService.getDiscountProofUrl(req.params.transactionId as string);
+    const result =
+      req.query.download === '1'
+        ? await transactionsService.getDiscountProofDownload(req.params.transactionId as string)
+        : await transactionsService.getDiscountProofUrl(req.params.transactionId as string);
     res.status(200).json({ data: result, error: null, meta: null });
   } catch (error) {
     handleModuleError(error, res, next);

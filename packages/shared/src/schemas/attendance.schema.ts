@@ -61,6 +61,23 @@ export const attendanceQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(100).default(25),
 });
 
+/**
+ * POS-PERF-P40 — Admin attendance monitoring across branches. supervisor_id
+ * narrows to the branches that supervisor is CURRENTLY assigned to (the real
+ * UserBranchAssignment model — there is no personal staff-ownership
+ * relationship). open_only lists records with no clock-out yet regardless
+ * of clock-in date, so overnight shifts started on an earlier day are
+ * visible; from/to are ignored in that mode.
+ */
+export const adminAttendanceQuerySchema = attendanceQuerySchema.extend({
+  branch_id: z.uuid().optional(),
+  supervisor_id: z.uuid().optional(),
+  open_only: z
+    .enum(['true', 'false'])
+    .transform((value) => value === 'true')
+    .optional(),
+});
+
 export const attendanceResponseSchema = z.object({
   id: z.uuid(),
   employee_id: z.uuid(),

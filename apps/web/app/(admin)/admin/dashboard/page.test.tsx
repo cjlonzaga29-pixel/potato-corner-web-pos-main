@@ -10,6 +10,7 @@ const {
   mockUseSocketStore,
   mockUseAllBranchStats,
   mockUseBranches,
+  mockUseBranchPresence,
   mockUseSelectedBranch,
   mockUseInventoryRealtimeSync,
   mockUseDashboardSalesTrendReport,
@@ -22,6 +23,7 @@ const {
   mockUseSocketStore: vi.fn(),
   mockUseAllBranchStats: vi.fn(),
   mockUseBranches: vi.fn(),
+  mockUseBranchPresence: vi.fn(),
   mockUseSelectedBranch: vi.fn(),
   mockUseInventoryRealtimeSync: vi.fn(),
   mockUseDashboardSalesTrendReport: vi.fn(),
@@ -79,6 +81,7 @@ vi.mock('@/hooks/queries/use-branches', () => ({
   useBranchRealtimeSync: mockUseBranchRealtimeSync,
   useAllBranchStats: mockUseAllBranchStats,
   useBranches: mockUseBranches,
+  useBranchPresence: mockUseBranchPresence,
 }));
 
 vi.mock('@/hooks/queries/use-universal-inventory', () => ({
@@ -162,6 +165,7 @@ beforeEach(() => {
   mockUseInventoryRealtimeSync.mockReturnValue(undefined);
   mockUseAllBranchStats.mockReturnValue({ data: [], isLoading: false, isError: false });
   mockUseBranches.mockReturnValue({ data: { branches: [], total: 0, page: 1, limit: 500 }, isLoading: false, isError: false });
+  mockUseBranchPresence.mockReturnValue({ data: undefined, isLoading: false, isError: false });
   mockUseDashboardSalesTrendReport.mockReturnValue({ data: { data: [] }, isLoading: false, isError: false });
   mockUseAdminInventoryRollup.mockReturnValue({ data: { branches: [], summary: {} }, isLoading: false, isError: false });
   mockUseAdminInventoryRollupRealtimeSync.mockReturnValue(undefined);
@@ -287,8 +291,8 @@ describe('AdminDashboardPage', () => {
     expect(screen.getByText('Staff Clocked In')).toBeInTheDocument();
     expect(screen.getByText('6')).toBeInTheDocument();
     expect(screen.getByText('Low Stock Items')).toBeInTheDocument();
-    // 4 total low-stock items (3 + 1) appears twice: the compact KPI card and the richer Low Stock Inventory widget below.
-    expect(screen.getAllByText('4')).toHaveLength(2);
+    // 4 total low-stock items (3 + 1) — only the KPI card now; the Low Stock Inventory widget was removed in POS-PERF-P40.
+    expect(screen.getByText('4')).toBeInTheDocument();
     expect(screen.getByText('Inventory Alerts')).toBeInTheDocument();
     expect(screen.getByText('5')).toBeInTheDocument();
   });
@@ -345,7 +349,7 @@ describe('AdminDashboardPage', () => {
     expect(screen.getByText('PayMaya')).toBeInTheDocument();
   });
 
-  it('renders the low stock total and a View Inventory link', () => {
+  it('no longer renders Low Stock Inventory, Low Stock Summary or Recent Activity (POS-PERF-P40)', () => {
     mockUseAllBranchStats.mockReturnValue({
       data: [branchStat({ branchId: 'b1', lowStockIngredientCount: 3 })],
       isLoading: false,
@@ -354,33 +358,33 @@ describe('AdminDashboardPage', () => {
 
     render(<AdminDashboardPage />);
 
-    expect(screen.getByText('Low Stock Inventory')).toBeInTheDocument();
-    // Appears twice: the compact "Low Stock Items" KPI card (row 2) and the richer Low Stock Inventory widget below.
-    expect(screen.getAllByText('3')).toHaveLength(2);
-    expect(screen.getByText('View Inventory').closest('a')).toHaveAttribute('href', '/admin/inventory');
+    expect(screen.queryByText('Low Stock Inventory')).not.toBeInTheDocument();
+    expect(screen.queryByText('Low Stock Summary')).not.toBeInTheDocument();
+    expect(screen.queryByText('Recent Activity')).not.toBeInTheDocument();
+    expect(screen.queryByText('View Inventory')).not.toBeInTheDocument();
+    // The compact Low Stock Items KPI card stays.
+    expect(screen.getByText('Low Stock Items')).toBeInTheDocument();
+    expect(screen.getByText('3')).toBeInTheDocument();
+    expect(screen.getByText('Branch Performance Table')).toBeInTheDocument();
   });
 
-  it('renders active vs. inactive branch counts', () => {
-    mockUseBranches.mockReturnValue({
-      data: {
-        branches: [
-          { id: '1', status: 'active' },
-          { id: '2', status: 'active' },
-          { id: '3', status: 'inactive' },
-        ],
-        total: 3,
-        page: 1,
-        limit: 500,
-      },
+  it('renders active, inactive and closed branch counts from server totals, not the list page', () => {
+    // Each status count is its own limit=1 request; only `total` is read, so a
+    // 100-row list page can't undercount, and closed is no longer folded into inactive.
+    const totals: Record<string, number> = { active: 7, inactive: 3, closed: 2 };
+    mockUseBranches.mockImplementation((params: { status?: string }) => ({
+      data: { branches: [], total: params.status ? totals[params.status] : 12, page: 1, limit: 1 },
       isLoading: false,
       isError: false,
-    });
+    }));
 
     render(<AdminDashboardPage />);
 
-    expect(screen.getByText('Active Branches')).toBeInTheDocument();
+    expect(screen.getByText('Branch Status')).toBeInTheDocument();
+    expect(screen.getByText('7')).toBeInTheDocument();
+    expect(screen.getByText('3')).toBeInTheDocument();
     expect(screen.getByText('2')).toBeInTheDocument();
-    expect(screen.getByText('1')).toBeInTheDocument();
+    expect(screen.getByText('Closed')).toBeInTheDocument();
   });
 
   it('renders a labeled Connected badge (not color-only) when connected', () => {

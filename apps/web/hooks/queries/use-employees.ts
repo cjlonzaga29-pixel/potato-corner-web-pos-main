@@ -149,6 +149,50 @@ export function useCreateEmployee() {
   });
 }
 
+/**
+ * POS-PERF-P40 — Admin Supervisors screen. POST /api/employees/supervisors
+ * rejects any role but supervisor server-side.
+ */
+export function useCreateSupervisor() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: CreateEmployeeInput) => {
+      const response = await apiClient<EmployeeResponse>('/api/employees/supervisors', { method: 'POST', body: JSON.stringify(input) });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to create supervisor'));
+      return response.data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['employees'] });
+      void queryClient.invalidateQueries({ queryKey: ['supervisors'] });
+      toast.success('Supervisor created');
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+/**
+ * POS-PERF-P40 — every supervisor (all pages of the 100-row-max list), used
+ * to show assigned supervisors per branch and to populate filters. Walks the
+ * pages instead of silently stopping at the first 100.
+ */
+export function useAllSupervisors(options: { enabled?: boolean } = {}) {
+  return useQuery({
+    queryKey: ['supervisors', 'all'],
+    queryFn: async () => {
+      const all: EmployeeResponse[] = [];
+      for (let page = 1; page <= 50; page += 1) {
+        const response = await apiClient<EmployeeListResponse>(`/api/employees?${buildQueryString({ role: 'supervisor', page, limit: 100 })}`);
+        if (!response.data) throw new Error(errorMessage(response, 'Failed to load supervisors'));
+        all.push(...response.data.employees);
+        if (all.length >= response.data.total || response.data.employees.length === 0) break;
+      }
+      return all;
+    },
+    enabled: options.enabled ?? true,
+    staleTime: 30 * 1000,
+  });
+}
+
 export function useUpdateEmployee(employeeId: string) {
   const queryClient = useQueryClient();
   return useMutation({

@@ -9,6 +9,7 @@ import { getAccessibleBranchIds } from '../../lib/branch-access.js';
 import { prisma } from '../../lib/prisma.js';
 import { attendanceOpenSessionLockId } from '../../lib/pg-lock.js';
 import { settingsService } from '../settings/settings.service.js';
+import { branchesRepository } from '../branches/branches.repository.js';
 
 type ActorContext = { id: string; role: string };
 type GpsStatus = 'within_radius' | 'outside_radius' | 'no_gps_data';
@@ -251,7 +252,8 @@ export const attendanceService = {
     const breakMinutes = data.breakMinutes ?? active.breakMinutes;
     const totalMinutes = Math.max(0, Math.round((clockOutServerTime.getTime() - active.clockInServerTime.getTime()) / 60000));
     const actualWorkMinutes = Math.max(0, totalMinutes - breakMinutes);
-    const regularShiftMinutes = await settingsService.getRegularShiftMinutes();
+    // POS-PERF-P40 — the branch's own Work Hours override when it has one, else the global policy.
+    const regularShiftMinutes = await settingsService.getRegularShiftMinutes(active.branchId);
     const overtimeMinutes = Math.max(0, actualWorkMinutes - regularShiftMinutes);
 
     const updated = (await attendanceRepository.clockOut(active.id, {
@@ -301,7 +303,7 @@ export const attendanceService = {
     const actualWorkMinutes = clockOutServerTime
       ? Math.max(0, Math.round((clockOutServerTime.getTime() - clockInServerTime.getTime()) / 60000) - breakMinutes)
       : null;
-    const regularShiftMinutes = await settingsService.getRegularShiftMinutes();
+    const regularShiftMinutes = await settingsService.getRegularShiftMinutes(original.branchId);
     const overtimeMinutes = actualWorkMinutes !== null ? Math.max(0, actualWorkMinutes - regularShiftMinutes) : 0;
 
     const correction = (await attendanceRepository.createOverride({
@@ -353,6 +355,64 @@ export const attendanceService = {
     });
 
     return response;
+  },
+
+  /**
+   * POS-PERF-P40 — Admin monitoring list. A supervisor filter resolves to
+   * that supervisor's CURRENT active branch assignments (not historical
+   * ones); combined with a branch filter it is the intersection, which may
+   * be empty. counts_toward_clocked_in mirrors countStaffTimedInByBranch
+   * plus findAllStatsGrouped's active-branch restriction, so
+   * the open-now view reconciles with the dashboard's "Staff Clocked In"
+   * figure record by record; it is null for closed records.
+   */
+  async getForAdmin(
+    filters: AttendanceListFilters & { branchId?: string; supervisorId?: string; openOnly?: boolean },
+    requestingUser: JwtPayload,
+  ) {
+    if (requestingUser.role !== ROLES.SUPER_ADMIN) {
+      throw new AttendanceError('INSUFFICIENT_PERMISSIONS', 'Only Super Admin may view cross-branch attendance', 403);
+    }
+
+    let branchIds: string[] | undefined = filters.branchId ? [filters.branchId] : undefined;
+    let supervisor: { id: string; name: string; branch_ids: string[] } | null = null;
+    if (filters.supervisorId) {
+      const user = await branchesRepository.findUserById(filters.supervisorId);
+      if (!user || user.role !== ROLES.SUPERVISOR) {
+        throw new AttendanceError('SUPERVISOR_NOT_FOUND', 'Supervisor not found', 404);
+      }
+      const assigned = (await branchesRepository.getUserActiveBranches(user.id)).map((a) => a.branchId);
+      supervisor = { id: user.id, name: `${user.firstName} ${user.lastName}`.trim(), branch_ids: assigned };
+      branchIds = branchIds ? branchIds.filter((id) => assigned.includes(id)) : assigned;
+    }
+
+    const scope = {
+      branch_ids: branchIds ?? null,
+      supervisor,
+      open_only: Boolean(filters.openOnly),
+    };
+    if (branchIds && branchIds.length === 0) {
+      return { records: [], total: 0, page: filters.page, limit: filters.limit, scope };
+    }
+
+    const { records, total } = await attendanceRepository.findForAdmin({ ...filters, branchIds });
+    return {
+      records: records.map((record) => ({
+        ...toResponse(record as unknown as AttendanceRow),
+        branch_name: record.branch.name,
+        counts_toward_clocked_in:
+          record.clockOutServerTime === null
+            ? record.branch.status === 'active' &&
+              record.employee.isActive &&
+              record.employee.status === 'active' &&
+              record.employee.branchAssignments.some((a) => a.branchId === record.branchId)
+            : null,
+      })),
+      total,
+      page: filters.page,
+      limit: filters.limit,
+      scope,
+    };
   },
 
   async getByBranch(branchId: string, filters: AttendanceListFilters) {

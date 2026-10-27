@@ -1,31 +1,10 @@
-'use client';
+import { redirect } from 'next/navigation';
 
-import { Users } from 'lucide-react';
-import { DataTable } from '@/components/shared/data-table';
-import { EmptyState } from '@/components/shared/feedback/empty-state';
-import { createBranchAccountsColumns } from '@/components/admin/branch-accounts-columns';
-import { useBranchAccountsOverview } from '@/hooks/queries/use-branches';
-
-const columns = createBranchAccountsColumns();
-
-export default function BranchAccountsPage() {
-  const { data, isLoading, isError, refetch } = useBranchAccountsOverview();
-
-  return (
-    <div className="app-section app-section-gap">
-      <div>
-        <h1 className="app-title font-bold">Branch Accounts</h1>
-        <p className="text-sm text-muted-foreground">Branch login accounts only — supervisors and staff are managed under Employees</p>
-      </div>
-
-      <DataTable
-        columns={columns}
-        data={data ?? []}
-        isLoading={isLoading}
-        isError={isError}
-        onRetry={() => void refetch()}
-        emptyState={<EmptyState icon={Users} title="No branch accounts found" description="No active assignments have been recorded yet." />}
-      />
-    </div>
-  );
+/**
+ * POS-PERF-P40 — Branch Accounts was merged into Branches (Branch Account
+ * column + Manage → Account). Old links and bookmarks land on the combined
+ * list. middleware.ts still enforces the /admin role prefix before this runs.
+ */
+export default function BranchAccountsRedirectPage(): never {
+  redirect('/admin/branches');
 }

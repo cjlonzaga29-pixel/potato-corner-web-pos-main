@@ -314,7 +314,7 @@ from here.
 
 | Check | Result |
 | --- | --- |
-| Web unit tests (`apps/web`, vitest, full suite) | 151 files, 1,319 tests: all pass. The first full run had 67 failures in 22 files. 11 were real (the recipe form test's hook mock lacked `useProductComponents`, `reset` and `error`; fixed). The other 21 files passed 366/366 when re-run on their own. Their failures were 5 s timeouts while a `next build` and another session's suite held the CPU at 100%. |
+| Web unit tests (`apps/web`, vitest, full suite) | **Corrected in P41R (§8.5): never green in one full run.** The only full run (`.p41-local/web-suite-p41.log`, 01:33–02:13, before the 03:13 commit) ended 22 files / 67 tests failed, 1,252 passed of 1,319; no exit code was recorded. "All pass" below combines that run with partial re-runs. Original text: 151 files, 1,319 tests: all pass. The first full run had 67 failures in 22 files. 11 were real (the recipe form test's hook mock lacked `useProductComponents`, `reset` and `error`; fixed). The other 21 files passed 366/366 when re-run on their own. Their failures were 5 s timeouts while a `next build` and another session's suite held the CPU at 100%. |
 | API tests, products + stock-availability (real Postgres included) | 22 files passed, 2 skipped (environment-gated); 345 tests passed, 27 skipped |
 | API tests, full suite | 194 files: 176 passed, 16 skipped (environment-gated). 3,015 tests passed, 248 skipped, **0 failed**. Two files (`publication-budget`, `single-publication`) failed in their setup hooks (Prisma init error / 10 s hook timeout under load); both passed 16/16 when re-run alone. An earlier full run also picked up this task's compiled `dist-p41` copy of the tests and raced the local API's audit-outbox worker; that copy and that server were removed before this run. |
 | Shared tests (`packages/shared`) | 4 files, 30 tests pass |
@@ -390,3 +390,252 @@ Not pushed or deployed. Before release:
   - an add-on shortfall is caught at the pre-check;
   - Charge waits for "Checking stock…" to clear;
   - the editor's Add Size shows as an inline section with Back.
+
+## 8. P41R — cart safety and isolated release integration
+
+Local only. Nothing was pushed, deployed or merged into shared `main`. Production was never
+written to or contacted. Every check below used the disposable database
+`127.0.0.1:5432/pos_p41r` (created for this pass), built code on web :3300 / API :4300, and the
+isolated worktree `C:/Users/kaile/Downloads/PTTO/p41r-integration` (branch
+`integration/pos-perf-p41r`).
+
+### 8.1 Branches and what was integrated
+
+| | SHA | State at the end of this pass |
+| --- | --- | --- |
+| Shared `main` (`potato-corner-web-pos-main`) | `5a9e48c6644ce1d0cd39d1329a144a73d26b912e` | Untouched, clean |
+| Review `review/pos-perf-p40r` (`p40r-review`) | `1da6add5ba796f761873f2d19e1d5fc720743ff7` | Untouched by this pass, clean |
+| Integration `integration/pos-perf-p41r` | see the final commit of this pass | Clean after commit |
+
+- **P40R2 status.** When this pass started, P40R2 was running: its server was on :3400, its
+  Storage fault proxy was running, and three test files were uncommitted on top of `4de80b3`.
+  None of that was integrated while it was in progress. At 04:26 it committed `1da6add`
+  (tests, a fault-injection fixture and runbook text only; no product code). Its worktree was
+  then clean and its processes had stopped.
+- **Integrated, by normal merges with no conflicts:**
+  - `4de80b3` P40R (proof-photo 410, deploy overlap, navigation, attendance label). It shares
+    no file with P41.
+  - `1da6add` P40R2 (verification only).
+- **Commits made in this pass:**
+  - `eaa7bb8` merge P40R.
+  - `25d7d98` the cart fixes (§8.2).
+  - `f5fcfcc` test isolation fix (§8.5).
+  - `65be432` merge P40R2.
+  - This runbook.
+
+### 8.2 Stock-check failure and the Charge policy
+
+**Policy (unchanged): fail-open.** The pre-check is advisory. If it can't produce an answer,
+the cart is kept and Charge is allowed. Checkout's atomic reservation stays authoritative:
+`transactions.service.ts` decrements stock with a conditional update inside the transaction
+and throws `INSUFFICIENT_STOCK` when no row qualifies. P41R makes this explicit. The cart note
+now reads: "Stock couldn't be checked. Items stay in the cart and you can still charge — the
+sale is checked against stock when it's submitted."
+
+**Advisory failure vs confirmed shortfall:**
+
+| Outcome | Cart | Charge | Message |
+| --- | --- | --- | --- |
+| Well-formed `ok: true` for the current cart | Kept; "Checking stock…" clears | Enabled | None |
+| Well-formed `ok: false` with shortfalls (**confirmed shortfall**) | Only unconfirmed units are taken back | Enabled | Error toast naming the short ingredients and exactly what was taken back |
+| Network error, HTTP error, refresh failure, timeout or malformed body (**advisory failure**) | Kept exactly | Enabled (fail-open) | "Stock check unavailable" warning toast plus the cart note with "Check again" |
+| Answer for an older cart, branch or cashier | Ignored (an OK still confirms what it covered) | Waits for the re-check | None |
+
+**Defects found and fixed (`25d7d98`):**
+
+1. **A hung check held Charge indefinitely.** `apiClient` uses `fetch` with no timeout. While
+   a request stayed open, the hook kept `inFlight` set, so Charge stayed on "Checking stock…".
+   A slow request is plausible here: this pass and P41 both measured P2024 pool starvation and
+   multi-second API stalls under load. Each check now gives up after
+   `STOCK_CHECK_TIMEOUT_MS = 10 s` and counts as an advisory failure. If the abandoned request
+   answers later, the answer is discarded, even when a retry is already in flight. The
+   underlying request is a read and is left to finish on its own.
+2. **A malformed 200 body was treated as a shortfall.** With `data: {}` (or `ok: false` with no
+   or empty `shortfalls`, or a string), `!result.ok` was true. The hook rolled back unconfirmed
+   units, then threw on `result.shortfalls.map` before `publish()`. The stale pending marks
+   then kept Charge disabled until the next cart change. A shape guard now treats such bodies
+   as an advisory failure, and `publish()` runs in a `finally`.
+3. **The shortfall message didn't say what was undone.** It now names each line and count,
+   e.g. "Took back 3 × P41 Fries Large (Regular) just added, not yet confirmed — the rest of
+   the cart is unchanged." When a line lost more than one unit, it adds "Fewer may still fit:
+   add them again one at a time". It never states a maximum, because none is calculated.
+
+**401 / refresh failure.** The access token 401s, the shared refresh fails, `apiClient` clears
+auth, broadcasts logout and returns `SESSION_EXPIRED` with `data: null`.
+`useCheckCartAvailability` throws on `data: null`, so the hook records an advisory failure and
+never rolls back. The client side is covered in `api-client.test.ts` (refresh failure) and the
+new hook test. In the browser it redirected to `/login` with no shortfall toast (§8.4).
+
+**Charge never stays disabled after the request settles.** Every settle path, whether answer,
+rejection, timeout, malformed body or stale result, clears `inFlight` and republishes the
+pending marks. A stale result re-runs and ends idle when nothing is unconfirmed.
+`hasUnresolved()` is synchronous, so a click queued before re-render can't submit.
+
+### 8.3 Burst-shortage behaviour
+
+The documented rollback of the whole unconfirmed burst is kept. A check covering several rapid
+taps can only say the total doesn't fit. No max-addable calculation was added.
+
+- Browser (+800 ms checks, potato 1,000 g, Fries Large 300 g): 4 rapid taps were all shown at
+  once, used 2 requests and ended at **1**. The answer for the first tap had already confirmed
+  that unit. The toast read: "Running low on P41 Potato p41r. Took back 3 × P41 Fries Large
+  p41r (Regular) just added, not yet confirmed — the rest of the cart is unchanged. Fewer may
+  still fit: add them again one at a time."
+- Three Large (900 g) would have fitted, so the message is honest that fewer may fit, and the
+  cashier can tap back up one at a time.
+
+### 8.4 Late-response and rapid-intent results
+
+**Deterministic hook tests** (`use-cart-stock-validation.test.tsx`, real cart store, every
+answer released by hand). There are 21 tests: 11 from P41, 8 new, and 2 with tightened
+assertions. New tests:
+- timeout keeps the cart and releases Charge;
+- a timed-out request answering out of order after a retry started is ignored;
+- 5 malformed bodies;
+- expired session then retry;
+- interleaved +/− ending at the exact quantity and payload;
+- a late OK after remove-then-re-add doesn't resurrect the old quantity.
+
+The shortfall tests now also assert exactly which lines and units were taken back. Run
+against the original P41 hook, the timeout (2) and malformed-body (4 of 5) tests fail. The 4
+other failures there come only from the new third callback argument.
+
+**Terminal page tests (new):**
+- Fail-open: after a failed check, Charge is re-enabled, the note says Charge is allowed, and
+  the sale submits.
+- A same-tick burst shortfall rolls back `{key: 2}` with one request, and the toast names
+  "2 × Mega Mix Fries (Mega Mix)", says "Fewer may still fit", and never states a maximum.
+
+**Real browser.** Script: `p41r-cart.mjs`. It ran on the built integrated code against the real
+API and `pos_p41r`, logged in as staff with a real clock-in. Each availability answer was
+controlled per scenario (held and released, delayed, aborted, malformed or 401).
+
+| Scenario | Result |
+| --- | --- |
+| Tap → line visible; 5 rapid taps at +800 ms | First line visible in 82–136 ms; 5 shown before any answer; final 5; 2 requests; confirmed ~1.8 s |
+| Add, then remove before the answer; answer is a shortfall | Line stays removed, no toast |
+| +, +, −, + while the first check is held | Shown 3, final 3; requests carried quantities `[1]` then `[3]` |
+| Check never answers | "Stock couldn't be checked" after 10.1 s; nothing left "Checking"; Charge enabled; Check again recovered |
+| ↳ the abandoned request then answers with a shortfall | Ignored; quantity still 1; no toast |
+| Malformed `data: {}`, 2 units, then charge | Kept 2; warning toast; Charge enabled; real sale **201**, sold quantity `[2]` (`MAIN01-20261028-000004`); empty cart after Next Customer |
+| Burst shortage | §8.3 |
+| Checkout during a pending check (+2.5 s) | Charge disabled with "Checking stock for the latest cart changes…"; forced click started no sale; after the answer, the real sale submitted quantity `[2]` and completed (`MAIN01-20261028-000005` `completed`, checked in the DB) |
+| Add-on (Cheesy Fries + Extra Cheese) | Request carried `selected_option_ids` |
+| Access 401 and refresh 401 during a check | Redirected to `/login`; no shortfall toast |
+
+**Not reachable or not run in the browser, but covered by unit tests:**
+- **Clear cart / Next Customer before a late response.** The terminal has no manual clear
+  control. `clearCart` runs only after a confirmed or queued sale, and Charge is blocked while
+  any check is unresolved. Hold/resume exist in `useCart` but aren't wired to any UI.
+- **Branch and cashier switch mid-check.** Covered by the hook test (epoch bump, answer
+  discarded, re-check under the new session).
+- **Out-of-order answers.** Only one check is ever in flight, except after a timeout. That
+  case is covered in both the browser and unit tests.
+
+**Probe artifacts, not product defects.** The first probe runs crashed React with a
+`NotFoundError: insertBefore` because the probe deleted Sonner's toast nodes from the DOM. The
+crash disappeared once the probe waited for toasts to expire instead. A
+`Cannot read … 'waiting'` page error comes from next-pwa's workbox-window registration, because
+the probe blocks service workers.
+
+### 8.5 Test evidence
+
+**Was "1,319 passed" one full run on committed P41? No.**
+- The only full web run (`.p41-local/web-suite-p41.log`, started 01:33) ended
+  `Test Files 22 failed | 129 passed (151)`, `Tests 67 failed | 1252 passed (1319)`, 2,424 s.
+  No exit code was logged; vitest exits 1 on failures.
+- It ran on the pre-commit tree. `5a9e48c` was committed at 03:13.
+- "All pass" combined that run with a 21-file re-run (`web-rerun.log`, 366/366) and a separate
+  fix. §4 is annotated accordingly.
+
+**Full web suite on the integration branch (one run).**
+- Command: `vitest run --pool=forks --poolOptions.forks.maxForks=1 --poolOptions.forks.minForks=1`
+  on `25d7d98`, with nothing else from this pass running.
+- Machine at the start: 4 logical cores, 7.7 GB RAM, **100% CPU, 0.48 GB free** (other
+  sessions' processes).
+- Result: **exit code 1**.
+  - Test files: 1 failed, 152 passed (153).
+  - Tests: **1 failed, 1,348 passed (1,349)**.
+  - 528 s of vitest time, 535 s wall.
+  - No timeouts.
+- The single failure was this pass's new fail-open page test. `mockRollbackUnconfirmed` still
+  held a call from an earlier test in the same file, so `not.toHaveBeenCalled` failed. Run
+  alone it had passed. The fix (`f5fcfcc`) clears the spy.
+- Re-run of the affected files only (whole terminal page file + hook file, one fork):
+  **145/145, exit 0**.
+- **This is not a clean full run.** No full web run has been made on `f5fcfcc` or later. The
+  only changes since `25d7d98` are that test and the P40R2 test/docs merge.
+- P40R2's own runbook reports a clean third full run on its tree (152/152, 1,316/1,316). That
+  run was on the P40 tree, not the integrated tree.
+
+**API, affected suites** (`stock-availability`, `products`, `transactions`,
+`p40-route-boundaries`, `settings`):
+- Run with one fork and `TEST_DATABASE_URL` set to `pos_p41r`.
+- Result: **33 files passed, 2 skipped; 836 tests passed, 27 skipped; exit 0**. This included
+  the real-Postgres transaction integration tests.
+- Skipped: `products.integration` (gated on the legacy `TEST_REDIS_URL`) and the opt-in
+  `publication-budget.measure`.
+
+**Static checks and builds on `f5fcfcc`:**
+
+| Check | Result |
+| --- | --- |
+| `tsc --noEmit` web / API / shared | clean / clean / clean |
+| API `tsc` build | OK |
+| ESLint, web (whole app) | 0 errors, 1 pre-existing warning (`<img>` in two-factor section) |
+| ESLint, API (changed modules) | clean |
+| Web `next build` | OK, 463 s |
+
+**Browser, other checks:**
+- P39 editor spec (`pos-perf-p39-products-management.spec.ts`, Admin Dashboard Desktop, one
+  worker, :3300): **4 passed (5.0 min), exit 0**.
+- P40 navigation (`p40-nav.mjs`, :3300, desktop 1440×900 and phone 390×844):
+  - Supervisors is highlighted on `/admin/employees/:id`, and the breadcrumb doesn't show the
+    id.
+  - Branches is highlighted on `/admin/branch-accounts`.
+- Reused P40R2 evidence: the files P40R changed are byte-identical in the integrated tree
+  (`git diff 4de80b3 HEAD` over those paths is empty). P40R2's attendance-label and
+  navigation browser results and its 20/20 real API + Storage scenarios therefore apply to
+  this code.
+
+**Not verified in this pass:**
+- **P40 proof photos in a browser against real Storage.**
+  - The shared local Supabase Storage didn't answer HTTP during this pass:
+    `/storage/v1/status` and `/version` timed out, although Docker reported the container
+    healthy.
+  - The P40R2 spec seeds by uploading to Storage, so it can't run.
+  - Storage is shared with other sessions, so it was not restarted.
+  - P40R2 reports the same gap (its proof-photo browser cases did not run).
+- PWA and POS Terminal (Mobile) Playwright projects.
+- Offline mode with the new cart flow.
+- Real devices.
+- Production.
+
+**Environment incident (local only, recorded for honesty).** The API reads `API_PORT`, not
+`PORT`. The first API start of this pass therefore listened on the default **:4000** for about
+3 minutes, using `pos_p41r` only. Nothing else was listening on :4000 at the time. It was
+stopped, `API_PORT=4300` was added to the git-ignored `.env`, and it was restarted on :4300.
+
+### 8.6 Remaining release blockers
+
+1. **A clean full web suite run on the final integration SHA.** The one run here had 1
+   test-isolation failure, since fixed and re-verified only in the affected files.
+2. **Proof photos in a browser against healthy Storage** (P40/P40R2 carry-over).
+3. **Integrate into shared `main`** (not part of this pass), then push and CI. Deploy order:
+   - P40R: follow the corrected deploy sequence in its runbook. Its web refuses, with an
+     explanation, to build a download link from an older API.
+   - P41/P41R work in either order.
+4. **Product sign-off on the 10 s pre-check timeout.** It doesn't change the fail-open policy;
+   it only bounds how long Charge waits for an advisory answer.
+5. **Pilot spot checks:**
+   - instant taps;
+   - burst shortage message;
+   - "Stock couldn't be checked" note with Check again;
+   - Charge waits for "Checking stock…".
+
+**Local leftovers in `pos_p41r`** (disposable; drop the database when done):
+- the seeded users and Main Branch;
+- the P41 fixtures (suffix `p41r`);
+- 5 completed probe sales `MAIN01-20261028-000001…000005`;
+- the staff clock-in;
+- the P39 spec's seeded branches and products.

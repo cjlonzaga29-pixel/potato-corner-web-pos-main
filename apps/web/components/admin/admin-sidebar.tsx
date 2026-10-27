@@ -26,6 +26,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { NavLinkIcon } from '@/components/shared/nav-link-icon';
 import type { NavItem } from '@/components/shared/nav-types';
+import { isNavItemActive } from '@/components/shared/nav-active';
 
 /**
  * Route paths match the existing app/(admin)/admin/* folder structure
@@ -48,8 +49,10 @@ export const ADMIN_NAV_ITEMS: ReadonlyArray<NavItem> = [
   { label: 'Dashboard', href: '/admin/dashboard', icon: LayoutDashboard },
   // POS-PERF-P40 — Branch Accounts merged into Branches (Manage → Account);
   // Employees renamed Supervisors. Old URLs redirect (see their page.tsx).
-  { label: 'Branches', href: '/admin/branches', icon: Building2 },
-  { label: 'Supervisors', href: '/admin/supervisors', icon: Users },
+  // POS-PERF-P40R — person pages stay at /admin/employees/:id, so they
+  // highlight Supervisors; the redirecting old list URLs do the same.
+  { label: 'Branches', href: '/admin/branches', icon: Building2, activePrefixes: ['/admin/branch-accounts'] },
+  { label: 'Supervisors', href: '/admin/supervisors', icon: Users, activePrefixes: ['/admin/employees'] },
   { label: 'Attendance', href: '/admin/attendance', icon: ClipboardCheck },
   { label: 'Reports', href: '/admin/reports', icon: BarChart3 },
   { label: 'Settings', href: '/admin/settings', icon: Settings },
@@ -201,7 +204,7 @@ export function AdminSidebar() {
             );
           }
 
-          const isActive = pathname === item.href || pathname?.startsWith(`${item.href}/`);
+          const isActive = isNavItemActive(pathname, item);
           const link = (
             <Link
               href={item.href as string}
@@ -324,7 +327,7 @@ export function AdminSidebar() {
               );
             }
 
-            const isActive = pathname === item.href || pathname?.startsWith(`${item.href}/`);
+            const isActive = isNavItemActive(pathname, item);
             return (
               <div key={item.label}>
                 {sectionHeading}

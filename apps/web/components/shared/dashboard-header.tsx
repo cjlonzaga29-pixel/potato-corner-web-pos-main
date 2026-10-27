@@ -29,6 +29,7 @@ import { NotificationBellConnected } from '@/components/shared/notification-bell
 import { ThemeToggle } from '@/components/shared/theme-toggle';
 import { NavSearchCommand } from '@/components/shared/nav-search-command';
 import type { NavItem } from '@/components/shared/nav-types';
+import { matchesActivePrefix } from '@/components/shared/nav-active';
 
 function findBreadcrumbLabel(pathname: string | null, navItems: ReadonlyArray<NavItem>): string {
   if (!pathname) return 'Dashboard';
@@ -38,6 +39,9 @@ function findBreadcrumbLabel(pathname: string | null, navItems: ReadonlyArray<Na
       if (child.href.split('?')[0] === pathname) return `${item.label} / ${child.label}`;
     }
   }
+  // POS-PERF-P40R — e.g. /admin/employees/:id reads "Supervisors", not the person's id.
+  const owner = navItems.find((item) => matchesActivePrefix(pathname, item));
+  if (owner) return owner.label;
   const lastSegment = pathname.split('/').filter(Boolean).pop() ?? 'dashboard';
   return lastSegment
     .split('-')

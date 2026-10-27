@@ -31,3 +31,43 @@ describe('useDashboardRecentTransactions', () => {
     expect(apiClient).toHaveBeenCalledWith(expect.stringContaining('/api/transactions?'));
   });
 });
+
+// POS-PERF-P40R — a confirmed-missing proof file is permanent; temporary failures keep retrying.
+describe('proof photo queries', () => {
+  function retryingWrapper({ children }: { children: ReactNode }) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } });
+    return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+  }
+
+  it('does not retry PROOF_FILE_MISSING and keeps the code on the error', async () => {
+    vi.mocked(apiClient).mockReset();
+    vi.mocked(apiClient).mockResolvedValue({
+      data: null,
+      error: { code: 'PROOF_FILE_MISSING', message: 'This photo is no longer in storage, so it cannot be shown or downloaded.' },
+      meta: null,
+    });
+    const { usePaymentProof } = await import('./use-transactions.js');
+    const { isProofFileMissing } = await import('@/lib/proof-errors');
+    const { result } = renderHook(() => usePaymentProof('txn-1', true), { wrapper: retryingWrapper });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(apiClient).toHaveBeenCalledTimes(1);
+    expect(isProofFileMissing(result.current.error)).toBe(true);
+  });
+
+  it('retries a temporary signing failure and does not call it missing', async () => {
+    vi.mocked(apiClient).mockReset();
+    vi.mocked(apiClient).mockResolvedValue({
+      data: null,
+      error: { code: 'DISCOUNT_PROOF_URL_FAILED', message: 'Could not generate discount proof URL' },
+      meta: null,
+    });
+    const { useDiscountProof } = await import('./use-transactions.js');
+    const { isProofFileMissing } = await import('@/lib/proof-errors');
+    const { result } = renderHook(() => useDiscountProof('txn-1', true), { wrapper: retryingWrapper });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(apiClient).toHaveBeenCalledTimes(3);
+    expect(isProofFileMissing(result.current.error)).toBe(false);
+  });
+});

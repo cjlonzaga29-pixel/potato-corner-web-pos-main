@@ -2036,6 +2036,7 @@ describe('TerminalPage — Charge waits for an unresolved stock check (POS-PERF-
     mockUpdateItemQuantity.mockImplementation((index: number, quantity: number) => {
       cart = cart.map((item, i) => (i === index ? { ...item, quantity } : item));
     });
+    mockRollbackUnconfirmed.mockClear();
     mockCheckCartAvailabilityMutateAsync.mockRejectedValueOnce(new Error('Could not reach the server.'));
     mockCreateTransactionMutateAsync.mockResolvedValueOnce({ id: 'txn-1', receipt_number: 'BR-001' });
     render(<TerminalPage />);

@@ -19,7 +19,7 @@ const SHORT: CartAvailabilityResult = { ok: false, shortfalls: [{ inventory_item
 const water: PosCartItem = { product_id: 'p-water', product_variant_id: 'v-water', quantity: 1 };
 const friesSmall: PosCartItem = { product_id: 'p-fries', product_variant_id: 'v-fries-s', quantity: 1 };
 
-function setup() {
+function setup({ timeoutMs }: { timeoutMs?: number } = {}) {
   const calls: { input: CartAvailabilityCheckInput; answer: Deferred }[] = [];
   const check = vi.fn(
     (input: CartAvailabilityCheckInput) =>
@@ -39,6 +39,7 @@ function setup() {
         rollbackUnconfirmed: (unconfirmed) => useCartStore.getState().rollbackUnconfirmed(unconfirmed),
         onShortfall,
         onUnavailable,
+        timeoutMs,
       }),
     { initialProps: { branchId: 'branch-1', sessionKey: 'cashier-1' } },
   );
@@ -70,6 +71,13 @@ function setQuantity(hook: Hook, item: PosCartItem, quantity: number) {
 async function flush() {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+/** Waits real time — for the per-check timeout, which tests set to a few ms. */
+async function wait(ms: number) {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, ms));
   });
 }
 
@@ -134,7 +142,11 @@ describe('useCartStockValidation', () => {
     await answer(calls, 1, SHORT);
     expect(quantityOf(friesSmall)).toBe(2);
     expect(quantityOf(friesLarge)).toBe(0);
-    expect(onShortfall).toHaveBeenCalledWith(['Potato'], 2);
+    // Names exactly what was taken back, per line, so the cashier can tell which additions were undone.
+    expect(onShortfall).toHaveBeenCalledWith(['Potato'], 2, [
+      { item: { ...friesSmall, quantity: 3 }, units: 1 },
+      { item: friesLarge, units: 1 },
+    ]);
     expect(hook.result.current.status).toBe('idle');
   });
 
@@ -148,7 +160,7 @@ describe('useCartStockValidation', () => {
     expect(calls[1]?.input.lines).toEqual([{ product_variant_id: 'v-fries-s', quantity: 3 }]);
     await answer(calls, 1, SHORT);
     expect(quantityOf(friesSmall)).toBe(1);
-    expect(onShortfall).toHaveBeenCalledWith(['Potato'], 2);
+    expect(onShortfall).toHaveBeenCalledWith(['Potato'], 2, [{ item: { ...friesSmall, quantity: 3 }, units: 2 }]);
   });
 
   it('ignores an out-of-order shortfall for an older cart and keeps the latest intent', async () => {
@@ -272,6 +284,125 @@ describe('useCartStockValidation', () => {
     await flush();
     expect(hook.result.current.hasUnresolved()).toBe(true);
     await answer(calls, 0, OK);
+    expect(hook.result.current.hasUnresolved()).toBe(false);
+  });
+
+  // POS-PERF-P41R — failure modes of the check itself. Each one is advisory
+  // (fail-open: the cart is kept and Charge comes back), never a shortfall.
+  describe('when the check itself fails', () => {
+    function expectFailedOpen(hook: Hook, onShortfall: ReturnType<typeof setup>['onShortfall']) {
+      expect(hook.result.current.status).toBe('unverified');
+      expect(hook.result.current.pendingKeys.size).toBe(0);
+      expect(hook.result.current.hasUnresolved()).toBe(false);
+      expect(onShortfall).not.toHaveBeenCalled();
+    }
+
+    it('times out a check that never answers, keeps the cart, and releases Charge', async () => {
+      const { hook, calls, onShortfall, onUnavailable } = setup({ timeoutMs: 20 });
+      tapAdd(hook, water);
+      tapAdd(hook, water);
+      await flush();
+      expect(hook.result.current.hasUnresolved()).toBe(true);
+      await wait(40);
+      expect(calls).toHaveLength(1);
+      expect(quantityOf(water)).toBe(2);
+      expect(onUnavailable).toHaveBeenCalledTimes(1);
+      expectFailedOpen(hook, onShortfall);
+    });
+
+    it('ignores the timed-out request when it finally answers, even after a retry is in flight', async () => {
+      const { hook, calls, onShortfall } = setup({ timeoutMs: 20 });
+      tapAdd(hook, water);
+      await flush();
+      await wait(40);
+      act(() => hook.result.current.recheck());
+      await flush();
+      expect(calls).toHaveLength(2);
+      expect(hook.result.current.status).toBe('checking');
+
+      // The abandoned first request answers out of order — it must not take anything back.
+      await answer(calls, 0, SHORT);
+      expect(quantityOf(water)).toBe(1);
+      expect(onShortfall).not.toHaveBeenCalled();
+      expect(hook.result.current.status).toBe('checking');
+
+      await answer(calls, 1, OK);
+      expect(hook.result.current.status).toBe('idle');
+      expect(hook.result.current.hasUnresolved()).toBe(false);
+      expect(quantityOf(water)).toBe(1);
+    });
+
+    it.each([
+      ['an empty object', {}],
+      ['ok: false with no shortfall list', { ok: false }],
+      ['ok: false with an empty shortfall list', { ok: false, shortfalls: [] }],
+      ['a string', 'OK'],
+      ['null', null],
+    ])('treats a malformed answer (%s) as unavailable, not as a shortfall', async (_label, malformed) => {
+      const { hook, calls, onShortfall, onUnavailable } = setup();
+      tapAdd(hook, water);
+      tapAdd(hook, friesSmall);
+      await flush();
+      await answer(calls, 0, malformed as unknown as CartAvailabilityResult);
+      expect(quantityOf(water)).toBe(1);
+      expect(quantityOf(friesSmall)).toBe(1);
+      expect(onUnavailable).toHaveBeenCalledTimes(1);
+      expectFailedOpen(hook, onShortfall);
+    });
+
+    it('treats an expired session (refresh failed, the request rejects) as unavailable and recovers on retry', async () => {
+      const { hook, calls, onShortfall, onUnavailable } = setup();
+      tapAdd(hook, water);
+      await flush();
+      await answer(calls, 0, new Error('Your session has expired. Please sign in again.'));
+      expect(quantityOf(water)).toBe(1);
+      expect(onUnavailable).toHaveBeenCalledTimes(1);
+      expectFailedOpen(hook, onShortfall);
+
+      act(() => hook.result.current.recheck());
+      await flush();
+      expect(hook.result.current.hasUnresolved()).toBe(true);
+      await answer(calls, 1, SHORT);
+      // A forced re-check with nothing unconfirmed never takes anything back: the
+      // lines were already in the cart, so a shortfall is reported, not undone.
+      expect(quantityOf(water)).toBe(1);
+      expect(onShortfall).toHaveBeenCalledWith(['Potato'], 0, []);
+      expect(hook.result.current.status).toBe('idle');
+      expect(hook.result.current.hasUnresolved()).toBe(false);
+    });
+  });
+
+  it('interleaved + and − while a check is pending end at the exact intended quantity and payload', async () => {
+    const { hook, calls, onShortfall } = setup();
+    tapAdd(hook, water);
+    await flush();
+    setQuantity(hook, water, 2);
+    setQuantity(hook, water, 3);
+    setQuantity(hook, water, 2);
+    setQuantity(hook, water, 3);
+    await flush();
+    expect(calls).toHaveLength(1);
+    expect(quantityOf(water)).toBe(3);
+
+    await answer(calls, 0, OK);
+    expect(calls[1]?.input.lines).toEqual([{ product_variant_id: 'v-water', quantity: 3 }]);
+    await answer(calls, 1, SHORT);
+    // The OK covered 1; the 2 units added after it are the only ones taken back.
+    expect(quantityOf(water)).toBe(1);
+    expect(onShortfall).toHaveBeenCalledWith(['Potato'], 2, [{ item: { ...water, quantity: 3 }, units: 2 }]);
+    expect(hook.result.current.hasUnresolved()).toBe(false);
+  });
+
+  it('a late OK never resurrects a line removed and re-added smaller in the meantime', async () => {
+    const { hook, calls } = setup();
+    tapAdd(hook, { ...water, quantity: 3 });
+    await flush();
+    setQuantity(hook, water, 0);
+    tapAdd(hook, water);
+    await answer(calls, 0, OK);
+    // An OK for 3 also covers 1, so nothing is left to check and nothing is raised back to 3.
+    expect(quantityOf(water)).toBe(1);
+    expect(calls).toHaveLength(1);
     expect(hook.result.current.hasUnresolved()).toBe(false);
   });
 });

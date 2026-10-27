@@ -470,12 +470,24 @@ export default function TerminalPage() {
     check: checkCartAvailability.mutateAsync,
     getItems,
     rollbackUnconfirmed,
-    onShortfall: (names, removed) => {
+    // POS-PERF-P41R — names exactly which unconfirmed additions were taken
+    // back. A check covering a burst only says the total doesn't fit, not
+    // how many would, so it never claims a maximum — only that fewer may fit.
+    onShortfall: (names, removed, takenBack) => {
+      const lineName = (item: PosCartItem) => {
+        const info = variantIndex.get(item.product_variant_id);
+        if (!info) return 'an item';
+        return info.variant.name ? `${info.product.name} (${info.variant.name})` : info.product.name;
+      };
+      const tookBack = takenBack.map(({ item, units }) => `${units} × ${lineName(item)}`).join(', ');
+      const severalOfOne = takenBack.some(({ units }) => units > 1);
       toast.error("Can't add — not enough stock", {
         id: 'cart-stock-shortfall',
         description:
           removed > 0
-            ? `Running low on ${names.join(', ')}. Took back the ${removed === 1 ? 'item' : `${removed} items`} just added — the rest of the cart is unchanged. Try a smaller quantity, or ask a supervisor to restock.`
+            ? `Running low on ${names.join(', ')}. Took back ${tookBack} just added, not yet confirmed — the rest of the cart is unchanged. ${
+                severalOfOne ? 'Fewer may still fit: add them again one at a time.' : 'Try a smaller quantity, or ask a supervisor to restock.'
+              }`
             : `Running low on ${names.join(', ')} for this cart. Checkout will refuse it until the quantity is lowered or stock is added.`,
       });
     },
@@ -2553,7 +2565,7 @@ export default function TerminalPage() {
         ))}
         {stockValidation.status === 'unverified' && (
           <div role="status" className="flex items-center justify-between gap-2 rounded-md border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
-            <span>Stock couldn&apos;t be checked. Items stay in the cart; checkout still checks stock.</span>
+            <span>Stock couldn&apos;t be checked. Items stay in the cart and you can still charge — the sale is checked against stock when it&apos;s submitted.</span>
             <Button variant="outline" size="sm" className="h-7 shrink-0 px-2 text-xs" onClick={stockValidation.recheck}>
               Check again
             </Button>

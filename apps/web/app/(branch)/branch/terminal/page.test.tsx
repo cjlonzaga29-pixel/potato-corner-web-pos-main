@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as React from 'react';
 import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
+import { toast } from 'sonner';
 import TerminalPage from './page';
 import type { PosCatalogProduct, CreateTransactionInput } from '@potato-corner/shared';
 import type { SaleSnapshot } from '@/components/pos/sale-status-modal';
@@ -2024,6 +2025,76 @@ describe('TerminalPage — Charge waits for an unresolved stock check (POS-PERF-
 
     await act(async () => release({ ok: true, shortfalls: [] }));
     await waitFor(() => expect(screen.getByRole('button', { name: /Charge/ })).not.toBeDisabled());
+  });
+
+  // POS-PERF-P41R — fail-open is the existing policy: a check that can't run
+  // never blocks the sale. Charge comes back once the request settles, the
+  // cart says why, and checkout's atomic reservation decides.
+  it('fails open: after the check fails, Charge comes back, the cart says so, and the sale can be submitted', async () => {
+    let cart = [{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }];
+    mockCartItems.mockImplementation(() => cart);
+    mockUpdateItemQuantity.mockImplementation((index: number, quantity: number) => {
+      cart = cart.map((item, i) => (i === index ? { ...item, quantity } : item));
+    });
+    mockCheckCartAvailabilityMutateAsync.mockRejectedValueOnce(new Error('Could not reach the server.'));
+    mockCreateTransactionMutateAsync.mockResolvedValueOnce({ id: 'txn-1', receipt_number: 'BR-001' });
+    render(<TerminalPage />);
+    openCheckout();
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '1000' } });
+
+    fireEvent.click(firstOf(screen.getAllByRole('button', { name: 'Increase Mega Mix Fries quantity' })));
+
+    expect(await screen.findByText(/Stock couldn.t be checked\. Items stay in the cart and you can still charge/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: /Charge/ })).not.toBeDisabled());
+    expect(screen.queryByText('Checking stock for the latest cart changes…')).not.toBeInTheDocument();
+    expect(mockRollbackUnconfirmed).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: /Charge/ }));
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(1));
+  });
+
+  it('after a burst shortfall, names exactly what was taken back and says fewer may fit, never a maximum', async () => {
+    const toastError = vi.spyOn(toast, 'error');
+    let cart: { product_id: string; product_variant_id: string; quantity: number }[] = [];
+    mockCartItems.mockImplementation(() => cart);
+    mockAddItem.mockImplementation((item: { product_id: string; product_variant_id: string; quantity: number }) => {
+      const existing = cart.find((line) => line.product_variant_id === item.product_variant_id);
+      cart = existing ? cart.map((line) => (line === existing ? { ...line, quantity: line.quantity + item.quantity } : line)) : [...cart, item];
+    });
+    mockRollbackUnconfirmed.mockClear().mockImplementationOnce(() => {
+      cart = [];
+      return 2;
+    });
+    mockCheckCartAvailabilityMutateAsync.mockClear().mockResolvedValueOnce({
+      ok: false,
+      shortfalls: [{ inventory_item_id: 'i-potato', item_name: 'Potato', available: 100, required: 400 }],
+    });
+    mockUseCatalog.mockReturnValue({
+      data: catalogWith([slotVariant({ flavors: [], flavor_slots: [], live_ready: true, readiness_code: 'READY', missing_flavor_ids: [] })]),
+      isLoading: false,
+    });
+    try {
+      render(<TerminalPage />);
+      // Two taps in the same tick: one request covers both, so it can only say the pair doesn't fit.
+      const card = screen.getByRole('button', { name: /^Mega Mix Fries, Mega Mix,/ });
+      fireEvent.click(card);
+      fireEvent.click(card);
+
+      await waitFor(() => expect(mockRollbackUnconfirmed).toHaveBeenCalledWith({ 'variant-1|||': 2 }));
+      expect(mockCheckCartAvailabilityMutateAsync).toHaveBeenCalledTimes(1);
+      expect(mockCheckCartAvailabilityMutateAsync).toHaveBeenCalledWith(expect.objectContaining({ lines: [{ product_variant_id: 'variant-1', quantity: 2 }] }));
+      await waitFor(() => expect(toastError).toHaveBeenCalled());
+      const [title, options] = toastError.mock.calls.at(-1) ?? [];
+      expect(title).toBe("Can't add — not enough stock");
+      const description = String((options as { description?: string } | undefined)?.description);
+      expect(description).toContain('Running low on Potato.');
+      expect(description).toContain('Took back 2 × Mega Mix Fries (Mega Mix) just added, not yet confirmed');
+      expect(description).toContain('Fewer may still fit');
+      expect(description).not.toMatch(/maximum|at most|only \d/i);
+    } finally {
+      toastError.mockRestore();
+      mockAddItem.mockReset();
+    }
   });
 });
 

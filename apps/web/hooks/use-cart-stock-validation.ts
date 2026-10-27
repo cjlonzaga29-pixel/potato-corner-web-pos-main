@@ -4,8 +4,46 @@ import { cartLineKey, type PosCartItem } from '@/stores/cart.store';
 
 export type CartStockStatus = 'idle' | 'checking' | 'unverified';
 
+/** A line a shortfall took units back from, as it was just before. */
+export interface TakenBackLine {
+  item: PosCartItem;
+  units: number;
+}
+
+/**
+ * POS-PERF-P41R — the request has no timeout of its own, and Charge waits for
+ * the answer, so one hung request (a stalled API, an exhausted pool) would hold
+ * Charge forever. Past this it counts as unavailable, like a network error.
+ */
+export const STOCK_CHECK_TIMEOUT_MS = 10_000;
+
 function quantitiesByKey(items: PosCartItem[]): Map<string, number> {
   return new Map(items.map((item) => [cartLineKey(item), item.quantity]));
+}
+
+/** Only a well-formed answer can confirm or take back units; anything else is treated as the check failing. */
+function isAvailabilityResult(value: unknown): value is CartAvailabilityResult {
+  if (typeof value !== 'object' || value === null) return false;
+  const { ok, shortfalls } = value as { ok?: unknown; shortfalls?: unknown };
+  if (typeof ok !== 'boolean' || !Array.isArray(shortfalls)) return false;
+  if (!ok && shortfalls.length === 0) return false;
+  return shortfalls.every((shortfall: unknown) => typeof shortfall === 'object' && shortfall !== null && typeof (shortfall as { item_name?: unknown }).item_name === 'string');
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Stock check timed out')), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 /** The whole cart as the availability check reads it — add-on options included, since checkout deducts their mapped ingredients too. */
@@ -28,10 +66,11 @@ interface UseCartStockValidationOptions {
   getItems: () => PosCartItem[];
   /** Takes the given unconfirmed units back out of the cart, by cartLineKey; returns how many were removed. */
   rollbackUnconfirmed: (unconfirmed: Record<string, number>) => number;
-  /** A shortfall for the current cart: `removed` unconfirmed units were already taken back out of it. */
-  onShortfall: (itemNames: string[], removed: number) => void;
-  /** The check itself failed (network/API). The cart is kept as-is — the reservation at checkout is still the final guard. */
+  /** A shortfall for the current cart: `removed` unconfirmed units were already taken back out of it, `takenBack` says from which lines. */
+  onShortfall: (itemNames: string[], removed: number, takenBack: TakenBackLine[]) => void;
+  /** The check itself failed (network/API, timeout, malformed answer). The cart is kept as-is — the reservation at checkout is still the final guard. */
   onUnavailable: () => void;
+  timeoutMs?: number;
 }
 
 /**
@@ -54,7 +93,16 @@ interface UseCartStockValidationOptions {
  * (fail-open, same as before P41) and reports itself as unverified until a
  * later check succeeds — checkout's atomic reservation stays the real guard.
  */
-export function useCartStockValidation({ branchId, sessionKey, check, getItems, rollbackUnconfirmed, onShortfall, onUnavailable }: UseCartStockValidationOptions) {
+export function useCartStockValidation({
+  branchId,
+  sessionKey,
+  check,
+  getItems,
+  rollbackUnconfirmed,
+  onShortfall,
+  onUnavailable,
+  timeoutMs = STOCK_CHECK_TIMEOUT_MS,
+}: UseCartStockValidationOptions) {
   const unconfirmedRef = useRef(new Map<string, number>());
   const [pendingKeys, setPendingKeys] = useState<ReadonlySet<string>>(() => new Set());
   const [status, setStatus] = useState<CartStockStatus>('idle');
@@ -63,9 +111,9 @@ export function useCartStockValidation({ branchId, sessionKey, check, getItems, 
   const forceRef = useRef(false);
   const epochRef = useRef(0);
   const disposedRef = useRef(false);
-  const latest = useRef({ branchId, sessionKey, check, getItems, rollbackUnconfirmed, onShortfall, onUnavailable });
+  const latest = useRef({ branchId, sessionKey, check, getItems, rollbackUnconfirmed, onShortfall, onUnavailable, timeoutMs });
   useLayoutEffect(() => {
-    latest.current = { branchId, sessionKey, check, getItems, rollbackUnconfirmed, onShortfall, onUnavailable };
+    latest.current = { branchId, sessionKey, check, getItems, rollbackUnconfirmed, onShortfall, onUnavailable, timeoutMs };
   });
 
   const publish = useCallback(() => setPendingKeys(new Set(unconfirmedRef.current.keys())), []);
@@ -98,7 +146,8 @@ export function useCartStockValidation({ branchId, sessionKey, check, getItems, 
     inFlightRef.current = true;
     let result: CartAvailabilityResult | null = null;
     try {
-      result = await latest.current.check({ branch_id: requestBranchId, lines: toAvailabilityLines(snapshot) });
+      const answer: unknown = await withTimeout(latest.current.check({ branch_id: requestBranchId, lines: toAvailabilityLines(snapshot) }), latest.current.timeoutMs);
+      result = isAvailabilityResult(answer) ? answer : null;
     } catch {
       result = null;
     } finally {
@@ -127,17 +176,25 @@ export function useCartStockValidation({ branchId, sessionKey, check, getItems, 
     }
     const unconfirmed = Object.fromEntries(unconfirmedRef.current);
     unconfirmedRef.current.clear();
-    if (!result) {
-      setStatus('unverified');
-      latest.current.onUnavailable();
-    } else if (!result.ok) {
-      const removed = latest.current.rollbackUnconfirmed(unconfirmed);
-      setStatus('idle');
-      latest.current.onShortfall([...new Set(result.shortfalls.map((s) => s.item_name))], removed);
-    } else {
-      setStatus('idle');
+    // Whatever a callback does, the pending marks (and so Charge) must be released.
+    try {
+      if (!result) {
+        setStatus('unverified');
+        latest.current.onUnavailable();
+      } else if (!result.ok) {
+        const takenBack = snapshot.flatMap((item) => {
+          const units = Math.min(unconfirmed[cartLineKey(item)] ?? 0, item.quantity);
+          return units > 0 ? [{ item, units }] : [];
+        });
+        const removed = latest.current.rollbackUnconfirmed(unconfirmed);
+        setStatus('idle');
+        latest.current.onShortfall([...new Set(result.shortfalls.map((s) => s.item_name))], removed, takenBack);
+      } else {
+        setStatus('idle');
+      }
+    } finally {
+      publish();
     }
-    publish();
   };
 
   const noteIncrease = useCallback(

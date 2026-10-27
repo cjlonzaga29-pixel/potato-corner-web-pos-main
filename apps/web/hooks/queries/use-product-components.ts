@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type { CreateProductComponentInput, ProductComponentResponse, UpdateProductComponentInput } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
+import { productApiError } from './use-products';
 
 interface ApiErrorShape {
   error: { code: string; message?: string } | string | null;
@@ -61,7 +62,8 @@ export function useUpdateProductComponent(productVariantId: string, componentId:
         method: 'PATCH',
         body: JSON.stringify(input),
       });
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to update recipe component'));
+      // POS-PERF-P41 — keeps the code so the form can tell a MAPPING_CONFLICT apart.
+      if (!response.data) throw productApiError(response, 'Failed to update recipe component');
       return response.data;
     },
     onSuccess: () => {

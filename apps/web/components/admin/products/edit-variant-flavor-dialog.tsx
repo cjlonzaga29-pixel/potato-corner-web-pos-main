@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import type { ProductVariantResponse } from '@potato-corner/shared';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
+import { FormSaveError } from '@/components/shared/forms/form-save-error';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
@@ -27,17 +28,26 @@ export function EditVariantFlavorDialog({ open, onOpenChange, productId, variant
     if (open) {
       setPricePremium(flavor.price_premium);
       setIsAvailable(flavor.is_available);
+      updateVariantFlavor.reset();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-sync only when the form opens or the flavor changes
   }, [open, flavor]);
 
+  const hasUnsavedInput = open && (pricePremium !== flavor.price_premium || isAvailable !== flavor.is_available);
+
   async function handleSubmit() {
-    await updateVariantFlavor.mutateAsync({ price_premium: pricePremium, is_available: isAvailable });
+    try {
+      await updateVariantFlavor.mutateAsync({ price_premium: pricePremium, is_available: isAvailable });
+    } catch {
+      // Shown inline (FormSaveError); the entered values stay.
+      return;
+    }
     onOpenChange(false);
   }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-sm">
+      <DialogContent className="sm:max-w-sm" hasUnsavedInput={hasUnsavedInput}>
         <DialogHeader>
           <DialogTitle>Edit Flavor Pricing</DialogTitle>
           <DialogDescription>{flavor.name}</DialogDescription>
@@ -54,6 +64,8 @@ export function EditVariantFlavorDialog({ open, onOpenChange, productId, variant
             <Switch checked={isAvailable} onCheckedChange={setIsAvailable} />
           </div>
         </div>
+
+        <FormSaveError error={updateVariantFlavor.error} />
 
         <DialogFooter>
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>

@@ -26,6 +26,8 @@ export interface CartAvailabilityLineInput {
   productVariantId: string;
   flavorId?: string | null;
   selectedFlavors?: { slotIndex: number; snackProductVariantId: string; flavorId: string }[];
+  /** POS-PERF-P41 — add-on options whose inventory mappings checkout also deducts. */
+  selectedOptionIds?: string[];
   quantity: number;
 }
 

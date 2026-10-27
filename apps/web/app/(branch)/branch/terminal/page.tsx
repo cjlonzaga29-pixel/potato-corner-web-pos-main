@@ -19,7 +19,8 @@ import { CartLineItem, type CartLine } from '@/components/pos/cart-line-item';
 import type { DiscountChoice } from '@/components/pos/payment-footer';
 import { CheckoutWorkspace } from '@/components/pos/checkout-workspace';
 import { splitAddOnLines, isAddOnsGroup, NO_ADD_ON_KEY, type AddOnAssignments } from '@/lib/pos/split-add-ons';
-import type { PosCartItem, PosCartSelectedOption } from '@/stores/cart.store';
+import { cartLineKey, type PosCartItem, type PosCartSelectedOption } from '@/stores/cart.store';
+import { toAvailabilityLines, useCartStockValidation } from '@/hooks/use-cart-stock-validation';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -450,7 +451,7 @@ export default function TerminalPage() {
     }
   }, [activeEmployee, refreshEmployeeSession, clearTerminalOperator]);
 
-  const { items, addItem, removeItem, updateItemQuantity, replaceItem, clearCart } = useCart();
+  const { items, addItem, removeItem, updateItemQuantity, replaceItem, rollbackUnconfirmed, getItems, clearCart } = useCart();
   const {
     data: liveCatalog,
     isLoading: isCatalogLoading,
@@ -460,6 +461,32 @@ export default function TerminalPage() {
   } = useCatalog(branchId);
   useCatalogRealtimeSync(branchId);
   const checkCartAvailability = useCheckCartAvailability();
+  // POS-PERF-P41 — taps change the cart immediately; this checks the whole
+  // cart behind them (one request at a time, coalescing taps made while one
+  // is in flight) and takes back only units a confirmed shortfall refuses.
+  const stockValidation = useCartStockValidation({
+    branchId,
+    sessionKey: (isBranchAccount ? activeEmployee?.id : user?.id) ?? null,
+    check: checkCartAvailability.mutateAsync,
+    getItems,
+    rollbackUnconfirmed,
+    onShortfall: (names, removed) => {
+      toast.error("Can't add — not enough stock", {
+        id: 'cart-stock-shortfall',
+        description:
+          removed > 0
+            ? `Running low on ${names.join(', ')}. Took back the ${removed === 1 ? 'item' : `${removed} items`} just added — the rest of the cart is unchanged. Try a smaller quantity, or ask a supervisor to restock.`
+            : `Running low on ${names.join(', ')} for this cart. Checkout will refuse it until the quantity is lowered or stock is added.`,
+      });
+    },
+    onUnavailable: () => {
+      toast.warning('Stock check unavailable', {
+        id: 'cart-stock-unavailable',
+        description: 'Could not verify ingredient stock right now — the items stay in the cart and the final check still happens at checkout.',
+      });
+    },
+  });
+  const { noteIncrease, noteDecrease, noteRemoved } = stockValidation;
   // Informational only below (payment-proof storage path fallback) — never
   // gates the Charge button. The API resolves and auto-opens the cashier's
   // own active shift server-side via shiftGuard, so checkout is never
@@ -1202,6 +1229,11 @@ export default function TerminalPage() {
     [],
   );
 
+  // POS-PERF-P41 — now used only by an Add-ons edit of an existing line,
+  // which replaces that line and so is checked before it is applied (the
+  // dialog stays open on a shortfall). Every add and quantity increase goes
+  // through stockValidation above instead.
+  //
   // POS-PERF-P24 — cart-wide stock pre-check, called only at discrete
   // cashier checkpoints (a flavor/slot/add-ons confirm, a cart quantity
   // increase) — never on every keystroke or product-card render. Sums
@@ -1227,12 +1259,7 @@ export default function TerminalPage() {
       const myGeneration = ++checkGenerationRef.current;
       const requestBranchId = branchId;
       const baseline = excludeIndex === undefined ? items : items.filter((_, i) => i !== excludeIndex);
-      const lines = [...baseline, ...candidateItems].map((item) => ({
-        product_variant_id: item.product_variant_id,
-        flavor_id: item.flavor_id ?? undefined,
-        selected_flavors: item.selected_flavors,
-        quantity: item.quantity,
-      }));
+      const lines = toAvailabilityLines([...baseline, ...candidateItems]);
       let result: Awaited<ReturnType<typeof checkCartAvailability.mutateAsync>>;
       try {
         result = await checkCartAvailability.mutateAsync({ branch_id: requestBranchId, lines });
@@ -1270,10 +1297,9 @@ export default function TerminalPage() {
   // already in the catalog response, zero extra latency) blocks the tap
   // outright with an alert before any network call; low_stock never blocks.
   // A product with no flavor/slot/add-ons choices to make adds immediately
-  // on tap, so cartHasCapacityFor's one bounded check runs right here as the
-  // add itself — not per render, not per card, just once per actual add.
-  // A product that opens a dialog instead defers that same check to the
-  // dialog's own confirm handler, once the configuration is known.
+  // on tap (POS-PERF-P41: before the stock answer, which stockValidation
+  // checks for the whole cart behind it). A product that opens a dialog
+  // instead adds once that configuration is confirmed.
   const handleProductTap = useCallback(
     (product: PosCatalogProduct, variant: PosCatalogProduct['variants'][number]) => {
       if (!variant.live_ready) return;
@@ -1292,12 +1318,11 @@ export default function TerminalPage() {
         return;
       }
       if (maybeOpenAddOnsPrompt(product, variant, {})) return;
-      void (async () => {
-        if (!(await cartHasCapacityFor([{ product_id: product.id, product_variant_id: variant.id, quantity: 1 }]))) return;
-        addItem({ product_id: product.id, product_variant_id: variant.id, quantity: 1 });
-      })();
+      const item: PosCartItem = { product_id: product.id, product_variant_id: variant.id, quantity: 1 };
+      addItem(item);
+      noteIncrease(cartLineKey(item), 1);
     },
-    [maybeOpenAddOnsPrompt, addItem, cartHasCapacityFor],
+    [maybeOpenAddOnsPrompt, addItem, noteIncrease],
   );
 
   function handleAddOnsAssignmentChange(groupId: string, choiceKey: string, quantity: number) {
@@ -1427,11 +1452,15 @@ export default function TerminalPage() {
     // at this point, so the cart-wide check runs here rather than at tap
     // time. Edit mode excludes the line being replaced from the baseline so
     // its own existing requirement isn't double-counted against itself.
-    if (!(await cartHasCapacityFor(newItems, editingIndex))) return;
+    // POS-PERF-P41 — a new line is added at once and checked behind it.
     if (editingIndex !== undefined) {
+      if (!(await cartHasCapacityFor(newItems, editingIndex))) return;
       replaceItem(editingIndex, newItems);
     } else {
-      for (const item of newItems) addItem(item);
+      for (const item of newItems) {
+        addItem(item);
+        noteIncrease(cartLineKey(item), item.quantity);
+      }
     }
     setAddOnsPrompt(null);
   }
@@ -1492,7 +1521,7 @@ export default function TerminalPage() {
     [items, variantIndex],
   );
 
-  async function handleFlavorPick(flavorId: string) {
+  function handleFlavorPick(flavorId: string) {
     if (!flavorPrompt) return;
     const { product, variant } = flavorPrompt;
     if (maybeOpenAddOnsPrompt(product, variant, { flavorId })) {
@@ -1500,9 +1529,9 @@ export default function TerminalPage() {
       return;
     }
     const candidate: PosCartItem = { product_id: product.id, product_variant_id: variant.id, flavor_id: flavorId, quantity: 1 };
-    if (!(await cartHasCapacityFor([candidate]))) return;
     setFlavorPrompt(null);
     addItem(candidate);
+    noteIncrease(cartLineKey(candidate), 1);
   }
 
   function handleSlotSnackPick(slotIndex: number, snackProductVariantId: string) {
@@ -1520,7 +1549,7 @@ export default function TerminalPage() {
     });
   }
 
-  async function handleSlotAddToCart() {
+  function handleSlotAddToCart() {
     if (!slotPrompt) return;
     const selectedFlavors = slotPrompt.variant.flavor_slots.map((slot) => ({
       slot_index: slot.slot_index,
@@ -1534,28 +1563,39 @@ export default function TerminalPage() {
       return;
     }
     const candidate: PosCartItem = { product_id: product.id, product_variant_id: variant.id, selected_flavors: selectedFlavors, quantity: 1 };
-    if (!(await cartHasCapacityFor([candidate]))) return;
     setSlotPrompt(null);
     addItem(candidate);
+    noteIncrease(cartLineKey(candidate), 1);
   }
 
   // POS-PERF-P24 — a quantity decrease/removal never needs a stock check (it
-  // only frees up capacity); only an increase is validated, and only against
-  // the cart as it would be after the change — excludeIndex keeps this one
-  // line's own existing quantity from being double-counted against itself.
+  // only frees up capacity); only an increase is validated.
+  // POS-PERF-P41 — every change applies at once. An increase is checked
+  // behind it (stockValidation); a decrease or removal first cancels any of
+  // that line's still-unconfirmed units, so a late shortfall can never take
+  // back more than is left or bring a removed line back. Reads the line from
+  // the store, not a render closure, so these stay stable props for the
+  // memoized CartLineItem.
   const handleQuantityChange = useCallback(
     (index: number, quantity: number) => {
-      const current = items[index];
-      if (!current || quantity <= current.quantity) {
-        updateItemQuantity(index, quantity);
-        return;
-      }
-      void (async () => {
-        if (!(await cartHasCapacityFor([{ ...current, quantity }], index))) return;
-        updateItemQuantity(index, quantity);
-      })();
+      const current = getItems()[index];
+      if (!current) return;
+      const key = cartLineKey(current);
+      updateItemQuantity(index, quantity);
+      if (quantity <= 0) noteRemoved(key);
+      else if (quantity > current.quantity) noteIncrease(key, quantity - current.quantity);
+      else noteDecrease(key, current.quantity - quantity);
     },
-    [items, updateItemQuantity, cartHasCapacityFor],
+    [getItems, updateItemQuantity, noteIncrease, noteDecrease, noteRemoved],
+  );
+
+  const handleRemoveLine = useCallback(
+    (index: number) => {
+      const current = getItems()[index];
+      if (current) noteRemoved(cartLineKey(current));
+      removeItem(index);
+    },
+    [getItems, removeItem, noteRemoved],
   );
 
   // Memoized so it only recomputes when the cart or catalog actually change —
@@ -1622,6 +1662,7 @@ export default function TerminalPage() {
   // cashier would naturally fix them.
   const chargeDisabledReason: string | null = (() => {
     if (isChargeInFlight) return 'Checkout is already processing.';
+    if (stockValidation.status === 'checking' || stockValidation.pendingKeys.size > 0) return 'Checking stock for the latest cart changes…';
     if (!isClockedIn) return 'Clock in before completing a sale.';
     if (cartLines.length === 0) return 'Add items to the cart to start a sale.';
     if ((discountType === 'pwd' || discountType === 'senior_citizen') && discountIdReference.trim().length === 0) {
@@ -1739,6 +1780,8 @@ export default function TerminalPage() {
     // don't reliably block a second click event queued before React
     // re-renders.
     if (!branchId || chargeTokenRef.current !== null || isResolvingPriorAttempt) return;
+    // POS-PERF-P41 — never submit quantities a stock answer could still take back.
+    if (stockValidation.hasUnresolved()) return;
     const chargeToken = crypto.randomUUID();
     chargeTokenRef.current = chargeToken;
     setIsChargeInFlight(true);
@@ -2503,10 +2546,19 @@ export default function TerminalPage() {
             line={line}
             showDivider={i > 0}
             onEdit={handleEditLine}
-            onRemove={removeItem}
+            onRemove={handleRemoveLine}
             onQuantityChange={handleQuantityChange}
+            isChecking={stockValidation.pendingKeys.has(cartLineKey(line.item))}
           />
         ))}
+        {stockValidation.status === 'unverified' && (
+          <div role="status" className="flex items-center justify-between gap-2 rounded-md border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+            <span>Stock couldn&apos;t be checked. Items stay in the cart; checkout still checks stock.</span>
+            <Button variant="outline" size="sm" className="h-7 shrink-0 px-2 text-xs" onClick={stockValidation.recheck}>
+              Check again
+            </Button>
+          </div>
+        )}
       </div>
     );
 
@@ -2550,7 +2602,7 @@ export default function TerminalPage() {
       layout={isDesktop ? 'two-pane' : 'stepped'}
       cartLines={cartLines}
       onEditLine={handleEditLine}
-      onRemoveLine={removeItem}
+      onRemoveLine={handleRemoveLine}
       onQuantityChange={handleQuantityChange}
       subtotal={subtotal}
       vatAmount={vatAmount}

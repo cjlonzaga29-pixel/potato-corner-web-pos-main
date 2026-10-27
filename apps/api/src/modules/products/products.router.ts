@@ -154,10 +154,11 @@ router.post(
       if (!requireUser(req, res)) return;
       const result = await productsService.checkCartAvailability(
         req.body.branch_id,
-        req.body.lines.map((line: { product_variant_id: string; flavor_id?: string | null; selected_flavors?: { slot_index: number; snack_product_variant_id: string; flavor_id: string }[]; quantity: number }) => ({
+        req.body.lines.map((line: { product_variant_id: string; flavor_id?: string | null; selected_flavors?: { slot_index: number; snack_product_variant_id: string; flavor_id: string }[]; selected_option_ids?: string[]; quantity: number }) => ({
           productVariantId: line.product_variant_id,
           flavorId: line.flavor_id ?? null,
           selectedFlavors: line.selected_flavors?.map((sf) => ({ slotIndex: sf.slot_index, snackProductVariantId: sf.snack_product_variant_id, flavorId: sf.flavor_id })),
+          selectedOptionIds: line.selected_option_ids,
           quantity: line.quantity,
         })),
       );

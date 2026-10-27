@@ -1,8 +1,9 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
+import { FormSaveError } from '@/components/shared/forms/form-save-error';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
@@ -33,15 +34,29 @@ export function AssignOptionGroupDialog({ open, onOpenChange, productId, variant
     onOpenChange(next);
   }
 
+  // POS-PERF-P41 — Back/Escape in the product editor ask before discarding this.
+  const hasUnsavedInput = open && Boolean(optionGroupId);
+  useEffect(() => {
+    if (!open) return;
+    setOptionGroupId('');
+    assignGroup.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the form starts empty each time it opens
+  }, [open]);
+
   async function handleSubmit() {
     if (!optionGroupId) return;
-    await assignGroup.mutateAsync({ option_group_id: optionGroupId });
+    try {
+      await assignGroup.mutateAsync({ option_group_id: optionGroupId });
+    } catch {
+      // Shown inline (FormSaveError); the selection stays.
+      return;
+    }
     handleOpenChange(false);
   }
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-sm">
+      <DialogContent className="sm:max-w-sm" hasUnsavedInput={hasUnsavedInput}>
         <DialogHeader>
           <DialogTitle>Assign Option Group</DialogTitle>
           <DialogDescription>Option groups already assigned to this variant are hidden from the list.</DialogDescription>
@@ -66,6 +81,8 @@ export function AssignOptionGroupDialog({ open, onOpenChange, productId, variant
             </SelectContent>
           </Select>
         </div>
+
+        <FormSaveError error={assignGroup.error} />
 
         <DialogFooter>
           <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>

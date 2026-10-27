@@ -74,7 +74,7 @@ function errorCode(response: ApiErrorShape): string | undefined {
   return typeof response.error === 'string' ? undefined : response.error.code;
 }
 
-function productApiError(response: ApiErrorShape, fallback: string): ProductApiError {
+export function productApiError(response: ApiErrorShape, fallback: string): ProductApiError {
   return new ProductApiError(errorMessage(response, fallback), errorCode(response));
 }
 
@@ -653,7 +653,7 @@ export function useCreateVariant(productId: string) {
         method: 'POST',
         body: JSON.stringify(input),
       });
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to create variant'));
+      if (!response.data) throw productApiError(response, 'Failed to create variant');
       return response.data;
     },
     onSuccess: () => {
@@ -674,7 +674,8 @@ export function useUpdateVariant(productId: string, variantId: string) {
         method: 'PATCH',
         body: JSON.stringify(input),
       });
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to update variant'));
+      // POS-PERF-P41 — keeps the code so the size form can tell a VARIANT_CONFLICT apart.
+      if (!response.data) throw productApiError(response, 'Failed to update variant');
       return response.data;
     },
     onSuccess: () => {

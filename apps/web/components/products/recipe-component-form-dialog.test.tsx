@@ -15,7 +15,7 @@ const {
   mockUseInventoryItems: vi.fn(),
   mockUseUnitsOfMeasure: vi.fn(),
   mockUseInventoryCategories: vi.fn(() => ({ data: [], isLoading: false })),
-  mockUseCreateInventoryItem: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  mockUseCreateInventoryItem: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, error: null, reset: vi.fn() })),
   mockUseCreateProductComponent: vi.fn(),
   mockUseUpdateProductComponent: vi.fn(),
 }));
@@ -32,6 +32,8 @@ vi.mock('@/hooks/queries/use-universal-inventory', () => ({
 vi.mock('@/hooks/queries/use-product-components', () => ({
   useCreateProductComponent: mockUseCreateProductComponent,
   useUpdateProductComponent: mockUseUpdateProductComponent,
+  // POS-PERF-P41 — read only for a version conflict's Load latest.
+  useProductComponents: () => ({ refetch: vi.fn() }),
 }));
 
 /** Flat, always-rendered list — same approach as inventory-mapping-form-dialog.test.tsx for the real Radix Select. */
@@ -144,8 +146,8 @@ describe('RecipeComponentFormDialog — add mode', () => {
   it('filters the unit picker to units matching the selected item base unit dimension (WEIGHT)', () => {
     mockUseInventoryItems.mockReturnValue({ data: [ITEM], isLoading: false });
     mockUseUnitsOfMeasure.mockReturnValue({ data: UNITS, isLoading: false });
-    mockUseCreateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
-    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+    mockUseCreateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false, error: null, reset: vi.fn() });
+    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false, error: null, reset: vi.fn() });
 
     render(<RecipeComponentFormDialog open onOpenChange={vi.fn()} productVariantId="variant-1" existingComponents={[]} />);
 
@@ -161,8 +163,8 @@ describe('RecipeComponentFormDialog — add mode', () => {
     const mutateAsync = vi.fn().mockResolvedValue(undefined);
     mockUseInventoryItems.mockReturnValue({ data: [ITEM], isLoading: false });
     mockUseUnitsOfMeasure.mockReturnValue({ data: UNITS, isLoading: false });
-    mockUseCreateProductComponent.mockReturnValue({ mutateAsync, isPending: false });
-    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+    mockUseCreateProductComponent.mockReturnValue({ mutateAsync, isPending: false, error: null, reset: vi.fn() });
+    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false, error: null, reset: vi.fn() });
 
     render(<RecipeComponentFormDialog open onOpenChange={vi.fn()} productVariantId="variant-1" existingComponents={[]} />);
 
@@ -183,8 +185,8 @@ describe('RecipeComponentFormDialog — add mode', () => {
   it('displays the selected item Inventory Category and Base Unit as read-only, and updates them when the item changes', () => {
     mockUseInventoryItems.mockReturnValue({ data: [ITEM, ITEM_2], isLoading: false });
     mockUseUnitsOfMeasure.mockReturnValue({ data: UNITS, isLoading: false });
-    mockUseCreateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
-    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+    mockUseCreateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false, error: null, reset: vi.fn() });
+    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false, error: null, reset: vi.fn() });
 
     render(<RecipeComponentFormDialog open onOpenChange={vi.fn()} productVariantId="variant-1" existingComponents={[]} />);
 
@@ -205,8 +207,8 @@ describe('RecipeComponentFormDialog — add mode', () => {
   it('shows a deduction preview once quantity and unit are set', () => {
     mockUseInventoryItems.mockReturnValue({ data: [ITEM], isLoading: false });
     mockUseUnitsOfMeasure.mockReturnValue({ data: UNITS, isLoading: false });
-    mockUseCreateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
-    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+    mockUseCreateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false, error: null, reset: vi.fn() });
+    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false, error: null, reset: vi.fn() });
 
     render(<RecipeComponentFormDialog open onOpenChange={vi.fn()} productVariantId="variant-1" existingComponents={[]} />);
 
@@ -223,8 +225,8 @@ describe('RecipeComponentFormDialog — add mode', () => {
   it('includes the product variant label in the deduction preview', () => {
     mockUseInventoryItems.mockReturnValue({ data: [ITEM], isLoading: false });
     mockUseUnitsOfMeasure.mockReturnValue({ data: UNITS, isLoading: false });
-    mockUseCreateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
-    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+    mockUseCreateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false, error: null, reset: vi.fn() });
+    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false, error: null, reset: vi.fn() });
 
     render(
       <RecipeComponentFormDialog
@@ -248,8 +250,8 @@ describe('RecipeComponentFormDialog — add mode', () => {
   it('defaults Quantity Required to 1 for a COUNT-dimension item (packaging)', () => {
     mockUseInventoryItems.mockReturnValue({ data: [ITEM_PC], isLoading: false });
     mockUseUnitsOfMeasure.mockReturnValue({ data: UNITS, isLoading: false });
-    mockUseCreateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
-    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+    mockUseCreateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false, error: null, reset: vi.fn() });
+    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false, error: null, reset: vi.fn() });
 
     render(<RecipeComponentFormDialog open onOpenChange={vi.fn()} productVariantId="variant-1" existingComponents={[]} />);
 
@@ -261,8 +263,8 @@ describe('RecipeComponentFormDialog — add mode', () => {
   it('defaults Quantity Required to 0 for a WEIGHT-dimension item', () => {
     mockUseInventoryItems.mockReturnValue({ data: [ITEM], isLoading: false });
     mockUseUnitsOfMeasure.mockReturnValue({ data: UNITS, isLoading: false });
-    mockUseCreateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
-    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+    mockUseCreateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false, error: null, reset: vi.fn() });
+    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false, error: null, reset: vi.fn() });
 
     render(<RecipeComponentFormDialog open onOpenChange={vi.fn()} productVariantId="variant-1" existingComponents={[]} />);
 
@@ -274,8 +276,8 @@ describe('RecipeComponentFormDialog — add mode', () => {
   it('defaults Quantity Required to 0 for a VOLUME-dimension item', () => {
     mockUseInventoryItems.mockReturnValue({ data: [ITEM_2], isLoading: false });
     mockUseUnitsOfMeasure.mockReturnValue({ data: UNITS, isLoading: false });
-    mockUseCreateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
-    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+    mockUseCreateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false, error: null, reset: vi.fn() });
+    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false, error: null, reset: vi.fn() });
 
     render(<RecipeComponentFormDialog open onOpenChange={vi.fn()} productVariantId="variant-1" existingComponents={[]} />);
 
@@ -288,8 +290,8 @@ describe('RecipeComponentFormDialog — add mode', () => {
     const mutateAsync = vi.fn().mockResolvedValue(undefined);
     mockUseInventoryItems.mockReturnValue({ data: [ITEM_PC], isLoading: false });
     mockUseUnitsOfMeasure.mockReturnValue({ data: UNITS, isLoading: false });
-    mockUseCreateProductComponent.mockReturnValue({ mutateAsync, isPending: false });
-    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+    mockUseCreateProductComponent.mockReturnValue({ mutateAsync, isPending: false, error: null, reset: vi.fn() });
+    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false, error: null, reset: vi.fn() });
 
     render(<RecipeComponentFormDialog open onOpenChange={vi.fn()} productVariantId="variant-1" existingComponents={[]} />);
 
@@ -311,8 +313,8 @@ describe('RecipeComponentFormDialog — edit mode', () => {
   it('displays the current item Inventory Category and Base Unit, and preserves the saved quantity and recipe unit', () => {
     mockUseInventoryItems.mockReturnValue({ data: [ITEM], isLoading: false });
     mockUseUnitsOfMeasure.mockReturnValue({ data: UNITS, isLoading: false });
-    mockUseCreateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
-    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+    mockUseCreateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false, error: null, reset: vi.fn() });
+    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false, error: null, reset: vi.fn() });
 
     render(
       <RecipeComponentFormDialog
@@ -338,8 +340,8 @@ describe('RecipeComponentFormDialog — edit mode', () => {
     const mutateAsync = vi.fn().mockResolvedValue(undefined);
     mockUseInventoryItems.mockReturnValue({ data: [ITEM], isLoading: false });
     mockUseUnitsOfMeasure.mockReturnValue({ data: UNITS, isLoading: false });
-    mockUseCreateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
-    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync, isPending: false });
+    mockUseCreateProductComponent.mockReturnValue({ mutateAsync: vi.fn(), isPending: false, error: null, reset: vi.fn() });
+    mockUseUpdateProductComponent.mockReturnValue({ mutateAsync, isPending: false, error: null, reset: vi.fn() });
 
     render(
       <RecipeComponentFormDialog

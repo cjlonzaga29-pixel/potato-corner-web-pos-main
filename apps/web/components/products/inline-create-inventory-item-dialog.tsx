@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import {
   Dialog,
@@ -10,6 +10,7 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog';
+import { FormSaveError } from '@/components/shared/forms/form-save-error';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import {
@@ -66,12 +67,25 @@ export function InlineCreateInventoryItemDialog({
     onOpenChange(next);
   }
 
+  // POS-PERF-P41 — Back/Escape in the product editor ask before discarding these.
+  const hasUnsavedInput = open && (name.trim().length > 0 || Boolean(categoryId) || Boolean(baseUnitId));
+  useEffect(() => {
+    if (open) createItem.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- a stale error is cleared each time the form opens
+  }, [open]);
+
   async function handleSubmit() {
-    const created = await createItem.mutateAsync({
-      name: name.trim(),
-      category_id: categoryId || undefined,
-      base_unit_id: baseUnitId,
-    });
+    let created;
+    try {
+      created = await createItem.mutateAsync({
+        name: name.trim(),
+        category_id: categoryId || undefined,
+        base_unit_id: baseUnitId,
+      });
+    } catch {
+      // Shown inline (FormSaveError); the entered values stay.
+      return;
+    }
     reset();
     onOpenChange(false);
     onCreated(created.id);
@@ -81,7 +95,7 @@ export function InlineCreateInventoryItemDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-sm">
+      <DialogContent className="sm:max-w-sm" hasUnsavedInput={hasUnsavedInput}>
         <DialogHeader>
           <DialogTitle>New Inventory Item</DialogTitle>
           <DialogDescription>
@@ -138,6 +152,8 @@ export function InlineCreateInventoryItemDialog({
             </p>
           </div>
         </div>
+
+        <FormSaveError error={createItem.error} />
 
         <DialogFooter>
           <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>

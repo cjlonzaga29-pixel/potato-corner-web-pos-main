@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -13,7 +13,8 @@ import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
 import { CurrencyInput } from '@/components/shared/forms/currency-input';
-import { useCreateVariant, useUpdateVariant } from '@/hooks/queries/use-products';
+import { FormSaveError } from '@/components/shared/forms/form-save-error';
+import { ProductApiError, useCreateVariant, useProduct, useUpdateVariant } from '@/hooks/queries/use-products';
 
 function optionalCoercedNumber(min: number) {
   return z.preprocess(
@@ -49,18 +50,41 @@ interface VariantFormDialogProps {
   variant?: ProductVariantResponse;
 }
 
+/**
+ * POS-PERF-P41 — a failed save stays in the form with what was typed
+ * (FormSaveError). An edit carries the version it was loaded from; if the
+ * size was saved elsewhere in between (409 VARIANT_CONFLICT) the typed values
+ * stay and "Load latest" deliberately replaces them with the saved size.
+ */
 export function VariantFormDialog({ open, onOpenChange, productId, variant }: VariantFormDialogProps) {
   const isEdit = Boolean(variant);
   const createVariant = useCreateVariant(productId);
   const updateVariant = useUpdateVariant(productId, variant?.id ?? '');
   const mutation = isEdit ? updateVariant : createVariant;
+  const { refetch: refetchProduct } = useProduct(isEdit ? productId : null);
+  const [baseVersion, setBaseVersion] = useState(variant?.version);
 
   const form = useForm<FormValues>({ resolver: zodResolver(formSchema), defaultValues: defaultValues(variant) });
+  const hasUnsavedInput = open && form.formState.isDirty;
 
   useEffect(() => {
-    if (open) form.reset(defaultValues(variant));
+    if (!open) return;
+    form.reset(defaultValues(variant));
+    setBaseVersion(variant?.version);
+    createVariant.reset();
+    updateVariant.reset();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-sync when the dialog opens or the target variant changes
   }, [open, variant]);
+
+  const conflict = mutation.error instanceof ProductApiError && mutation.error.code === 'VARIANT_CONFLICT';
+
+  async function loadLatest() {
+    const latest = (await refetchProduct()).data?.variants.find((v) => v.id === variant?.id);
+    if (!latest) return;
+    form.reset(defaultValues(latest));
+    setBaseVersion(latest.version);
+    updateVariant.reset();
+  }
 
   function handleOpenChange(next: boolean) {
     onOpenChange(next);
@@ -68,23 +92,28 @@ export function VariantFormDialog({ open, onOpenChange, productId, variant }: Va
 
   async function onSubmit(values: FormValues) {
     const parsed = formSchema.parse(values);
-    await mutation.mutateAsync({
-      name: parsed.name,
-      size_label: parsed.size_label,
-      base_price: parsed.base_price,
-      display_order: parsed.display_order,
-      is_active: parsed.is_active,
-      // POS-PERF-P36 — surfaces a 409 VARIANT_CONFLICT instead of silently
-      // overwriting someone else's concurrent edit; only meaningful on
-      // update (the variant we loaded this dialog from has a version).
-      ...(isEdit && variant ? { expected_version: variant.version ?? undefined } : {}),
-    });
+    try {
+      await mutation.mutateAsync({
+        name: parsed.name,
+        size_label: parsed.size_label,
+        base_price: parsed.base_price,
+        display_order: parsed.display_order,
+        is_active: parsed.is_active,
+        // POS-PERF-P36 — surfaces a 409 VARIANT_CONFLICT instead of silently
+        // overwriting someone else's concurrent edit; only meaningful on
+        // update (the variant we loaded this dialog from has a version).
+        ...(isEdit && variant ? { expected_version: baseVersion ?? undefined } : {}),
+      });
+    } catch {
+      // Shown inline below (FormSaveError); the typed values stay.
+      return;
+    }
     handleOpenChange(false);
   }
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-sm">
+      <DialogContent className="sm:max-w-sm" hasUnsavedInput={hasUnsavedInput}>
         <DialogHeader>
           <DialogTitle>{isEdit ? 'Edit Variant' : 'Add Variant'}</DialogTitle>
           <DialogDescription>{isEdit ? 'Update this variant.' : 'Add a new size/variant to this product.'}</DialogDescription>
@@ -125,6 +154,17 @@ export function VariantFormDialog({ open, onOpenChange, productId, variant }: Va
               <p className="text-sm font-medium">Active</p>
               <Switch checked={form.watch('is_active')} onCheckedChange={(checked) => form.setValue('is_active', checked)} />
             </div>
+
+            <FormSaveError error={mutation.error}>
+              {conflict ? (
+                <>
+                  <p>This size was changed elsewhere after you opened it. Your entries are still here.</p>
+                  <Button type="button" size="sm" variant="outline" onClick={() => void loadLatest()}>
+                    Load latest (discards your entries)
+                  </Button>
+                </>
+              ) : undefined}
+            </FormSaveError>
 
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>

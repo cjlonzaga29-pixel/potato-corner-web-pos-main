@@ -25,8 +25,11 @@ import { Button } from '@/components/ui/button';
 import { useInventoryItems, useUnitsOfMeasure } from '@/hooks/queries/use-universal-inventory';
 import {
   useCreateProductComponent,
+  useProductComponents,
   useUpdateProductComponent,
 } from '@/hooks/queries/use-product-components';
+import { FormSaveError } from '@/components/shared/forms/form-save-error';
+import { ProductApiError } from '@/hooks/queries/use-products';
 import { InlineCreateInventoryItemDialog } from './inline-create-inventory-item-dialog';
 
 const CREATE_NEW_ITEM_VALUE = '__create_new__';
@@ -96,6 +99,9 @@ export function RecipeComponentFormDialog({
   const createComponent = useCreateProductComponent(productVariantId);
   const updateComponent = useUpdateProductComponent(productVariantId, editingComponent?.id ?? '');
   const mutation = isEdit ? updateComponent : createComponent;
+  // POS-PERF-P41 — the version an edit claims to change; Load latest moves it forward deliberately.
+  const [baseVersion, setBaseVersion] = useState(editingComponent?.version);
+  const { refetch: refetchComponents } = useProductComponents(isEdit ? productVariantId : null);
 
   const { data: inventoryItems, isLoading: itemsLoading } = useInventoryItems(false);
   const { data: units, isLoading: unitsLoading } = useUnitsOfMeasure(false);
@@ -109,6 +115,9 @@ export function RecipeComponentFormDialog({
 
   useEffect(() => {
     if (!open) return;
+    createComponent.reset();
+    updateComponent.reset();
+    setBaseVersion(editingComponent?.version);
     if (editingComponent) {
       setInventoryItemId(editingComponent.inventory_item_id);
       setQuantityRequired(String(editingComponent.quantity_required));
@@ -120,6 +129,7 @@ export function RecipeComponentFormDialog({
       setRecipeUnitId('');
       setIsActive(true);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-sync when the form opens or the target line changes
   }, [open, editingComponent]);
 
   // Default the recipe unit whenever the selected item (add mode) resolves a
@@ -161,26 +171,51 @@ export function RecipeComponentFormDialog({
 
   async function handleSubmit() {
     const numericQuantity = Number(quantityRequired);
-    if (isEdit) {
-      // POS-PERF-P36R — surfaces a 409 MAPPING_CONFLICT instead of silently
-      // overwriting someone else's concurrent edit to this same ingredient.
-      await updateComponent.mutateAsync({
-        quantity_required: numericQuantity,
-        recipe_unit_id: recipeUnitId,
-        is_active: isActive,
-        expected_version: editingComponent?.version,
-      });
-    } else {
-      if (!inventoryItemId) return;
-      await createComponent.mutateAsync({
-        product_variant_id: productVariantId,
-        inventory_item_id: inventoryItemId,
-        quantity_required: numericQuantity,
-        recipe_unit_id: recipeUnitId || undefined,
-      });
+    try {
+      if (isEdit) {
+        // POS-PERF-P36R — surfaces a 409 MAPPING_CONFLICT instead of silently
+        // overwriting someone else's concurrent edit to this same ingredient.
+        await updateComponent.mutateAsync({
+          quantity_required: numericQuantity,
+          recipe_unit_id: recipeUnitId,
+          is_active: isActive,
+          expected_version: baseVersion,
+        });
+      } else {
+        if (!inventoryItemId) return;
+        await createComponent.mutateAsync({
+          product_variant_id: productVariantId,
+          inventory_item_id: inventoryItemId,
+          quantity_required: numericQuantity,
+          recipe_unit_id: recipeUnitId || undefined,
+        });
+      }
+    } catch {
+      // Shown inline (FormSaveError); the entered values stay.
+      return;
     }
     handleOpenChange(false);
   }
+
+  const conflict = mutation.error instanceof ProductApiError && mutation.error.code === 'MAPPING_CONFLICT';
+
+  async function loadLatest() {
+    const latest = (await refetchComponents()).data?.find((component) => component.id === editingComponent?.id);
+    if (!latest) return;
+    setQuantityRequired(String(latest.quantity_required));
+    setRecipeUnitId(latest.recipe_unit_id);
+    setIsActive(latest.is_active);
+    setBaseVersion(latest.version);
+    updateComponent.reset();
+  }
+
+  // POS-PERF-P41 — Back/Escape in the product editor ask before discarding these.
+  const hasUnsavedInput =
+    open &&
+      !inlineCreateOpen &&
+      (editingComponent
+        ? quantityRequired !== String(editingComponent.quantity_required) || recipeUnitId !== editingComponent.recipe_unit_id || isActive !== editingComponent.is_active
+        : Boolean(inventoryItemId));
 
   const isValid =
     (isEdit || Boolean(inventoryItemId)) &&
@@ -191,7 +226,7 @@ export function RecipeComponentFormDialog({
   return (
     <>
       <Dialog open={open} onOpenChange={handleOpenChange}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-md" hasUnsavedInput={hasUnsavedInput}>
           <DialogHeader>
             <DialogTitle>{isEdit ? 'Edit Recipe Component' : 'Add Recipe Component'}</DialogTitle>
             <DialogDescription>
@@ -330,6 +365,17 @@ export function RecipeComponentFormDialog({
               </div>
             )}
           </div>
+
+          <FormSaveError error={mutation.error}>
+            {conflict ? (
+              <>
+                <p>This ingredient line was changed elsewhere after you opened it. Your entries are still here.</p>
+                <Button type="button" size="sm" variant="outline" onClick={() => void loadLatest()}>
+                  Load latest (discards your entries)
+                </Button>
+              </>
+            ) : undefined}
+          </FormSaveError>
 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>

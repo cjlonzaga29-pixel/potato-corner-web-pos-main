@@ -39,6 +39,22 @@ function sameSelectedOptions(a: PosCartSelectedOption[] | undefined, b: PosCartS
   return sortedA.every((id, i) => id === sortedB[i]);
 }
 
+/**
+ * POS-PERF-P41 — one string per cart-line identity, using exactly the rules
+ * addItem/replaceItem merge on (variant, flavor, Mix & Max slots, selected
+ * options — repeats included). The stock pre-check tracks a line's
+ * unconfirmed quantity by this key, so it still finds the line after another
+ * line is removed and every index shifts.
+ */
+export function cartLineKey(item: PosCartItem): string {
+  const slots = [...(item.selected_flavors ?? [])]
+    .sort((a, b) => a.slot_index - b.slot_index)
+    .map((slot) => `${slot.slot_index}:${slot.snack_product_variant_id}:${slot.flavor_id}`)
+    .join(',');
+  const options = (item.selected_options ?? []).map((option) => option.option_id).sort().join(',');
+  return `${item.product_variant_id}|${item.flavor_id ?? ''}|${slots}|${options}`;
+}
+
 interface HeldOrder {
   id: string;
   items: PosCartItem[];
@@ -53,6 +69,8 @@ interface CartState {
   removeItem: (index: number) => void;
   updateItemQuantity: (index: number, quantity: number) => void;
   replaceItem: (index: number, replacements: PosCartItem[]) => void;
+  /** POS-PERF-P41 — takes back units the stock pre-check refused, by cartLineKey; returns how many units were removed. Never adds a line or raises a quantity. */
+  rollbackUnconfirmed: (unconfirmed: Record<string, number>) => number;
   clearCart: () => void;
   holdCurrentOrder: () => void;
   resumeHeldOrder: (id: string) => void;
@@ -140,6 +158,18 @@ export const useCartStore = create<CartState>()(
           }
           return { items: merged };
         }),
+      rollbackUnconfirmed: (unconfirmed) => {
+        let removed = 0;
+        set((state) => ({
+          items: state.items.flatMap((item) => {
+            const units = Math.min(unconfirmed[cartLineKey(item)] ?? 0, item.quantity);
+            if (units <= 0) return [item];
+            removed += units;
+            return item.quantity - units > 0 ? [{ ...item, quantity: item.quantity - units }] : [];
+          }),
+        }));
+        return removed;
+      },
       clearCart: () => set({ items: [] }),
       holdCurrentOrder: () => {
         const { items, heldOrders } = get();

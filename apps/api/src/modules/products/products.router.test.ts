@@ -27,6 +27,7 @@ vi.mock('./products.service.js', () => ({
     publishProductToBranches: vi.fn(),
     getPublicationCheck: vi.fn(),
     getAllProducts: vi.fn(),
+    checkCartAvailability: vi.fn(),
   },
 }));
 
@@ -376,5 +377,47 @@ describe('GET /api/products — POS-PERF-P39 branch tabs', () => {
       expect.objectContaining({ branch_id: branchId, view: 'drafts', page: 1, limit: 25 }),
     );
     expect(res.status).toHaveBeenCalledWith(200);
+  });
+});
+
+// POS-PERF-P41 — the POS pre-check carries add-on option ids through to the
+// service. Auth/branch middleware are covered elsewhere; this runs the
+// route's own validation and handler with an authenticated user in place.
+describe('POST /api/products/catalog/availability-check — add-on option ids', () => {
+  function validateAndHandle() {
+    return getRouteHandlers(productsRouter, 'post', '/catalog/availability-check').slice(-2);
+  }
+
+  it('passes selected_option_ids per line to the service', async () => {
+    const branchId = randomUUID();
+    const variantId = randomUUID();
+    const optionId = randomUUID();
+    vi.mocked(productsService.checkCartAvailability).mockResolvedValue({ ok: true, shortfalls: [] });
+    const req = mockReq({
+      user: { id: randomUUID(), role: 'staff', email: 's@test.local', branchIds: [branchId] },
+      body: { branch_id: branchId, lines: [{ product_variant_id: variantId, selected_option_ids: [optionId, optionId], quantity: 2 }, { product_variant_id: variantId, quantity: 1 }] },
+    } as unknown as Partial<Request>);
+    const res = mockRes();
+
+    await runHandlers(validateAndHandle(), req, res);
+
+    expect(productsService.checkCartAvailability).toHaveBeenCalledWith(branchId, [
+      { productVariantId: variantId, flavorId: null, selectedFlavors: undefined, selectedOptionIds: [optionId, optionId], quantity: 2 },
+      { productVariantId: variantId, flavorId: null, selectedFlavors: undefined, selectedOptionIds: undefined, quantity: 1 },
+    ]);
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+
+  it('rejects a malformed option id with 422, never reaching the service', async () => {
+    const req = mockReq({
+      user: { id: randomUUID(), role: 'staff', email: 's@test.local', branchIds: [] },
+      body: { branch_id: randomUUID(), lines: [{ product_variant_id: randomUUID(), selected_option_ids: ['cheese'], quantity: 1 }] },
+    } as unknown as Partial<Request>);
+    const res = mockRes();
+
+    await runHandlers(validateAndHandle(), req, res);
+
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(productsService.checkCartAvailability).not.toHaveBeenCalled();
   });
 });

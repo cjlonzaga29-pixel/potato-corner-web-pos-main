@@ -201,14 +201,14 @@ test('Edit popup: staged details, section forms inside the popup, and branch-onl
   await row(page, product.configured).getByRole('button', { name: 'Edit' }).click();
   const editor = page.getByTestId('product-editor');
   await expect(editor).toBeVisible();
-  await expect(editor.getByRole('tab')).toHaveText(['Details', 'Sizes & Prices', 'Ingredients', 'Choices', 'Branches']);
+  await expect(editor.getByRole('tab')).toHaveText(['Details', 'Sizes & Prices', 'Ingredients & Packaging', 'Flavors & Choices', 'Branches']);
 
   // Details: save, then a discarded edit on close.
   const nameField = editor.getByRole('textbox', { name: /Product Name/ });
   await nameField.fill(`${product.configured} Renamed`);
   await expect(editor.getByText('Unsaved changes')).toBeVisible();
-  await editor.getByRole('button', { name: 'Save details' }).click();
-  await expect(editor.getByText('All details saved')).toBeVisible({ timeout: 15_000 });
+  await editor.getByRole('button', { name: 'Save Changes' }).click();
+  await expect(editor.getByText('Changes saved')).toBeVisible({ timeout: 15_000 });
   await editor.getByRole('textbox', { name: /Description/ }).fill('Not kept');
   await editor.getByRole('button', { name: 'Close', exact: true }).click();
   await expect(editor.getByRole('alert')).toContainText('Discard your unsaved details?');
@@ -223,7 +223,7 @@ test('Edit popup: staged details, section forms inside the popup, and branch-onl
   await row(page, `${product.configured} Renamed`).getByRole('button', { name: 'Edit' }).click();
   await editor.getByRole('tab', { name: 'Sizes & Prices' }).click();
   await editor.getByRole('button', { name: 'Add Size' }).click();
-  const sizeForm = editor.getByRole('dialog', { name: 'Add Variant' });
+  const sizeForm = editor.getByRole('region', { name: 'Add Variant' });
   await expect(sizeForm).toBeVisible();
   expect(await page.locator('[data-state="open"].fixed.inset-0').count()).toBe(1);
   await expect(editor.getByRole('tab', { name: 'Details' })).toBeDisabled();
@@ -236,7 +236,7 @@ test('Edit popup: staged details, section forms inside the popup, and branch-onl
   await expect(editor.getByRole('tab', { name: 'Details' })).toBeEnabled();
 
   // Ingredients: the recipe lines are there; Add Component opens inside the popup and Escape backs out of it only.
-  await editor.getByRole('tab', { name: 'Ingredients' }).click();
+  await editor.getByRole('tab', { name: 'Ingredients & Packaging' }).click();
   await expect(editor.getByText(/P38 Potato/).first()).toBeVisible({ timeout: 15_000 });
   await editor.getByRole('button', { name: 'Add Component' }).first().click();
   await expect(editor.locator('[data-hosted-dialog]')).toHaveCount(1);
@@ -245,7 +245,7 @@ test('Edit popup: staged details, section forms inside the popup, and branch-onl
   await expect(editor).toBeVisible();
 
   // Choices: the linked flavor, option groups and Mix & Max slots are reachable the same way.
-  await editor.getByRole('tab', { name: 'Choices' }).click();
+  await editor.getByRole('tab', { name: 'Flavors & Choices' }).click();
   await expect(editor.getByText(/P38 Cheese/).first()).toBeVisible();
   await editor.getByRole('button', { name: 'Assign Option Group' }).first().click();
   await expect(editor.locator('[data-hosted-dialog]')).toHaveCount(1);
@@ -295,7 +295,7 @@ test('narrow phone: the Edit popup fits the screen and scrolls inside', async ({
       return Boolean(box && box.x >= 0 && box.y >= 0 && box.x + box.width <= 390 && box.y + box.height <= 844);
     }, { timeout: 10_000 })
     .toBe(true);
-  await editor.getByRole('tab', { name: 'Choices' }).click();
+  await editor.getByRole('tab', { name: 'Flavors & Choices' }).click();
   await expect(editor.getByRole('button', { name: 'Close', exact: true })).toBeInViewport();
   await page.screenshot({ path: test.info().outputPath('p39-editor-phone.png') });
 });

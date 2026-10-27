@@ -2462,7 +2462,7 @@ export const productsService = {
    */
   async checkCartAvailability(
     branchId: string,
-    lines: { productVariantId: string; flavorId?: string | null; selectedFlavors?: { slotIndex: number; snackProductVariantId: string; flavorId: string }[]; quantity: number }[],
+    lines: { productVariantId: string; flavorId?: string | null; selectedFlavors?: { slotIndex: number; snackProductVariantId: string; flavorId: string }[]; selectedOptionIds?: string[]; quantity: number }[],
   ) {
     return stockAvailabilityService.evaluateCartAvailability(branchId, lines);
   },

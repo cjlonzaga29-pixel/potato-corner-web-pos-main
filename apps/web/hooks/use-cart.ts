@@ -1,5 +1,10 @@
 import { useCartStore } from '@/stores/cart.store';
 
+/** POS-PERF-P41 — the cart as it is right now, for handlers that must not act on a render's (possibly older) snapshot. */
+function getItems() {
+  return useCartStore.getState().items;
+}
+
 /**
  * POS cart operations — thin wrapper over the cart Zustand store.
  *
@@ -19,6 +24,7 @@ export function useCart() {
   const removeItem = useCartStore((state) => state.removeItem);
   const updateItemQuantity = useCartStore((state) => state.updateItemQuantity);
   const replaceItem = useCartStore((state) => state.replaceItem);
+  const rollbackUnconfirmed = useCartStore((state) => state.rollbackUnconfirmed);
   const clearCart = useCartStore((state) => state.clearCart);
   const holdCurrentOrder = useCartStore((state) => state.holdCurrentOrder);
   const resumeHeldOrder = useCartStore((state) => state.resumeHeldOrder);
@@ -30,6 +36,8 @@ export function useCart() {
     removeItem,
     updateItemQuantity,
     replaceItem,
+    rollbackUnconfirmed,
+    getItems,
     clearCart,
     holdCurrentOrder,
     resumeHeldOrder,

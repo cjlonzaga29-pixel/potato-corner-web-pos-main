@@ -1,7 +1,7 @@
 'use client';
 
 import { memo, useRef } from 'react';
-import { Pencil, Trash2 } from 'lucide-react';
+import { Loader2, Pencil, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import type { PosCartItem, PosCartSelectedOption } from '@/stores/cart.store';
@@ -43,6 +43,8 @@ interface CartLineItemProps {
   onEdit: (index: number) => void;
   onRemove: (index: number) => void;
   onQuantityChange: (index: number, quantity: number) => void;
+  /** POS-PERF-P41 — part of this line's quantity is in the cart but its stock check hasn't answered yet. */
+  isChecking?: boolean;
 }
 
 /**
@@ -65,7 +67,7 @@ interface CartLineItemProps {
  * fine-pointer standard/compact), tighter line-height on modifier rows, and
  * smaller row gaps. No change to what data is shown or the handlers' args.
  */
-export const CartLineItem = memo(function CartLineItem({ line, showDivider, onEdit, onRemove, onQuantityChange }: CartLineItemProps) {
+export const CartLineItem = memo(function CartLineItem({ line, showDivider, onEdit, onRemove, onQuantityChange, isChecking = false }: CartLineItemProps) {
   // Test-only visibility into actual re-render count — see product-card.tsx
   // for the same pattern and rationale.
   const renderCountRef = useRef(0);
@@ -93,8 +95,16 @@ export const CartLineItem = memo(function CartLineItem({ line, showDivider, onEd
           </p>
           <p className="shrink-0 text-right text-sm font-bold tabular-nums text-foreground">{formatPeso(line.lineTotal)}</p>
         </div>
-        <p className="text-xs text-muted-foreground">
-          {line.variantName} · {formatPeso(line.unitPrice)} each
+        <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
+          <span>
+            {line.variantName} · {formatPeso(line.unitPrice)} each
+          </span>
+          {isChecking && (
+            <span className="inline-flex items-center gap-1 text-primary" data-testid="cart-line-checking">
+              <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+              Checking stock…
+            </span>
+          )}
         </p>
 
         {hasOptionDetails && (

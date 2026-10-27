@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { AlertTriangle, ImageIcon, Loader2, Trash2 } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ImageIcon, Loader2, Trash2 } from 'lucide-react';
 import type { ProductDetailResponse } from '@potato-corner/shared';
 import { Form } from '@/components/ui/form';
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
@@ -70,6 +70,9 @@ interface ProductDetailsFormProps {
  * PRODUCT_CONFLICT) instead of overwritten; the typed values stay in place
  * until the supervisor chooses to load the latest. The photo is separate and
  * saves as soon as it is chosen, as the section says.
+ *
+ * POS-PERF-P41 — Save Changes / Cancel, like every other editor form; a
+ * successful save says so next to the buttons until the next edit.
  */
 export function ProductDetailsForm({ product, disabled, onDirtyChange }: ProductDetailsFormProps) {
   const updateProduct = useUpdateProduct(product.id);
@@ -81,6 +84,7 @@ export function ProductDetailsForm({ product, disabled, onDirtyChange }: Product
   const baseVersion = useRef(product.version);
   const [conflict, setConflict] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [justSaved, setJustSaved] = useState(false);
 
   const { data: imageData, isLoading: imageLoading } = useProductImage(product.id, product.has_image);
   const uploadImage = useUploadProductImage();
@@ -88,6 +92,7 @@ export function ProductDetailsForm({ product, disabled, onDirtyChange }: Product
 
   useEffect(() => {
     onDirtyChange(isDirty);
+    if (isDirty) setJustSaved(false);
   }, [isDirty, onDirtyChange]);
 
   // A newer saved version (another supervisor, or this editor's own save)
@@ -123,6 +128,7 @@ export function ProductDetailsForm({ product, disabled, onDirtyChange }: Product
       });
       baseVersion.current = saved.version;
       form.reset(valuesFromProduct(saved));
+      setJustSaved(true);
     } catch (error) {
       if (error instanceof ProductApiError && error.code === 'PRODUCT_CONFLICT') {
         setConflict(true);
@@ -231,16 +237,27 @@ export function ProductDetailsForm({ product, disabled, onDirtyChange }: Product
             </Alert>
           )}
 
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            <span className="mr-auto text-xs text-muted-foreground" aria-live="polite">
-              {isDirty ? 'Unsaved changes' : 'All details saved'}
+          <div className="flex flex-wrap items-center justify-end gap-2 border-t pt-4">
+            <span className="mr-auto inline-flex items-center gap-1.5 text-xs text-muted-foreground" aria-live="polite" data-testid="product-details-save-status">
+              {updateProduct.isPending ? (
+                'Saving…'
+              ) : isDirty ? (
+                'Unsaved changes'
+              ) : justSaved ? (
+                <>
+                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" aria-hidden="true" />
+                  Changes saved
+                </>
+              ) : (
+                'All details saved'
+              )}
             </span>
             <Button type="button" variant="outline" disabled={!isDirty || updateProduct.isPending} onClick={() => form.reset()}>
-              Discard changes
+              Cancel
             </Button>
             <Button type="submit" disabled={disabled || !isDirty || updateProduct.isPending}>
               {updateProduct.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Save details
+              {updateProduct.isPending ? 'Saving…' : 'Save Changes'}
             </Button>
           </div>
         </form>
@@ -251,7 +268,10 @@ export function ProductDetailsForm({ product, disabled, onDirtyChange }: Product
           <h3 id="product-editor-photo" className="text-sm font-medium">
             Photo
           </h3>
-          <p className="text-xs text-muted-foreground">Saves as soon as you upload or remove it. Shown in the product list and on POS.</p>
+          <p className="text-xs text-muted-foreground">
+            Saves as soon as you upload or remove it — separate from Save Changes above, and Cancel doesn&apos;t undo it. Shown in the product list
+            and on POS.
+          </p>
         </div>
         {product.has_image && (
           <div className="flex items-center gap-3">

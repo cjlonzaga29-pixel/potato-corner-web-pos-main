@@ -218,7 +218,7 @@ test('Draft -> Add to POS -> Active -> deactivated everywhere -> Inactive, and s
   await tab(page, 'Inactive').click();
   await row(page, product.published).getByRole('button', { name: 'Edit' }).click();
   await expect(editor).toBeVisible();
-  await expect(editor.getByRole('tab')).toHaveText(['Details', 'Sizes & Prices', 'Ingredients', 'Choices', 'Branches']);
+  await expect(editor.getByRole('tab')).toHaveText(['Details', 'Sizes & Prices', 'Ingredients & Packaging', 'Flavors & Choices', 'Branches']);
   await editor.getByRole('tab', { name: 'Branches' }).click();
   await expect(editor.getByTestId('product-editor-branch').filter({ hasText: names.a })).toContainText('Not on POS');
   await page.screenshot({ path: test.info().outputPath('p39r2-inactive-after-audit-failure.png') });

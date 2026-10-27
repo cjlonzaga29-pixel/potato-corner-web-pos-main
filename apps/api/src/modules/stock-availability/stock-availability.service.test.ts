@@ -7,12 +7,18 @@ vi.mock('../shadow-bom-deduction/shadow-bom-deduction.service.js', () => ({
 vi.mock('../../lib/prisma.js', () => ({
   prisma: {
     inventoryStock: { findMany: vi.fn() },
+    productOptionInventoryMapping: { findMany: vi.fn() },
   },
+}));
+
+vi.mock('../product-components/unit-conversion.util.js', () => ({
+  convertQuantity: vi.fn(async (quantity: { toNumber(): number } | number) => ({ toNumber: () => (typeof quantity === 'number' ? quantity : quantity.toNumber()) })),
 }));
 
 const { computeBomDeductionBatch } = await import('../shadow-bom-deduction/shadow-bom-deduction.service.js');
 const { prisma } = await import('../../lib/prisma.js');
 const { stockAvailabilityService } = await import('./stock-availability.service.js');
+const { convertQuantity } = await import('../product-components/unit-conversion.util.js');
 
 function decimal(value: number) {
   return { toNumber: () => value };
@@ -197,5 +203,60 @@ describe('stockAvailabilityService.evaluateCartAvailability', () => {
     const result = await stockAvailabilityService.evaluateCartAvailability('branch-1', [{ productVariantId: 'variant-1', quantity: 1 }]);
 
     expect(result).toEqual({ ok: true, shortfalls: [] });
+  });
+
+  // POS-PERF-P41 — add-on options deduct their mapped ingredient at checkout,
+  // so the pre-check sums them with the recipes (one mapping query).
+  it('adds each selected add-on option ingredient, times the line quantity, to the shared total', async () => {
+    vi.mocked(computeBomDeductionBatch).mockResolvedValueOnce([
+      [{ inventoryItemId: 'item-potato', baseUnitId: 'unit-g', quantity: 200 }], // cheesy fries x2
+      [{ inventoryItemId: 'item-cheese', baseUnitId: 'unit-g', quantity: 15 }], // cheese sticks recipe
+    ]);
+    vi.mocked(prisma.productOptionInventoryMapping.findMany).mockResolvedValueOnce([
+      { productOptionId: 'opt-cheese', inventoryItemId: 'item-cheese', quantityRequired: decimal(10), deductionUnitId: 'unit-g', inventoryItem: { baseUnitId: 'unit-g', deletedAt: null } },
+    ] as never);
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValueOnce([
+      stockRow({ inventoryItemId: 'item-potato', quantityOnHand: decimal(1000) }),
+      stockRow({ inventoryItemId: 'item-cheese', quantityOnHand: decimal(30), inventoryItem: { name: 'Cheese' } }),
+    ] as never);
+
+    const result = await stockAvailabilityService.evaluateCartAvailability('branch-1', [
+      { productVariantId: 'variant-cheesy', quantity: 2, selectedOptionIds: ['opt-cheese'] },
+      { productVariantId: 'variant-sticks', quantity: 1 },
+    ]);
+
+    expect(prisma.productOptionInventoryMapping.findMany).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ ok: false, shortfalls: [{ inventoryItemId: 'item-cheese', itemName: 'Cheese', available: 30, required: 35 }] });
+  });
+
+  it('counts an option listed twice twice, and leaves out mappings checkout would refuse instead of failing the pre-check', async () => {
+    vi.mocked(computeBomDeductionBatch).mockResolvedValueOnce([[]]);
+    vi.mocked(prisma.productOptionInventoryMapping.findMany).mockResolvedValueOnce([
+      { productOptionId: 'opt-cheese', inventoryItemId: 'item-cheese', quantityRequired: decimal(10), deductionUnitId: 'unit-g', inventoryItem: { baseUnitId: 'unit-g', deletedAt: null } },
+      { productOptionId: 'opt-gone', inventoryItemId: 'item-gone', quantityRequired: decimal(10), deductionUnitId: 'unit-g', inventoryItem: { baseUnitId: 'unit-g', deletedAt: new Date() } },
+      { productOptionId: 'opt-tbsp', inventoryItemId: 'item-sauce', quantityRequired: decimal(1), deductionUnitId: 'unit-tbsp', inventoryItem: { baseUnitId: 'unit-ml', deletedAt: null } },
+    ] as never);
+    vi.mocked(convertQuantity).mockImplementation(async (quantity, from, to) => {
+      if (from !== to) throw new Error('MISSING_UNIT_CONVERSION');
+      return { toNumber: () => (typeof quantity === 'number' ? quantity : quantity.toNumber()) } as never;
+    });
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValueOnce([
+      stockRow({ inventoryItemId: 'item-cheese', quantityOnHand: decimal(100), inventoryItem: { name: 'Cheese' } }),
+    ] as never);
+
+    const result = await stockAvailabilityService.evaluateCartAvailability('branch-1', [
+      { productVariantId: 'variant-1', quantity: 3, selectedOptionIds: ['opt-cheese', 'opt-cheese', 'opt-gone', 'opt-tbsp'] },
+    ]);
+
+    expect(prisma.inventoryStock.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { branchId: 'branch-1', inventoryItemId: { in: ['item-cheese'] } } }));
+    expect(result).toEqual({ ok: true, shortfalls: [] });
+  });
+
+  it('makes no option-mapping query for a cart without add-ons', async () => {
+    vi.mocked(computeBomDeductionBatch).mockResolvedValueOnce([[]]);
+
+    await stockAvailabilityService.evaluateCartAvailability('branch-1', [{ productVariantId: 'variant-1', quantity: 1 }]);
+
+    expect(prisma.productOptionInventoryMapping.findMany).not.toHaveBeenCalled();
   });
 });

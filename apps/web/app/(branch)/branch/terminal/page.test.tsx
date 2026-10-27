@@ -147,15 +147,22 @@ vi.mock('@/lib/geolocation', () => ({
   GeolocationError: MockGeolocationError,
 }));
 
-const { mockCartItems } = vi.hoisted(() => ({ mockCartItems: vi.fn(() => [] as unknown[]) }));
+const { mockCartItems, mockRollbackUnconfirmed, mockUpdateItemQuantity } = vi.hoisted(() => ({
+  mockCartItems: vi.fn(() => [] as unknown[]),
+  mockRollbackUnconfirmed: vi.fn(() => 0),
+  mockUpdateItemQuantity: vi.fn(),
+}));
 
 vi.mock('@/hooks/use-cart', () => ({
   useCart: () => ({
     items: mockCartItems(),
     addItem: mockAddItem,
     removeItem: vi.fn(),
-    updateItemQuantity: vi.fn(),
+    updateItemQuantity: mockUpdateItemQuantity,
     replaceItem: mockReplaceItem,
+    // POS-PERF-P41 — the stock pre-check reads the live cart and rolls back through these.
+    rollbackUnconfirmed: mockRollbackUnconfirmed,
+    getItems: () => mockCartItems(),
     clearCart: mockClearCart,
   }),
 }));
@@ -490,24 +497,40 @@ describe('TerminalPage — live POS readiness', () => {
     await waitFor(() => expect(mockAddItem).toHaveBeenCalled());
   });
 
-  // POS-PERF-P24 — the cart-wide pre-check runs at the add itself (no
-  // flavor/options dialog in play here) and blocks when the server reports
-  // a shortfall, without ever calling addItem.
-  it('blocks add-to-cart when the cart-wide availability check reports a shortfall', async () => {
-    mockCheckCartAvailabilityMutateAsync.mockResolvedValueOnce({
+  // POS-PERF-P24 — the cart-wide pre-check runs for the add itself (no
+  // flavor/options dialog in play here). POS-PERF-P41 — the tap adds at once
+  // and the check runs behind it; a confirmed shortfall takes that
+  // unconfirmed unit back out (rollbackUnconfirmed), never the rest.
+  it('adds at once and takes the unconfirmed unit back when the cart-wide check reports a shortfall', async () => {
+    let cart: unknown[] = [];
+    mockCartItems.mockImplementation(() => cart);
+    mockAddItem.mockImplementation((item: unknown) => {
+      cart = [...cart, item];
+    });
+    mockRollbackUnconfirmed.mockClear();
+    mockCheckCartAvailabilityMutateAsync.mockClear().mockResolvedValueOnce({
       ok: false,
       shortfalls: [{ inventory_item_id: 'item-1', item_name: 'Cheese Powder', available: 1, required: 5 }],
     });
-    mockUseCatalog.mockReturnValue({
-      data: catalogWith([slotVariant({ flavors: [], flavor_slots: [], live_ready: true, readiness_code: 'READY', missing_flavor_ids: [] })]),
-      isLoading: false,
-    });
-    render(<TerminalPage />);
+    try {
+      mockUseCatalog.mockReturnValue({
+        data: catalogWith([slotVariant({ flavors: [], flavor_slots: [], live_ready: true, readiness_code: 'READY', missing_flavor_ids: [] })]),
+        isLoading: false,
+      });
+      render(<TerminalPage />);
 
-    fireEvent.click(screen.getByText('Mega Mix Fries'));
+      fireEvent.click(screen.getByText('Mega Mix Fries'));
 
-    await waitFor(() => expect(mockCheckCartAvailabilityMutateAsync).toHaveBeenCalled());
-    expect(mockAddItem).not.toHaveBeenCalled();
+      expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 });
+      await waitFor(() => expect(mockRollbackUnconfirmed).toHaveBeenCalledWith({ 'variant-1|||': 1 }));
+      expect(mockCheckCartAvailabilityMutateAsync).toHaveBeenCalledTimes(1);
+      expect(mockCheckCartAvailabilityMutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ lines: [{ product_variant_id: 'variant-1', quantity: 1 }] }),
+      );
+    } finally {
+      mockAddItem.mockReset();
+      mockCartItems.mockImplementation(() => []);
+    }
   });
 
   it('shows no readiness message and allows add-to-cart when live_ready is true', async () => {
@@ -1954,6 +1977,53 @@ describe('TerminalPage — Charge disabled-reason messaging (cash)', () => {
 
     expect(screen.getByRole('button', { name: /Charge/ })).not.toBeDisabled();
     expect(screen.getByText('Change: ₱50.00')).toBeInTheDocument();
+  });
+});
+
+// POS-PERF-P41 — a quantity change shows at once, but Charge waits for the
+// stock answer covering it: checkout must never submit a quantity that a
+// pending shortfall could still take back.
+describe('TerminalPage — Charge waits for an unresolved stock check (POS-PERF-P41)', () => {
+  beforeEach(() => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), isLoading: false });
+    mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isLoading: false });
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' }, isLoading: false });
+  });
+
+  afterEach(() => {
+    cleanup();
+    mockCartItems.mockImplementation(() => []);
+    mockUpdateItemQuantity.mockReset();
+  });
+
+  it('disables Charge with "Checking stock…" until the answer for the increased quantity arrives', async () => {
+    let cart = [{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }];
+    mockCartItems.mockImplementation(() => cart);
+    mockUpdateItemQuantity.mockImplementation((index: number, quantity: number) => {
+      cart = cart.map((item, i) => (i === index ? { ...item, quantity } : item));
+    });
+    let release: (value: { ok: boolean; shortfalls: never[] }) => void = () => undefined;
+    mockCheckCartAvailabilityMutateAsync.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    render(<TerminalPage />);
+    openCheckout();
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '1000' } });
+    expect(screen.getByRole('button', { name: /Charge/ })).not.toBeDisabled();
+
+    fireEvent.click(firstOf(screen.getAllByRole('button', { name: 'Increase Mega Mix Fries quantity' })));
+
+    expect(mockUpdateItemQuantity).toHaveBeenCalledWith(0, 2);
+    expect(await screen.findByText('Checking stock for the latest cart changes…')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Charge/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: /Charge/ }));
+    expect(mockCreateTransactionMutateAsync).not.toHaveBeenCalled();
+
+    await act(async () => release({ ok: true, shortfalls: [] }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /Charge/ })).not.toBeDisabled());
   });
 });
 

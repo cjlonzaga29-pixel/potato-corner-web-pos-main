@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Trash2 } from 'lucide-react';
+import { Loader2, Trash2 } from 'lucide-react';
 import type { ProductVariantResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -65,8 +65,17 @@ export function VariantChoicesCard({ productId, variant }: { productId: string; 
                       {group.required ? 'Required' : 'Optional'} · {group.selection_type === 'SINGLE' ? 'Pick one' : 'Pick multiple'}
                     </p>
                   </div>
-                  <Button size="sm" variant="ghost" aria-label={`Remove ${group.name}`} onClick={() => void unassign.mutateAsync(group.id)}>
-                    <Trash2 className="h-3.5 w-3.5" />
+                  {/* POS-PERF-P41 — removes at once (no Cancel undoes it); busy until the server answers, and the hook toasts the result. */}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    aria-label={`Remove ${group.name}`}
+                    title="Removes it now"
+                    disabled={unassign.isPending}
+                    aria-busy={unassign.isPending && unassign.variables === group.id}
+                    onClick={() => void unassign.mutateAsync(group.id).catch(() => undefined)}
+                  >
+                    {unassign.isPending && unassign.variables === group.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
                   </Button>
                 </div>
               ))}

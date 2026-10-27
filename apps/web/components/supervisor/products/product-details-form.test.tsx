@@ -3,9 +3,9 @@ import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/re
 import type { ProductDetailResponse } from '@potato-corner/shared';
 
 /**
- * POS-PERF-P39 — the editor's Details tab is staged: Save details sends the
+ * POS-PERF-P39 — the editor's Details tab is staged: Save Changes sends the
  * version it was loaded from, a newer saved version is refused without
- * losing what was typed, Discard changes restores the saved values, and a
+ * losing what was typed, Cancel restores the saved values, and a
  * newer version refreshes the fields only while nothing is typed.
  */
 const { mockUpdate, MockProductApiError } = vi.hoisted(() => {
@@ -77,28 +77,29 @@ function nameInput() {
 }
 
 describe('ProductDetailsForm (POS-PERF-P39)', () => {
-  it('sends nothing until Save details, then saves with the version it was loaded from', async () => {
+  it('sends nothing until Save Changes, then saves with the version it was loaded from', async () => {
     const onDirtyChange = vi.fn();
     mockUpdate.mockResolvedValue(product({ name: 'Cheese Fries XL', version: 5 }));
     render(<ProductDetailsForm product={product()} disabled={false} onDirtyChange={onDirtyChange} />);
 
-    expect(screen.getByRole('button', { name: 'Save details' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Save Changes' })).toBeDisabled();
     fireEvent.change(nameInput(), { target: { value: 'Cheese Fries XL' } });
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true));
     expect(mockUpdate).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Save details' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
     await waitFor(() => expect(mockUpdate).toHaveBeenCalledWith(expect.objectContaining({ name: 'Cheese Fries XL', category_id: 'cat-1', display_order: 2, expected_version: 4 })));
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false));
-    expect(screen.getByText('All details saved')).toBeInTheDocument();
+    // POS-PERF-P41 — a visible confirmation until the next edit.
+    expect(screen.getByTestId('product-details-save-status')).toHaveTextContent('Changes saved');
   });
 
   it('does not report its own save as a change elsewhere while the refetch is still on its way', async () => {
     mockUpdate.mockResolvedValue(product({ name: 'Cheese Fries XL', version: 5 }));
     render(<ProductDetailsForm product={product()} disabled={false} onDirtyChange={vi.fn()} />);
     fireEvent.change(nameInput(), { target: { value: 'Cheese Fries XL' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save details' }));
-    expect(await screen.findByText('All details saved')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+    expect(await screen.findByText('Changes saved')).toBeInTheDocument();
 
     // The product prop still carries version 4; the user starts another edit.
     fireEvent.change(nameInput(), { target: { value: 'Cheese Fries XXL' } });
@@ -113,27 +114,41 @@ describe('ProductDetailsForm (POS-PERF-P39)', () => {
     render(<ProductDetailsForm product={product()} disabled={false} onDirtyChange={vi.fn()} />);
 
     fireEvent.change(nameInput(), { target: { value: 'My Edit' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save details' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
 
     expect(await screen.findByTestId('product-details-conflict')).toHaveTextContent('Not saved — this product was changed elsewhere');
     expect(nameInput()).toHaveValue('My Edit');
     expect(screen.getByText('Unsaved changes')).toBeInTheDocument();
   });
 
+  it('keeps typed values and shows the reason inline when a save fails for another reason', async () => {
+    mockUpdate.mockImplementation(async () => {
+      throw new MockProductApiError('Network error — please try again', 'NETWORK_ERROR');
+    });
+    render(<ProductDetailsForm product={product()} disabled={false} onDirtyChange={vi.fn()} />);
+    fireEvent.change(nameInput(), { target: { value: 'My Edit' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    expect(await screen.findByText("Couldn't save the details")).toBeInTheDocument();
+    expect(screen.getByText('Network error — please try again')).toBeInTheDocument();
+    expect(nameInput()).toHaveValue('My Edit');
+    expect(screen.getByRole('button', { name: 'Save Changes' })).not.toBeDisabled();
+  });
+
   it('shows validation errors in place and sends nothing', async () => {
     render(<ProductDetailsForm product={product()} disabled={false} onDirtyChange={vi.fn()} />);
     fireEvent.change(nameInput(), { target: { value: 'X' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save details' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
 
     expect(await screen.findByText('Minimum 2 characters')).toBeInTheDocument();
     expect(nameInput()).toHaveValue('X');
     expect(mockUpdate).not.toHaveBeenCalled();
   });
 
-  it('Discard changes restores the saved values', async () => {
+  it('Cancel restores the saved values', async () => {
     render(<ProductDetailsForm product={product()} disabled={false} onDirtyChange={vi.fn()} />);
     fireEvent.change(nameInput(), { target: { value: 'Typo' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(nameInput()).toHaveValue('Cheese Fries'));
   });
 
@@ -154,6 +169,6 @@ describe('ProductDetailsForm (POS-PERF-P39)', () => {
   it('is read-only when the supervisor may not edit the product', () => {
     render(<ProductDetailsForm product={product()} disabled onDirtyChange={vi.fn()} />);
     expect(nameInput()).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Save details' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Save Changes' })).toBeDisabled();
   });
 });

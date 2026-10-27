@@ -1,8 +1,9 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
+import { FormSaveError } from '@/components/shared/forms/form-save-error';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
@@ -42,15 +43,31 @@ export function LinkFlavorDialog({ open, onOpenChange, productId, variantId, lin
     onOpenChange(next);
   }
 
+  // POS-PERF-P41 — Back/Escape in the product editor ask before discarding these.
+  const hasUnsavedInput = open && (Boolean(flavorId) || pricePremium !== 0 || !isAvailable);
+  useEffect(() => {
+    if (!open) return;
+    setFlavorId('');
+    setPricePremium(0);
+    setIsAvailable(true);
+    linkFlavor.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the form starts empty each time it opens
+  }, [open]);
+
   async function handleSubmit() {
     if (!flavorId) return;
-    await linkFlavor.mutateAsync({ flavor_id: flavorId, price_premium: pricePremium, is_available: isAvailable });
+    try {
+      await linkFlavor.mutateAsync({ flavor_id: flavorId, price_premium: pricePremium, is_available: isAvailable });
+    } catch {
+      // Shown inline (FormSaveError); the entered values stay.
+      return;
+    }
     handleOpenChange(false);
   }
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-sm">
+      <DialogContent className="sm:max-w-sm" hasUnsavedInput={hasUnsavedInput}>
         <DialogHeader>
           <DialogTitle>Link Flavor</DialogTitle>
           <DialogDescription>Flavors already linked to this variant are hidden from the list.</DialogDescription>
@@ -90,6 +107,8 @@ export function LinkFlavorDialog({ open, onOpenChange, productId, variantId, lin
             <Switch checked={isAvailable} onCheckedChange={setIsAvailable} />
           </div>
         </div>
+
+        <FormSaveError error={linkFlavor.error} />
 
         <DialogFooter>
           <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>

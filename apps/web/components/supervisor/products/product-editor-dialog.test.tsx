@@ -11,10 +11,13 @@ import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
  * locked meanwhile, and read-only mode for a product the supervisor may not
  * edit in place. The tabs' editors are stand-ins here; each has its own tests.
  */
-const { mockUseProduct, user } = vi.hoisted(() => ({
+const { mockUseProduct, mockPush, user } = vi.hoisted(() => ({
   mockUseProduct: vi.fn(),
+  mockPush: vi.fn(),
   user: { current: { id: 'sup-1', role: 'supervisor', branchIds: ['branch-a', 'branch-b'] } },
 }));
+
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: mockPush }) }));
 
 vi.mock('@/hooks/use-auth', () => ({ useAuth: () => ({ user: user.current }) }));
 vi.mock('@/hooks/queries/use-products', () => ({ useProduct: mockUseProduct }));
@@ -25,17 +28,20 @@ vi.mock('./product-details-form', () => ({
     </div>
   ),
 }));
+// Like the real forms: the component that owns the typed state renders the dialog and reports it on DialogContent.
 vi.mock('@/components/products/product-sizes-panel', () => ({
   ProductSizesPanel: function SizesStandIn() {
     const [open, setOpen] = useState(false);
+    const [name, setName] = useState('');
     return (
       <>
         <button type="button" onClick={() => setOpen(true)}>
           Add Size
         </button>
         <Dialog open={open} onOpenChange={setOpen}>
-          <DialogContent>
+          <DialogContent className="sm:max-w-sm" hasUnsavedInput={name !== ''}>
             <DialogTitle>Add a size</DialogTitle>
+            <input aria-label="Size name" value={name} onChange={(event) => setName(event.target.value)} />
           </DialogContent>
         </Dialog>
       </>
@@ -99,8 +105,8 @@ describe('ProductEditorDialog (POS-PERF-P39)', () => {
     const onClose = vi.fn();
     render(<ProductEditorDialog productId="p1" onClose={onClose} />);
 
-    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Details', 'Sizes & Prices', 'Ingredients', 'Choices', 'Branches']);
-    expect(screen.getByText(/Sizes, ingredients, choices and branch changes save as you make them/)).toBeInTheDocument();
+    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Details', 'Sizes & Prices', 'Ingredients & Packaging', 'Flavors & Choices', 'Branches']);
+    expect(screen.getByText(/each save as soon as you confirm them/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
@@ -129,7 +135,7 @@ describe('ProductEditorDialog (POS-PERF-P39)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Add Size' }));
     const editor = screen.getByTestId('product-editor');
-    expect(await within(editor).findByRole('dialog', { name: 'Add a size' })).toBeInTheDocument();
+    expect(await within(editor).findByRole('region', { name: 'Add a size' })).toBeInTheDocument();
     await waitFor(() => expect(tab(/Details/)).toBeDisabled());
     expect(tab(/Sizes/)).not.toBeDisabled();
 
@@ -137,6 +143,53 @@ describe('ProductEditorDialog (POS-PERF-P39)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
     expect(screen.getByRole('alert')).toHaveTextContent('Close the form you have open');
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  // POS-PERF-P41 — the section form is part of the editor, not a small dialog inside it.
+  it('shows a section form inline, full width, with Back to the tab and no second dialog or corner X', async () => {
+    render(<ProductEditorDialog productId="p1" initialTab="sizes" onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add Size' }));
+    const editor = screen.getByTestId('product-editor');
+    const section = await within(editor).findByRole('region', { name: 'Add a size' });
+
+    expect(screen.getAllByRole('dialog')).toEqual([editor]);
+    expect(section.className).not.toMatch(/max-w-/);
+    expect(within(editor).queryByRole('button', { name: /Close this form/ })).toBeNull();
+    expect(within(editor).getAllByRole('button', { name: 'Close' })).toHaveLength(1);
+
+    fireEvent.click(within(section).getByRole('button', { name: 'Back to Sizes & Prices' }));
+    await waitFor(() => expect(within(editor).queryByRole('region', { name: 'Add a size' })).toBeNull());
+    await waitFor(() => expect(tab(/Details/)).not.toBeDisabled());
+  });
+
+  it('asks before Back discards a typed section form', async () => {
+    render(<ProductEditorDialog productId="p1" initialTab="sizes" onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add Size' }));
+    const section = await screen.findByRole('region', { name: 'Add a size' });
+    fireEvent.change(within(section).getByRole('textbox', { name: 'Size name' }), { target: { value: 'Jumbo' } });
+
+    fireEvent.click(within(section).getByRole('button', { name: 'Back to Sizes & Prices' }));
+    expect(within(section).getByRole('alert')).toHaveTextContent('Discard what you typed in this form?');
+    fireEvent.click(within(section).getByRole('button', { name: 'Keep editing' }));
+    expect(within(section).getByRole('textbox', { name: 'Size name' })).toHaveValue('Jumbo');
+
+    fireEvent.click(within(section).getByRole('button', { name: 'Back to Sizes & Prices' }));
+    fireEvent.click(within(section).getByRole('button', { name: 'Discard and go back' }));
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Add a size' })).toBeNull());
+  });
+
+  it('asks before Open product page discards unsaved details', () => {
+    const onClose = vi.fn();
+    mockPush.mockClear();
+    render(<ProductEditorDialog productId="p1" onClose={onClose} />);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Product Name' }), { target: { value: 'x' } });
+
+    fireEvent.click(screen.getByRole('link', { name: 'Open product page' }));
+    expect(mockPush).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent('Discard your unsaved details?');
+    fireEvent.click(screen.getByRole('button', { name: 'Discard and open product page' }));
+    expect(mockPush).toHaveBeenCalledWith('/supervisor/products/p1');
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('is read-only, with the reason and a way to the product page, when the supervisor does not cover every branch', () => {

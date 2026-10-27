@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import type { FlavorSlotResponse } from '@potato-corner/shared';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
+import { FormSaveError } from '@/components/shared/forms/form-save-error';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -43,14 +44,36 @@ export function FlavorSlotFormDialog({ open, onOpenChange, productId, variantId,
     setUnit(slot?.unit ?? 'scoop');
     setRequired(slot?.required ?? true);
     setReason('');
+    addSlot.reset();
+    updateSlot.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-sync only when the form opens or the slot changes
   }, [open, slot]);
 
   const isPending = addSlot.isPending || updateSlot.isPending;
   const qty = Number(flavorQty);
   const canSubmit = label.trim().length > 0 && unit.trim().length > 0 && qty > 0 && (!requiresReason || reason.trim().length > 0);
 
+  // POS-PERF-P41 — Back/Escape in the product editor ask before discarding these.
+  const hasUnsavedInput =
+    open &&
+      (label !== (slot?.label ?? '') ||
+        flavorQty !== (slot ? String(slot.flavor_qty) : '1') ||
+        unit !== (slot?.unit ?? 'scoop') ||
+        required !== (slot?.required ?? true) ||
+        reason !== '');
+
   async function handleSubmit() {
     if (!canSubmit) return;
+    try {
+      await saveSlot();
+    } catch {
+      // Shown inline (FormSaveError); the entered values stay.
+      return;
+    }
+    onOpenChange(false);
+  }
+
+  async function saveSlot() {
     if (slot) {
       await updateSlot.mutateAsync({
         label: label.trim(),
@@ -68,12 +91,11 @@ export function FlavorSlotFormDialog({ open, onOpenChange, productId, variantId,
         reason: requiresReason ? reason.trim() : undefined,
       });
     }
-    onOpenChange(false);
   }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-sm">
+      <DialogContent className="sm:max-w-sm" hasUnsavedInput={hasUnsavedInput}>
         <DialogHeader>
           <DialogTitle>{slot ? 'Edit Flavor Slot' : 'Add Flavor Slot'}</DialogTitle>
           <DialogDescription>
@@ -110,6 +132,8 @@ export function FlavorSlotFormDialog({ open, onOpenChange, productId, variantId,
             </div>
           )}
         </div>
+
+        <FormSaveError error={(slot ? updateSlot.error : addSlot.error)} />
 
         <DialogFooter>
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>

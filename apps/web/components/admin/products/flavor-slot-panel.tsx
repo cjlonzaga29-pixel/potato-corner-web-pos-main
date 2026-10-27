@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Plus, Pencil, Trash2, X } from 'lucide-react';
+import { Plus, Pencil, Trash2, X, Loader2 } from 'lucide-react';
 import type { FlavorSlotResponse } from '@potato-corner/shared';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -183,12 +183,14 @@ function SlotRow({
                 <button
                   type="button"
                   aria-label="Remove snack option"
-                  onClick={() => void removeSnackOption.mutateAsync(option.id)}
-                  disabled={requiresReason}
+                  // POS-PERF-P41 — removes at once; busy until the server answers (the hook toasts the result).
+                  onClick={() => void removeSnackOption.mutateAsync(option.id).catch(() => undefined)}
+                  disabled={requiresReason || removeSnackOption.isPending}
+                  aria-busy={removeSnackOption.isPending && removeSnackOption.variables === option.id}
                   className="ml-1"
-                  title={requiresReason ? 'Removing from an ACTIVE variant requires a reason — use Edit on the slot instead' : undefined}
+                  title={requiresReason ? 'Removing from an ACTIVE variant requires a reason — use Edit on the slot instead' : 'Removes it now'}
                 >
-                  <X className="h-3 w-3" />
+                  {removeSnackOption.isPending && removeSnackOption.variables === option.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <X className="h-3 w-3" />}
                 </button>
               </Badge>
             ))}

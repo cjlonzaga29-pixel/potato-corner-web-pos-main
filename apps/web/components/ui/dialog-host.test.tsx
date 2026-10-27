@@ -53,22 +53,25 @@ describe('DialogHost (POS-PERF-P39)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add Size' }));
 
     const slot = screen.getByTestId('host-slot');
-    await waitFor(() => expect(within(slot).getByRole('dialog', { name: 'Add a size' })).toBeInTheDocument());
+    // POS-PERF-P41 — a labelled section of the editor, not a second dialog.
+    await waitFor(() => expect(within(slot).getByRole('region', { name: 'Add a size' })).toBeInTheDocument());
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
     // One overlay — the editor's own — and the editor is the only modal dialog.
     expect(document.querySelectorAll('[data-state="open"].fixed.inset-0')).toHaveLength(1);
     // The panel is laid out inside the editor, not as a second fixed, centred modal.
-    expect(within(slot).getByRole('dialog', { name: 'Add a size' })).not.toHaveClass('fixed');
+    expect(within(slot).getByRole('region', { name: 'Add a size' })).not.toHaveClass('fixed');
+    expect(within(slot).getByRole('button', { name: 'Back' })).toBeInTheDocument();
     expect(screen.getByTestId('underneath')).toHaveAttribute('inert');
   });
 
   it('Escape closes the panel only, leaving the editor open and interactive', async () => {
     render(<Editor />);
     fireEvent.click(screen.getByRole('button', { name: 'Add Size' }));
-    const panel = await screen.findByRole('dialog', { name: 'Add a size' });
+    const panel = await screen.findByRole('region', { name: 'Add a size' });
 
     fireEvent.keyDown(within(panel).getByRole('textbox', { name: 'Size name' }), { key: 'Escape' });
 
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add a size' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Add a size' })).toBeNull());
     expect(screen.getByRole('dialog', { name: 'Editor' })).toBeInTheDocument();
     await waitFor(() => expect(screen.getByTestId('underneath')).not.toHaveAttribute('inert'));
   });

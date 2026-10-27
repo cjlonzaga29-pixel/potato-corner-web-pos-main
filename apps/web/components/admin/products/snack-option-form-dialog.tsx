@@ -1,8 +1,9 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
+import { FormSaveError } from '@/components/shared/forms/form-save-error';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -58,15 +59,31 @@ export function SnackOptionFormDialog({
 
   const canSubmit = Boolean(snackVariantId) && (!requiresReason || reason.trim().length > 0);
 
+  // POS-PERF-P41 — Back/Escape in the product editor ask before discarding these.
+  const hasUnsavedInput = open && (Boolean(snackProductId) || Boolean(snackVariantId) || reason.trim().length > 0);
+  useEffect(() => {
+    if (!open) return;
+    setSnackProductId('');
+    setSnackVariantId('');
+    setReason('');
+    addSnackOption.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the form starts empty each time it opens
+  }, [open]);
+
   async function handleSubmit() {
     if (!canSubmit) return;
-    await addSnackOption.mutateAsync({ snack_product_variant_id: snackVariantId, reason: requiresReason ? reason.trim() : undefined });
+    try {
+      await addSnackOption.mutateAsync({ snack_product_variant_id: snackVariantId, reason: requiresReason ? reason.trim() : undefined });
+    } catch {
+      // Shown inline (FormSaveError); the selection stays.
+      return;
+    }
     handleOpenChange(false);
   }
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-sm">
+      <DialogContent className="sm:max-w-sm" hasUnsavedInput={hasUnsavedInput}>
         <DialogHeader>
           <DialogTitle>Add Snack Option</DialogTitle>
           <DialogDescription>Pick the product and size that is sellable into this slot.</DialogDescription>
@@ -125,6 +142,8 @@ export function SnackOptionFormDialog({
             </div>
           )}
         </div>
+
+        <FormSaveError error={addSnackOption.error} />
 
         <DialogFooter>
           <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>

@@ -1,7 +1,8 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogHost, DialogTitle } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
@@ -24,8 +25,8 @@ export type ProductEditorTab = (typeof PRODUCT_EDITOR_TABS)[number];
 const TAB_LABELS: Record<ProductEditorTab, string> = {
   details: 'Details',
   sizes: 'Sizes & Prices',
-  ingredients: 'Ingredients',
-  choices: 'Choices',
+  ingredients: 'Ingredients & Packaging',
+  choices: 'Flavors & Choices',
   branches: 'Branches',
 };
 
@@ -50,6 +51,12 @@ interface ProductEditorDialogProps {
  * over the tab content — one modal, one focus trap, Escape backs out of the
  * panel first. The tabs are locked while a panel is open so it can't be
  * unmounted with its input.
+ *
+ * POS-PERF-P41 — each section form is an inline section of this dialog (see
+ * DialogHost in ui/dialog.tsx) with a "Back to <tab>" button, and the
+ * editor shows one scroll area at a time. Close, Back, Escape and Open
+ * product page all ask before discarding unsaved details or a typed section
+ * form; leaving the page warns too.
  */
 export function ProductEditorDialog({ productId, initialTab = 'details', onClose }: ProductEditorDialogProps) {
   const { user } = useAuth();
@@ -57,7 +64,8 @@ export function ProductEditorDialog({ productId, initialTab = 'details', onClose
   const [tab, setTab] = useState<ProductEditorTab>(initialTab);
   const [detailsDirty, setDetailsDirty] = useState(false);
   const [panelOpen, setPanelOpen] = useState(false);
-  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [confirmDiscard, setConfirmDiscard] = useState<null | 'close' | 'navigate'>(null);
+  const router = useRouter();
   const [hostElement, setHostElement] = useState<HTMLDivElement | null>(null);
   const onDirtyChange = useCallback((dirty: boolean) => setDetailsDirty(dirty), []);
   const onPanelChange = useCallback((active: boolean) => setPanelOpen(active), []);
@@ -73,13 +81,31 @@ export function ProductEditorDialog({ productId, initialTab = 'details', onClose
   const variants = product ? [...product.variants].sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0)) : [];
   const branches = product ? [...product.branch_availability].sort((a, b) => a.branch_name.localeCompare(b.branch_name)) : [];
 
+  const hasUnsaved = detailsDirty || panelOpen;
+  const productPageHref = `/supervisor/products/${productId}`;
+
   function requestClose() {
-    if (detailsDirty || panelOpen) {
-      setConfirmDiscard(true);
+    if (hasUnsaved) {
+      setConfirmDiscard('close');
       return;
     }
     onClose();
   }
+
+  function discardAndContinue() {
+    if (confirmDiscard === 'navigate') router.push(productPageHref);
+    onClose();
+  }
+
+  // Reloading or leaving the site with typed, unsaved values asks first (the browser's own prompt).
+  useEffect(() => {
+    if (!hasUnsaved) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [hasUnsaved]);
 
   return (
     <Dialog open onOpenChange={(open) => !open && requestClose()}>
@@ -98,7 +124,9 @@ export function ProductEditorDialog({ productId, initialTab = 'details', onClose
             <DialogTitle className="truncate">{product ? `Edit ${product.name}` : 'Edit product'}</DialogTitle>
             {product && <ProductStatusBadge status={product.status} />}
           </div>
-          <DialogDescription>Details save with Save details. Sizes, ingredients, choices and branch changes save as you make them.</DialogDescription>
+          <DialogDescription>
+            Details save with Save Changes. Sizes, ingredients, flavors, choices and branch changes each save as soon as you confirm them.
+          </DialogDescription>
         </DialogHeader>
 
         {isLoading ? (
@@ -134,14 +162,15 @@ export function ProductEditorDialog({ productId, initialTab = 'details', onClose
             )}
 
             <div className="relative min-h-0 flex-1">
-              <DialogHost container={hostElement} onActiveChange={onPanelChange}>
-                <div className="h-full overflow-y-auto px-4 py-4 sm:px-6" inert={panelOpen}>
+              <DialogHost container={hostElement} onActiveChange={onPanelChange} backLabel={`Back to ${TAB_LABELS[tab]}`}>
+                {/* Hidden (and inert) while a section form is open, so only that form's scroll area is on screen. */}
+                <div className={`h-full overflow-y-auto px-4 py-4 sm:px-6 ${panelOpen ? 'invisible' : ''}`} inert={panelOpen}>
                   {/* Details stays mounted while another tab is shown, so typed-but-unsaved values survive a tab switch. */}
                   <TabsContent value="details" forceMount className="mt-0 data-[state=inactive]:hidden">
                     <ProductDetailsForm product={product} disabled={!canEdit} onDirtyChange={onDirtyChange} />
                   </TabsContent>
                   <TabsContent value="sizes" className="mt-0 space-y-3">
-                    <p className="text-xs text-muted-foreground">Each change here saves as soon as you confirm it.</p>
+                    <p className="text-xs text-muted-foreground">Adding, editing or deleting a size saves as soon as you confirm it; Close doesn&apos;t undo it.</p>
                     <ProductSizesPanel product={product} confirmDelete disabled={!canEdit} />
                   </TabsContent>
                   <TabsContent value="ingredients" className="mt-0 space-y-4">
@@ -158,7 +187,8 @@ export function ProductEditorDialog({ productId, initialTab = 'details', onClose
                   </TabsContent>
                   <TabsContent value="choices" className="mt-0 space-y-4">
                     <p className="text-xs text-muted-foreground">
-                      Flavors, add-on option groups and Mix &amp; Max flavor slots per size. Each change saves as soon as you confirm it.
+                      Flavors, add-on option groups and Mix &amp; Max flavor slots per size. Each change saves as soon as you confirm it, and
+                      Remove takes effect right away.
                     </p>
                     {variants.length === 0 ? (
                       <EmptyState title="No sizes yet" description="Add a size first, then its choices." />
@@ -168,7 +198,8 @@ export function ProductEditorDialog({ productId, initialTab = 'details', onClose
                   </TabsContent>
                   <TabsContent value="branches" className="mt-0 space-y-3">
                     <p className="text-xs text-muted-foreground">
-                      The branches this product is set up for. Deactivating takes it off POS at that branch only; nothing else changes.
+                      The branches this product is set up for. Publish here and Deactivate here take effect immediately, at that branch only;
+                      nothing else changes.
                     </p>
                     {branches.length === 0 ? (
                       <EmptyState title="Not set up for any branch" description="Open the product page to manage where it is sold." />
@@ -181,7 +212,7 @@ export function ProductEditorDialog({ productId, initialTab = 'details', onClose
                     )}
                   </TabsContent>
                 </div>
-                {/* Section forms (Add Size, recipe lines, flavors, slots, confirmations) render here, over the tab content. */}
+                {/* Section forms (Add Size, recipe lines, flavors, slots, confirmations) render here, in place of the tab content. */}
                 <div ref={setHostElement} className="pointer-events-none absolute inset-0" />
               </DialogHost>
             </div>
@@ -195,18 +226,27 @@ export function ProductEditorDialog({ productId, initialTab = 'details', onClose
                 {panelOpen ? 'Close the form you have open and discard what you typed in it' : 'Discard your unsaved details'}
                 {panelOpen && detailsDirty ? ', and your unsaved details?' : '?'}
               </span>
-              <Button variant="outline" size="sm" onClick={() => setConfirmDiscard(false)} autoFocus>
+              <Button variant="outline" size="sm" onClick={() => setConfirmDiscard(null)} autoFocus>
                 Keep editing
               </Button>
-              <Button variant="danger" size="sm" onClick={onClose}>
-                Discard and close
+              <Button variant="danger" size="sm" onClick={discardAndContinue}>
+                {confirmDiscard === 'navigate' ? 'Discard and open product page' : 'Discard and close'}
               </Button>
             </div>
           ) : (
             <>
               {product && (
                 <Button variant="ghost" size="sm" asChild className="mr-auto">
-                  <Link href={`/supervisor/products/${product.id}`}>Open product page</Link>
+                  <Link
+                    href={productPageHref}
+                    onClick={(event) => {
+                      if (!hasUnsaved) return;
+                      event.preventDefault();
+                      setConfirmDiscard('navigate');
+                    }}
+                  >
+                    Open product page
+                  </Link>
                 </Button>
               )}
               <Button variant="outline" onClick={requestClose}>

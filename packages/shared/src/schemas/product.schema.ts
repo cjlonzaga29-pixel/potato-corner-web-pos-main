@@ -497,9 +497,12 @@ export const posCatalogResponseSchema = z.object({
 // (scoped by flavor_id, same override rule as the live deduction) plus, for
 // Mix & Max, each selected slot's snack variant BOM (scoped by that slot's
 // own flavor_id) — summed across every line in the request, including the
-// candidate item being added. Product Option deductions (a separate mapping,
-// not ProductComponent-driven) are intentionally out of scope here; the
-// server-side atomic reservation at checkout remains the final guard.
+// candidate item being added. POS-PERF-P41 — plus each selected add-on
+// option's ProductOptionInventoryMapping (selected_option_ids, the same ids
+// checkout receives), so an ingredient shared between a recipe and an add-on
+// is summed once. Optional: an older client that omits it gets the pre-P41
+// result. The server-side atomic reservation at checkout remains the final
+// guard.
 export const cartAvailabilityLineSchema = z.object({
   product_variant_id: z.uuid(),
   flavor_id: z.uuid().nullable().optional(),
@@ -512,6 +515,7 @@ export const cartAvailabilityLineSchema = z.object({
       }),
     )
     .optional(),
+  selected_option_ids: z.array(z.uuid()).max(50).optional(),
   quantity: z.number().int().positive(),
 });
 

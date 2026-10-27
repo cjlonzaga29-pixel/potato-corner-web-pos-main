@@ -1,4 +1,5 @@
 import { prisma } from '../../lib/prisma.js';
+import { convertQuantity } from '../product-components/unit-conversion.util.js';
 import { computeBomDeductionBatch } from '../shadow-bom-deduction/shadow-bom-deduction.service.js';
 import { classifyStockStatus } from '../universal-inventory/universal-inventory.service.js';
 import type {
@@ -110,6 +111,9 @@ export const stockAvailabilityService = {
         requiredByItem.set(bomLine.inventoryItemId, (requiredByItem.get(bomLine.inventoryItemId) ?? 0) + bomLine.quantity);
       }
     }
+    for (const optionLine of await optionRequirements(lines)) {
+      requiredByItem.set(optionLine.inventoryItemId, (requiredByItem.get(optionLine.inventoryItemId) ?? 0) + optionLine.quantity);
+    }
 
     const itemIds = [...requiredByItem.keys()];
     if (itemIds.length === 0) return { ok: true, shortfalls: [] };
@@ -144,6 +148,39 @@ export const stockAvailabilityService = {
     return { ok: shortfalls.length === 0, shortfalls };
   },
 };
+
+/**
+ * POS-PERF-P41 — add-on ingredient requirements, the same composition
+ * checkout's computeOptionDeductionLines deducts (one mapping per option,
+ * converted into the item's base unit, times the line quantity; an option
+ * listed twice counts twice). One query for every option in the cart. A
+ * mapping checkout would refuse (inactive item, no unit conversion) is left
+ * out here rather than failing the pre-check — checkout reports it.
+ */
+async function optionRequirements(lines: CartAvailabilityLineInput[]): Promise<{ inventoryItemId: string; quantity: number }[]> {
+  const optionIds = [...new Set(lines.flatMap((line) => line.selectedOptionIds ?? []))];
+  if (optionIds.length === 0) return [];
+  const mappings = await prisma.productOptionInventoryMapping.findMany({
+    where: { productOptionId: { in: optionIds } },
+    select: { productOptionId: true, inventoryItemId: true, quantityRequired: true, deductionUnitId: true, inventoryItem: { select: { baseUnitId: true, deletedAt: true } } },
+  });
+  const perUnitByOption = new Map<string, { inventoryItemId: string; quantity: number }>();
+  for (const mapping of mappings) {
+    if (mapping.inventoryItem.deletedAt !== null) continue;
+    try {
+      const base = await convertQuantity(mapping.quantityRequired, mapping.deductionUnitId, mapping.inventoryItem.baseUnitId, mapping.inventoryItemId);
+      perUnitByOption.set(mapping.productOptionId, { inventoryItemId: mapping.inventoryItemId, quantity: base.toNumber() });
+    } catch {
+      continue;
+    }
+  }
+  return lines.flatMap((line) =>
+    (line.selectedOptionIds ?? []).flatMap((optionId) => {
+      const perUnit = perUnitByOption.get(optionId);
+      return perUnit ? [{ inventoryItemId: perUnit.inventoryItemId, quantity: perUnit.quantity * line.quantity }] : [];
+    }),
+  );
+}
 
 function evaluateLines(lines: { inventoryItemId: string; quantity: number }[], stockByItem: Map<string, StockRow>): VariantStockResult {
   if (lines.length === 0) {

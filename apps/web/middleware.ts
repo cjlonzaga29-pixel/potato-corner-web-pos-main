@@ -332,9 +332,18 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  // sw.js and workbox-*.js must stay excluded too — next-pwa's service
-  // worker fetches these unauthenticated (before any login), and without
-  // this exclusion this middleware 307-redirects them to /login, so the
-  // service worker can never register at all (Phase 20 Task 6 finding).
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|manifest.json|icons|sw\\.js|workbox-).*)'],
+  // next-pwa's three generated public scripts must stay excluded too — they
+  // are fetched unauthenticated (before any login), and without this
+  // exclusion this middleware 307-redirects them to /login:
+  // - sw.js and workbox-<hash>.js: the service worker could never register
+  //   at all (Phase 20 Task 6 finding).
+  // - swe-worker-<hash>.js: every page runs `new Worker('/swe-worker-…js')`
+  //   and sw.js precaches it, so the browser parsed login HTML as JS
+  //   ("Unexpected token '<'") and the SW cached that HTML (POS-PERF-P44R).
+  // Each is anchored to the exact generated shape (next-pwa's 16-hex /
+  // workbox's 8-hex content hash, plus its .map), so a lookalike path such
+  // as /swe-worker-admin or /sw.js/x still goes through this middleware.
+  matcher: [
+    '/((?!_next/static|_next/image|favicon.ico|manifest.json|icons|(?:sw|workbox-[0-9a-f]+|swe-worker-[0-9a-f]+)\\.js(?:\\.map)?$).*)',
+  ],
 };

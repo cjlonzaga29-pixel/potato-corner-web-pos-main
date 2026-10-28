@@ -28,9 +28,22 @@ function requireEnv(name: string): string {
   return value;
 }
 
-const SUPER_ADMIN = { email: requireEnv('E2E_SUPER_ADMIN_EMAIL'), password: requireEnv('E2E_SUPER_ADMIN_PASSWORD') };
-const SUPERVISOR = { email: requireEnv('E2E_SUPERVISOR_EMAIL'), password: requireEnv('E2E_SUPERVISOR_PASSWORD') };
-const BRANCH = { email: requireEnv('E2E_BRANCH_EMAIL'), password: requireEnv('E2E_BRANCH_PASSWORD') };
+// Same rule deploy-production.yml checks before any production write: the
+// mailbox part must name the account as automation (runbook §5.3), so a
+// real person's login can't be put into these secrets by mistake.
+const AUTOMATION_EMAIL_MARKER = /^[^@]*e2e-smoke[^@]*@/i;
+
+function requireAutomationEmail(name: string): string {
+  const value = requireEnv(name);
+  if (!AUTOMATION_EMAIL_MARKER.test(value)) {
+    throw new Error(`${name} is not a dedicated automation account — its address must contain "e2e-smoke" before the @`);
+  }
+  return value;
+}
+
+const SUPER_ADMIN = { email: requireAutomationEmail('E2E_SUPER_ADMIN_EMAIL'), password: requireEnv('E2E_SUPER_ADMIN_PASSWORD') };
+const SUPERVISOR = { email: requireAutomationEmail('E2E_SUPERVISOR_EMAIL'), password: requireEnv('E2E_SUPERVISOR_PASSWORD') };
+const BRANCH = { email: requireAutomationEmail('E2E_BRANCH_EMAIL'), password: requireEnv('E2E_BRANCH_PASSWORD') };
 
 // RFC 2606 reserves .invalid, so this address can never belong to an account.
 const NONEXISTENT_EMAIL = 'e2e-smoke-no-such-account@pilot-smoke.invalid';
@@ -68,30 +81,25 @@ async function logout(page: Page): Promise<void> {
 // it never got. That one message is caused by the harness, not the app.
 const SERVICE_WORKER_BLOCKED_ERROR = "Cannot read properties of undefined (reading 'waiting')";
 
-// Known app defect found by POS-PERF-P44 (runbook §6.3): middleware.ts's
-// matcher exempts sw.js and workbox-* but not next-pwa's swe-worker-<hash>.js,
-// so that script is redirected to /login and the browser parses HTML as JS.
-// Tolerated only while it is the sole script served as HTML; remove this
-// once the matcher is fixed.
-const KNOWN_HTML_SCRIPT = /^\/swe-worker-[0-9a-f]+\.js$/;
-const HTML_AS_SCRIPT_ERROR = "Unexpected token '<'";
-
-/** Records uncaught page errors (minus the two explained above) so a test can assert none happened. */
+/**
+ * Records uncaught page errors (minus the one explained above) so a test can
+ * assert none happened. Nothing else is tolerated: if a public script is
+ * redirected to /login again (as next-pwa's swe-worker-<hash>.js was until
+ * POS-PERF-P44R), its "Unexpected token '<'" fails the test, and any page
+ * script answered with HTML is recorded as an error by name.
+ */
 function collectPageErrors(page: Page): string[] {
   const errors: string[] = [];
-  const htmlScripts: string[] = [];
   page.on('response', (response) => {
     const contentType = response.headers()['content-type'] ?? '';
-    if (response.request().resourceType() === 'script' && contentType.includes('text/html')) {
-      htmlScripts.push(new URL(response.url()).pathname);
+    const { pathname } = new URL(response.url());
+    const isScript = response.request().resourceType() === 'script' || pathname.endsWith('.js');
+    if (isScript && contentType.includes('text/html')) {
+      errors.push(`script served as HTML: ${pathname}`);
     }
   });
   page.on('pageerror', (err) => {
     if (err.message === SERVICE_WORKER_BLOCKED_ERROR) return;
-    if (err.message === HTML_AS_SCRIPT_ERROR && htmlScripts.length > 0 && htmlScripts.every((p) => KNOWN_HTML_SCRIPT.test(p))) {
-      test.info().annotations.push({ type: 'known-defect', description: `script served as HTML: ${htmlScripts.join(', ')}` });
-      return;
-    }
     errors.push(err.message);
   });
   return errors;

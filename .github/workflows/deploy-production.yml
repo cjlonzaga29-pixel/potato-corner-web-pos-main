@@ -121,6 +121,52 @@ jobs:
           fi
           echo "All deployment credentials are present."
 
+      # Decide the post-promote smoke now, before any production write
+      # (POS-PERF-P44R). None of the six account secrets set → the smoke is
+      # skipped with a notice. All six set, each address marked as a dedicated
+      # automation account (runbook §5.3) → it runs. Anything in between, or
+      # an unmarked address, fails here with nothing deployed, instead of
+      # failing after promote or running with a personal login. Names only;
+      # values are never printed.
+      - name: Check production smoke accounts
+        id: smoke
+        if: ${{ steps.tip.outputs.current == 'true' }}
+        env:
+          E2E_SUPER_ADMIN_EMAIL: ${{ secrets.E2E_SUPER_ADMIN_EMAIL }}
+          E2E_SUPER_ADMIN_PASSWORD: ${{ secrets.E2E_SUPER_ADMIN_PASSWORD }}
+          E2E_SUPERVISOR_EMAIL: ${{ secrets.E2E_SUPERVISOR_EMAIL }}
+          E2E_SUPERVISOR_PASSWORD: ${{ secrets.E2E_SUPERVISOR_PASSWORD }}
+          E2E_BRANCH_EMAIL: ${{ secrets.E2E_BRANCH_EMAIL }}
+          E2E_BRANCH_PASSWORD: ${{ secrets.E2E_BRANCH_PASSWORD }}
+        run: |
+          set -euo pipefail
+          names="E2E_SUPER_ADMIN_EMAIL E2E_SUPER_ADMIN_PASSWORD E2E_SUPERVISOR_EMAIL E2E_SUPERVISOR_PASSWORD E2E_BRANCH_EMAIL E2E_BRANCH_PASSWORD"
+          set_count=0
+          missing=""
+          for name in $names; do
+            if [ -n "${!name:-}" ]; then set_count=$((set_count + 1)); else missing="$missing $name"; fi
+          done
+          if [ "$set_count" -eq 0 ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No smoke account secrets are set; the production smoke will be skipped."
+            exit 0
+          fi
+          if [ -n "$missing" ]; then
+            echo "::error::Smoke account secrets are only partly set; missing:$missing. Nothing was deployed. Set all six (or none) in the 'production' environment, then re-run this job."
+            exit 1
+          fi
+          unmarked=""
+          for name in E2E_SUPER_ADMIN_EMAIL E2E_SUPERVISOR_EMAIL E2E_BRANCH_EMAIL; do
+            local_part="${!name%%@*}"
+            if [[ "${local_part,,}" != *e2e-smoke* ]]; then unmarked="$unmarked $name"; fi
+          done
+          if [ -n "$unmarked" ]; then
+            echo "::error::Not dedicated automation accounts (address must contain \"e2e-smoke\" before the @):$unmarked. Nothing was deployed."
+            exit 1
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+          echo "All six smoke account secrets are set; the production smoke will run after promote."
+
       # Fail closed before any production write unless the pinned Render
       # service is the one configured and its Auto-Deploy is off; with it on,
       # Render would deploy every main push without validation or approval.
@@ -227,19 +273,17 @@ jobs:
         run: node .github/scripts/deploy-rollout.mjs vercel-verify
 
       - name: Install Playwright Chromium (pilot smoke suite only needs Desktop Chrome)
-        if: ${{ steps.tip.outputs.current == 'true' && env.E2E_SUPER_ADMIN_EMAIL != '' }}
+        if: ${{ steps.tip.outputs.current == 'true' && steps.smoke.outputs.run == 'true' }}
         run: pnpm exec playwright install --with-deps chromium
-        env:
-          E2E_SUPER_ADMIN_EMAIL: ${{ secrets.E2E_SUPER_ADMIN_EMAIL }}
 
       - name: Run Playwright smoke tests against production
         # Skips instead of failing the run when pilot accounts haven't been
-        # provisioned yet (Phase 20 Task 16 — pilot go-live cutover). Same
-        # graceful-skip pattern as the Render deploy step above. Once
-        # E2E_SUPER_ADMIN_EMAIL is set, any other missing secret fails the
-        # suite. The suite is production-safe (POS-PERF-P44): read-only guard,
-        # dedicated automation accounts, no PIN entry or clock-in.
-        if: ${{ steps.tip.outputs.current == 'true' && env.E2E_SUPER_ADMIN_EMAIL != '' }}
+        # provisioned yet (Phase 20 Task 16 — pilot go-live cutover); the
+        # "Check production smoke accounts" step above decided, before any
+        # production write, that all six secrets are set and marked. The
+        # suite is production-safe (POS-PERF-P44): read-only guard, dedicated
+        # automation accounts, no PIN entry or clock-in.
+        if: ${{ steps.tip.outputs.current == 'true' && steps.smoke.outputs.run == 'true' }}
         run: pnpm exec playwright test --config=tests/e2e/playwright.pilot.config.ts
         env:
           PLAYWRIGHT_BASE_URL: https://www.potatorenovare.com
@@ -251,10 +295,8 @@ jobs:
           E2E_BRANCH_PASSWORD: ${{ secrets.E2E_BRANCH_PASSWORD }}
 
       - name: Report skipped smoke tests
-        if: ${{ steps.tip.outputs.current == 'true' && env.E2E_SUPER_ADMIN_EMAIL == '' }}
-        env:
-          E2E_SUPER_ADMIN_EMAIL: ${{ secrets.E2E_SUPER_ADMIN_EMAIL }}
-        run: echo "::notice::Production smoke tests SKIPPED — E2E_SUPER_ADMIN_EMAIL is not configured. API and web rollout were verified; behaviour was not smoke-tested."
+        if: ${{ steps.tip.outputs.current == 'true' && steps.smoke.outputs.run == 'false' }}
+        run: echo "::notice::Production smoke tests SKIPPED — none of the six E2E account secrets is configured. API and web rollout were verified; behaviour was not smoke-tested."
 
       - name: Create GitHub release with auto-generated changelog
         # Tag the commit that was validated and deployed, not whatever main

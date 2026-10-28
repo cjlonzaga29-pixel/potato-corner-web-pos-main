@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { NextRequest } from 'next/server';
-import { middleware } from './middleware';
+import { unstable_doesMiddlewareMatch } from 'next/experimental/testing/server';
+import { middleware, config } from './middleware';
 
 /** Builds an unsigned JWT-shaped string — middleware only decodes (never verifies) this locally. */
 function fakeAccessToken(payload: Record<string, unknown>): string {
@@ -153,5 +154,53 @@ describe('POS-PERF-P26 — Branch Account page removal', () => {
       const response = await middleware(request);
       expect(response.headers.get('location')).toBeNull();
     }
+  });
+});
+
+describe('POS-PERF-P44R — matcher exempts only the generated PWA scripts', () => {
+  // Same compiled matcher Next.js applies at runtime, fed this file's own config.
+  const runsMiddleware = (path: string) => unstable_doesMiddlewareMatch({ config, url: `https://app.potatocorner.test${path}` });
+
+  it('serves next-pwa/workbox generated scripts (and their maps) without the login redirect', () => {
+    for (const path of [
+      '/sw.js',
+      '/sw.js.map',
+      '/workbox-5194662c.js',
+      '/workbox-5194662c.js.map',
+      '/swe-worker-5c72df51bb1f6ee0.js',
+      '/swe-worker-5c72df51bb1f6ee0.js.map',
+    ]) {
+      expect(runsMiddleware(path), path).toBe(false);
+    }
+  });
+
+  it('still runs on app pages, the login page and lookalike or non-generated script paths', () => {
+    for (const path of [
+      '/',
+      '/login',
+      '/admin/dashboard',
+      '/branch/terminal',
+      '/swe-worker-admin',
+      '/swe-worker-.js',
+      '/swe-worker-NOTHEX.js',
+      '/swe-worker-5c72df51bb1f6ee0.js/admin',
+      '/swe-worker-5c72df51bb1f6ee0.jsx',
+      '/sw.js/admin',
+      '/sw.json',
+      '/sw.jsx',
+      '/workbox-admin',
+      '/workbox-5194662c.js.html',
+      '/admin/swe-worker-5c72df51bb1f6ee0.js',
+      '/admin/sw.js',
+      '/worker.js',
+      '/private.js',
+    ]) {
+      expect(runsMiddleware(path), path).toBe(true);
+    }
+  });
+
+  it('redirects a signed-out lookalike worker path to /login', async () => {
+    const response = await middleware(makeRequest('https://app.potatocorner.test/swe-worker-admin'));
+    expect(requireLocation(response).pathname).toBe('/login');
   });
 });

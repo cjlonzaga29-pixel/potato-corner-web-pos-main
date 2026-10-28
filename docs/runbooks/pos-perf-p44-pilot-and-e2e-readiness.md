@@ -101,9 +101,9 @@ Super Admin account. These are audit/cache/default rows, not business data.
 changed. No `login_attempts` moved, and `notifications` stayed at 0 even 35 s after the run (past the 30 s presence debounce).
 Any other write is aborted by the guard and fails the run.
 
-**Credential policy:** no `E2E_SUPER_ADMIN_EMAIL` → the workflow step is skipped with a notice (unchanged). `E2E_SUPER_ADMIN_EMAIL`
-set but any other of the six missing → the suite fails at load with `Missing required env var <NAME>` (names only). No
-`PLAYWRIGHT_BASE_URL`, or one that is not an approved production or local origin → the config refuses to load.
+**Credential policy:** *superseded by POS-PERF-P44R* (`pos-perf-p44r-worker-routing-and-smoke-guards.md` §3). The run/skip
+decision is now made before any production write over all six secrets, and each address must contain `e2e-smoke`. No
+`PLAYWRIGHT_BASE_URL`, or one that is not an approved production or local origin → the config refuses to load (unchanged).
 
 ### 4.2 Isolated mutating E2E
 
@@ -157,6 +157,7 @@ Do this from the owner's own Super Admin session. Do not reuse the owner's passw
 
 1. **Mailboxes.** Use addresses the owner controls (for example plus-addresses on the owner's mailbox), clearly named, such as
    `…+e2e-smoke-admin@…`, `…+e2e-smoke-supervisor@…`, `…+e2e-smoke-branch@…`. Password reset must reach the owner.
+   **Required since P44R:** the part before the `@` must contain `e2e-smoke` (any case), or the deploy fails before any write.
 2. **Generate each initial password locally**, never in a shared terminal log:
    `node -e "process.stdout.write(require('crypto').randomBytes(24).toString('base64url')+'-Aa1')"` and paste it straight into
    the create dialog. (The suffix guarantees the upper/lower/digit/special classes `strongPasswordSchema` requires.)
@@ -254,6 +255,8 @@ was empty after the smoke runs (`preserveOutput: 'never'`). The account emails d
 
 ### 6.3 Defect found: `swe-worker-<hash>.js` is redirected to `/login`
 
+**Fixed in POS-PERF-P44R** (`pos-perf-p44r-worker-routing-and-smoke-guards.md`); the smoke allowance below is removed.
+
 `apps/web/middleware.ts`'s matcher exempts `sw.js` and `workbox-*` but not `swe-worker-<hash>.js`, which next-pwa now emits.
 A signed-out page load requests it as a script; the middleware redirects it to `/login`, the browser receives HTML, and throws
 `Unexpected token '<'`. Reproduced with service workers **allowed** as well (real browsers), so it is not a harness artifact.
@@ -348,7 +351,8 @@ Awaiting the owner, in order. None was done by P44:
 4. **Set the six secrets** in the `production` environment with hidden input; delete `E2E_STAFF_*` if present.
 5. **Next deploy**: the smoke runs for real for the first time. Record the result in the evidence template (§7). A failure
    after promote means: roll back per P43, then investigate.
-6. **Fix the `swe-worker` matcher** (§6.3) in a normal reviewed change, and remove the smoke's allowance with it.
+6. ~~**Fix the `swe-worker` matcher** (§6.3) in a normal reviewed change, and remove the smoke's allowance with it.~~ Done in
+   POS-PERF-P44R.
 7. **Pilot checklist** (§7): observe during normal work and fill in; all items PENDING.
 8. **Isolated E2E maintenance** (separate task): repair stale specs (`expenses`, `p37`, and others not re-run), and decide
    whether a remote isolated environment is wanted. Creating one (database, Storage, API, web) is a platform/resource

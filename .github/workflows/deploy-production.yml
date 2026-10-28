@@ -42,6 +42,11 @@ jobs:
       VERCEL_ORG_ID: team_ixozcUgz2KZlGr8LQ09X6AEr
       VERCEL_PROJECT_ID: prj_yVPZZumoPDxbGuADZ4JeetWCKl0V
       VERCEL_PRODUCTION_DOMAINS: potatorenovare.com,www.potatorenovare.com
+      # Pinned Render production API service; RENDER_SERVICE_ID_PRODUCTION
+      # must name exactly this service, built from this repo's main.
+      RENDER_EXPECTED_SERVICE_ID: srv-d9cok48js32c73dss310
+      RENDER_EXPECTED_REPO: https://github.com/${{ github.repository }}
+      RENDER_EXPECTED_BRANCH: main
       EXPECTED_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
@@ -116,6 +121,18 @@ jobs:
           fi
           echo "All deployment credentials are present."
 
+      # Fail closed before any production write unless the pinned Render
+      # service is the one configured and its Auto-Deploy is off; with it on,
+      # Render would deploy every main push without validation or approval.
+      # Enabled, unknown, missing or unreadable all fail. Read-only: the
+      # setting is never changed from here.
+      - name: Verify Render service and Auto-Deploy off (production)
+        if: ${{ steps.tip.outputs.current == 'true' }}
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID_PRODUCTION: ${{ secrets.RENDER_SERVICE_ID_PRODUCTION }}
+        run: node .github/scripts/deploy-rollout.mjs render-preflight
+
       # Workflow-published web only: build the exact checkout before any
       # production write, so a build failure stops the release early and the
       # new-API/old-web window below is just the upload, not a full build.
@@ -147,7 +164,8 @@ jobs:
           DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL_DIRECT }}
           DIRECT_URL: ${{ secrets.PRODUCTION_DATABASE_URL_DIRECT }}
 
-      # Triggers the hook with ref=<this SHA>, then polls the deploy id the
+      # Re-runs the Render service/Auto-Deploy check, triggers the hook with
+      # ref=<this SHA>, then polls the deploy id the
       # hook returned on RENDER_SERVICE_ID_PRODUCTION until it is live at this
       # SHA. Failed/cancelled/replaced deploys, a wrong service or commit, and
       # the 25-minute bound all fail the job. Replaces the old blind sleep 45.

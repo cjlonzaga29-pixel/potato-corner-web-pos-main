@@ -3,7 +3,9 @@
 //
 // Replaces the old blind `sleep 45`. Each check is bound to the exact commit
 // this run validated and deploys, never to "whatever is live now":
-//   render       — trigger the Render deploy hook for EXPECTED_SHA, then poll
+//   render-preflight — before any production write, require the pinned
+//                  Render service (repo/branch) with Auto-Deploy off.
+//   render       — re-run that check, then trigger the Render deploy hook for EXPECTED_SHA, then poll
 //                  that deploy (by id) on RENDER_SERVICE_ID until it is live.
 //   web-mode     — read apps/web/vercel.json at this commit and say who
 //                  publishes the production web: Vercel's Git integration
@@ -143,6 +145,117 @@ export function classifyRenderStatus(status) {
 // Retrieve returns the deploy itself; the hook and list wrap it in { deploy }.
 const unwrapDeploy = (x) => (x && typeof x === 'object' && x.deploy ? x.deploy : x);
 
+/** "https://github.com/Owner/Repo.git/" and "git@github.com:owner/repo" → "github.com/owner/repo". */
+export function normalizeRepo(repo) {
+  return String(repo)
+    .trim()
+    .toLowerCase()
+    .replace(/^git@github\.com:/, 'github.com/')
+    .replace(/^https?:\/\//, '')
+    .replace(/\/+$/, '')
+    .replace(/\.git$/, '');
+}
+
+/**
+ * Fail-closed preflight of the production Render service, run before any
+ * production write. Passes only when `serviceId` is the pinned
+ * `expectedServiceId`, the API returns that service, it is built from
+ * `expectedRepo` / `expectedBranch`, and Auto-Deploy is exactly "no" —
+ * otherwise Render would also deploy every main push without this gate.
+ * Enabled, missing or unrecognised autoDeploy, a malformed body, and any
+ * non-transient API error all fail. Nothing is ever changed on Render.
+ */
+export async function checkRenderService({
+  apiKey,
+  serviceId,
+  expectedServiceId,
+  expectedRepo,
+  expectedBranch,
+  fetchImpl,
+  intervalMs = 15_000,
+  timeoutMs = 3 * 60_000,
+  maxConsecutiveErrors = 5,
+  now,
+  sleep,
+  log = () => {},
+}) {
+  if (expectedServiceId && serviceId !== expectedServiceId) {
+    throw new FatalError(
+      `RENDER_SERVICE_ID_PRODUCTION does not match the pinned production service ${expectedServiceId}`,
+    );
+  }
+  const headers = { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' };
+  const service = await pollUntil({
+    label: 'Render service',
+    intervalMs,
+    timeoutMs,
+    maxConsecutiveErrors,
+    now,
+    sleep,
+    log,
+    check: async () => {
+      try {
+        const { body } = await fetchJson(
+          fetchImpl,
+          `${RENDER_API}/services/${encodeURIComponent(serviceId)}`,
+          { headers },
+          'Render service lookup',
+        );
+        return { done: true, value: body };
+      } catch (err) {
+        if (err instanceof FatalError && /HTTP 404/.test(err.message)) {
+          throw new FatalError(
+            'Render service lookup: HTTP 404 — RENDER_SERVICE_ID_PRODUCTION does not name a service this API key can see',
+          );
+        }
+        throw err;
+      }
+    },
+  });
+  if (!service || typeof service !== 'object' || Array.isArray(service)) {
+    throw new FatalError('Render service lookup: response was not a service object');
+  }
+  if (service.id !== serviceId) {
+    throw new FatalError(
+      service.id
+        ? 'Render service lookup returned a different service id'
+        : 'Render service lookup: response has no service id',
+    );
+  }
+  if (expectedRepo) {
+    if (typeof service.repo !== 'string' || !service.repo) {
+      throw new FatalError(`Render service ${serviceId} reports no repository`);
+    }
+    if (normalizeRepo(service.repo) !== normalizeRepo(expectedRepo)) {
+      throw new FatalError(
+        `Render service ${serviceId} is built from ${service.repo}, expected ${expectedRepo}`,
+      );
+    }
+  }
+  if (expectedBranch && service.branch !== expectedBranch) {
+    throw new FatalError(
+      `Render service ${serviceId} tracks branch ${service.branch ?? '(none)'}, expected ${expectedBranch}`,
+    );
+  }
+  if (service.autoDeploy === 'yes') {
+    throw new FatalError(
+      `Render Auto-Deploy is ON for ${serviceId}: Render would also deploy every main push without validation or approval. Turn it off in the Render dashboard (Settings → Auto-Deploy), then re-run. Nothing was deployed.`,
+    );
+  }
+  if (service.autoDeploy !== 'no') {
+    throw new FatalError(
+      `Render Auto-Deploy setting for ${serviceId} is unknown (${service.autoDeploy === undefined ? 'missing' : JSON.stringify(service.autoDeploy)}); refusing to deploy until it reads "no"`,
+    );
+  }
+  return {
+    id: service.id,
+    name: service.name,
+    repo: service.repo,
+    branch: service.branch,
+    autoDeploy: service.autoDeploy,
+  };
+}
+
 /** POST the deploy hook for `sha`. Returns the new deploy id, or null on 202 (queued, no id). */
 export async function triggerRenderDeploy({ hookUrl, sha, fetchImpl }) {
   let url;
@@ -185,6 +298,9 @@ export async function triggerRenderDeploy({ hookUrl, sha, fetchImpl }) {
 export async function waitForRenderDeploy({
   apiKey,
   serviceId,
+  expectedServiceId,
+  expectedRepo,
+  expectedBranch,
   sha,
   deployId,
   triggeredAt,
@@ -195,7 +311,6 @@ export async function waitForRenderDeploy({
   now,
   sleep,
   log = () => {},
-  warn = () => {},
 }) {
   // One deadline across service lookup, deploy lookup and status polling.
   const clock = now ?? Date.now;
@@ -204,36 +319,21 @@ export async function waitForRenderDeploy({
   const headers = { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' };
   const svc = `${RENDER_API}/services/${encodeURIComponent(serviceId)}`;
 
-  const service = await pollUntil({
-    label: 'Render service',
+  // Same fail-closed check as the preflight, re-read while following the deploy.
+  await checkRenderService({
+    apiKey,
+    serviceId,
+    expectedServiceId,
+    expectedRepo,
+    expectedBranch,
+    fetchImpl,
     intervalMs,
     timeoutMs: remaining(),
     maxConsecutiveErrors,
     now: clock,
     sleep,
     log,
-    check: async () => {
-      try {
-        const { body } = await fetchJson(fetchImpl, svc, { headers }, 'Render service lookup');
-        return { done: true, value: body };
-      } catch (err) {
-        if (err instanceof FatalError && /HTTP 404/.test(err.message)) {
-          throw new FatalError(
-            'Render service lookup: HTTP 404 — RENDER_SERVICE_ID_PRODUCTION does not name a service this API key can see',
-          );
-        }
-        throw err;
-      }
-    },
   });
-  if (service?.id && service.id !== serviceId) {
-    throw new FatalError('Render service lookup returned a different service id');
-  }
-  if (service?.autoDeploy === 'yes') {
-    warn(
-      'Render Auto-Deploy is ON for this service: Render also deploys every main push without this gate. See the P43 runbook.',
-    );
-  }
 
   let id = deployId;
   if (!id) {
@@ -476,14 +576,45 @@ export async function main(
       out(mode);
       return 0;
     }
-    if (cmd === 'render') {
-      const [hookUrl, apiKey, serviceId, sha] = requireEnv(env, [
-        'RENDER_DEPLOY_HOOK_PRODUCTION',
+    if (cmd === 'render-preflight') {
+      const [apiKey, serviceId, expectedServiceId, expectedRepo, expectedBranch] = requireEnv(env, [
         'RENDER_API_KEY',
         'RENDER_SERVICE_ID_PRODUCTION',
-        'EXPECTED_SHA',
+        'RENDER_EXPECTED_SERVICE_ID',
+        'RENDER_EXPECTED_REPO',
+        'RENDER_EXPECTED_BRANCH',
       ]);
+      secrets = [apiKey];
+      const s = await checkRenderService({
+        apiKey,
+        serviceId,
+        expectedServiceId,
+        expectedRepo,
+        expectedBranch,
+        fetchImpl,
+        log: say,
+      });
+      say(
+        `Render service ${s.id} (${s.name ?? 'unnamed'}): repo ${s.repo}, branch ${s.branch}, autoDeploy=${s.autoDeploy}. OK`,
+      );
+      return 0;
+    }
+    if (cmd === 'render') {
+      const [hookUrl, apiKey, serviceId, expectedServiceId, expectedRepo, expectedBranch, sha] =
+        requireEnv(env, [
+          'RENDER_DEPLOY_HOOK_PRODUCTION',
+          'RENDER_API_KEY',
+          'RENDER_SERVICE_ID_PRODUCTION',
+          'RENDER_EXPECTED_SERVICE_ID',
+          'RENDER_EXPECTED_REPO',
+          'RENDER_EXPECTED_BRANCH',
+          'EXPECTED_SHA',
+        ]);
       secrets = [...hookSecrets(hookUrl), apiKey];
+      const expected = { expectedServiceId, expectedRepo, expectedBranch };
+      // Re-checked immediately before the hook: the setting could have
+      // changed while migrations ran, and the hook must not fire if it did.
+      await checkRenderService({ apiKey, serviceId, ...expected, fetchImpl, log: say });
       const triggeredAt = Date.now();
       const deployId = await triggerRenderDeploy({ hookUrl, sha, fetchImpl });
       say(
@@ -494,12 +625,12 @@ export async function main(
       const r = await waitForRenderDeploy({
         apiKey,
         serviceId,
+        ...expected,
         sha,
         deployId,
         triggeredAt,
         fetchImpl,
         log: say,
-        warn: (m) => say(`::warning::${m}`),
       });
       say(`Render deploy ${r.id} is live at ${r.commit}`);
       return 0;
@@ -538,7 +669,9 @@ export async function main(
       say(`Vercel production (${domains.join(', ')}) is ${r.id} at ${r.sha}`);
       return 0;
     }
-    err('usage: deploy-rollout.mjs render | web-mode [vercel.json] | vercel-verify');
+    err(
+      'usage: deploy-rollout.mjs render-preflight | render | web-mode [vercel.json] | vercel-verify',
+    );
     return 2;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

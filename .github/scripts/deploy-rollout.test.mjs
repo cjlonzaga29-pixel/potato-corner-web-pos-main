@@ -3,8 +3,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   FatalError,
+  checkRenderService,
   classifyRenderStatus,
   main,
+  normalizeRepo,
   pollUntil,
   sanitize,
   triggerRenderDeploy,
@@ -60,7 +62,25 @@ function fakeFetch(routes) {
   return { impl, calls };
 }
 
-const service = json(200, { id: SERVICE, name: 'potato-corner-api', autoDeploy: 'no' });
+const REPO = 'https://github.com/cjlonzaga29-pixel/potato-corner-web-pos-main';
+const serviceBody = {
+  id: SERVICE,
+  name: 'potato-corner-api',
+  autoDeploy: 'no',
+  repo: REPO,
+  branch: 'main',
+};
+const service = json(200, serviceBody);
+const EXPECTED = { expectedServiceId: SERVICE, expectedRepo: REPO, expectedBranch: 'main' };
+const RENDER_ENV = {
+  RENDER_DEPLOY_HOOK_PRODUCTION: HOOK,
+  RENDER_API_KEY: API_KEY,
+  RENDER_SERVICE_ID_PRODUCTION: SERVICE,
+  RENDER_EXPECTED_SERVICE_ID: SERVICE,
+  RENDER_EXPECTED_REPO: REPO,
+  RENDER_EXPECTED_BRANCH: 'main',
+  EXPECTED_SHA: SHA,
+};
 const deploy = (id, status, sha = SHA, extra = {}) =>
   json(200, { id, status, commit: { id: sha }, trigger: 'deploy_hook', ...extra });
 
@@ -335,14 +355,209 @@ test('service, lookup and status phases share one deadline', async () => {
   assert.ok(clock.now() - t0 <= 120_000, `ran ${clock.now() - t0} ms past a 120 s budget`);
 });
 
-test('auto-deploy on is surfaced as a warning', async () => {
-  const warnings = [];
+// ------------------------------------------------------ render preflight ---
+
+function preflightArgs(fetchImpl, over = {}) {
+  const clock = fakeClock();
+  return {
+    apiKey: API_KEY,
+    serviceId: SERVICE,
+    ...EXPECTED,
+    fetchImpl,
+    intervalMs: 10_000,
+    timeoutMs: 60_000,
+    maxConsecutiveErrors: 3,
+    now: clock.now,
+    sleep: clock.sleep,
+    ...over,
+  };
+}
+
+const serviceRoute = (...responses) => fakeFetch({ [`/services/${SERVICE}`]: responses });
+
+test('preflight passes only for the pinned service with Auto-Deploy off', async () => {
+  const f = serviceRoute(service);
+  const r = await checkRenderService(preflightArgs(f.impl));
+  assert.deepEqual(r, {
+    id: SERVICE,
+    name: 'potato-corner-api',
+    repo: REPO,
+    branch: 'main',
+    autoDeploy: 'no',
+  });
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls[0].init.headers.Authorization, `Bearer ${API_KEY}`);
+});
+
+test('preflight fails closed when Auto-Deploy is on', async () => {
+  const f = serviceRoute(json(200, { ...serviceBody, autoDeploy: 'yes' }));
+  await assert.rejects(checkRenderService(preflightArgs(f.impl)), (e) => {
+    assert.ok(e instanceof FatalError);
+    assert.match(e.message, /Auto-Deploy is ON/);
+    return true;
+  });
+  assert.equal(f.calls.length, 1, 'not retried, and nothing else is called');
+});
+
+test('preflight fails closed when Auto-Deploy is missing or unrecognised', async () => {
+  const noAutoDeploy = { ...serviceBody };
+  delete noAutoDeploy.autoDeploy;
+  for (const [body, re] of [
+    [noAutoDeploy, /unknown \(missing\)/],
+    [{ ...serviceBody, autoDeploy: null }, /unknown \(null\)/],
+    [{ ...serviceBody, autoDeploy: 'maybe' }, /unknown \("maybe"\)/],
+    [{ ...serviceBody, autoDeploy: false }, /unknown \(false\)/],
+    [{ ...serviceBody, autoDeploy: 'No' }, /unknown \("No"\)/],
+  ]) {
+    await assert.rejects(checkRenderService(preflightArgs(serviceRoute(json(200, body)).impl)), re);
+  }
+});
+
+test('preflight fails on a malformed service response', async () => {
+  for (const [body, re] of [
+    [null, /not a service object/],
+    [[serviceBody], /not a service object/],
+    ['srv-expected', /not a service object/],
+    [{ ...serviceBody, id: undefined }, /no service id/],
+  ]) {
+    await assert.rejects(checkRenderService(preflightArgs(serviceRoute(json(200, body)).impl)), re);
+  }
+  // A body that is not JSON at all is treated as transient, retried, then fails.
+  const notJson = serviceRoute({
+    ok: true,
+    status: 200,
+    json: async () => {
+      throw new SyntaxError('bad');
+    },
+  });
+  await assert.rejects(checkRenderService(preflightArgs(notJson.impl)), /giving up.*not JSON/);
+});
+
+test('preflight fails on API errors: auth and 404 at once, 5xx/network after bounded retries', async () => {
+  for (const status of [401, 403]) {
+    const f = serviceRoute(json(status, {}));
+    await assert.rejects(checkRenderService(preflightArgs(f.impl)), new RegExp(`HTTP ${status}`));
+    assert.equal(f.calls.length, 1);
+  }
+  await assert.rejects(
+    checkRenderService(preflightArgs(serviceRoute(json(404, {})).impl)),
+    /does not name a service/,
+  );
+
+  const down = serviceRoute(json(503, {}));
+  await assert.rejects(checkRenderService(preflightArgs(down.impl)), /giving up after 3/);
+  assert.equal(down.calls.length, 3);
+
+  const net = serviceRoute(
+    Object.assign(new TypeError('fetch failed'), { cause: { code: 'ENOTFOUND' } }),
+  );
+  await assert.rejects(
+    checkRenderService(preflightArgs(net.impl)),
+    /giving up.*network error \(ENOTFOUND\)/,
+  );
+
+  // Transient, then recovered: passes.
+  const flaky = serviceRoute(json(502, {}), service);
+  assert.equal((await checkRenderService(preflightArgs(flaky.impl))).autoDeploy, 'no');
+});
+
+test('preflight verifies service identity, repository and branch', async () => {
+  const none = fakeFetch({});
+  await assert.rejects(
+    checkRenderService(preflightArgs(none.impl, { serviceId: 'srv-other' })),
+    /does not match the pinned production service srv-expected/,
+  );
+  assert.equal(none.calls.length, 0, 'a mismatched id is rejected before any API call');
+
+  for (const [body, re] of [
+    [{ ...serviceBody, id: 'srv-other' }, /different service id/],
+    [{ ...serviceBody, repo: 'https://github.com/someone/else' }, /is built from .*someone\/else/],
+    [{ ...serviceBody, repo: undefined }, /reports no repository/],
+    [{ ...serviceBody, branch: 'develop' }, /tracks branch develop, expected main/],
+    [{ ...serviceBody, branch: undefined }, /tracks branch \(none\)/],
+  ]) {
+    await assert.rejects(checkRenderService(preflightArgs(serviceRoute(json(200, body)).impl)), re);
+  }
+
+  const sameRepo = serviceRoute(json(200, { ...serviceBody, repo: `${REPO.toUpperCase()}.git/` }));
+  assert.equal((await checkRenderService(preflightArgs(sameRepo.impl))).id, SERVICE);
+  assert.equal(normalizeRepo('git@github.com:A/B.git'), 'github.com/a/b');
+});
+
+test('follow-up poll applies the same fail-closed service check', async () => {
   const f = fakeFetch({
-    [`/services/${SERVICE}`]: [json(200, { id: SERVICE, autoDeploy: 'yes' })],
+    [`/services/${SERVICE}`]: [json(200, { ...serviceBody, autoDeploy: 'yes' })],
     [`/services/${SERVICE}/deploys/dep-new`]: [deploy('dep-new', 'live')],
   });
-  await waitForRenderDeploy(renderArgs(f.impl, { warn: (m) => warnings.push(m) }));
-  assert.match(warnings[0], /Auto-Deploy is ON/);
+  await assert.rejects(waitForRenderDeploy(renderArgs(f.impl, EXPECTED)), /Auto-Deploy is ON/);
+  assert.ok(!f.calls.some((c) => c.url.includes('/deploys/')));
+});
+
+test('render CLI never fires the hook unless the service preflight passes', async () => {
+  for (const [body, re] of [
+    [{ ...serviceBody, autoDeploy: 'yes' }, /Auto-Deploy is ON/],
+    [{ ...serviceBody, autoDeploy: undefined }, /unknown \(missing\)/],
+    [{ ...serviceBody, branch: 'develop' }, /tracks branch develop/],
+  ]) {
+    const lines = [];
+    const f = fakeFetch({
+      [`/services/${SERVICE}`]: [json(200, body)],
+      '/deploy/': [json(200, { deploy: { id: 'dep-new' } })],
+    });
+    const code = await main(['render'], RENDER_ENV, {
+      fetchImpl: f.impl,
+      out: (m) => lines.push(m),
+      err: (m) => lines.push(m),
+    });
+    assert.equal(code, 1);
+    assert.match(lines.join('\n'), re);
+    assert.ok(!f.calls.some((c) => c.url.includes('/deploy/')), 'hook never POSTed');
+  }
+  // Pinned id mismatch: nothing is called at all.
+  const f = fakeFetch({});
+  const code = await main(
+    ['render'],
+    { ...RENDER_ENV, RENDER_SERVICE_ID_PRODUCTION: 'srv-other' },
+    { fetchImpl: f.impl, out: () => {}, err: () => {} },
+  );
+  assert.equal(code, 1);
+  assert.equal(f.calls.length, 0);
+});
+
+test('render-preflight CLI: OK line on success, sanitized ::error:: on failure, missing env named', async () => {
+  const run = async (routes, env = {}) => {
+    const lines = [];
+    const f = fakeFetch(routes);
+    const code = await main(
+      ['render-preflight'],
+      { ...RENDER_ENV, ...env },
+      { fetchImpl: f.impl, out: (m) => lines.push(m), err: (m) => lines.push(m) },
+    );
+    return { code, text: lines.join('\n'), calls: f.calls };
+  };
+  const ok = await run({ [`/services/${SERVICE}`]: [service] });
+  assert.equal(ok.code, 0);
+  assert.match(ok.text, /Render service srv-expected .*autoDeploy=no\. OK/);
+  assert.ok(!ok.calls.some((c) => c.url.includes('/deploy/')), 'preflight never triggers a deploy');
+
+  const on = await run({
+    [`/services/${SERVICE}`]: [json(200, { ...serviceBody, autoDeploy: 'yes' })],
+  });
+  assert.equal(on.code, 1);
+  assert.match(on.text, /^::error::Render Auto-Deploy is ON/m);
+
+  // Unauthorized: fails at once (no real retry sleeps), and the key never appears.
+  const denied = await run({
+    [`/services/${SERVICE}`]: [json(401, { message: `invalid key ${API_KEY}` })],
+  });
+  assert.equal(denied.code, 1);
+  assert.match(denied.text, /::error::Render service lookup: HTTP 401/);
+  assert.ok(!denied.text.includes(API_KEY));
+
+  const missing = await run({}, { RENDER_EXPECTED_SERVICE_ID: '' });
+  assert.equal(missing.code, 1);
+  assert.match(missing.text, /missing required environment: RENDER_EXPECTED_SERVICE_ID/);
+  assert.equal(missing.calls.length, 0);
 });
 
 test('pollUntil rethrows non-transient errors as-is', async () => {
@@ -481,13 +696,7 @@ test('CLI output never contains the hook URL, hook key or API key — success an
     const f = fakeFetch(routes);
     const code = await main(
       ['render'],
-      {
-        RENDER_DEPLOY_HOOK_PRODUCTION: HOOK,
-        RENDER_API_KEY: API_KEY,
-        RENDER_SERVICE_ID_PRODUCTION: SERVICE,
-        EXPECTED_SHA: SHA,
-        ...env,
-      },
+      { ...RENDER_ENV, ...env },
       { fetchImpl: f.impl, out: (m) => lines.push(m), err: (m) => lines.push(m) },
     );
     return { code, text: lines.join('\n'), calls: f.calls };
@@ -496,6 +705,7 @@ test('CLI output never contains the hook URL, hook key or API key — success an
 
   // A hostile error path: the network error message itself contains the hook URL.
   const failed = await run({
+    [`/services/${SERVICE}`]: [service],
     '/deploy/': [
       Object.assign(new TypeError(`fetch failed ${HOOK}`), { cause: { code: 'ECONNRESET' } }),
     ],

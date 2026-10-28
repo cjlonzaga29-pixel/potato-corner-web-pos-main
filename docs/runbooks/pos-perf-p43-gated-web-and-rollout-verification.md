@@ -131,6 +131,7 @@ no network and no secrets, so PRs and main pushes both run them inside `validate
    - a 404 fails with "RENDER_SERVICE_ID_PRODUCTION does not name a service";
    - a different `id` fails;
    - `autoDeploy: "yes"` prints a `::warning::`, because Render would also deploy ungated.
+     **Superseded by P43R (§10):** this is now a fail-closed preflight before any production write.
 2. POST the hook once, with `ref=EXPECTED_SHA`.
    - It is **never retried**, because a lost response may still have started a deploy. Re-run the job instead.
    - Any status other than 200 or 202 fails.
@@ -177,8 +178,8 @@ Auto-Deploy is off. That assumption is still not verified.
    Prefer `gh secret set <NAME> --env production` with no `--body`; it prompts with hidden input.
    **This step must happen before pushing this commit.** Otherwise the credential check fails the run.
    That failure is safe: nothing is written, and you re-run once the secrets are added.
-2. **Render:** in the production API service → Settings, confirm **Auto-Deploy is Off**. The workflow
-   warns if it is on.
+2. **Render:** in the production API service → Settings, confirm **Auto-Deploy is Off**. Since P43R the
+   workflow fails before any production write if it is on, unknown or unreadable (§10).
 3. **Push this commit (git mode).** Watch the run:
    - validate, then approval;
    - "web publisher: git";
@@ -308,6 +309,28 @@ Auto-Deploy is off. That assumption is still not verified.
 5. Note: Vercel's Hobby plan is meant for non-commercial use. That is a billing or owner question; this
    task made no change.
 6. `deploy-staging.yml` is unchanged, as in P42R §7.5.
+
+## 10. P43R — fail-closed Render preflight
+
+In P43 the Render service lookup ran only *after* migrations and the hook POST, and `autoDeploy: "yes"`
+was only a warning. P43R makes it a gate:
+
+- New step **Verify Render service and Auto-Deploy off (production)**
+  (`deploy-rollout.mjs render-preflight`) runs right after the credentials check, **before** the Vercel
+  build, migrations and the hook.
+- It passes only when all of these hold:
+  - `RENDER_SERVICE_ID_PRODUCTION` equals the pinned `RENDER_EXPECTED_SERVICE_ID`
+    (`srv-d9cok48js32c73dss310`). This is checked before any API call.
+  - `GET /v1/services/{id}` returns an object whose `id` is that service.
+  - `repo` is this repository and `branch` is `main`. A missing value fails.
+  - `autoDeploy` is exactly `"no"`.
+- These all fail: `"yes"`, a missing or unrecognised value, a malformed body, 401/403/404 at once, and
+  network errors or 5xx after 5 bounded retries.
+- The setting is never changed by the workflow.
+- `render` re-runs the same check immediately before the hook POST (the setting could change during
+  migrations), and again while following the deploy.
+- Tests: 30/30, using off/on/unknown/malformed/API-failure/identity cases, and a check that the hook is
+  never POSTed when the preflight fails. Seven scratch mutations of the gate were all caught.
 
 ## Sources
 

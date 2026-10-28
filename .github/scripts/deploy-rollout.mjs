@@ -14,6 +14,8 @@
 //                  stdout from a file, require that deployment to be this
 //                  workflow's own READY production build of EXPECTED_SHA, and
 //                  print its id (promoted later, after the API is live).
+//   vercel-promote — re-check VERCEL_DEPLOYMENT_ID is that build, then ask
+//                  Vercel once to point production domains at it.
 //   vercel-verify — poll until every production domain is aliased to a READY
 //                  production deployment of EXPECTED_SHA in the pinned project
 //                  (workflow mode: exactly VERCEL_DEPLOYMENT_ID, source cli,
@@ -609,6 +611,55 @@ export function parseVercelDeployOutput(text) {
   return { id: d.id };
 }
 
+/**
+ * Promote our staged production deployment: re-check it is this workflow's
+ * own READY build of `sha`, then POST /v10/projects/{id}/promote/{deploymentId}
+ * once (https://openapi.vercel.sh, requestPromote: no rebuild; 201 done, 202
+ * queued). Not `vercel promote`: the CLI resolves scope via /v2/user first,
+ * which this team token cannot read ("User not found", P43R2 run
+ * 40678105685). Never retried — a lost response may still have promoted;
+ * vercel-verify decides what production is serving.
+ */
+export async function promoteVercelDeployment({
+  token,
+  teamId,
+  projectId,
+  sha,
+  deploymentId,
+  fetchImpl,
+}) {
+  const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' };
+  const q = `teamId=${encodeURIComponent(teamId)}`;
+  const { body: d } = await fetchJson(
+    fetchImpl,
+    `${VERCEL_API}/v13/deployments/${encodeURIComponent(deploymentId)}?${q}`,
+    { headers },
+    `Vercel deployment ${deploymentId}`,
+  );
+  if (d.id !== deploymentId) {
+    throw new FatalError(`Vercel deployment ${deploymentId}: lookup returned ${d.id}`);
+  }
+  assertOwnVercelDeployment(d, { projectId, sha });
+  if (d.readyState !== 'READY') {
+    throw new FatalError(`Vercel deployment ${deploymentId} is ${d.readyState}, not READY`);
+  }
+  let res;
+  try {
+    res = await fetchImpl(
+      `${VERCEL_API}/v10/projects/${encodeURIComponent(projectId)}/promote/${encodeURIComponent(deploymentId)}?${q}`,
+      { method: 'POST', headers },
+    );
+  } catch (err) {
+    const code = err?.cause?.code ?? err?.name ?? 'error';
+    throw new FatalError(
+      `Vercel promote: network error (${code}); not retried — it may still have been applied`,
+    );
+  }
+  if (res.status === 201 || res.status === 200) return 'promoted';
+  if (res.status === 202) return 'queued';
+  throw new FatalError(`Vercel promote ${deploymentId}: HTTP ${res.status}`);
+}
+
 /** Resolve a deployment URL printed by `vercel deploy` to its id. */
 export async function vercelDeploymentIdFromUrl({ token, teamId, url, fetchImpl }) {
   const host = new URL(url).host;
@@ -730,6 +781,26 @@ export async function main(
       out(id);
       return 0;
     }
+    if (cmd === 'vercel-promote') {
+      const [token, teamId, projectId, sha, deploymentId] = requireEnv(env, [
+        'VERCEL_TOKEN',
+        'VERCEL_ORG_ID',
+        'VERCEL_PROJECT_ID',
+        'EXPECTED_SHA',
+        'VERCEL_DEPLOYMENT_ID',
+      ]);
+      secrets = [token];
+      const r = await promoteVercelDeployment({
+        token,
+        teamId,
+        projectId,
+        sha,
+        deploymentId,
+        fetchImpl,
+      });
+      say(`Vercel promote of ${deploymentId} (${sha}) ${r}`);
+      return 0;
+    }
     if (cmd === 'vercel-verify') {
       const [token, teamId, projectId, sha, domainList] = requireEnv(env, [
         'VERCEL_TOKEN',
@@ -767,7 +838,7 @@ export async function main(
       return 0;
     }
     err(
-      'usage: deploy-rollout.mjs render-preflight | render | web-mode [vercel.json] | vercel-staged <file> | vercel-verify',
+      'usage: deploy-rollout.mjs render-preflight | render | web-mode [vercel.json] | vercel-staged <file> | vercel-promote | vercel-verify',
     );
     return 2;
   } catch (e) {

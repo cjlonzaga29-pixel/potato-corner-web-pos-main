@@ -203,18 +203,17 @@ jobs:
       # Web goes out only after the new API is verified live, so the new web
       # never talks to the old API. (Git-published web skips this: it is
       # already out, see "Determine web publisher".) Promoting a staged
-      # production build assigns the domains without a rebuild. No --yes: it
-      # is only ever given the production id verified above, and `promote`
-      # exits 0 even when nothing happened, so the verify step below decides.
+      # production build assigns the domains without a rebuild. Calls the
+      # promote API once for the id verified above (not `vercel promote`,
+      # which fails on this token's /v2/user lookup); the verify step below
+      # decides what production is actually serving.
       - name: Promote the staged apps/web deployment to production (this commit)
         if: ${{ steps.tip.outputs.current == 'true' && steps.web.outputs.mode == 'workflow' }}
-        timeout-minutes: 10
+        timeout-minutes: 5
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_DEPLOYMENT_ID: ${{ steps.vercel.outputs.id }}
-        run: |
-          set -euo pipefail
-          vercel promote "$VERCEL_DEPLOYMENT_ID" --timeout=5m --token="$VERCEL_TOKEN"
+        run: node .github/scripts/deploy-rollout.mjs vercel-promote
 
       # Both modes: every production domain must be aliased to a READY
       # production deployment of this SHA in the pinned project (workflow

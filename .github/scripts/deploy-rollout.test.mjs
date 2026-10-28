@@ -8,6 +8,7 @@ import {
   main,
   normalizeRepo,
   parseVercelDeployOutput,
+  promoteVercelDeployment,
   pollUntil,
   sanitize,
   triggerRenderDeploy,
@@ -810,6 +811,109 @@ test('vercel-staged CLI accepts only our READY production build of this SHA', as
   assert.equal(bad.code, 1);
   assert.match(bad.text, /::error::vercel deploy output is neither JSON/);
   assert.equal(bad.calls.length, 0);
+});
+
+test('promote: re-checks our READY build, POSTs the promote API once, no retry', async () => {
+  const promoteArgs = (fetchImpl) => ({
+    token: VERCEL_TOKEN,
+    teamId: TEAM,
+    projectId: PROJECT,
+    sha: SHA,
+    deploymentId: 'dpl_Ours',
+    fetchImpl,
+  });
+  const promotePath = `/v10/projects/${PROJECT}/promote/dpl_Ours`;
+
+  const ok = fakeFetch({
+    '/v13/deployments/dpl_Ours': [cdep('dpl_Ours', SHA)],
+    [promotePath]: [json(201, {})],
+  });
+  assert.equal(await promoteVercelDeployment(promoteArgs(ok.impl)), 'promoted');
+  const post = ok.calls.find((c) => c.url.includes(promotePath));
+  assert.equal(post.init.method, 'POST');
+  assert.ok(post.url.includes(`teamId=${TEAM}`));
+  assert.equal(post.init.headers.Authorization, `Bearer ${VERCEL_TOKEN}`);
+  assert.ok(!post.url.includes(VERCEL_TOKEN));
+
+  const queued = fakeFetch({
+    '/v13/deployments/dpl_Ours': [cdep('dpl_Ours', SHA)],
+    [promotePath]: [json(202, {})],
+  });
+  assert.equal(await promoteVercelDeployment(promoteArgs(queued.impl)), 'queued');
+
+  // Anything that is not our READY production build is never promoted.
+  for (const [dep, err] of [
+    [cdep('dpl_Ours', SHA, { readyState: 'BUILDING' }), /is BUILDING, not READY/],
+    [cdep('dpl_Ours', OLD_SHA), /releaseSha is 0000000/],
+    [vdep('dpl_Ours', SHA), /source is git, not cli/],
+    [cdep('dpl_Ours', SHA, { target: 'preview' }), /target is preview/],
+    [cdep('dpl_Other', SHA), /lookup returned dpl_Other/],
+  ]) {
+    const f = fakeFetch({ '/v13/deployments/dpl_Ours': [dep], [promotePath]: [json(201, {})] });
+    await assert.rejects(promoteVercelDeployment(promoteArgs(f.impl)), err);
+    assert.ok(!f.calls.some((c) => c.url.includes('/promote/')), 'no promote request');
+  }
+
+  // Rejected or lost: fail once, never re-POST.
+  for (const [resp, err] of [
+    [json(409, {}), /HTTP 409/],
+    [json(503, {}), /HTTP 503/],
+    [
+      Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET' } }),
+      /not retried/,
+    ],
+  ]) {
+    const f = fakeFetch({
+      '/v13/deployments/dpl_Ours': [cdep('dpl_Ours', SHA)],
+      [promotePath]: [resp],
+    });
+    await assert.rejects(promoteVercelDeployment(promoteArgs(f.impl)), err);
+    assert.equal(f.calls.filter((c) => c.url.includes('/promote/')).length, 1);
+  }
+});
+
+test('vercel-promote CLI requires the deployment id and never prints the token', async () => {
+  const env = {
+    VERCEL_TOKEN,
+    VERCEL_ORG_ID: TEAM,
+    VERCEL_PROJECT_ID: PROJECT,
+    EXPECTED_SHA: SHA,
+    VERCEL_DEPLOYMENT_ID: 'dpl_Ours',
+  };
+  const run = async (routes, over = {}) => {
+    const lines = [];
+    const f = fakeFetch(routes);
+    const code = await main(
+      ['vercel-promote'],
+      { ...env, ...over },
+      {
+        fetchImpl: f.impl,
+        out: (m) => lines.push(m),
+        err: (m) => lines.push(m),
+      },
+    );
+    return { code, text: lines.join('\n'), calls: f.calls };
+  };
+  const ok = await run({
+    '/v13/deployments/dpl_Ours': [cdep('dpl_Ours', SHA)],
+    '/promote/dpl_Ours': [json(201, {})],
+  });
+  assert.equal(ok.code, 0);
+  assert.match(
+    ok.text,
+    /Vercel promote of dpl_Ours \(1111111111111111111111111111111111111111\) promoted/,
+  );
+
+  const missing = await run({}, { VERCEL_DEPLOYMENT_ID: '' });
+  assert.equal(missing.code, 1);
+  assert.match(missing.text, /missing required environment: VERCEL_DEPLOYMENT_ID/);
+  assert.equal(missing.calls.length, 0);
+
+  const denied = await run({
+    '/v13/deployments/': [json(403, { error: { message: `bad ${VERCEL_TOKEN}` } })],
+  });
+  assert.equal(denied.code, 1);
+  assert.ok(!denied.text.includes(VERCEL_TOKEN));
 });
 
 // ------------------------------------------------------- secret hygiene ---

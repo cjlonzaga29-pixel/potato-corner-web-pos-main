@@ -395,3 +395,34 @@ or verify fails after Render went live, production is the new API with the previ
 failed job; it stages a fresh build and promotes it. To undo the cutover, revert this commit. Its revert
 is then Git-published in git mode. If a promote has turned off "Auto-assign Custom Production Domains",
 the git-mode verify times out (fail-safe), and the setting must be re-enabled before relying on git mode.
+
+### 11.4 First cutover run: promote failed, fixed forward
+
+[Run 40678105685](https://github.com/cjlonzaga29-pixel/potato-corner-web-pos-main/actions/runs/40678105685)
+on `f27825a`:
+
+- `validate` passed: 11:12:14Z to 11:18:53Z.
+- The owner approved, and `deploy-production` started at 11:54:32Z.
+- It logged `web publisher: workflow`, then the Render preflight `autoDeploy=no`.
+- The staged build `dpl_92835WrMSFBPuiAb8N5L9mTAn1M8` was READY at 11:59:00Z, with `source: cli` and
+  `releaseSha f27825a`. Both domains stayed on `dpl_CDcmEBeCGBu2q8cuLJ733xN5H4FA` (checked 11:59:32Z).
+- The migrations were a no-op.
+- Render deploy `dep-dbgu72utlv9c73ddd98g` was live at `f27825a` at 12:01:55Z.
+- **`vercel promote` failed:** `Error: User not found. (404)`, 0.45 s after it started.
+- Verify, the smoke tests and the release were all skipped. **Production was then the new API with the old
+  web.** There was no compatibility risk: `182cb08` → `f27825a` changes no app code.
+- Vercel created **no** Git deployment for `f27825a`. The staged CLI build was the only deployment.
+
+**Cause.** In CLI 59.11.7, `promote` resolves scope through `getScope` → `getUser` (`/v2/user`). This
+team token gets a 404 there. `deploy`, with `VERCEL_ORG_ID`/`VERCEL_PROJECT_ID` set, never makes that
+lookup, which is why the staged deploy worked.
+
+**Fix.** `deploy-rollout.mjs vercel-promote` calls the endpoint the CLI would call itself:
+`POST /v10/projects/{projectId}/promote/{deploymentId}?teamId=…` (OpenAPI `requestPromote`: "does NOT
+rebuild"; 201 means done, 202 means queued).
+- Before the POST, it re-checks that the id is our own READY CLI production build of the SHA.
+- It POSTs once and never retries.
+- `vercel-verify` still decides the outcome.
+- Tests: 35/35.
+
+The orphaned staged deployment from the failed run is never promoted.

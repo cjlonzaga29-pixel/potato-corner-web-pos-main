@@ -639,3 +639,100 @@ stopped, `API_PORT=4300` was added to the git-ignored `.env`, and it was restart
 - 5 completed probe sales `MAIN01-20261028-000001…000005`;
 - the staff clock-in;
 - the P39 spec's seeded branches and products.
+
+## 9. P41R2 — final integrated verification (2026-10-28)
+
+Local only. Nothing was merged into shared `main`, pushed or deployed. Production was never
+contacted. Worktree `C:/Users/kaile/Downloads/PTTO/p41r-integration`, branch
+`integration/pos-perf-p41r`, starting HEAD `8579a74205700959939aa72a2d7f1396a152b0a6`, clean.
+
+### 9.1 Starting state
+
+- `f5fcfcc` (the rollback-spy `mockClear`) is in HEAD. `apps/web` is identical between `f5fcfcc`
+  and `8579a74`.
+- **P40R3:** no evidence to reuse. `p40r-review` was clean at `1da6add`, which is already merged
+  here (`65be432`). No P40R3 commit existed.
+- No proof, transaction, report, download or Storage file differs between `1da6add` and HEAD.
+
+### 9.2 Machine and service preflight
+
+- 4 cores, 7.7 GB RAM. At the start: **0.76 GB free, 88% CPU.** No other test servers were
+  running.
+- **Docker Desktop was stopped**:
+  - `com.docker.service` was `STOPPED`;
+  - the engine pipe `dockerDesktopLinuxEngine` didn't exist;
+  - the WSL distros `docker-desktop` and `Ubuntu` were `Stopped`.
+- **Nothing was listening on Postgres `:5432` or Supabase `:54321`.**
+  `GET /storage/v1/status` couldn't connect. This was rechecked after the suite: still stopped.
+- Per the task rules, Docker and WSL were not started.
+- Every database- and Storage-dependent check stopped here. This pass created no database, no
+  Storage fixture and no server process.
+
+### 9.3 Full web suite on the final integration code (gap 1: **closed**)
+
+- **Code:** `8579a74205700959939aa72a2d7f1396a152b0a6`. It includes `f5fcfcc` and the merged
+  P40R/P40R2 code.
+- **Command** (in `apps/web`): `vitest run --pool=forks --poolOptions.forks.maxForks=1 --poolOptions.forks.minForks=1`
+  - no exclusions;
+  - default timeouts;
+  - nothing else from this pass was running.
+- **Log:** `.p41-local/web-suite-p41r2-8579a74.log` (local, git-ignored).
+- **Result: exit code 0.**
+  - Test files: **153 passed (153)**.
+  - Tests: **1,349 passed (1,349)**.
+  - Duration: 676 s (03:24:54Z–03:36:22Z).
+  - No failures and no timeouts.
+- **Earlier evidence is kept:** §8.5's run on `25d7d98` (exit 1, one isolation failure) and P41's
+  pre-commit run (67 failures) stand as recorded. This is the first clean full run on the
+  integrated tree.
+- No app code changed in this pass, so the API, static check and build results in §8.5 still
+  describe this code.
+
+### 9.4 Proof-photo browser cases (gap 2: **open, blocked by the environment**)
+
+Cases A–D did not run:
+- A: valid view/download;
+- B: 410 `PROOF_FILE_MISSING` → "Photo unavailable";
+- C: Storage outage → Try again → recovery;
+- D: old-API download refused.
+
+**Why:** they need a disposable database on local Postgres and real local Supabase Storage. Both
+are hosted by Docker Desktop, which was stopped (§9.2). No P40/P40R2/P40R3 evidence exists to
+reuse either. P40R2's own browser cases were blocked too (P40 runbook §12.3–12.4).
+
+**To finish once Docker Desktop and Supabase are running** (follow the P40 runbook §12.4):
+1. Do an authenticated upload/read/delete on a test-owned object to prove Storage really works.
+2. Create a uniquely named database. Don't use `pos_verify` or `pos_p41r`. Run
+   `prisma migrate deploy` and the seed, with every DB URL pinned to that database.
+3. Build the API and web from this branch. Start the API with `API_PORT` (not `PORT`) and
+   `SUPABASE_URL` set to `tests/e2e/fixtures/storage-fault-proxy.cjs` on a free port.
+4. Run `tests/e2e/pos-perf-p40r2-proof-and-nav.spec.ts` (`Admin Dashboard (Desktop)`,
+   `--workers=1`) with `PLAYWRIGHT_BASE_URL` and `E2E_STORAGE_PROXY_URL` set.
+
+### 9.5 Owner-approved advisory stock-check timeout
+
+The owner has approved the 10 s timeout (`STOCK_CHECK_TIMEOUT_MS`). After a timeout:
+- the cart is kept as it is;
+- an explicit fail-open warning is shown ("Stock couldn't be checked … you can still charge");
+- Charge is enabled.
+
+Checkout's server-side atomic reservation (`INSUFFICIENT_STOCK`) remains the final guard. This
+closes §8.6 blocker 4. The policy was not changed.
+
+### 9.6 Fixes and cleanup
+
+- **Fixes:** none. No regression was found.
+- **Processes:** only the vitest run was started, and it exited on its own.
+- **Databases and Storage:** nothing was created, so nothing was removed.
+- **Not touched:**
+  - `pos_p41r` (§8.6 leftovers). It couldn't be inspected with Postgres down, and it is still to
+    be dropped once confirmed unused.
+  - P40R2's retained Storage object `payment-proofs/p40r2-fixture/e35480b7-4e64-433f-b3c2-6e2f05140b5e.png`.
+- Shared `main` (`5a9e48c`) and `p40r-review` (`1da6add`) were only read.
+
+### 9.7 Remaining release blockers
+
+1. **Proof-photo browser cases A–D** (§9.4). They need Docker Desktop/Supabase running.
+2. Integrate into shared `main`, then push and CI. Follow the P40R deploy order (§8.6 item 3).
+3. Pilot spot checks (§8.6 item 5).
+4. Drop `pos_p41r` and the P40R2 Storage fixture once they are confirmed unused.

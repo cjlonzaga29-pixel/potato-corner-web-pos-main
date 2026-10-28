@@ -565,3 +565,21 @@ run in a browser in P40R2.
   - With its stdout pipe gone, the API answered logins with 500 `INTERNAL_ERROR`.
   - It was restarted with the log under `.p39-local/`, and logins worked again.
   - The full-suite and API results above had already been recorded before the deletion.
+
+## 13. P41R2 — integrated verification status (2026-10-28)
+
+Ran on `integration/pos-perf-p41r` at `8579a74`, which contains P40R (`4de80b3`) and P40R2 (`1da6add`).
+No proof-related file differs from `1da6add`. Full details are in the P41 runbook §9.
+
+- **Full web suite on the integrated code:**
+  - exit 0;
+  - 153/153 files, 1,349/1,349 tests;
+  - one fork, default timeouts.
+- **Proof-photo browser cases** (A: valid view/download; B: 410 → "Photo unavailable"; C: outage →
+  Try again → recovery; D: old-API download refused):
+  - **still not run**;
+  - Docker Desktop was stopped, so there was no Postgres `:5432` and no Storage `:54321`;
+  - Docker/WSL were not started, per the rules;
+  - the run steps are unchanged (§12.4).
+- **Retained fixture:** `payment-proofs/p40r2-fixture/e35480b7-4e64-433f-b3c2-6e2f05140b5e.png`
+  couldn't be checked or removed while Storage was down.

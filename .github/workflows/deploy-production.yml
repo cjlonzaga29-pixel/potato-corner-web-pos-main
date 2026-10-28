@@ -36,6 +36,13 @@ jobs:
     concurrency:
       group: deploy-production
       cancel-in-progress: false
+    env:
+      # Pinned Vercel target (identifiers, not credentials): the
+      # potato-corner-pos project in the cjlonzaga29-pixels-projects team.
+      VERCEL_ORG_ID: team_ixozcUgz2KZlGr8LQ09X6AEr
+      VERCEL_PROJECT_ID: prj_yVPZZumoPDxbGuADZ4JeetWCKl0V
+      VERCEL_PRODUCTION_DOMAINS: potatorenovare.com,www.potatorenovare.com
+      EXPECTED_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
 
@@ -72,6 +79,59 @@ jobs:
         if: ${{ steps.tip.outputs.current == 'true' }}
         run: pnpm install --frozen-lockfile
 
+      # Who publishes production web for THIS commit is read from the commit
+      # itself (apps/web/vercel.json git.deploymentEnabled.main). "git": the
+      # Vercel Git integration already published it on push, ungated, and this
+      # job only verifies it. "workflow": Git deploys of main are off at this
+      # commit, so this job builds and deploys it below. Exactly one publisher
+      # per commit — never both, never neither. See the P43 runbook.
+      - name: Determine web publisher for this commit
+        id: web
+        if: ${{ steps.tip.outputs.current == 'true' }}
+        run: |
+          set -euo pipefail
+          MODE=$(node .github/scripts/deploy-rollout.mjs web-mode apps/web/vercel.json)
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "Production web publisher for $GITHUB_SHA: $MODE"
+
+      # Fail before any production write if a credential needed to deploy and
+      # verify this release is missing. Names only; values are never printed.
+      - name: Check deployment credentials
+        if: ${{ steps.tip.outputs.current == 'true' }}
+        env:
+          PRODUCTION_DATABASE_URL_DIRECT: ${{ secrets.PRODUCTION_DATABASE_URL_DIRECT }}
+          RENDER_DEPLOY_HOOK_PRODUCTION: ${{ secrets.RENDER_DEPLOY_HOOK_PRODUCTION }}
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID_PRODUCTION: ${{ secrets.RENDER_SERVICE_ID_PRODUCTION }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for name in PRODUCTION_DATABASE_URL_DIRECT RENDER_DEPLOY_HOOK_PRODUCTION RENDER_API_KEY RENDER_SERVICE_ID_PRODUCTION VERCEL_TOKEN; do
+            if [ -z "${!name:-}" ]; then missing="$missing $name"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing production environment secrets:$missing. Nothing was deployed. Add them to the 'production' environment, then re-run this job."
+            exit 1
+          fi
+          echo "All deployment credentials are present."
+
+      # Workflow-published web only: build the exact checkout before any
+      # production write, so a build failure stops the release early and the
+      # new-API/old-web window below is just the upload, not a full build.
+      - name: Install Vercel CLI
+        if: ${{ steps.tip.outputs.current == 'true' && steps.web.outputs.mode == 'workflow' }}
+        run: npm install --global vercel@59.11.7
+
+      - name: Build apps/web for Vercel production (this commit)
+        if: ${{ steps.tip.outputs.current == 'true' && steps.web.outputs.mode == 'workflow' }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          set -euo pipefail
+          vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+          vercel build --prod --token="$VERCEL_TOKEN"
+
       # Manual approval is enforced via the "production" GitHub Environment's
       # required reviewers setting, not a workflow step. It is requested only
       # after the validate job above has passed for this exact commit.
@@ -87,26 +147,43 @@ jobs:
           DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL_DIRECT }}
           DIRECT_URL: ${{ secrets.PRODUCTION_DATABASE_URL_DIRECT }}
 
-      - name: Deploy apps/api to Render (production)
-        # Skips instead of failing the run when the Render service (and its
-        # deploy hook secret) hasn't been provisioned yet — migrations above
-        # already ran against the real production DB regardless.
-        if: ${{ steps.tip.outputs.current == 'true' && env.RENDER_DEPLOY_HOOK_PRODUCTION != '' }}
+      # Triggers the hook with ref=<this SHA>, then polls the deploy id the
+      # hook returned on RENDER_SERVICE_ID_PRODUCTION until it is live at this
+      # SHA. Failed/cancelled/replaced deploys, a wrong service or commit, and
+      # the 25-minute bound all fail the job. Replaces the old blind sleep 45.
+      - name: Deploy apps/api to Render and wait until live (production)
+        if: ${{ steps.tip.outputs.current == 'true' }}
+        timeout-minutes: 30
         env:
           RENDER_DEPLOY_HOOK_PRODUCTION: ${{ secrets.RENDER_DEPLOY_HOOK_PRODUCTION }}
-        run: curl -fsS -X POST "$RENDER_DEPLOY_HOOK_PRODUCTION"
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID_PRODUCTION: ${{ secrets.RENDER_SERVICE_ID_PRODUCTION }}
+        run: node .github/scripts/deploy-rollout.mjs render
 
-      # apps/web needs no step here — Vercel's GitHub integration auto-deploys
-      # on push to `main` directly, independent of this workflow. It is NOT
-      # gated by validate or by approval: the web can go live before (or
-      # without) this workflow passing. See the P42R runbook.
+      # Web goes out only after the new API is verified live, so the new web
+      # never talks to the old API. (Git-published web skips this: it is
+      # already out, see "Determine web publisher".)
+      - name: Deploy apps/web to Vercel production (this commit)
+        id: vercel
+        if: ${{ steps.tip.outputs.current == 'true' && steps.web.outputs.mode == 'workflow' }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          set -euo pipefail
+          URL=$(vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN")
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "Deployed $URL"
 
-      # Both the Render deploy hook above and Vercel's own GitHub-triggered
-      # deploy are async — give them a little runway before hitting the live
-      # site, rather than racing a still-rolling-out deployment.
-      - name: Wait for deployments to roll out
+      # Both modes: every production domain must be aliased to a READY
+      # production deployment of this SHA in the pinned project (workflow
+      # mode: to exactly the deployment created above).
+      - name: Verify production web is serving this commit
         if: ${{ steps.tip.outputs.current == 'true' }}
-        run: sleep 45
+        timeout-minutes: 20
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_DEPLOYMENT_URL: ${{ steps.vercel.outputs.url }}
+        run: node .github/scripts/deploy-rollout.mjs vercel-verify
 
       - name: Install Playwright Chromium (pilot smoke suite only needs Desktop Chrome)
         if: ${{ steps.tip.outputs.current == 'true' && env.E2E_SUPER_ADMIN_EMAIL != '' }}
@@ -128,6 +205,12 @@ jobs:
           E2E_SUPERVISOR_PASSWORD: ${{ secrets.E2E_SUPERVISOR_PASSWORD }}
           E2E_STAFF_EMAIL: ${{ secrets.E2E_STAFF_EMAIL }}
           E2E_STAFF_PASSWORD: ${{ secrets.E2E_STAFF_PASSWORD }}
+
+      - name: Report skipped smoke tests
+        if: ${{ steps.tip.outputs.current == 'true' && env.E2E_SUPER_ADMIN_EMAIL == '' }}
+        env:
+          E2E_SUPER_ADMIN_EMAIL: ${{ secrets.E2E_SUPER_ADMIN_EMAIL }}
+        run: echo "::notice::Production smoke tests SKIPPED — E2E_SUPER_ADMIN_EMAIL is not configured. API and web rollout were verified; behaviour was not smoke-tested."
 
       - name: Create GitHub release with auto-generated changelog
         # Tag the commit that was validated and deployed, not whatever main

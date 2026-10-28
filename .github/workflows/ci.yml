@@ -54,6 +54,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Production rollout polling/verification used by deploy-production.yml.
+      # Node built-in test runner; no network, no secrets.
+      - name: Deployment script tests
+        run: node --test ".github/scripts/*.test.mjs"
+
       - name: Set up test environment
         # apps/api/vitest.setup.ts loads apps/api/.env via dotenv/config at
         # test-file-import time. .env is correctly gitignored, so CI has no

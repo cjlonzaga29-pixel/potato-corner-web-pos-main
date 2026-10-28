@@ -426,3 +426,63 @@ rebuild"; 201 means done, 202 means queued).
 - Tests: 35/35.
 
 The orphaned staged deployment from the failed run is never promoted.
+
+### 11.5 Cutover completed — evidence (`abee602`)
+
+[Run 40684941097](https://github.com/cjlonzaga29-pixel/potato-corner-web-pos-main/actions/runs/40684941097)
+on `abee6020a3cd4d50c4b24e3b2887c2c64b31d62f`:
+
+**Order of the run:**
+1. `validate` passed: 12:05:06Z to 12:10:32Z.
+2. The owner approved: `cjlonzaga29-pixel` → `production`. The approval came after validate, and the job
+   only started once it was given.
+3. `deploy-production` started at 12:28:49Z. It passed the tip guard, then logged
+   `web publisher: workflow` and the Render preflight `autoDeploy=no`.
+4. The staged build `dpl_2J5KeZejrApL1AhncbJnSyGNQ4Vv` was READY at 12:31:57Z.
+5. Migrations: "89 migrations … No pending migrations to apply".
+6. Render: `dep-dbgumh6i0phs73aa3q9g` was live at `abee602` at 12:34:52Z.
+7. The promote API answered "promoted" at 12:34:53Z.
+8. Verify: both domains were on `dpl_2J5KeZejrApL1AhncbJnSyGNQ4Vv` at `abee602` (12:35:04Z).
+9. The smoke tests were **SKIPPED**: `E2E_SUPER_ADMIN_EMAIL` is unset.
+10. Release `prod-20261028-123504` was tagged at `abee602`.
+
+**Publisher evidence:**
+- The production deployment has `source: cli`, `meta.releaseSha` = `abee602…`,
+  `meta.releaseRun` = `40684941097`, and no `githubCommitSha`.
+- Since 11:10Z, Vercel lists only the two workflow CLI production deployments: this one and the
+  unpromoted `dpl_92835WrMSFBPuiAb8N5L9mTAn1M8` at `f27825a`.
+- GitHub has **no `vercel[bot]` Production deployment** for `f27825a` or `abee602`. Each has only the
+  Actions `production` environment record. By contrast, `182cb08` has a `vercel[bot]` `Production`
+  deployment.
+- Rechecked at 12:41Z: still none.
+
+**Final state (12:36–12:41Z):**
+- Local `main` = `origin/main` = the release tag = `abee602`.
+- Render `srv-d9cok48js32c73dss310` (repo main) is live at `abee602`, with `autoDeploy=no`.
+- Both workers logged "started" at 12:34:46Z on instance `-qvwj2`.
+- API `/health` returns 200.
+- `potatorenovare.com` and `www.potatorenovare.com` return 307 → `/login`, and `/login` and
+  `/api/health` return 200.
+- The project still has `autoAssignCustomDomains: true`. Neither the promote API call nor the
+  `--skip-domain` deploys changed it, so reverting to git mode still auto-publishes.
+
+**Preview check:**
+- Draft PR #38 (branch `chore/p43r2-preview-check`, `6b52911`, one docs-only HTML comment) got a
+  `vercel[bot]` Preview deployment: `dpl_HtwAnoLmzjZGYUcD1XcDHGujWPds`, `target` preview, `source`
+  git, READY, `githubCommitSha` `6b52911`, `githubCommitRef` = the branch.
+- The production aliases were unchanged.
+- The PR was closed unmerged, and the branch was deleted.
+
+**Credentials:** the existing `VERCEL_TOKEN`, `RENDER_API_KEY`, `RENDER_SERVICE_ID_PRODUCTION`,
+`RENDER_DEPLOY_HOOK_PRODUCTION` and `PRODUCTION_DATABASE_URL_DIRECT` were reused. Nothing was rotated,
+created or re-scoped. The local checks used the existing Vercel and Render CLI sessions, read-only.
+The pulled `.vercel/` env was deleted after the local build check.
+
+**Remaining limitations:**
+- The rollout is not atomic. The new-API/old-web window is now just Render live → promote (about
+  1 s here).
+- The production smoke tests have never run: there are no pilot E2E accounts yet.
+- The Next.js build warns that Sentry `onRequestError` is missing and there is no `global-error.js`.
+  This is pre-existing, unrelated, and left unchanged.
+- The orphaned staged deployment `dpl_92835…` is harmless and is never promoted.
+- Whether a job waiting for approval holds the concurrency slot is still unverified.

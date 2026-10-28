@@ -30,18 +30,18 @@ function setup({ timeoutMs }: { timeoutMs?: number } = {}) {
   const onShortfall = vi.fn();
   const onUnavailable = vi.fn();
   const hook = renderHook(
-    ({ branchId, sessionKey }: { branchId: string; sessionKey: string }) =>
+    (props: { branchId: string; sessionKey: string; timeoutMs?: number }) =>
       useCartStockValidation({
-        branchId,
-        sessionKey,
+        branchId: props.branchId,
+        sessionKey: props.sessionKey,
         check,
         getItems: () => useCartStore.getState().items,
         rollbackUnconfirmed: (unconfirmed) => useCartStore.getState().rollbackUnconfirmed(unconfirmed),
         onShortfall,
         onUnavailable,
-        timeoutMs,
+        timeoutMs: props.timeoutMs,
       }),
-    { initialProps: { branchId: 'branch-1', sessionKey: 'cashier-1' } },
+    { initialProps: { branchId: 'branch-1', sessionKey: 'cashier-1', timeoutMs } },
   );
   return { hook, calls, check, onShortfall, onUnavailable };
 }
@@ -315,6 +315,9 @@ describe('useCartStockValidation', () => {
       tapAdd(hook, water);
       await flush();
       await wait(40);
+      // Only the first request may time out; the retry must still be in flight
+      // whatever the wall clock does, so it gets a timeout no test run reaches.
+      hook.rerender({ branchId: 'branch-1', sessionKey: 'cashier-1', timeoutMs: 60_000 });
       act(() => hook.result.current.recheck());
       await flush();
       expect(calls).toHaveLength(2);

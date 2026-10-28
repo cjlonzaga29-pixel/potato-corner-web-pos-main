@@ -431,6 +431,8 @@ function AdminReportsPageContent() {
     limit: 100,
   });
   const expenseColumns = useMemo(() => createExpenseColumns((row) => setSelectedExpenseId(row.id)), []);
+  // Stable so opening/closing the transactions panel doesn't remount View Transactions, which the panel returns focus to.
+  const dailySalesColumns = useMemo(() => getDailySalesColumns(setDrilldownRow), []);
   const selectedExpense = expenses.data?.expenses.find((row) => row.id === selectedExpenseId) ?? null;
   const selectedExpenseReceipt: ExpenseReceiptProofData | null =
     selectedExpense && selectedExpense.receipt_url
@@ -619,7 +621,7 @@ function AdminReportsPageContent() {
               </div>
               <DataTable
                 stickyHeader
-                columns={getDailySalesColumns(setDrilldownRow)}
+                columns={dailySalesColumns}
                 data={dailySales.data?.data ?? []}
                 isLoading={dailySales.isLoading}
                 emptyState={<EmptyState title="No sales in this range" />}

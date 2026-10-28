@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ColumnDef, PaginationState } from '@tanstack/react-table';
 import { FileDown, Loader2 } from 'lucide-react';
 import type { TransactionResponse, TransactionStatus, PaymentMethod } from '@potato-corner/shared';
@@ -16,7 +16,7 @@ import { ReceiptModal } from '@/components/pos/receipt-modal';
 import { ViewPaymentProofDialog } from '@/components/shared/transactions/view-payment-proof-dialog';
 import { ViewDiscountProofDialog } from '@/components/shared/transactions/view-discount-proof-dialog';
 import { formatCurrency } from '@/lib/utils';
-import { downloadTransactionsPdf } from '@/lib/transaction-export-client';
+import { downloadTransactionsPdf, type TransactionPdfFilters } from '@/lib/transaction-export-client';
 import { useDiscountAuditTrail, useTransaction, useTransactions } from '@/hooks/queries/use-transactions';
 
 const ALL = 'all';
@@ -39,6 +39,18 @@ function money(value: number) {
 
 function moneyHeader(label: string) {
   return <div className="text-right">{label}</div>;
+}
+
+const transactionRowId = (txn: TransactionResponse) => txn.id;
+
+type ProofKind = 'payment' | 'discount';
+type PdfState = { status: 'idle' | 'working' | 'error' | 'done'; target?: string; message?: string };
+
+/** Moves focus to `target` in place of Radix's default, which has no Trigger to return to and would leave it on <body>. */
+function focusInstead(event: Event, target: HTMLElement | null | undefined) {
+  if (!target?.isConnected || target === document.body) return;
+  event.preventDefault();
+  target.focus();
 }
 
 interface DailySalesDrilldownProps {
@@ -65,7 +77,13 @@ export function DailySalesDrilldown({ open, onOpenChange, branchId, branchName, 
   const [receiptTransactionId, setReceiptTransactionId] = useState<string | null>(null);
   const [proofTransactionId, setProofTransactionId] = useState<string | null>(null);
   const [discountProofTransactionId, setDiscountProofTransactionId] = useState<string | null>(null);
-  const [pdfState, setPdfState] = useState<{ status: 'idle' | 'working' | 'error' | 'done'; target?: string; message?: string }>({ status: 'idle' });
+  const [pdfState, setPdfState] = useState<PdfState>({ status: 'idle' });
+  // POS-PERF-P41R4 — focus return. The panel and both proof viewers are opened from buttons, not Radix Triggers, so
+  // each close says where focus goes: the exact View Proof that opened the viewer, or the control that opened the panel.
+  const sheetContentRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const panelOpenerRef = useRef<HTMLElement | null>(null);
+  const proofOpenerRef = useRef<{ key: string; element: HTMLElement } | null>(null);
 
   useEffect(() => {
     const handle = setTimeout(() => setDebouncedSearch(search.trim()), SEARCH_DEBOUNCE_MS);
@@ -95,17 +113,36 @@ export function DailySalesDrilldown({ open, onOpenChange, branchId, branchName, 
     [discountAuditQuery.data],
   );
 
-  async function handlePdf(target: 'all' | string) {
+  const downloadPdf = useCallback(async (request: TransactionPdfFilters, target: 'all' | string) => {
     setPdfState({ status: 'working', target });
     try {
-      const filename = await downloadTransactionsPdf(target === 'all' ? filters : { transaction_id: target });
+      const filename = await downloadTransactionsPdf(request);
       setPdfState({ status: 'done', target, message: `Downloaded ${filename}` });
     } catch (error) {
       setPdfState({ status: 'error', target, message: error instanceof Error ? error.message : 'The PDF could not be generated.' });
     }
+  }, []);
+
+  const openProof = useCallback((kind: ProofKind, transactionId: string, trigger: HTMLElement) => {
+    proofOpenerRef.current = { key: `${kind}:${transactionId}`, element: trigger };
+    if (kind === 'payment') setProofTransactionId(transactionId);
+    else setDiscountProofTransactionId(transactionId);
+  }, []);
+
+  /** Back to the View Proof that opened the viewer; its row's current button if that node was replaced; the receipt search if the row has left the table. */
+  function returnFocusFromProof(event: Event) {
+    const opener = proofOpenerRef.current;
+    proofOpenerRef.current = null;
+    if (!opener) return;
+    const sameButton = opener.element.isConnected
+      ? opener.element
+      : Array.from(sheetContentRef.current?.querySelectorAll<HTMLElement>('[data-proof-trigger]') ?? []).find((el) => el.dataset.proofTrigger === opener.key);
+    focusInstead(event, sameButton ?? searchInputRef.current);
   }
 
-  const columns: ColumnDef<TransactionResponse>[] = [
+  // Memoized so a re-render (opening a viewer, a background refetch) keeps every cell mounted: DataTable's flexRender
+  // treats each `cell` function as a component type, so new functions would remount every cell and detach the focused button.
+  const columns = useMemo<ColumnDef<TransactionResponse>[]>(() => [
     { id: 'time', header: 'Time', cell: ({ row }) => <span className="whitespace-nowrap">{formatTimeOnly(row.original.created_at)}</span> },
     {
       id: 'receipt_number',
@@ -149,7 +186,7 @@ export function DailySalesDrilldown({ open, onOpenChange, branchId, branchName, 
         if (txn.payment_method === 'cash') return <span className="text-muted-foreground text-xs">—</span>;
         if (!txn.has_payment_proof) return <span className="whitespace-nowrap text-muted-foreground text-xs">Not uploaded</span>;
         return (
-          <Button type="button" variant="ghost" size="sm" onClick={() => setProofTransactionId(txn.id)}>
+          <Button type="button" variant="ghost" size="sm" data-proof-trigger={`payment:${txn.id}`} onClick={(event) => openProof('payment', txn.id, event.currentTarget)}>
             View Proof
           </Button>
         );
@@ -162,7 +199,7 @@ export function DailySalesDrilldown({ open, onOpenChange, branchId, branchName, 
         const txn = row.original;
         if (!txn.has_discount_proof) return <span className="text-muted-foreground text-xs">—</span>;
         return (
-          <Button type="button" variant="ghost" size="sm" onClick={() => setDiscountProofTransactionId(txn.id)}>
+          <Button type="button" variant="ghost" size="sm" data-proof-trigger={`discount:${txn.id}`} onClick={(event) => openProof('discount', txn.id, event.currentTarget)}>
             View Proof
           </Button>
         );
@@ -184,7 +221,7 @@ export function DailySalesDrilldown({ open, onOpenChange, branchId, branchName, 
               size="sm"
               aria-label={`Download PDF of ${row.original.receipt_number}`}
               disabled={pdfState.status === 'working'}
-              onClick={() => void handlePdf(row.original.id)}
+              onClick={() => void downloadPdf({ transaction_id: row.original.id }, row.original.id)}
             >
               {isWorking ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <FileDown className="h-4 w-4" aria-hidden="true" />}
             </Button>
@@ -192,7 +229,7 @@ export function DailySalesDrilldown({ open, onOpenChange, branchId, branchName, 
         );
       },
     },
-  ];
+  ], [discountCustomerIdByTransaction, pdfState, downloadPdf, openProof]);
 
   function resetPage() {
     setPagination((prev) => ({ ...prev, pageIndex: 0 }));
@@ -201,7 +238,19 @@ export function DailySalesDrilldown({ open, onOpenChange, branchId, branchName, 
   return (
     <>
       <Sheet open={open} onOpenChange={onOpenChange}>
-        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-[min(96vw,92rem)]">
+        <SheetContent
+          ref={sheetContentRef}
+          side="right"
+          className="w-full overflow-y-auto sm:max-w-[min(96vw,92rem)]"
+          // Runs before Radix moves focus into the panel, so the active element is still the control that opened it.
+          onOpenAutoFocus={() => {
+            panelOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+          }}
+          onCloseAutoFocus={(event) => {
+            focusInstead(event, panelOpenerRef.current);
+            panelOpenerRef.current = null;
+          }}
+        >
           <SheetHeader>
             <SheetTitle>
               Transactions — {branchName} — {reportDate}
@@ -217,6 +266,7 @@ export function DailySalesDrilldown({ open, onOpenChange, branchId, branchName, 
                 Receipt Number
               </label>
               <Input
+                ref={searchInputRef}
                 id="drilldown-search"
                 placeholder="Search receipt #"
                 value={search}
@@ -273,7 +323,7 @@ export function DailySalesDrilldown({ open, onOpenChange, branchId, branchName, 
               </Select>
             </div>
             <div className="ml-auto flex flex-col items-end gap-1">
-              <Button type="button" variant="outline" disabled={pdfState.status === 'working' || total === 0} onClick={() => void handlePdf('all')}>
+              <Button type="button" variant="outline" disabled={pdfState.status === 'working' || total === 0} onClick={() => void downloadPdf(filters, 'all')}>
                 {pdfState.status === 'working' && pdfState.target === 'all' ? (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
                 ) : (
@@ -294,6 +344,7 @@ export function DailySalesDrilldown({ open, onOpenChange, branchId, branchName, 
               stickyHeader
               columns={columns}
               data={data?.transactions ?? []}
+              getRowId={transactionRowId}
               isLoading={isLoading}
               isError={isError}
               onRetry={() => void refetch()}
@@ -307,8 +358,12 @@ export function DailySalesDrilldown({ open, onOpenChange, branchId, branchName, 
       </Sheet>
 
       <ReceiptModal transaction={receiptTransaction ?? null} onClose={() => setReceiptTransactionId(null)} />
-      <ViewPaymentProofDialog transactionId={proofTransactionId} onOpenChange={(o) => !o && setProofTransactionId(null)} />
-      <ViewDiscountProofDialog transactionId={discountProofTransactionId} onOpenChange={(o) => !o && setDiscountProofTransactionId(null)} />
+      <ViewPaymentProofDialog transactionId={proofTransactionId} onOpenChange={(o) => !o && setProofTransactionId(null)} onCloseAutoFocus={returnFocusFromProof} />
+      <ViewDiscountProofDialog
+        transactionId={discountProofTransactionId}
+        onOpenChange={(o) => !o && setDiscountProofTransactionId(null)}
+        onCloseAutoFocus={returnFocusFromProof}
+      />
     </>
   );
 }

@@ -8,6 +8,8 @@ import { isProofFileMissing } from '@/lib/proof-errors';
 interface ViewDiscountProofDialogProps {
   transactionId: string | null;
   onOpenChange: (open: boolean) => void;
+  /** Where focus goes on close — the caller knows which control opened it (there is no Radix Trigger to return to). */
+  onCloseAutoFocus?: (event: Event) => void;
 }
 
 /**
@@ -17,13 +19,13 @@ interface ViewDiscountProofDialogProps {
  * table. POS-PERF-P40 — an expired link can now be reloaded in place, and
  * Download photo saves the original file.
  */
-export function ViewDiscountProofDialog({ transactionId, onOpenChange }: ViewDiscountProofDialogProps) {
+export function ViewDiscountProofDialog({ transactionId, onOpenChange, onCloseAutoFocus }: ViewDiscountProofDialogProps) {
   const open = transactionId !== null;
   const { data, isLoading, isError, error, refetch } = useDiscountProof(transactionId, open);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-md" onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle>Discount Proof</DialogTitle>
           <DialogDescription className="sr-only">Photo of the PWD or Senior Citizen ID used for the discount.</DialogDescription>

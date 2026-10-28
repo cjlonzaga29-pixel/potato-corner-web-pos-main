@@ -971,3 +971,137 @@ Two P41R3 sessions ran in parallel in this worktree for a while.
 2. Integrate into shared `main`, then push and CI. Follow the P40R deploy order (§8.6 item 3).
 3. Pilot spot checks (§8.6 item 5).
 4. Drop `pos_p41r`.
+
+## 12. P41R4 — proof-dialog focus return fixed (2026-10-28)
+
+Local only. Nothing was merged into shared `main`, pushed or deployed. Production was never contacted.
+Worktree `C:/Users/kaile/Downloads/PTTO/p41r-integration`, branch `integration/pos-perf-p41r`, starting
+HEAD `812aac67156b9cbfe678893eec29e737b162bc3f` (one docs commit on top of the expected `810216a`), clean.
+This session was the only one using the worktree.
+
+### 12.1 Proven cause
+
+§10.5 named one cause. There were two, and fixing only the second would not have been enough.
+1. **No Trigger to return to.**
+   - `ViewPaymentProofDialog`, `ViewDiscountProofDialog` and the drilldown's `Sheet` are opened by controlled
+     state, not `DialogTrigger`.
+   - In `@radix-ui/react-dialog` 1.1, the modal content's `onCloseAutoFocus` calls `event.preventDefault()`,
+     then `context.triggerRef.current?.focus()`.
+   - `triggerRef` is null here, and that `preventDefault` stops `FocusScope` from restoring
+     `previouslyFocusedElement`. Focus ends on `<body>` even if the button is never replaced.
+2. **Remounted cells.**
+   - `daily-sales-drilldown.tsx` rebuilt `columns` on every render. TanStack's `flexRender` calls
+     `React.createElement(cell, props)` for any function, so each new `cell` function is a new component type
+     and every cell remounts.
+   - Opening a viewer sets state, so View Proof's node was detached.
+   - The reports page's `getDailySalesColumns(setDrilldownRow)` did the same to View Transactions.
+
+### 12.2 Fix
+
+- **`daily-sales-drilldown.tsx`:**
+  - View Proof records `{ kind:transactionId, element }` when clicked. On close, `onCloseAutoFocus` focuses:
+    1. that element;
+    2. if the node was replaced, the same row's current button, looked up by `data-proof-trigger` inside the
+       panel only;
+    3. if the row has left the table, the Receipt Number search.
+
+    If none of these is connected, it leaves Radix's default alone.
+  - The `Sheet` records its opener in `onOpenAutoFocus`, before Radix moves focus, and returns focus to it on
+    close if it is still connected.
+  - `columns` is `useMemo`'d. Its deps are the discount Customer ID map, `pdfState`, and two `useCallback`s
+    that have no deps.
+  - The PDF download takes its request explicitly, so a memoized cell can't capture stale filters.
+  - Rows are keyed by `transaction.id` (`getRowId`), so a refetch or reorder keeps each row's DOM with its
+    record.
+- **`data-table.tsx`:** new optional `getRowId` prop, passed to TanStack. When it is omitted, rows keep the
+  index key, so other call sites are unchanged.
+- **Proof dialogs:** optional `onCloseAutoFocus` prop, passed to `DialogContent`. Other callers are unchanged.
+- **Reports page:** Daily Sales columns are `useMemo`'d, the same pattern as `expenseColumns`.
+- **Not used:** timers, document-wide selectors and per-render focusing.
+- **Unchanged:** authorization, branch scoping and proof fetching.
+
+### 12.3 Tests
+
+- **Component regression** (`daily-sales-drilldown.test.tsx`, 5 new tests). **All 5 failed on the old code.**
+  Focus ended on `<body>`, and in the refetch case the row also got a different button node. All 5 pass now:
+  - payment proof, Close and Escape: focus returns to the opening row's button, and Escape doesn't close the
+    panel;
+  - discount proof: focus returns to its own button, not the first View Proof;
+  - background refetch while open: same node, and focus returns to it;
+  - originating row gone: focus goes to Receipt Number;
+  - panel close: focus returns to the panel's opener, after a viewer was opened and closed inside it.
+- **Affected component files: 14 files, 154/154 passed.**
+  - Covered: the drilldown, the reports page, DataTable, the shared transaction dialogs, the branch reports
+    view, branch receipts and shift detail.
+- **Browser spec additions** (the existing assertions are unchanged):
+  - Tab ×4 stays inside the open payment viewer;
+  - Escape on the panel returns focus to View Transactions.
+
+### 12.4 Full affected browser spec
+
+- **Environment:**
+  - **Database:** new disposable `p41r4_focus_eqybg1` on `127.0.0.1:5432`. `migrate deploy` applied 89
+    migrations, then the base seed ran.
+  - **Guarded runner:** refuses non-loopback hosts and any database except this run's `p41r4_focus_*`. That
+    also refuses `pos_verify`, `pos_p41r`, `postgres` and empty names. The target was checked again before
+    migrate and seed.
+  - **API:** existing `dist`, checked to be newer than every API source file (API code has not changed since
+    `eaa7bb8`). Run with:
+    - `API_PORT=4420`;
+    - origin `:3420`;
+    - `SUPABASE_URL` pointing at the fault proxy on `:54420`, which forwards to `:54321`.
+  - **Web:** `next build` with `NEXT_PUBLIC_API_URL=http://localhost:4420`, exit 0. The routes-manifest
+    rewrite and the middleware contain `:4420` and not `:4300`. Served with `next start -p 3420`.
+  - No build ran while anything was serving.
+- **Result: 4 passed (4.9 min), exit 0.**
+  - Run: `tests/e2e/pos-perf-p40r2-proof-and-nav.spec.ts`, Chromium `Admin Dashboard (Desktop)`,
+    `--workers=1`, the committed spec with no `--grep`.
+
+| Test | Result |
+| --- | --- |
+| Navigation | passed |
+| Attendance | passed |
+| Proof photos A, B and D, with **both focus-return assertions** and the new trap and panel checks | passed |
+| Storage outage (C) | passed |
+
+- The `toBeFocused` after Escape that was red **now passes**.
+- Logs (local): `.p41-local/p41r4/spec-full.log`, `web-build.log`, `api.log`, `proxy.log`.
+
+### 12.5 Static checks
+
+- web `tsc --noEmit`: exit 0.
+- `eslint .` in `apps/web`: 0 errors. One warning, which predates this change, in `two-factor-section.tsx`
+  (not touched).
+- spec `tsc --noEmit --strict`: clean.
+- web `next build`: exit 0.
+- Full API suites were not re-run, because no API or shared-package code changed.
+
+### 12.6 Cleanup
+
+- **Stopped:** only this session's processes.
+  - These were web `:3420`, API `:4420` and proxy `:54420`.
+  - Each was matched by command line, and the ports were free afterwards.
+- **Dropped:** `p41r4_focus_eqybg1` (0 connections).
+- **Storage removed:** `payment-proofs/p40/rotef6/payment.png` (68 B, created 05:42 UTC by this run).
+  - Case B had already removed the `rotef6` discount object.
+  - Both prefixes are empty.
+- **Not touched:**
+  - `pos_p41r` (still to be dropped, §10.7);
+  - older Storage objects;
+  - the shared Docker/Supabase stack, which was left running;
+  - shared `main` (`5a9e48c`) and `p40r-review` (`dbd21b4`).
+- **Kept locally (git-ignored):**
+  - `apps/web/.next`, which is now built for API `:4420`. Rebuild it before any other local use;
+  - `tests/e2e/fixtures/*.auth.json`, rewritten by global setup;
+  - `.p39-local/p40r2/` screenshots.
+
+### 12.7 Remaining
+
+1. ~~Owner decision on the focus-return defect~~: fixed here.
+2. Integrate into shared `main`, then push and CI. Follow the P40R deploy order (§8.6 item 3).
+3. Pilot spot checks (§8.6 item 5).
+4. Drop `pos_p41r`, after checking separately who owns and uses it.
+5. **Limitation:** other controlled dialogs still have no Trigger to return focus to. Examples are View
+   Receipt in this panel and the proof viewers on other pages.
+   - They are out of this fix's scope.
+   - The same `onCloseAutoFocus` pattern applies to them.

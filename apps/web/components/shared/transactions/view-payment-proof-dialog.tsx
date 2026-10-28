@@ -8,6 +8,8 @@ import { isProofFileMissing } from '@/lib/proof-errors';
 interface ViewPaymentProofDialogProps {
   transactionId: string | null;
   onOpenChange: (open: boolean) => void;
+  /** Where focus goes on close — the caller knows which control opened it (there is no Radix Trigger to return to). */
+  onCloseAutoFocus?: (event: Event) => void;
 }
 
 /**
@@ -16,13 +18,13 @@ interface ViewPaymentProofDialogProps {
  * Fetches a fresh signed URL only while open, never eagerly from the list.
  * POS-PERF-P40 — adds Download photo and an expired-link reload.
  */
-export function ViewPaymentProofDialog({ transactionId, onOpenChange }: ViewPaymentProofDialogProps) {
+export function ViewPaymentProofDialog({ transactionId, onOpenChange, onCloseAutoFocus }: ViewPaymentProofDialogProps) {
   const open = transactionId !== null;
   const { data, isLoading, isError, error, refetch } = usePaymentProof(transactionId, open);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-md" onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle>Payment Proof</DialogTitle>
           <DialogDescription className="sr-only">Photo of the customer&apos;s payment confirmation.</DialogDescription>

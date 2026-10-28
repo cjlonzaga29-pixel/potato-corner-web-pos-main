@@ -212,6 +212,12 @@ test('proof photos: valid download, temporary failure retries, missing file stop
   await page.screenshot({ path: path.join(OUT, 'payment-proof-old-api-download.png') });
   await page.unroute('**/api/transactions/*/payment-proof?download=1');
 
+  // P41R4 — Tab stays inside the open viewer.
+  for (let i = 0; i < 4; i++) {
+    await page.keyboard.press('Tab');
+    await expect(payment.locator(':focus')).toHaveCount(1);
+  }
+
   // Keyboard: Escape closes the dialog, focus returns to its trigger, the panel keeps its filter.
   await page.keyboard.press('Escape');
   await expect(payment).toBeHidden();
@@ -243,6 +249,11 @@ test('proof photos: valid download, temporary failure retries, missing file stop
   await page.screenshot({ path: path.join(OUT, 'discount-proof-missing-phone.png') });
   await page.keyboard.press('Escape');
   await expect(viewDiscount).toBeFocused();
+
+  // P41R4 — closing the panel returns focus to the View Transactions that opened it.
+  await page.keyboard.press('Escape');
+  await expect(sheet).toBeHidden();
+  await expect(page.getByRole('row').filter({ hasText: seed.names.a }).first().getByRole('button', { name: 'View Transactions' })).toBeFocused();
 });
 
 test('proof photos: storage unavailable offers Try again and recovers', async ({ page }) => {

@@ -624,3 +624,22 @@ details are in the P41 runbook §11.
   - B returned 410 `PROOF_FILE_MISSING` for both view and download.
 - The focus-return failure from before P40/P41 (§14 / P41 §10.5) reproduced.
 - Every fixture and process from this run was removed.
+
+## 16. P41R4 — proof-dialog focus return fixed (2026-10-28)
+
+The focus-return defect from §14 / §15 is **fixed**. Full details are in the P41 runbook §12.
+- **Cause (two layers, both proven from source):**
+  - the proof viewers and the transactions panel are opened by plain buttons, not Radix Triggers. Radix's
+    modal close handler then cancels FocusScope's own restore and focuses a null `triggerRef`, so focus
+    fell to `<body>` even without a remount;
+  - the drilldown's unmemoized `columns` made `flexRender` remount every cell on each render, so View
+    Proof's node was already detached.
+- **Fix:**
+  - the drilldown records the opening View Proof (and the panel's opener) and returns focus to it through
+    `onCloseAutoFocus`;
+  - memoized `columns`, with rows keyed by transaction id;
+  - memoized Daily Sales columns on the reports page.
+- **Full `pos-perf-p40r2-proof-and-nav.spec.ts`: 4 passed, exit 0.**
+  - Both focus-return assertions that were red now pass.
+  - New focus-trap and panel-close checks pass.
+  - Cases A–D still pass.

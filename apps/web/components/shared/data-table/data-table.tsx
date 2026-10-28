@@ -44,6 +44,8 @@ export interface DataTableProps<TData, TValue> {
   columnVisibility?: VisibilityState;
   onColumnVisibilityChange?: (visibility: VisibilityState) => void;
   onRowClick?: (row: TData) => void;
+  /** Keys rows by a stable id instead of their index, so a refetch or reorder keeps each row's DOM (and any focused control in it) with its record. */
+  getRowId?: (row: TData, index: number) => string;
   /** Report tables opt in: header stays pinned while the body scrolls vertically inside a bounded-height container, instead of pushing the page down. Off by default so every non-report table (37+ call sites) is unaffected. */
   stickyHeader?: boolean;
   /** Scroll-container max-height when `stickyHeader` is set. Defaults to a viewport-relative value that leaves room for the page header/toolbar/pagination around it. */
@@ -77,12 +79,14 @@ export function DataTable<TData, TValue>({
   columnVisibility,
   onColumnVisibilityChange,
   onRowClick,
+  getRowId,
   stickyHeader = false,
   maxBodyHeight = '65vh',
 }: DataTableProps<TData, TValue>) {
   const table = useReactTable({
     data,
     columns,
+    getRowId,
     getCoreRowModel: getCoreRowModel(),
     manualPagination: true,
     manualSorting: true,

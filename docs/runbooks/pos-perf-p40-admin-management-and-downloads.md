@@ -583,3 +583,30 @@ No proof-related file differs from `1da6add`. Full details are in the P41 runboo
   - the run steps are unchanged (§12.4).
 - **Retained fixture:** `payment-proofs/p40r2-fixture/e35480b7-4e64-433f-b3c2-6e2f05140b5e.png`
   couldn't be checked or removed while Storage was down.
+
+## 14. P41R3 — proof-photo browser cases run on the integrated code (2026-10-28)
+
+Ran on `integration/pos-perf-p41r` (start `56a92ff`) after Docker Desktop and the existing local Supabase
+stack were started normally. Built API `:4410` → Storage fault proxy `:54410` → Storage `:54321`. Built
+web `:3410`. Disposable database `p41r3_proof_10281146`, dropped afterwards. Full details are in the P41
+runbook §10.
+
+- **A. Valid view/download:** passed. Attachment `payment-proof-<receipt>.png`, `image/png`, 68 bytes,
+  byte-identical.
+- **B. Missing object:** passed. "Photo unavailable", one request and no retry (sign 400 → `getBucket`
+  200, the 410 `PROOF_FILE_MISSING` path).
+- **C. Storage outage:** passed. Retryable "Failed to load…" with Try again, then recovery after the
+  proxy was restored.
+- **D. Old-API download answer:** passed. Refused with the server-update message, with no navigation and
+  no `/undefined` request.
+- **Spec fixes (test only)** in `pos-perf-p40r2-proof-and-nav.spec.ts`:
+  - `serviceWorkers: 'block'`, because the production build's PWA service worker hid requests from
+    `page.route`, so D's mock never applied;
+  - the 390 px width checks now wait for the relayout (`expect.poll`), because right after the resize the
+    box still reported 448 px.
+- **Still red:** the spec's focus-return assertion after Escape. View Proof's node is replaced when the
+  dialog opens (the Daily Sales drilldown's unmemoized `columns` remount every cell), so focus falls to
+  `<body>`. This was already the case at `45aab2a`. It is not a P40/P41 regression and was not fixed.
+  Owner decision.
+- **§13's retained fixture** `payment-proofs/p40r2-fixture/e35480b7-4e64-433f-b3c2-6e2f05140b5e.png` was
+  confirmed (sole object, 68 bytes, `image/png`) and **removed**.

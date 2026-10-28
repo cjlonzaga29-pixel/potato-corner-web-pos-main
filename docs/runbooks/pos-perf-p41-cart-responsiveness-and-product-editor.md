@@ -736,3 +736,149 @@ closes §8.6 blocker 4. The policy was not changed.
 2. Integrate into shared `main`, then push and CI. Follow the P40R deploy order (§8.6 item 3).
 3. Pilot spot checks (§8.6 item 5).
 4. Drop `pos_p41r` and the P40R2 Storage fixture once they are confirmed unused.
+
+## 10. P41R3 — local services restored, proof-photo browser cases run (2026-10-28)
+
+Local only. Nothing was merged into shared `main`, pushed or deployed. Production was never contacted.
+Worktree `C:/Users/kaile/Downloads/PTTO/p41r-integration`, branch `integration/pos-perf-p41r`,
+starting HEAD `56a92fffb42eefbd0e730b294b81eeb187b3a763`, clean.
+
+### 10.1 Machine and service startup
+
+- **Machine:** 4 cores, 7.7 GB RAM. At the start, 0.67 GB free and 57% CPU. With Docker running, 0.74 GB
+  free and 82% CPU.
+  - Builds and browser runs were done one at a time.
+  - The API `tsc` build took about 6 minutes.
+- **Docker Desktop** was started normally (`Docker Desktop.exe`):
+  - engine 29.6.1 answered within about 5 s;
+  - the existing containers came up through their restart policies, so `supabase start` was not run and no
+    second stack was created;
+  - `supabase_auth` restarted once, and every container was healthy about 1.5 min later;
+  - no force restart, WSL shutdown, reset, prune or volume deletion was used.
+- **Health:**
+  - Postgres 16.14 on `127.0.0.1:5432` accepted connections;
+  - `GET /storage/v1/status` returned 200 on `127.0.0.1:54321`;
+  - an authenticated, test-owned upload → read → delete → read in `payment-proofs` worked: the read was
+    byte-identical, and the object was gone after delete.
+- Every DB and Storage URL was checked to be loopback before any migration, seed or upload.
+
+### 10.2 Full web suite (gap 1: closed, unchanged)
+
+- §9.3's clean run on `8579a74` still describes the integrated code:
+  - exit 0;
+  - 153/153 files, 1,349/1,349 tests;
+  - one fork, default timeouts, no exclusions.
+- Since `8579a74`, only docs (`56a92ff`) and this pass's e2e spec change exist.
+  - The web suite is rooted at `apps/web`, so it doesn't include `tests/e2e`.
+  - No app code changed, so the suite was not re-run.
+- `f5fcfcc` (the rollback-spy `mockClear`) is an ancestor of HEAD.
+
+### 10.3 Proof-photo browser setup
+
+- **Database:** new disposable `p41r3_proof_10281146` (not `pos_verify` or `pos_p41r`).
+  - `prisma migrate deploy` applied 89 migrations.
+  - `prisma/seed.ts` ran with `ALLOW_DATABASE_SEED=true`.
+- **API:** built from HEAD (`tsc`) and run as `node dist/server.js` with:
+  - `API_PORT=4410` (not `PORT`);
+  - `NEXT_PUBLIC_APP_URL=http://localhost:3410`;
+  - `SUPABASE_URL` pointing at `tests/e2e/fixtures/storage-fault-proxy.cjs` on `:54410`, which forwards to
+    `:54321`.
+- **Web:** `next build` with `NEXT_PUBLIC_API_URL=http://localhost:4410`, run with `next start -p 3410`.
+  - The build was checked to contain `:4410` and not the `.env.local` port `:4300`.
+- **Spec:** `tests/e2e/pos-perf-p40r2-proof-and-nav.spec.ts` on Chromium (`Admin Dashboard (Desktop)`,
+  `--workers=1`). Real HTTP, the real API and real local Storage were used. Role and branch checks were left
+  on, and the buckets stayed private.
+
+### 10.4 Results
+
+| Case | Result |
+| --- | --- |
+| **A. Valid proof** | **passed.** The inline image shows, and Download photo saves `payment-proof-<receipt>.png`, byte-identical to the 68-byte fixture. Over real HTTP: API 200 `{download_url, filename, expires_in_seconds}`; Storage 200, `content-type: image/png`, `Content-Disposition: attachment; filename=payment-proof-<receipt>.png`, PNG signature `89504e47`. |
+| **B. Missing object, existing bucket** | **passed.** "Photo unavailable" and "no longer in storage" are shown, with no Try again, Download or image. Exactly 1 request in 8 s, so there is no retry loop. Proxy log: sign → Storage 400, then `getBucket` → 200, which is the API's 410 `PROOF_FILE_MISSING` path. Fits at 390 px. |
+| **C. Temporary Storage outage** | **passed.** The proxy dropped the socket, and the dialog showed "Failed to load the payment proof." with Try again and no "Photo unavailable". After the proxy was set back to `pass`, Try again (focused, Enter) loaded the image. Fits at 390 px, with Download in view. |
+| **D. Old-API download answer** | **passed.** The refusal text "Download photo is not available until the server update finishes…" is shown. The URL didn't change, nothing downloaded, and no `/undefined` request was made. |
+| Navigation and Attendance (P40R2) | passed |
+| **Focus return after Escape** | **failed.** This is a real defect that existed before P40/P41 (§10.5). |
+
+Screenshots were opened and checked: valid, old-API, missing (desktop and phone), storage down, recovered
+(desktop and phone). Evidence is kept locally (git-ignored) in `.p41-local/p41r3/run1…run6/`.
+
+**Run history** (logs in `.p41-local/p41r3/`):
+1. **Committed spec as it was:** A passed. D failed because the mock never applied.
+   - The production build registers the PWA service worker, and `page.route` doesn't see requests a
+     service worker handles.
+   - The API log shows the second `?download=1` reaching the real API. Playwright's own `urlMatches`
+     confirmed the glob matched.
+   - **Fix (test only):** `test.use({ serviceWorkers: 'block' })`.
+2. **With that fix:** A and D passed. The run stopped at the focus assertion.
+3. **Invalid, my error.** A broken shell chain meant the runner never loaded the disposable-DB settings, so
+   the P40 fixture seeded into `pos_p41r` (suffix `r31226`). See §10.6. Later runs went through a guarded
+   runner that refuses any database other than `p41r3_proof_*`.
+4. **Temporary uncommitted copy** with only the two focus checks made `expect.soft`, and serial mode off:
+   - A, B and D assertions passed;
+   - B's phone check read 448 px (§10.5);
+   - C was not reached because of a flaw in the copy (it re-seeded with the same suffix).
+5. **Committed spec, `--grep` on C only:** passed.
+6. **Corrected temporary copy:** nav, attendance and C passed, and every A/B/D assertion passed. The only
+   failures were the two soft focus checks.
+
+The committed spec is still **red** at the first focus assertion (`toBeFocused` after Escape). It doesn't
+run in CI: `deploy-production.yml` runs only `pilot-smoke.spec.ts`.
+
+### 10.5 Findings
+
+- **Focus return (app defect from before P40/P41; not fixed).** Clicking View Proof in the Daily Sales
+  transactions sheet replaces that button's DOM node while the dialog is open. On close, Radix restores
+  focus to a detached node, so focus falls to `<body>`. This happens even with a plain open → Escape.
+  - **Cause:** `components/reports/daily-sales-drilldown.tsx` rebuilds `columns` every render, and
+    `DataTable` uses `flexRender`, which renders each `cell` function as a new component type. Opening a
+    dialog sets state, so every cell remounts.
+  - **Not a regression:** the same unmemoized `columns` exist at baseline `45aab2a`, and `DataTable` hasn't
+    changed since before P40. P41's hosted-dialog focus restore (`dialog.tsx`) keeps the baseline's
+    `opener?.isConnected` guard.
+  - **Not fixed** under the "proven regressions only" rule. This is an owner decision.
+  - Keyboard users have to tab back from the top of the sheet. The receipt filter and the "1 transaction
+    match" state are kept.
+- **Phone-width check race (test defect, fixed).** Right after `setViewportSize`, both proof dialogs
+  briefly report their desktop box: 437–448 px, with x < 0. 100 ms later they measure 358 px at x = 16 at
+  a 390 px viewport. The app layout is correct.
+  - **Fix (test only):** both 390 px checks now wait with `expect.poll`. The threshold is unchanged.
+- **Spec validation:** `tsc --noEmit --strict` is clean on the spec. No eslint config covers `tests/e2e`.
+  No app code changed, so no app tests, typecheck, lint or build re-runs were needed beyond the builds
+  above.
+
+### 10.6 Cleanup
+
+- **Stopped:** the web `:3410`, API `:4410` and proxy `:54410` this pass started. An orphaned
+  `next start -p 3410` child was confirmed by its command line before it was stopped. All three ports were
+  then free.
+- **Dropped:** `p41r3_proof_10281146` (0 connections at drop time).
+- **Storage removed** (all created 2026-10-28 04:10–04:44 UTC by this pass and matched to its seed
+  suffixes):
+  - 9 `payment-proofs/p40/<suffix>/payment.png`;
+  - 6 `discount-proofs/p40/<suffix>/discount.png`;
+  - suffixes `dm1396 r31209 r31217 r31226 r31229 r31234 rmnfur rmrbrd wmk2b5`;
+  - **P40R2 fixture** `payment-proofs/p40r2-fixture/e35480b7-4e64-433f-b3c2-6e2f05140b5e.png`. Before removal
+    it was confirmed to be the only object there: 68 bytes, `image/png`.
+- **Kept:** the `p40/*` objects from 2026-10-27, which belong to earlier P40 runs.
+- **Left in `pos_p41r`** (my run 3; local, not production). One P40 seed set from that run:
+  - branches `P40Ar31226`, `P40Br31226`, `P40Cr31226`;
+  - 5 users `p40-*-r31226@test.local` or last name `r31226`;
+  - 32 transactions, plus their shifts and assignments.
+  - It was not removed with a raw multi-table delete in a database this pass doesn't own. `pos_p41r` is
+    already marked to be dropped (§9.7 item 4), and dropping it removes these rows.
+- **Kept locally (git-ignored):**
+  - `.p41-local/p41r3/` logs and screenshots;
+  - `apps/api/dist`;
+  - `apps/web/.next`, which is now built for API `:4410`, so rebuild it before any other local use;
+  - `tests/e2e/fixtures/*.auth.json`, rewritten by global setup.
+- **Left running:** the shared Docker Desktop and Supabase stack.
+- **Not touched:** shared `main` (`5a9e48c`), `p40r-review` (`dbd21b4`) and the other worktrees.
+
+### 10.7 Remaining
+
+1. **Owner decision on the focus-return defect** (§10.5). It existed before P40/P41. Until it is fixed or
+   the assertion is changed, `pos-perf-p40r2-proof-and-nav.spec.ts` stays red at that line.
+2. Integrate into shared `main`, then push and CI. Follow the P40R deploy order (§8.6 item 3).
+3. Pilot spot checks (§8.6 item 5).
+4. Drop `pos_p41r`, which also removes the `r31226` seed set.

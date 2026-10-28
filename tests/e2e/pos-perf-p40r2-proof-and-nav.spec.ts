@@ -19,6 +19,10 @@ import { TEST_USERS } from './fixtures/test-users';
 
 test.describe.configure({ mode: 'serial' });
 test.setTimeout(600_000);
+// The production web build registers the PWA service worker, and page.route
+// never sees requests a service worker handles — block it so the old-API mock
+// applies and request counts are the page's own.
+test.use({ serviceWorkers: 'block' });
 
 const PROXY = process.env.E2E_STORAGE_PROXY_URL;
 const suffix = process.env.P40_SEED_SUFFIX ?? Date.now().toString(36).slice(-6);
@@ -233,8 +237,8 @@ test('proof photos: valid download, temporary failure retries, missing file stop
   await page.screenshot({ path: path.join(OUT, 'discount-proof-missing.png') });
 
   await page.setViewportSize({ width: 390, height: 844 });
-  const box = await discount.boundingBox();
-  expect(box?.width ?? 999).toBeLessThanOrEqual(390);
+  // Right after the resize the box can still report the desktop width; wait for the relayout.
+  await expect.poll(async () => (await discount.boundingBox())?.width ?? 999).toBeLessThanOrEqual(390);
   await expect(discount.getByText('Photo unavailable')).toBeInViewport();
   await page.screenshot({ path: path.join(OUT, 'discount-proof-missing-phone.png') });
   await page.keyboard.press('Escape');
@@ -267,8 +271,7 @@ test('proof photos: storage unavailable offers Try again and recovers', async ({
     await page.screenshot({ path: path.join(OUT, 'payment-proof-recovered.png') });
 
     await page.setViewportSize({ width: 390, height: 844 });
-    const box = await payment.boundingBox();
-    expect(box?.width ?? 999).toBeLessThanOrEqual(390);
+    await expect.poll(async () => (await payment.boundingBox())?.width ?? 999).toBeLessThanOrEqual(390);
     await expect(payment.getByRole('button', { name: 'Download photo' })).toBeInViewport();
     await page.screenshot({ path: path.join(OUT, 'payment-proof-recovered-phone.png') });
   } finally {

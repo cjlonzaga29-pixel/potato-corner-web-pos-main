@@ -3,7 +3,12 @@
 // Credentials come from process.env only (see .env.e2e.example); this spec
 // must never hardcode a password. Run via:
 //   npx playwright test --config=playwright.p3-verify.config.ts
-import { test, expect, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { test, expect } from './helpers/read-only-guard';
+
+// Super Admin only: its sockets never join a branch room, so realtime can
+// stay on for the CORS check without queuing branch presence notifications.
+test.use({ realtime: 'allow' });
 
 function requireEnv(name: string): string {
   const value = process.env[name];

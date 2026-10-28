@@ -12,6 +12,7 @@ const { PrismaClient } = require(path.join(__dirname, '..', '..', '..', 'apps', 
 
 async function main() {
   const [mode, ...args] = process.argv.slice(2);
+  require('./local-db-guard.cjs').assertLocalDatabase(); // POS-PERF-P44: local DB only
   const prisma = new PrismaClient();
   try {
     if (mode === 'seed') {

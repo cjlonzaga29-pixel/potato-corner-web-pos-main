@@ -7,7 +7,8 @@
 // must never create/edit/delete any data — navigation, login/logout, and
 // cookie assertions only. Run via:
 //   npx playwright test --config=tests/e2e/playwright.production-smoke.config.ts --project=chromium
-import { test, expect, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { test, expect, installReadOnlyGuard, expectNoBlockedWrites } from './helpers/read-only-guard';
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -113,6 +114,7 @@ test('logout on one tab broadcasts and redirects a second tab within 5s (18f6039
   // real browser tabs are 2 pages inside ONE context, so that's what this
   // uses (correcting the "2 contexts" framing in the original ask).
   const context = await browser.newContext();
+  const blocked = await installReadOnlyGuard(context);
   const tab1 = await context.newPage();
   const tab2 = await context.newPage();
 
@@ -132,6 +134,7 @@ test('logout on one tab broadcasts and redirects a second tab within 5s (18f6039
   } finally {
     await context.close();
   }
+  expectNoBlockedWrites(blocked);
 });
 
 test('dashboard navigation averages under 800ms with the access-hint fast path (946a989)', async ({ page }) => {

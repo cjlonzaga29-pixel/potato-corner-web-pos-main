@@ -1,4 +1,12 @@
 import { defineConfig, devices } from '@playwright/test';
+import { resolveIsolatedBaseURL } from './helpers/e2e-target';
+
+// Isolated suites only: these seed accounts and fixtures, sell, adjust stock,
+// upload and delete. resolveIsolatedBaseURL defaults to localhost, refuses
+// production, and accepts another host only when E2E_ISOLATED_REMOTE_HOST
+// confirms it (POS-PERF-P44). Specs written for live credentials have their
+// own configs and are never collected here.
+const PRODUCTION_CREDENTIAL_SPECS = /(\.production\.spec|production-smoke\.spec|pilot-smoke\.spec|p3-fixes-verification\.spec)\.ts$/;
 
 export default defineConfig({
   testDir: '.',
@@ -9,20 +17,19 @@ export default defineConfig({
   workers: 1,
   reporter: [['html'], ['github']],
   use: {
-    // Staging/live runs must set PLAYWRIGHT_BASE_URL explicitly; local dev falls back to localhost.
-    baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:3000',
+    baseURL: resolveIsolatedBaseURL(),
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },
   projects: [
     {
       name: 'POS Terminal (Mobile)',
-      testIgnore: /pwa-minimum-device\.spec\.ts/,
+      testIgnore: [PRODUCTION_CREDENTIAL_SPECS, /pwa-minimum-device\.spec\.ts/],
       use: { ...devices['Galaxy Tab S4'] },
     },
     {
       name: 'Admin Dashboard (Desktop)',
-      testIgnore: /pwa-minimum-device\.spec\.ts/,
+      testIgnore: [PRODUCTION_CREDENTIAL_SPECS, /pwa-minimum-device\.spec\.ts/],
       use: { ...devices['Desktop Chrome'] },
     },
     {

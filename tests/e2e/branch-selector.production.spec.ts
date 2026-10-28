@@ -4,6 +4,7 @@
 // for why: loginLimiter caps POST /api/auth/login at 10/15min per IP).
 import { expect, type APIRequestContext } from '@playwright/test';
 import { test, createAuthedApiContext } from './helpers/prod-login';
+import { resolveProductionSmokeBaseURL } from './helpers/e2e-target';
 
 interface BranchesResponse {
   branches: { id: string; name: string; code: string }[];
@@ -11,7 +12,7 @@ interface BranchesResponse {
 
 let apiRequest: APIRequestContext;
 let accessToken: string;
-const baseURL = 'https://www.potatorenovare.com';
+const baseURL = resolveProductionSmokeBaseURL();
 
 test.beforeAll(async () => {
   const ctx = await createAuthedApiContext(baseURL);

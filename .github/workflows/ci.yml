@@ -59,6 +59,11 @@ jobs:
       - name: Deployment script tests
         run: node --test ".github/scripts/*.test.mjs"
 
+      # E2E target/write guards (POS-PERF-P44). Node built-in runner; no
+      # browser, no network, no secrets.
+      - name: E2E guard tests
+        run: node --test tests/e2e/helpers/guards.node-test.mts
+
       - name: Set up test environment
         # apps/api/vitest.setup.ts loads apps/api/.env via dotenv/config at
         # test-file-import time. .env is correctly gitignored, so CI has no

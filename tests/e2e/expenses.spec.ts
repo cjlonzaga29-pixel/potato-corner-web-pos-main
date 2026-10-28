@@ -1,12 +1,15 @@
-// Production E2E suite for the expenses admin UI (apps/web/app/(admin)/admin/expenses).
-// Every test that creates data cleans it up via API DELETE in a finally block.
-// Uses a single shared session (see helpers/prod-login.ts) to stay well under
-// loginLimiter's 10 logins/15min-per-IP cap — do not add additional
-// page.goto('/login') calls to this file.
+// E2E suite for the expenses admin UI (apps/web/app/(admin)/admin/expenses).
+// POS-PERF-P44: formerly expenses.production.spec.ts, which created, edited,
+// deleted and uploaded receipts for real expenses in production. It writes
+// business data and Storage objects, so it now runs only under the isolated
+// shared config (seeded local Super Admin; resolveIsolatedBaseURL refuses
+// production). Every test that creates data cleans it up via API DELETE.
 import path from 'node:path';
-import { expect, type APIRequestContext } from '@playwright/test';
-import { test, createAuthedApiContext, authedDelete } from './helpers/prod-login';
-import { authedPost } from './fixtures/api-helpers';
+import { test, expect, request as playwrightRequest, type APIRequestContext } from '@playwright/test';
+import { authedDelete } from './helpers/prod-login';
+import { resolveIsolatedBaseURL } from './helpers/e2e-target';
+import { apiLogin, authedPost } from './fixtures/api-helpers';
+import { TEST_USERS } from './fixtures/test-users';
 
 interface ExpenseRecord {
   id: string;
@@ -23,12 +26,13 @@ interface BranchesResponse {
 let apiRequest: APIRequestContext;
 let accessToken: string;
 let firstBranchId: string;
-const baseURL = 'https://www.potatorenovare.com';
+const baseURL = resolveIsolatedBaseURL();
+
+test.use({ storageState: path.join(__dirname, 'fixtures', 'super_admin.auth.json') });
 
 test.beforeAll(async () => {
-  const ctx = await createAuthedApiContext(baseURL);
-  apiRequest = ctx.request;
-  accessToken = ctx.accessToken;
+  apiRequest = await playwrightRequest.newContext({ baseURL });
+  accessToken = (await apiLogin(apiRequest, TEST_USERS.super_admin.email, TEST_USERS.super_admin.password)).accessToken;
 
   const res = await apiRequest.get('/api/branches?status=active&limit=1', {
     headers: { Authorization: `Bearer ${accessToken}` },

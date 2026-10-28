@@ -22,6 +22,7 @@ async function main() {
   if (!branchAId || !branchBId || !creatorUserId || !suffix) {
     throw new Error('usage: seed-shared-branch-product.cjs <branchAId> <branchBId> <creatorUserId> <suffix>');
   }
+  require('./local-db-guard.cjs').assertLocalDatabase(); // POS-PERF-P44: local DB only
   const prisma = new PrismaClient();
   try {
     const unit = await prisma.unitOfMeasure.create({

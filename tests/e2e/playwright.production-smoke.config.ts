@@ -1,6 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 import { config as loadEnv } from 'dotenv';
 import path from 'path';
+import { resolveProductionSmokeBaseURL } from './helpers/e2e-target';
 
 loadEnv({ path: path.resolve(__dirname, '.env.e2e') });
 
@@ -21,10 +22,12 @@ export default defineConfig({
   reporter: [['list']],
   preserveOutput: 'never',
   use: {
-    baseURL: process.env.PLAYWRIGHT_BASE_URL || 'https://www.potatorenovare.com',
+    baseURL: resolveProductionSmokeBaseURL(),
     trace: 'off',
     screenshot: 'off',
     video: 'off',
+    // Service-worker fetches bypass context routing (see helpers/read-only-guard.ts).
+    serviceWorkers: 'block',
   },
   projects: [
     {

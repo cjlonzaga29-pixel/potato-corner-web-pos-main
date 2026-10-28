@@ -13,6 +13,7 @@ async function main() {
   if (!branchId || !inventoryItemId || !quantityMarker || !responsibleUserId) {
     throw new Error('usage: seed-legacy-movement.cjs <branchId> <inventoryItemId> <quantityMarker> <responsibleUserId>');
   }
+  require('./local-db-guard.cjs').assertLocalDatabase(); // POS-PERF-P44: local DB only
   const prisma = new PrismaClient();
   try {
     const item = await prisma.inventoryItem.findUnique({ where: { id: inventoryItemId }, select: { baseUnitId: true } });

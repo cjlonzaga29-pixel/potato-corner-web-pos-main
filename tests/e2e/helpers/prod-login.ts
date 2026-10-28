@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium, request as playwrightRequest, test as base, type APIRequestContext } from '@playwright/test';
+import { expectNoBlockedWrites, installReadOnlyGuard } from './read-only-guard';
 
 export const PROD_AUTH_STATE_PATH = path.join(__dirname, '..', 'fixtures', 'prod-super-admin.auth.json');
 
@@ -33,7 +34,8 @@ export const SUPER_ADMIN = {
  */
 export async function bootstrapProdSession(baseURL: string): Promise<void> {
   const browser = await chromium.launch();
-  const context = await browser.newContext({ baseURL });
+  const context = await browser.newContext({ baseURL, serviceWorkers: 'block' });
+  const blocked = await installReadOnlyGuard(context, 'allow');
   const page = await context.newPage();
 
   await page.goto('/login');
@@ -52,6 +54,7 @@ export async function bootstrapProdSession(baseURL: string): Promise<void> {
   await context.storageState({ path: PROD_AUTH_STATE_PATH });
   await context.close();
   await browser.close();
+  expectNoBlockedWrites(blocked);
 }
 
 /**
@@ -106,15 +109,20 @@ export async function createAuthedApiContext(baseURL: string): Promise<{ request
  * test after the first would present an already-consumed refresh token and
  * get bounced to /login. Every spec file in this production suite must
  * import `test`/`expect` from here instead of directly from '@playwright/test'.
+ * POS-PERF-P44: the context is read-only-guarded (helpers/read-only-guard.ts).
+ * Realtime stays allowed — this session is Super Admin, whose sockets never
+ * join a branch room, and dashboard-live-activity checks the connection.
  */
-export const test = base.extend<Record<string, never>>({
+export const test = base.extend({
   page: async ({ browser }, use, testInfo) => {
     const baseURL = testInfo.project.use.baseURL as string;
-    const context = await browser.newContext({ baseURL, storageState: PROD_AUTH_STATE_PATH });
+    const context = await browser.newContext({ baseURL, storageState: PROD_AUTH_STATE_PATH, serviceWorkers: 'block' });
+    const blocked = await installReadOnlyGuard(context, 'allow');
     const page = await context.newPage();
     await use(page);
     await context.storageState({ path: PROD_AUTH_STATE_PATH });
     await context.close();
+    expectNoBlockedWrites(blocked);
   },
 });
 

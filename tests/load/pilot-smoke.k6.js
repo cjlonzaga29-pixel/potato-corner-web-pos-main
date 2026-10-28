@@ -45,7 +45,12 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 
-const BASE_URL = __ENV.PLAYWRIGHT_BASE_URL || 'https://potatorenovare.com';
+// POS-PERF-P44: no default target — a load test against production is an
+// owner decision, never what an unset variable silently means.
+const BASE_URL = __ENV.PLAYWRIGHT_BASE_URL;
+if (!BASE_URL) {
+  throw new Error('PLAYWRIGHT_BASE_URL must be set explicitly (no default target)');
+}
 
 const PRIMARY_EMAIL = __ENV.K6_TEST_EMAIL;
 const PRIMARY_PASSWORD = __ENV.K6_TEST_PASSWORD;

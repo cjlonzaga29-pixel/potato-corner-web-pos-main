@@ -235,7 +235,10 @@ jobs:
       - name: Run Playwright smoke tests against production
         # Skips instead of failing the run when pilot accounts haven't been
         # provisioned yet (Phase 20 Task 16 — pilot go-live cutover). Same
-        # graceful-skip pattern as the Render deploy step above.
+        # graceful-skip pattern as the Render deploy step above. Once
+        # E2E_SUPER_ADMIN_EMAIL is set, any other missing secret fails the
+        # suite. The suite is production-safe (POS-PERF-P44): read-only guard,
+        # dedicated automation accounts, no PIN entry or clock-in.
         if: ${{ steps.tip.outputs.current == 'true' && env.E2E_SUPER_ADMIN_EMAIL != '' }}
         run: pnpm exec playwright test --config=tests/e2e/playwright.pilot.config.ts
         env:
@@ -244,8 +247,8 @@ jobs:
           E2E_SUPER_ADMIN_PASSWORD: ${{ secrets.E2E_SUPER_ADMIN_PASSWORD }}
           E2E_SUPERVISOR_EMAIL: ${{ secrets.E2E_SUPERVISOR_EMAIL }}
           E2E_SUPERVISOR_PASSWORD: ${{ secrets.E2E_SUPERVISOR_PASSWORD }}
-          E2E_STAFF_EMAIL: ${{ secrets.E2E_STAFF_EMAIL }}
-          E2E_STAFF_PASSWORD: ${{ secrets.E2E_STAFF_PASSWORD }}
+          E2E_BRANCH_EMAIL: ${{ secrets.E2E_BRANCH_EMAIL }}
+          E2E_BRANCH_PASSWORD: ${{ secrets.E2E_BRANCH_PASSWORD }}
 
       - name: Report skipped smoke tests
         if: ${{ steps.tip.outputs.current == 'true' && env.E2E_SUPER_ADMIN_EMAIL == '' }}

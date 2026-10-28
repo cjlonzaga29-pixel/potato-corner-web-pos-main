@@ -1,16 +1,16 @@
 import { defineConfig, devices } from '@playwright/test';
 import { config as loadEnv } from 'dotenv';
 import path from 'path';
+import { resolveProductionSmokeBaseURL } from './helpers/e2e-target';
 
 loadEnv({ path: path.resolve(__dirname, '.env.e2e') });
 
-// Dedicated config for the Phase 20 pilot smoke suite (pilot-smoke.spec.ts).
+// Production-safe pilot smoke (pilot-smoke.spec.ts), run by
+// deploy-production.yml after the web promote is verified (POS-PERF-P44).
 // Deliberately has NO globalSetup: the shared playwright.config.ts's
-// global-setup.ts logs in with hardcoded seeded test accounts
-// (fixtures/test-users.ts) that don't exist against the production pilot
-// deployment. This config targets live pilot users via env vars instead
-// (see .env.e2e.example) and must never be pointed at a non-production
-// PLAYWRIGHT_BASE_URL that also lacks those accounts.
+// global-setup.ts logs in seeded local accounts and its suites seed and
+// write business data. PLAYWRIGHT_BASE_URL has no default here — it must
+// name an approved production origin, or a local one for rehearsal.
 export default defineConfig({
   testDir: '.',
   testMatch: /pilot-smoke\.spec\.ts/,
@@ -22,14 +22,16 @@ export default defineConfig({
   reporter: [['list']],
   preserveOutput: 'never',
   use: {
-    baseURL: process.env.PLAYWRIGHT_BASE_URL || 'https://potatorenovare.com',
-    // No artifact capture: this suite runs against live pilot credentials, and
-    // trace/screenshot/video all capture DOM state (including input values). If
-    // a test fails, re-run with tracing enabled locally against a throwaway
-    // account instead of against pilot credentials.
+    baseURL: resolveProductionSmokeBaseURL(),
+    // No artifact capture: this suite runs against live credentials, and
+    // trace/screenshot/video all capture DOM state (including input values).
+    // If a test fails, re-run it locally against disposable accounts.
     trace: 'off',
     screenshot: 'off',
     video: 'off',
+    // A service worker's own fetches bypass page.route — blocking it keeps
+    // every request under helpers/read-only-guard.ts.
+    serviceWorkers: 'block',
   },
   projects: [
     {

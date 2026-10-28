@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { chromium, type FullConfig } from '@playwright/test';
 import { TEST_USERS, type TestUserKey } from './fixtures/test-users';
+import { resolveIsolatedBaseURL } from './helpers/e2e-target';
 
 /**
  * Logs in as each seeded role through the real login form (not a raw API
@@ -12,7 +13,9 @@ import { TEST_USERS, type TestUserKey } from './fixtures/test-users';
  * fixtures/README.md already documented as the intended convention.
  */
 export default async function globalSetup(config: FullConfig): Promise<void> {
-  const baseURL = config.projects[0]?.use.baseURL ?? 'http://localhost:3000';
+  // Re-checked here, not only in the config: this logs in seeded accounts
+  // and every spec after it writes, so a production target must never pass.
+  const baseURL = resolveIsolatedBaseURL({ ...process.env, PLAYWRIGHT_BASE_URL: config.projects[0]?.use.baseURL });
   const browser = await chromium.launch();
 
   for (const key of Object.keys(TEST_USERS) as TestUserKey[]) {

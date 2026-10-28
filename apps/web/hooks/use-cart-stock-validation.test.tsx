@@ -29,8 +29,11 @@ function setup({ timeoutMs }: { timeoutMs?: number } = {}) {
   );
   const onShortfall = vi.fn();
   const onUnavailable = vi.fn();
-  const hook = renderHook(
-    (props: { branchId: string; sessionKey: string; timeoutMs?: number }) =>
+  const hook = renderHook<
+    ReturnType<typeof useCartStockValidation>,
+    { branchId: string; sessionKey: string; timeoutMs?: number }
+  >(
+    (props) =>
       useCartStockValidation({
         branchId: props.branchId,
         sessionKey: props.sessionKey,

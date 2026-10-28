@@ -383,6 +383,10 @@ Not pushed or deployed. Before release:
 
 - Push.
 - Watch CI.
+  - **Correction (P42R):** a push to `main` started no separate CI run. `ci.yml` only ran on pull
+    requests. Up to `a2fe6e5`, the "CI" for a main push was a step inside the approval-gated
+    production deploy job, so it ran after approval. Run 40643248740 (§13) shows it did run and pass
+    for `a2fe6e5`. P42R moves it ahead of approval.
 - Deploy the API and web (either order).
 - Spot-check on the pilot branch:
   - a tap adds instantly;
@@ -1105,3 +1109,18 @@ This session was the only one using the worktree.
    Receipt in this panel and the proof viewers on other pages.
    - They are out of this fix's scope.
    - The same `onCloseAutoFocus` pattern applies to them.
+
+## 13. P42R — what the production run of `a2fe6e5` actually did (2026-10-28)
+
+[Run 40643248740](https://github.com/cjlonzaga29-pixel/potato-corner-web-pos-main/actions/runs/40643248740)
+deployed `a2fe6e5` on a push to `main`.
+- **Tests ran and passed on that exact SHA:**
+  - shared 30/30;
+  - API 3,267 passed, 5 skipped;
+  - web 1,354/1,354;
+  - type-check, lint (0 errors) and build.
+- They ran **after** the owner approved, inside the approval-gated job, and before production
+  migrations ("No pending migrations to apply") and the Render hook.
+- Smoke tests were skipped, because their secrets aren't set.
+- The gate is now in front of the approval. Vercel is still ungated. Full evidence, the workflow change
+  and the local full web suite (exit 0, 1,355/1,355) are in `pos-perf-p42r-production-test-gate.md`.

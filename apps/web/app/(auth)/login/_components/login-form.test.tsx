@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react';
 import { LoginForm } from './login-form';
 import { ApiRequestError } from '@/hooks/queries/use-2fa';
 
@@ -168,11 +168,41 @@ describe('LoginForm 2FA challenge', () => {
     expect(screen.getByLabelText('Authentication code')).toBeInTheDocument();
   });
 
-  it('displays a countdown of the challenge expiry', async () => {
-    mockLogin.mockResolvedValue({ challengeRequired: true, challengeToken: 'chal-1', expiresIn: 125 });
-    render(<LoginForm />);
-    await fillAndSubmit();
+  describe('challenge countdown', () => {
+    // The form computes the expiry from Date.now() and re-reads it on a 1 s
+    // setInterval. Faking only those keeps the displayed value independent of
+    // how long rendering takes; setTimeout stays real so waitFor still polls.
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
 
-    await waitFor(() => expect(screen.getByText(/Challenge expires in 2:05/)).toBeInTheDocument());
+    it('displays a countdown of the challenge expiry', async () => {
+      mockLogin.mockResolvedValue({ challengeRequired: true, challengeToken: 'chal-1', expiresIn: 125 });
+      render(<LoginForm />);
+      await fillAndSubmit();
+
+      await waitFor(() => expect(screen.getByText(/Challenge expires in 2:05/)).toBeInTheDocument());
+
+      act(() => vi.advanceTimersByTime(1000));
+      expect(screen.getByText(/Challenge expires in 2:04/)).toBeInTheDocument();
+    });
+
+    it('returns to the credentials form when the challenge expires', async () => {
+      mockLogin.mockResolvedValue({ challengeRequired: true, challengeToken: 'chal-1', expiresIn: 125 });
+      render(<LoginForm />);
+      await fillAndSubmit();
+      await waitFor(() => expect(screen.getByLabelText('Authentication code')).toBeInTheDocument());
+
+      act(() => vi.advanceTimersByTime(124_000));
+      expect(screen.getByText(/Challenge expires in 0:01/)).toBeInTheDocument();
+
+      act(() => vi.advanceTimersByTime(1000));
+      expect(screen.queryByLabelText('Authentication code')).not.toBeInTheDocument();
+      expect(screen.getByLabelText('Password')).toBeInTheDocument();
+      expect(screen.getByText('Session expired — please log in again')).toBeInTheDocument();
+    });
   });
 });

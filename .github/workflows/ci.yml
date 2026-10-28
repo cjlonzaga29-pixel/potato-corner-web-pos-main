@@ -3,6 +3,11 @@ name: CI
 on:
   pull_request:
     branches: [main, staging]
+  # deploy-production.yml calls this same job as its `validate` gate, so
+  # main pushes and PRs run one definition of lint/type-check/test/build.
+  # A called workflow inherits the caller's event context, so checkout below
+  # gets the pushed commit (github.sha) — the exact SHA that later deploys.
+  workflow_call: {}
 
 jobs:
   validate:

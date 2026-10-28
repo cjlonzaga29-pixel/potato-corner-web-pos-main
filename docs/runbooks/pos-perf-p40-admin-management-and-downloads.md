@@ -309,6 +309,15 @@ that answer alone would turn a misconfigured bucket into "every photo is gone".
 3. `prisma migrate deploy`.
 4. The Render deploy hook for `apps/api`.
 
+> **Correction (P42R, from run [40643248740](https://github.com/cjlonzaga29-pixel/potato-corner-web-pos-main/actions/runs/40643248740)).**
+> Steps 1 and 2 were in the opposite order. Up to `a2fe6e5`, CI was a step *inside* the
+> `environment: production` job, so the approval was requested before any test ran. In that run
+> the owner approved between 06:20:27Z and 06:24:58Z. Type-check, lint, test and build then ran
+> from 06:25:48Z to 06:31:06Z, and production migrations ran at 06:31:06Z. A failing test still
+> stopped the migration and the Render hook, but only after approval. The new order (validate,
+> then approval, then deploy) is in `pos-perf-p42r-production-test-gate.md`. The Vercel
+> paragraph below is unchanged: the web is still not gated.
+
 `apps/web` has no step in that workflow: Vercel's GitHub integration deploys it **on the same push,
 independently**. The web normally goes live first, and the API follows only after CI and
 approval. This window can last hours if approval waits. "API first, then web" was never enforced.
@@ -643,3 +652,10 @@ The focus-return defect from §14 / §15 is **fixed**. Full details are in the P
   - Both focus-return assertions that were red now pass.
   - New focus-trap and panel-close checks pass.
   - Cases A–D still pass.
+
+## 17. P42R — deploy order corrected (2026-10-28)
+
+§11.4's "CI, then approval" was wrong for every deploy up to `a2fe6e5`. See the correction note there.
+- Run 40643248740 shows approval first, then CI inside the production job.
+- P42R moves validation ahead of approval for migrations, the Render hook and the release.
+- Vercel still deploys the web on push without any gate. See `pos-perf-p42r-production-test-gate.md` §4.

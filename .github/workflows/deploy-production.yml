@@ -1,105 +1,86 @@
 name: Deploy to Production
 
+# No workflow_dispatch trigger on purpose: the "production" environment has no
+# deployment-branch policy, so a manual trigger could deploy any branch. To
+# retry a main deploy, use "Re-run jobs" on its run — that re-uses the same
+# commit and re-runs validate before deploy.
+
 on:
   push:
     branches: [main]
 
 permissions:
-  contents: write
-  deployments: write
+  contents: read
 
 jobs:
+  # Runs ci.yml (the same job PRs run) on the pushed commit, outside the
+  # production environment: no secrets, no reviewer prompt, read-only token.
+  # The owner is only asked to approve deploy-production after this passes.
+  validate:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   deploy-production:
+    needs: validate
+    if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     environment: production
-    env:
-      REDIS_URL: redis://localhost:6379
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/potato_corner_test
-      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/potato_corner_test
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-      postgres:
-        image: postgres:15-alpine
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: potato_corner_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+    permissions:
+      contents: write
+      deployments: write
+    # One production deploy at a time. cancel-in-progress stays false so a
+    # running migration/Render deploy is never killed; GitHub instead replaces
+    # an older *pending* deploy (queued or awaiting approval, nothing run yet)
+    # with the newer one. The superseded-commit check below covers the rest.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
+      # Validation can finish out of order across pushes, and approval can wait
+      # for hours. Only deploy this commit if it is still the tip of main once
+      # the job holds the deploy lock; otherwise a newer push's run owns the
+      # deploy and this older commit must not overwrite it.
+      - name: Skip if a newer commit has reached main
+        id: tip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TIP=$(gh api "repos/${{ github.repository }}/git/ref/heads/main" --jq '.object.sha')
+          if [ "$TIP" = "$GITHUB_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Not deploying $GITHUB_SHA: main is now at $TIP, whose own run deploys it."
+          fi
+
       - uses: pnpm/action-setup@v4
+        if: ${{ steps.tip.outputs.current == 'true' }}
         with:
           version: 11.10.0
 
       - uses: actions/setup-node@v4
+        if: ${{ steps.tip.outputs.current == 'true' }}
         with:
           node-version: 24
           cache: pnpm
 
       - name: Install dependencies
+        if: ${{ steps.tip.outputs.current == 'true' }}
         run: pnpm install --frozen-lockfile
 
-      - name: Set up test environment
-        # See ci.yml's identical step — vitest.setup.ts loads apps/api/.env
-        # via dotenv/config at test-file-import time, and .env is gitignored.
-        #
-        # @prisma/client's own bundled env-loader ALSO reads apps/api/.env
-        # the moment any test file constructs a PrismaClient. Root
-        # .env.example's DATABASE_URL/DIRECT_URL point at the local
-        # full-stack dev DB (wrong password and DB name for this job's
-        # Postgres service) — copying them in as-is let something in the
-        # turbo -> vitest -> Prisma Client chain resolve DATABASE_URL from
-        # that file's value instead of this job's real one, so every
-        # DB-touching integration test failed with "Authentication failed
-        # ... for `postgres`" right after "Run database migrations (test
-        # DB)" had just succeeded with the correct value. Rewriting both
-        # lines to the current shell's value (this job's real service
-        # container URL, already correct in env: above) makes every
-        # possible source agree, regardless of which one actually wins.
-        run: |
-          cp .env.example apps/api/.env
-          sed -i "s#^DATABASE_URL=.*#DATABASE_URL=$DATABASE_URL#" apps/api/.env
-          sed -i "s#^DIRECT_URL=.*#DIRECT_URL=$DIRECT_URL#" apps/api/.env
-
-      - name: Generate Prisma client
-        run: pnpm --filter @potato-corner/api exec prisma generate
-
-      - name: Run database migrations (test DB)
-        # Same job-level Postgres service ci.yml uses for the test suite —
-        # separate from the "Run database migrations (production)" step
-        # below, which targets the real production DB via a different URL.
-        working-directory: apps/api
-        run: pnpm exec prisma migrate deploy
-
-      - name: Full CI validation
-        run: |
-          pnpm run type-check
-          pnpm run lint
-          pnpm run test
-          pnpm run build
-
       # Manual approval is enforced via the "production" GitHub Environment's
-      # required reviewers setting, not a workflow step.
+      # required reviewers setting, not a workflow step. It is requested only
+      # after the validate job above has passed for this exact commit.
 
       - name: Run database migrations (production)
         # Uses the direct (non-pooled) connection string, not the pooler
         # secret below — the session pooler caps concurrent clients at 15
         # and migrate deploy needs a session-level connection of its own.
+        if: ${{ steps.tip.outputs.current == 'true' }}
         working-directory: apps/api
         run: pnpm exec prisma migrate deploy
         env:
@@ -110,22 +91,25 @@ jobs:
         # Skips instead of failing the run when the Render service (and its
         # deploy hook secret) hasn't been provisioned yet — migrations above
         # already ran against the real production DB regardless.
-        if: ${{ env.RENDER_DEPLOY_HOOK_PRODUCTION != '' }}
+        if: ${{ steps.tip.outputs.current == 'true' && env.RENDER_DEPLOY_HOOK_PRODUCTION != '' }}
         env:
           RENDER_DEPLOY_HOOK_PRODUCTION: ${{ secrets.RENDER_DEPLOY_HOOK_PRODUCTION }}
         run: curl -fsS -X POST "$RENDER_DEPLOY_HOOK_PRODUCTION"
 
       # apps/web needs no step here — Vercel's GitHub integration auto-deploys
-      # on push to `main` directly, independent of this workflow.
+      # on push to `main` directly, independent of this workflow. It is NOT
+      # gated by validate or by approval: the web can go live before (or
+      # without) this workflow passing. See the P42R runbook.
 
       # Both the Render deploy hook above and Vercel's own GitHub-triggered
       # deploy are async — give them a little runway before hitting the live
       # site, rather than racing a still-rolling-out deployment.
       - name: Wait for deployments to roll out
+        if: ${{ steps.tip.outputs.current == 'true' }}
         run: sleep 45
 
       - name: Install Playwright Chromium (pilot smoke suite only needs Desktop Chrome)
-        if: ${{ env.E2E_SUPER_ADMIN_EMAIL != '' }}
+        if: ${{ steps.tip.outputs.current == 'true' && env.E2E_SUPER_ADMIN_EMAIL != '' }}
         run: pnpm exec playwright install --with-deps chromium
         env:
           E2E_SUPER_ADMIN_EMAIL: ${{ secrets.E2E_SUPER_ADMIN_EMAIL }}
@@ -134,7 +118,7 @@ jobs:
         # Skips instead of failing the run when pilot accounts haven't been
         # provisioned yet (Phase 20 Task 16 — pilot go-live cutover). Same
         # graceful-skip pattern as the Render deploy step above.
-        if: ${{ env.E2E_SUPER_ADMIN_EMAIL != '' }}
+        if: ${{ steps.tip.outputs.current == 'true' && env.E2E_SUPER_ADMIN_EMAIL != '' }}
         run: pnpm exec playwright test --config=tests/e2e/playwright.pilot.config.ts
         env:
           PLAYWRIGHT_BASE_URL: https://www.potatorenovare.com
@@ -146,6 +130,9 @@ jobs:
           E2E_STAFF_PASSWORD: ${{ secrets.E2E_STAFF_PASSWORD }}
 
       - name: Create GitHub release with auto-generated changelog
-        run: gh release create "prod-$(date +%Y%m%d-%H%M%S)" --title "Production deploy $(date +%Y-%m-%d)" --generate-notes --target main
+        # Tag the commit that was validated and deployed, not whatever main
+        # points at by now.
+        if: ${{ steps.tip.outputs.current == 'true' }}
+        run: gh release create "prod-$(date +%Y%m%d-%H%M%S)" --title "Production deploy $(date +%Y-%m-%d)" --generate-notes --target "$GITHUB_SHA"
         env:
           GH_TOKEN: ${{ github.token }}

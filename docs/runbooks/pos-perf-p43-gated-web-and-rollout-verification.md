@@ -340,3 +340,58 @@ was only a warning. P43R makes it a gate:
 - Vercel Get an Alias: https://vercel.com/docs/rest-api/aliases/get-an-alias
 - Render deploy hooks: https://render.com/docs/deploy-hooks
 - Render Retrieve deploy: https://api-docs.render.com/reference/retrieve-deploy
+
+## 11. P43R2 — Vercel production cutover
+
+Starting HEAD and `origin/main`: `182cb08a56091573c7b60a0d5a57c3a980399373` (P43R). The P43R run
+([40672123296](https://github.com/cjlonzaga29-pixel/potato-corner-web-pos-main/actions/runs/40672123296))
+was the first real test of the Render contract (§6.3). It passed: preflight `autoDeploy=no`, then
+`dep-dbgt4b942hec73dvfc10` went from `build_in_progress` to live at `182cb08`, and the git-mode verify
+found `dpl_CDcmEBeCGBu2q8cuLJ733xN5H4FA` at `182cb08`.
+
+### 11.1 What the pre-cutover checks found
+
+| Check | Result |
+| --- | --- |
+| `git.deploymentEnabled` semantics | The docs say it lists "branches that should not trigger a deployment upon commits", with minimatch keys and unspecified branches defaulting to `true`. So it affects **Git** deployments only, an exact `main` key leaves every other branch (PR previews) deploying, and explicit CLI deployments are unaffected. |
+| `apps/web/vercel.json` location | The project's Root Directory is `apps/web` (`/v9/projects`). Vercel reads `vercel.json` there, and the CLI upload includes it. |
+| **Local `vercel pull` + `vercel build --prod`** (CLI 59.11.7, repo root, pinned org/project ids) | **Failed: "Invalid rewrite found".** `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_SOCKET_URL`, `NEXT_PUBLIC_SENTRY_DSN`, `NEXT_PUBLIC_POSTHOG_KEY` and `NEXT_PUBLIC_POSTHOG_HOST` are Vercel **Sensitive** env vars. `vercel pull` writes the literal `[SENSITIVE]` for them, so the `/api/:path*` rewrite destination was invalid. Had it not failed, the bundle would have shipped `[SENSITIVE]` as the Sentry DSN, PostHog key and socket URL. **The P43 prebuilt path cannot reproduce the Git build.** Making these vars readable would mean recreating values, which this task may not do. |
+| CLI upload set (`vercel deploy --dry`) | From a working tree the CLI **ignores `.gitignore`**: 5,177 files and 235 MB, including `apps/api/.env`, `.turbo/cache` and local scratch folders. From a `git archive` export of the SHA: 1,432 files and 12.9 MB, only `*.example` env files, Next.js detected, `apps/web/vercel.json` included. |
+| `vercel deploy` stdout | The docs say stdout "is always the Deployment URL". But in 59.11.7, `asJson = --format json \|\| client.nonInteractive`, and `nonInteractive` turns on when the CLI detects an AI agent or `--non-interactive`. So the shape depends on the caller. `--format=json` pins it: either `{id,url,target,readyState,…}` or `{status,deployment}`. |
+| `vercel promote` | It is documented as the way to promote a *staged* production build (`--prod --skip-domain`), "instantly … it doesn't require a rebuild". In 59.11.7, a **non-production** id with `--yes` silently creates a new rebuilt deployment, and the command exits `0` on "No deployment promotion in progress". So the workflow never passes `--yes`, and it treats the alias check as the authority, not the exit code. |
+| Token authority | The P43R verify step proved read access (aliases, deployments). No non-mutating endpoint was usable to prove deploy permission, so **the cutover run's staged deploy is the proof**. It runs before migrations, so a token without deploy rights fails with no production write. |
+
+### 11.2 Workflow mode, as shipped (supersedes §4 steps 4 and 7)
+
+1. After approval, the credentials check and the Render preflight, and **before migrations**:
+   - `git archive $GITHUB_SHA` is extracted to `$RUNNER_TEMP/web-src`.
+   - `vercel deploy --cwd <export> --prod --skip-domain --format=json --meta releaseSha=<sha> --meta releaseRun=<run id>`
+     builds the release on Vercel with the real production env, the same builder as a Git build. **No
+     domain is touched.**
+   - `deploy-rollout.mjs vercel-staged` parses the JSON and accepts only one `dpl_…` id with target
+     `production`. It then GETs the deployment and requires all of: the pinned project, `target:
+     production`, `source: cli`, `meta.releaseSha == sha`, and `READY`.
+2. Migrations, then Render (unchanged).
+3. `vercel promote <that id> --timeout=5m`, with no `--yes`.
+4. `vercel-verify` with `VERCEL_DEPLOYMENT_ID`: both domains must alias **exactly that id**, and the
+   same own-deployment checks must pass (`source: cli`, `releaseSha`). A Git deployment, an older
+   deployment of the same SHA, or another run's deployment can never satisfy it.
+
+The publisher evidence does not rest on a username. Git deployments report `source: "git"`, and their
+creator is the owner account, not a bot.
+
+### 11.3 Cutover commit
+
+- `apps/web/vercel.json`: `{"git":{"deploymentEnabled":{"main":false}}}`. `web-mode` returns `workflow`.
+- `deploy-production.yml`: the staged-build and promote steps above replace `pull`/`build`/`deploy --prebuilt`.
+- `deploy-rollout.mjs`: `parseVercelDeployOutput`, `assertOwnVercelDeployment` and `vercel-staged`;
+  `vercel-verify` accepts `VERCEL_DEPLOYMENT_ID`.
+- Tests: 33/33. They add the CLI JSON shapes, a bare URL, multi-URL/prose/foreign-host rejection, error
+  status, a missing or malformed id, a non-production target, and `source`/`releaseSha`/project/READY/id
+  mismatches on the staged deployment, plus token scrubbing. actionlint 1.7.7 with shellcheck: exit 0.
+
+**Recovery.** If the staged build fails, nothing in production has changed: re-run after a fix. If promote
+or verify fails after Render went live, production is the new API with the previous web (§7). Re-run the
+failed job; it stages a fresh build and promotes it. To undo the cutover, revert this commit. Its revert
+is then Git-published in git mode. If a promote has turned off "Auto-assign Custom Production Domains",
+the git-mode verify times out (fail-safe), and the setting must be re-enabled before relying on git mode.

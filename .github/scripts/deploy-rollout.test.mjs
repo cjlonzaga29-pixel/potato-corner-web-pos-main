@@ -7,6 +7,7 @@ import {
   classifyRenderStatus,
   main,
   normalizeRepo,
+  parseVercelDeployOutput,
   pollUntil,
   sanitize,
   triggerRenderDeploy,
@@ -603,7 +604,25 @@ const DOMAINS = ['example.com', 'www.example.com'];
 const alias = (deploymentId, projectId = PROJECT) =>
   json(200, { alias: 'x', deploymentId, projectId, uid: 'u' });
 const vdep = (id, sha, readyState = 'READY', target = 'production', projectId = PROJECT) =>
-  json(200, { id, readyState, target, projectId, meta: sha ? { githubCommitSha: sha } : {} });
+  json(200, {
+    id,
+    readyState,
+    target,
+    projectId,
+    source: 'git',
+    meta: sha ? { githubCommitSha: sha } : {},
+  });
+/** A CLI (workflow-published) deployment tagged with --meta releaseSha. */
+const cdep = (id, releaseSha, over = {}) =>
+  json(200, {
+    id,
+    readyState: 'READY',
+    target: 'production',
+    projectId: PROJECT,
+    source: 'cli',
+    meta: releaseSha ? { releaseSha } : {},
+    ...over,
+  });
 
 function vercelArgs(fetchImpl, over = {}) {
   const clock = fakeClock();
@@ -665,7 +684,7 @@ test('workflow mode: aliases must reach our own deployment id; a contradicting S
     '/v4/aliases/': [alias('dpl_prev'), alias('dpl_prev'), alias('dpl_ours')],
     // Even a READY production deployment of the same SHA is not ours.
     '/v13/deployments/dpl_prev': [vdep('dpl_prev', SHA)],
-    '/v13/deployments/dpl_ours': [vdep('dpl_ours', undefined)],
+    '/v13/deployments/dpl_ours': [cdep('dpl_ours', SHA)],
   });
   const r = await waitForVercelProduction(vercelArgs(f.impl, { deploymentId: 'dpl_ours' }));
   assert.equal(r.id, 'dpl_ours');
@@ -676,12 +695,121 @@ test('workflow mode: aliases must reach our own deployment id; a contradicting S
 
   const mismatch = fakeFetch({
     '/v4/aliases/': [alias('dpl_ours')],
-    '/v13/deployments/dpl_ours': [vdep('dpl_ours', OLD_SHA)],
+    '/v13/deployments/dpl_ours': [
+      cdep('dpl_ours', SHA, { meta: { releaseSha: SHA, githubCommitSha: OLD_SHA } }),
+    ],
   });
   await assert.rejects(
     waitForVercelProduction(vercelArgs(mismatch.impl, { deploymentId: 'dpl_ours' })),
     /records commit 0000000/,
   );
+});
+
+test('workflow mode: our id must be a cli deployment tagged with this release SHA', async () => {
+  const cases = [
+    [vdep('dpl_ours', SHA), /source is git, not cli/],
+    [cdep('dpl_ours', undefined), /releaseSha is missing/],
+    [cdep('dpl_ours', OLD_SHA), /releaseSha is 0000000/],
+  ];
+  for (const [dep, err] of cases) {
+    const f = fakeFetch({
+      '/v4/aliases/': [alias('dpl_ours')],
+      '/v13/deployments/dpl_ours': [dep],
+    });
+    await assert.rejects(
+      waitForVercelProduction(vercelArgs(f.impl, { deploymentId: 'dpl_ours' })),
+      err,
+    );
+  }
+});
+
+test('parseVercelDeployOutput: both CLI JSON shapes, a bare URL, and failures', () => {
+  const dep = { id: 'dpl_Abc123', url: 'https://x-abc.vercel.app', target: 'production' };
+  assert.deepEqual(parseVercelDeployOutput(JSON.stringify(dep, null, 2)), { id: 'dpl_Abc123' });
+  assert.deepEqual(
+    parseVercelDeployOutput(JSON.stringify({ status: 'ok', deployment: dep, next: [] })),
+    { id: 'dpl_Abc123' },
+  );
+  assert.deepEqual(parseVercelDeployOutput('https://x-abc.vercel.app\n'), {
+    url: 'https://x-abc.vercel.app',
+  });
+
+  const bad = [
+    ['', /printed nothing/],
+    ['https://a.vercel.app\nhttps://b.vercel.app', /neither JSON nor a single/],
+    ['Deployed to https://a.vercel.app', /neither JSON nor a single/],
+    ['https://evil.example.com', /neither JSON nor a single/],
+    ['[]', /not an object/],
+    [
+      JSON.stringify({ status: 'error', reason: 'upload_failed' }),
+      /reported error \(upload_failed\)/,
+    ],
+    [JSON.stringify({ ...dep, error: { name: 'CHECKS_FAILED' } }), /reported CHECKS_FAILED/],
+    [JSON.stringify({ url: dep.url, target: 'production' }), /no deployment id/],
+    [JSON.stringify({ ...dep, id: 'dpl_x; rm -rf' }), /no deployment id/],
+    [JSON.stringify({ ...dep, target: 'preview' }), /preview deployment, not production/],
+    [JSON.stringify({ ...dep, target: null }), /untargeted deployment/],
+  ];
+  for (const [text, err] of bad) assert.throws(() => parseVercelDeployOutput(text), err, text);
+});
+
+test('vercel-staged CLI accepts only our READY production build of this SHA', async () => {
+  const { mkdtempSync, writeFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const dir = mkdtempSync(join(tmpdir(), 'vstaged-'));
+  const env = { VERCEL_TOKEN, VERCEL_ORG_ID: TEAM, VERCEL_PROJECT_ID: PROJECT, EXPECTED_SHA: SHA };
+  let n = 0;
+  const run = async (stdout, routes = {}) => {
+    const file = join(dir, `${n++}.out`);
+    writeFileSync(file, stdout);
+    const lines = [];
+    const f = fakeFetch(routes);
+    const code = await main(['vercel-staged', file], env, {
+      fetchImpl: f.impl,
+      out: (m) => lines.push(m),
+      err: (m) => lines.push(m),
+    });
+    return { code, text: lines.join('\n'), calls: f.calls };
+  };
+  const cliOut = (id) => JSON.stringify({ status: 'ok', deployment: { id, target: 'production' } });
+
+  const ok = await run(cliOut('dpl_Ours1'), {
+    '/v13/deployments/dpl_Ours1': [cdep('dpl_Ours1', SHA)],
+  });
+  assert.deepEqual([ok.code, ok.text], [0, 'dpl_Ours1']);
+  assert.ok(ok.calls[0].url.includes(`teamId=${TEAM}`));
+
+  const viaUrl = await run('https://x-abc.vercel.app', {
+    '/v13/deployments/x-abc.vercel.app': [json(200, { id: 'dpl_Ours2' })],
+    '/v13/deployments/dpl_Ours2': [cdep('dpl_Ours2', SHA)],
+  });
+  assert.deepEqual([viaUrl.code, viaUrl.text], [0, 'dpl_Ours2']);
+
+  const failures = [
+    [cdep('dpl_X', SHA, { readyState: 'ERROR' }), /is ERROR, not READY/],
+    [cdep('dpl_X', OLD_SHA), /releaseSha is 0000000/],
+    [vdep('dpl_X', SHA), /source is git, not cli/],
+    [cdep('dpl_X', SHA, { projectId: 'prj_other' }), /not in the pinned project/],
+    [cdep('dpl_X', SHA, { target: 'preview' }), /target is preview/],
+    [cdep('dpl_Other', SHA), /lookup returned dpl_Other/],
+  ];
+  for (const [dep, err] of failures) {
+    const r = await run(cliOut('dpl_X'), { '/v13/deployments/dpl_X': [dep] });
+    assert.equal(r.code, 1, String(err));
+    assert.match(r.text, err);
+  }
+
+  const denied = await run('https://x-abc.vercel.app', {
+    '/v13/deployments/': [json(403, { error: { message: `bad ${VERCEL_TOKEN}` } })],
+  });
+  assert.equal(denied.code, 1);
+  assert.ok(!denied.text.includes(VERCEL_TOKEN));
+
+  const bad = await run('not a deployment');
+  assert.equal(bad.code, 1);
+  assert.match(bad.text, /::error::vercel deploy output is neither JSON/);
+  assert.equal(bad.calls.length, 0);
 });
 
 // ------------------------------------------------------- secret hygiene ---

@@ -133,21 +133,43 @@ jobs:
           RENDER_SERVICE_ID_PRODUCTION: ${{ secrets.RENDER_SERVICE_ID_PRODUCTION }}
         run: node .github/scripts/deploy-rollout.mjs render-preflight
 
-      # Workflow-published web only: build the exact checkout before any
-      # production write, so a build failure stops the release early and the
-      # new-API/old-web window below is just the upload, not a full build.
+      # Workflow-published web only: build this exact commit on Vercel as a
+      # *staged* production deployment (--skip-domain: no domain is touched)
+      # before any production write, so a build failure stops the release
+      # early and the new-API/old-web window below is just a domain swap.
+      # Built remotely, not with `vercel build --prebuilt`: the NEXT_PUBLIC_*
+      # vars are Vercel "Sensitive" env vars, which `vercel pull` cannot
+      # download (it writes "[SENSITIVE]"), so only Vercel's builder sees
+      # them — exactly as in a Git build. The upload is a `git archive` export
+      # of this SHA: the CLI ignores .gitignore, and nothing generated in this
+      # job (node_modules, Prisma client) may reach the build.
       - name: Install Vercel CLI
         if: ${{ steps.tip.outputs.current == 'true' && steps.web.outputs.mode == 'workflow' }}
         run: npm install --global vercel@59.11.7
 
-      - name: Build apps/web for Vercel production (this commit)
+      - name: Build apps/web on Vercel as a staged production deployment (this commit)
+        id: vercel
         if: ${{ steps.tip.outputs.current == 'true' && steps.web.outputs.mode == 'workflow' }}
+        timeout-minutes: 20
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
           set -euo pipefail
-          vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
-          vercel build --prod --token="$VERCEL_TOKEN"
+          SRC="$RUNNER_TEMP/web-src"
+          OUT="$RUNNER_TEMP/vercel-deploy.json"
+          mkdir -p "$SRC"
+          git archive "$GITHUB_SHA" | tar -x -C "$SRC"
+          # On failure the CLI's JSON (ids, URLs, error name; no secrets) is
+          # in $OUT, not the log, so show it before failing.
+          if ! vercel deploy --cwd "$SRC" --prod --skip-domain --format=json \
+            --meta "releaseSha=$GITHUB_SHA" --meta "releaseRun=$GITHUB_RUN_ID" \
+            --token="$VERCEL_TOKEN" > "$OUT"; then
+            cat "$OUT" >&2 || true
+            exit 1
+          fi
+          ID=$(node .github/scripts/deploy-rollout.mjs vercel-staged "$OUT")
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
+          echo "Staged $ID: READY production build of $GITHUB_SHA (releaseRun=$GITHUB_RUN_ID), no domains assigned"
 
       # Manual approval is enforced via the "production" GitHub Environment's
       # required reviewers setting, not a workflow step. It is requested only
@@ -180,27 +202,29 @@ jobs:
 
       # Web goes out only after the new API is verified live, so the new web
       # never talks to the old API. (Git-published web skips this: it is
-      # already out, see "Determine web publisher".)
-      - name: Deploy apps/web to Vercel production (this commit)
-        id: vercel
+      # already out, see "Determine web publisher".) Promoting a staged
+      # production build assigns the domains without a rebuild. No --yes: it
+      # is only ever given the production id verified above, and `promote`
+      # exits 0 even when nothing happened, so the verify step below decides.
+      - name: Promote the staged apps/web deployment to production (this commit)
         if: ${{ steps.tip.outputs.current == 'true' && steps.web.outputs.mode == 'workflow' }}
+        timeout-minutes: 10
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.vercel.outputs.id }}
         run: |
           set -euo pipefail
-          URL=$(vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN")
-          echo "url=$URL" >> "$GITHUB_OUTPUT"
-          echo "Deployed $URL"
+          vercel promote "$VERCEL_DEPLOYMENT_ID" --timeout=5m --token="$VERCEL_TOKEN"
 
       # Both modes: every production domain must be aliased to a READY
       # production deployment of this SHA in the pinned project (workflow
-      # mode: to exactly the deployment created above).
+      # mode: to exactly the cli deployment staged above, tagged with this SHA).
       - name: Verify production web is serving this commit
         if: ${{ steps.tip.outputs.current == 'true' }}
         timeout-minutes: 20
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_DEPLOYMENT_URL: ${{ steps.vercel.outputs.url }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.vercel.outputs.id }}
         run: node .github/scripts/deploy-rollout.mjs vercel-verify
 
       - name: Install Playwright Chromium (pilot smoke suite only needs Desktop Chrome)

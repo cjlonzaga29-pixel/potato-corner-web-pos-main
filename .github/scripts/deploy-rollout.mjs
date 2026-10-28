@@ -10,8 +10,14 @@
 //   web-mode     — read apps/web/vercel.json at this commit and say who
 //                  publishes the production web: Vercel's Git integration
 //                  ("git") or this workflow ("workflow").
+//   vercel-staged — read `vercel deploy --prod --skip-domain --format=json`
+//                  stdout from a file, require that deployment to be this
+//                  workflow's own READY production build of EXPECTED_SHA, and
+//                  print its id (promoted later, after the API is live).
 //   vercel-verify — poll until every production domain is aliased to a READY
-//                  production deployment of EXPECTED_SHA in the pinned project.
+//                  production deployment of EXPECTED_SHA in the pinned project
+//                  (workflow mode: exactly VERCEL_DEPLOYMENT_ID, source cli,
+//                  meta.releaseSha == EXPECTED_SHA).
 //
 // No dependencies beyond Node 24 (global fetch, node:fs). Secrets are only read
 // from env and are scrubbed from every message this script prints.
@@ -457,6 +463,33 @@ export function webDeployMode(vercelJsonText) {
 const VERCEL_API = 'https://api.vercel.com';
 
 /**
+ * A workflow-published deployment must be this workflow's own: in the pinned
+ * project, a production target, uploaded by the CLI (not a Git deployment),
+ * tagged with --meta releaseSha=<this SHA>, and any Git-recorded SHA agreeing.
+ */
+export function assertOwnVercelDeployment(d, { projectId, sha }) {
+  const id = d.id ?? 'deployment';
+  if (d.projectId !== projectId) {
+    throw new FatalError(`Vercel deployment ${id} is not in the pinned project`);
+  }
+  if (d.target !== 'production') {
+    throw new FatalError(`Vercel deployment ${id} target is ${d.target}, not production`);
+  }
+  if (d.source !== 'cli') {
+    throw new FatalError(`Vercel deployment ${id} source is ${d.source ?? 'unknown'}, not cli`);
+  }
+  if (d.meta?.releaseSha !== sha) {
+    throw new FatalError(
+      `Vercel deployment ${id} releaseSha is ${d.meta?.releaseSha ?? 'missing'}, expected ${sha}`,
+    );
+  }
+  const recorded = d.meta?.githubCommitSha;
+  if (recorded && recorded !== sha) {
+    throw new FatalError(`Vercel deployment ${id} records commit ${recorded}, expected ${sha}`);
+  }
+}
+
+/**
  * Wait until every domain is aliased to one READY production deployment of
  * `sha` in `projectId`. When `deploymentId` is given (workflow mode) the
  * aliases must point at exactly that deployment.
@@ -520,12 +553,7 @@ export async function waitForVercelProduction({
         throw new FatalError(`Vercel deployment ${current} is not in the pinned project`);
       const deployedSha = d.meta?.githubCommitSha;
       if (deploymentId) {
-        // Our own CLI deployment of this checkout; a recorded SHA must still agree.
-        if (deployedSha && deployedSha !== sha) {
-          throw new FatalError(
-            `Vercel deployment ${current} records commit ${deployedSha}, expected ${sha}`,
-          );
-        }
+        assertOwnVercelDeployment(d, { projectId, sha });
       } else if (deployedSha !== sha) {
         return {
           done: false,
@@ -538,6 +566,47 @@ export async function waitForVercelProduction({
       return { done: true, value: { id: current, sha: deployedSha ?? sha } };
     },
   });
+}
+
+/**
+ * The deployment `vercel deploy --format=json` reports. The CLI prints either
+ * the deployment object ({ id, url, target, readyState }) or, when it treats
+ * the caller as non-interactive, { status, deployment }. A bare URL (the
+ * documented non-JSON stdout) is accepted only as the single non-empty line.
+ * Returns { id } or { url }; anything else is fatal, never guessed.
+ */
+export function parseVercelDeployOutput(text) {
+  const trimmed = String(text ?? '').trim();
+  if (!trimmed) throw new FatalError('vercel deploy printed nothing on stdout');
+  let parsed;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    const lines = trimmed.split(/\r?\n/).filter((l) => l.trim());
+    if (lines.length === 1 && /^https:\/\/[^\s/]+\.vercel\.app\/?$/.test(lines[0].trim())) {
+      return { url: lines[0].trim() };
+    }
+    throw new FatalError('vercel deploy output is neither JSON nor a single deployment URL');
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new FatalError('vercel deploy JSON is not an object');
+  }
+  if ('status' in parsed && parsed.status !== 'ok') {
+    throw new FatalError(
+      `vercel deploy reported ${parsed.status}${parsed.reason ? ` (${parsed.reason})` : ''}`,
+    );
+  }
+  const d = parsed.deployment ?? parsed;
+  if (d.error) throw new FatalError(`vercel deploy reported ${d.error.name ?? 'an error'}`);
+  if (typeof d.id !== 'string' || !/^dpl_[A-Za-z0-9]+$/.test(d.id)) {
+    throw new FatalError('vercel deploy JSON has no deployment id');
+  }
+  if (d.target !== 'production') {
+    throw new FatalError(
+      `vercel deploy created a ${d.target ?? 'untargeted'} deployment, not production`,
+    );
+  }
+  return { id: d.id };
 }
 
 /** Resolve a deployment URL printed by `vercel deploy` to its id. */
@@ -635,6 +704,32 @@ export async function main(
       say(`Render deploy ${r.id} is live at ${r.commit}`);
       return 0;
     }
+    if (cmd === 'vercel-staged') {
+      if (!arg) throw new FatalError('usage: vercel-staged <vercel deploy stdout file>');
+      const [token, teamId, projectId, sha] = requireEnv(env, [
+        'VERCEL_TOKEN',
+        'VERCEL_ORG_ID',
+        'VERCEL_PROJECT_ID',
+        'EXPECTED_SHA',
+      ]);
+      secrets = [token];
+      const r = parseVercelDeployOutput(readFileSync(arg, 'utf8'));
+      const id =
+        r.id ?? (await vercelDeploymentIdFromUrl({ token, teamId, url: r.url, fetchImpl }));
+      const { body: d } = await fetchJson(
+        fetchImpl,
+        `${VERCEL_API}/v13/deployments/${encodeURIComponent(id)}?teamId=${encodeURIComponent(teamId)}`,
+        { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } },
+        `Vercel deployment ${id}`,
+      );
+      if (d.id !== id) throw new FatalError(`Vercel deployment ${id}: lookup returned ${d.id}`);
+      assertOwnVercelDeployment(d, { projectId, sha });
+      if (d.readyState !== 'READY') {
+        throw new FatalError(`Vercel deployment ${id} is ${d.readyState}, not READY`);
+      }
+      out(id);
+      return 0;
+    }
     if (cmd === 'vercel-verify') {
       const [token, teamId, projectId, sha, domainList] = requireEnv(env, [
         'VERCEL_TOKEN',
@@ -648,14 +743,16 @@ export async function main(
         .split(',')
         .map((d) => d.trim())
         .filter(Boolean);
-      const deploymentId = env.VERCEL_DEPLOYMENT_URL
-        ? await vercelDeploymentIdFromUrl({
-            token,
-            teamId,
-            url: env.VERCEL_DEPLOYMENT_URL,
-            fetchImpl,
-          })
-        : undefined;
+      const deploymentId =
+        env.VERCEL_DEPLOYMENT_ID ||
+        (env.VERCEL_DEPLOYMENT_URL
+          ? await vercelDeploymentIdFromUrl({
+              token,
+              teamId,
+              url: env.VERCEL_DEPLOYMENT_URL,
+              fetchImpl,
+            })
+          : undefined);
       const r = await waitForVercelProduction({
         token,
         teamId,
@@ -670,7 +767,7 @@ export async function main(
       return 0;
     }
     err(
-      'usage: deploy-rollout.mjs render-preflight | render | web-mode [vercel.json] | vercel-verify',
+      'usage: deploy-rollout.mjs render-preflight | render | web-mode [vercel.json] | vercel-staged <file> | vercel-verify',
     );
     return 2;
   } catch (e) {

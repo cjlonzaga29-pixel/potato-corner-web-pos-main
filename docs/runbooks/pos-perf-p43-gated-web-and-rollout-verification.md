@@ -426,3 +426,5 @@ rebuild"; 201 means done, 202 means queued).
 - Tests: 35/35.
 
 The orphaned staged deployment from the failed run is never promoted.
+
+<!-- P43R2 preview verification branch: confirms PR previews still deploy with git.deploymentEnabled.main=false. Not to be merged. -->

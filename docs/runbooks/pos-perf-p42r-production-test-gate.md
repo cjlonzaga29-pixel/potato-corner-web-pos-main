@@ -217,3 +217,41 @@ runs after both.
 5. `deploy-staging.yml` keeps the old validate-inside-environment shape. It also lacks the test-DB
    service and the `.env` URL rewrite that `ci.yml` has, so its API integration tests may not behave the
    same way. This was not changed or checked here.
+
+## 8. P42R2 — first gated run blocked on a test race (2026-10-28)
+
+The push of `ecc9ebb` started [run 40650179123](https://github.com/cjlonzaga29-pixel/potato-corner-web-pos-main/actions/runs/40650179123).
+
+**What the gate did:**
+- The check name is **`validate / validate`**.
+- It started at 07:27:21Z with no approval prompt.
+- Step 12 ("Unit and integration tests") failed at 07:31:10Z.
+- `deploy-production` was **skipped**. No approval was requested, and no migration, Render hook or
+  release ran. Render stayed live at `a2fe6e5`.
+- **Vercel built `ecc9ebb` on push anyway** (`dpl_2mG484RPYy5LvhtkDWC9eg9NbhGA`). This is the ungated
+  web boundary described in §4.
+
+**The failure:**
+- API `initialization-audit/audit-integration.test.ts` › full lifecycle: `expected 239 to be 238`.
+- Totals: 1 failed, 3,266 passed, 5 skipped.
+
+**Cause, proven:**
+- The helper compared a **table-wide** `auditLog.count()` before and after one write.
+- API test files run in parallel against one Postgres. `products.publication-budget.integration.test.ts`
+  ran alongside it, and its `runAuditOutboxCycle()` delivers `audit_logs` rows.
+- This is not a regression: it is test-only, and the API code is unchanged since the green run 40643248740.
+
+**Reproduction:**
+- Set-up:
+  - a disposable local DB, `p42r2_audit_*`, migrated with 89 migrations and then dropped;
+  - a background loop inserting an unrelated `audit_logs` row every 50 ms.
+- Results:
+  - **old test:** 9 failed / 14 (`expected 718 to be 715`);
+  - **new test:** 14 / 14 passed.
+- **Mutation check:** writing the entry twice still fails the new test (`expected 2 to be 1`, 10 tests).
+
+**Fix:**
+- The helper now counts only rows for the run being tested
+  (`entityType: 'InitializationRun', entityId: run.id`).
+- All 15 call sites pass `run.id`.
+- API `tsc` passes, and so does eslint on the file.

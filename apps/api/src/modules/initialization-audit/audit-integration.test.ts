@@ -134,12 +134,17 @@ describe.skipIf(!canRunIntegrationTests)('writeInitAuditLogEntry integration', (
   /** Runs the transition, writes the audit entry, and returns both the updated
    * run and the newly-created AuditLog row for assertion. */
   async function transitionAndAudit<T extends { id: string; status: InitializationRunStatus; initiatedBy: string }>(
+    runId: string,
     transition: () => Promise<T>,
   ) {
-    const before = await prisma.auditLog.count();
+    // Counted for this run only: other test files share the database and
+    // write audit_logs concurrently (e.g. the audit-outbox worker), so a
+    // table-wide count can move by more than this transition's one row.
+    const runRows = { entityType: 'InitializationRun', entityId: runId };
+    const before = await prisma.auditLog.count({ where: runRows });
     const updated = await transition();
     await writeInitAuditLogEntry(updated.status, updated as never);
-    const after = await prisma.auditLog.count();
+    const after = await prisma.auditLog.count({ where: runRows });
     expect(after).toBe(before + 1);
 
     const row = await prisma.auditLog.findFirstOrThrow({
@@ -152,7 +157,7 @@ describe.skipIf(!canRunIntegrationTests)('writeInitAuditLogEntry integration', (
 
   it('PLANNED -> DRY_RUN_VALIDATED writes exactly one AuditLog row with correct fields', async () => {
     const run = await createRun('PLANNED');
-    const { updated, auditRow } = await transitionAndAudit(() =>
+    const { updated, auditRow } = await transitionAndAudit(run.id, () =>
       markDryRunValidated({ runId: run.id, expectedVersion: run.version }),
     );
     expect(auditRow.entityType).toBe('InitializationRun');
@@ -164,19 +169,19 @@ describe.skipIf(!canRunIntegrationTests)('writeInitAuditLogEntry integration', (
 
   it('DRY_RUN_VALIDATED -> APPLYING writes exactly one AuditLog row', async () => {
     const run = await createRun('DRY_RUN_VALIDATED');
-    const { auditRow } = await transitionAndAudit(() => startApplying({ runId: run.id, expectedVersion: run.version }));
+    const { auditRow } = await transitionAndAudit(run.id, () => startApplying({ runId: run.id, expectedVersion: run.version }));
     expect(auditRow.action).toBe('APPLYING');
   });
 
   it('APPLYING -> APPLIED writes exactly one AuditLog row', async () => {
     const run = await createRun('APPLYING');
-    const { auditRow } = await transitionAndAudit(() => markApplied({ runId: run.id, expectedVersion: run.version }));
+    const { auditRow } = await transitionAndAudit(run.id, () => markApplied({ runId: run.id, expectedVersion: run.version }));
     expect(auditRow.action).toBe('APPLIED');
   });
 
   it('APPLYING -> APPLY_FAILED writes exactly one AuditLog row', async () => {
     const run = await createRun('APPLYING');
-    const { auditRow } = await transitionAndAudit(() =>
+    const { auditRow } = await transitionAndAudit(run.id, () =>
       markApplyFailed({ runId: run.id, expectedVersion: run.version, failureReason: 'db unreachable' }),
     );
     expect(auditRow.action).toBe('APPLY_FAILED');
@@ -184,7 +189,7 @@ describe.skipIf(!canRunIntegrationTests)('writeInitAuditLogEntry integration', (
 
   it('APPLIED -> ROLLBACK_ASSESSING writes exactly one AuditLog row', async () => {
     const run = await createRun('APPLIED');
-    const { auditRow } = await transitionAndAudit(() =>
+    const { auditRow } = await transitionAndAudit(run.id, () =>
       startRollbackAssessment({ runId: run.id, expectedVersion: run.version }),
     );
     expect(auditRow.action).toBe('ROLLBACK_ASSESSING');
@@ -192,7 +197,7 @@ describe.skipIf(!canRunIntegrationTests)('writeInitAuditLogEntry integration', (
 
   it('ROLLBACK_ASSESSING -> ROLLBACK_BLOCKED writes exactly one AuditLog row', async () => {
     const run = await createRun('ROLLBACK_ASSESSING');
-    const { auditRow } = await transitionAndAudit(() =>
+    const { auditRow } = await transitionAndAudit(run.id, () =>
       markRollbackBlocked({ runId: run.id, expectedVersion: run.version }),
     );
     expect(auditRow.action).toBe('ROLLBACK_BLOCKED');
@@ -200,7 +205,7 @@ describe.skipIf(!canRunIntegrationTests)('writeInitAuditLogEntry integration', (
 
   it('ROLLBACK_ASSESSING -> ROLLING_BACK writes exactly one AuditLog row', async () => {
     const run = await createRun('ROLLBACK_ASSESSING');
-    const { auditRow } = await transitionAndAudit(() =>
+    const { auditRow } = await transitionAndAudit(run.id, () =>
       startRollingBack({ runId: run.id, expectedVersion: run.version }),
     );
     expect(auditRow.action).toBe('ROLLING_BACK');
@@ -208,13 +213,13 @@ describe.skipIf(!canRunIntegrationTests)('writeInitAuditLogEntry integration', (
 
   it('ROLLING_BACK -> ROLLED_BACK writes exactly one AuditLog row', async () => {
     const run = await createRun('ROLLING_BACK');
-    const { auditRow } = await transitionAndAudit(() => markRolledBack({ runId: run.id, expectedVersion: run.version }));
+    const { auditRow } = await transitionAndAudit(run.id, () => markRolledBack({ runId: run.id, expectedVersion: run.version }));
     expect(auditRow.action).toBe('ROLLED_BACK');
   });
 
   it('ROLLING_BACK -> ROLLBACK_PARTIAL writes exactly one AuditLog row', async () => {
     const run = await createRun('ROLLING_BACK');
-    const { auditRow } = await transitionAndAudit(() =>
+    const { auditRow } = await transitionAndAudit(run.id, () =>
       markRollbackPartial({ runId: run.id, expectedVersion: run.version, failureReason: 'partial rollback' }),
     );
     expect(auditRow.action).toBe('ROLLBACK_PARTIAL');
@@ -226,14 +231,14 @@ describe.skipIf(!canRunIntegrationTests)('writeInitAuditLogEntry integration', (
     // exceeds vitest's default 20s per-test timeout.
     const run = await createRun('PLANNED');
 
-    const r1 = await transitionAndAudit(() => markDryRunValidated({ runId: run.id, expectedVersion: run.version }));
-    const r2 = await transitionAndAudit(() => startApplying({ runId: run.id, expectedVersion: r1.updated.version }));
-    const r3 = await transitionAndAudit(() => markApplied({ runId: run.id, expectedVersion: r2.updated.version }));
-    const r4 = await transitionAndAudit(() =>
+    const r1 = await transitionAndAudit(run.id, () => markDryRunValidated({ runId: run.id, expectedVersion: run.version }));
+    const r2 = await transitionAndAudit(run.id, () => startApplying({ runId: run.id, expectedVersion: r1.updated.version }));
+    const r3 = await transitionAndAudit(run.id, () => markApplied({ runId: run.id, expectedVersion: r2.updated.version }));
+    const r4 = await transitionAndAudit(run.id, () =>
       startRollbackAssessment({ runId: run.id, expectedVersion: r3.updated.version }),
     );
-    const r5 = await transitionAndAudit(() => startRollingBack({ runId: run.id, expectedVersion: r4.updated.version }));
-    const r6 = await transitionAndAudit(() => markRolledBack({ runId: run.id, expectedVersion: r5.updated.version }));
+    const r5 = await transitionAndAudit(run.id, () => startRollingBack({ runId: run.id, expectedVersion: r4.updated.version }));
+    const r6 = await transitionAndAudit(run.id, () => markRolledBack({ runId: run.id, expectedVersion: r5.updated.version }));
 
     const rows = [r1, r2, r3, r4, r5, r6].map((r) => r.auditRow);
     // Each row's currentHash must be unique (distinct chain links).

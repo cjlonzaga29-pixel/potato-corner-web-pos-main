@@ -665,6 +665,9 @@ contacted. Worktree `C:/Users/kaile/Downloads/PTTO/p41r-integration`, branch
 - **Nothing was listening on Postgres `:5432` or Supabase `:54321`.**
   `GET /storage/v1/status` couldn't connect. This was rechecked after the suite: still stopped.
 - Per the task rules, Docker and WSL were not started.
+  - **Correction (P41R3):** that restriction was stale. The owner has since authorized normal
+    startup of Docker Desktop and the existing local Supabase stack, without reset, prune, volume
+    deletion or WSL shutdown. It is no longer a reason to skip Storage-dependent checks (§10.1).
 - Every database- and Storage-dependent check stopped here. This pass created no database, no
   Storage fixture and no server process.
 
@@ -882,3 +885,89 @@ run in CI: `deploy-production.yml` runs only `pilot-smoke.spec.ts`.
 2. Integrate into shared `main`, then push and CI. Follow the P40R deploy order (§8.6 item 3).
 3. Pilot spot checks (§8.6 item 5).
 4. Drop `pos_p41r`, which also removes the `r31226` seed set.
+
+## 11. P41R3 — independent smoke check of the proof cases (2026-10-28)
+
+A second, independent run of cases A–D on `810216a`. It confirms §10.4 and reuses that evidence; it
+doesn't replace it. App code is unchanged since `8579a74`, so §9.3's clean full web run (exit 0,
+153/153 files, 1,349/1,349 tests) still describes this code and was not re-run.
+
+### 11.1 Two sessions in one worktree (recorded for honesty)
+
+Two P41R3 sessions ran in parallel in this worktree for a while.
+- This session started a database (`p41r3_proof_04c5d6`) and servers on :3300 / :4300 / :54400.
+- Its two spec attempts failed in Playwright's global setup, before any proof test ran:
+  1. A login request never completed. The API logged `P1001` ("can't reach database server")
+     although Postgres never restarted.
+  2. The login page didn't hydrate within 30 s.
+- Cause: the other session's `next build` in the same worktree, with 0.4–0.6 GB free RAM and 100%
+  CPU. That build also deleted the `.next` that :3300 was serving.
+- This session then stopped its servers and dropped its database, which held only the base seed.
+  The other session finished §10. After that, the owner made this session the sole owner of the
+  worktree.
+- Logs: `.p41-local/p41r3-proof-spec-attempt1.log`, `.p41-local/p41r3-proof-spec.log` (local).
+
+### 11.2 Setup
+
+- **Database:** `p41r3_smoke_4ae7b9`, used only by this run. The target was checked before
+  `migrate deploy` (89 migrations) and the seed.
+- **API:** built `dist` on `:4410`:
+  - `API_PORT=4410`;
+  - origin `:3410`;
+  - `SUPABASE_URL` pointing at a fault proxy on `:54410`, which forwards to `:54321`.
+- **Web:** `next start -p 3410` on the existing `.next`.
+  - It was built from HEAD's source: no source file is newer than `BUILD_ID`.
+  - Its baked API URL is `:4410`.
+- No build ran during the browser run. CPU was at 100% from other load, with about 0.75 GB free.
+- **Spec:** an untracked copy of the committed spec, deleted afterwards. It differs in exactly three
+  lines:
+  - the two known focus-return checks are `expect.soft` (§10.5);
+  - the screenshot folder is `.p41-local/p41r3-smoke/`.
+
+### 11.3 Results
+
+| Case | Result |
+| --- | --- |
+| A. Valid proof | **passed** (browser). The image shows, and Download photo saves `payment-proof-PC-P40rnevbe-000001.png`, byte-identical. Over real HTTP: Storage 200, `content-type: image/png`, `Content-Disposition: attachment; filename=payment-proof-PC-P40rnevbe-000001.png`, 68 bytes, identical. |
+| B. Missing object | **passed** (browser): "Photo unavailable" / "no longer in storage", no Try again, Download or image, and 1 request in 8 s. Fits at 390 px. Over real HTTP, view and download both returned **410 `PROOF_FILE_MISSING`**. Proxy log: sign → 400, then `getBucket` → 200. |
+| C. Storage outage | **passed** (`--grep`, 1 passed, exit 0). "Failed to load the payment proof." with Try again; after the proxy was set back to `pass`, Try again (Enter) loaded the image. Fits at 390 px, with Download in view. |
+| D. Old-API download | **passed**. The server-update refusal is shown. No navigation, no download, and no `/undefined` request. |
+| Navigation and Attendance | passed |
+| Focus return after Escape | **failed (soft)**, at both checks. This is §10.5's defect from before P40/P41, reproduced. |
+
+- **Runs:**
+  - The full spec copy ran with exit 1: 2 passed, and 1 failed only on the two soft focus checks.
+  - C didn't run in that pass because serial mode skips the remaining tests after a failure. C was
+    then run alone and passed.
+- **Leaks:** no API response contained a Storage key, the Storage host or `token=`.
+- **Screenshots** were opened and checked: valid, old-API, missing (phone), storage down, recovered
+  (phone).
+- **Logs** (local): `.p41-local/p41r3-smoke-*.log`, `.p41-local/p41r3-smoke/`.
+
+### 11.4 Cleanup
+
+- **Stopped:** this session's processes only. Web :3410, API :4410 and proxy :54410 were each
+  matched by command line, and the ports were free afterwards. Earlier: :3300 / :4300 / :54400.
+- **Dropped:** `p41r3_smoke_4ae7b9` and `p41r3_proof_04c5d6` (0 connections each).
+- **Storage removed** (each 68 bytes, created 05:02–05:07 UTC by this run):
+  - `payment-proofs/p40/rnevbe/payment.png`;
+  - `payment-proofs/p40/rnk6m2/payment.png`;
+  - `discount-proofs/p40/rnk6m2/discount.png`.
+
+  The `rnevbe` discount object had already been removed by case B. Both prefixes were empty
+  afterwards. A preflight object (`payment-proofs/p41r3-preflight/…`) was uploaded and deleted
+  in the preflight itself.
+- **Deleted:** the temporary spec copy.
+- **Rewritten (git-ignored):** `tests/e2e/fixtures/*.auth.json`, by global setup.
+- **Not touched:**
+  - `pos_p41r`, which still holds §10.6's `r31226` seed set and is still to be dropped;
+  - the shared Docker/Supabase stack, which was left running;
+  - shared `main` and `p40r-review`.
+
+### 11.5 Remaining release blockers
+
+1. **Owner decision on the focus-return defect** (§10.5). It existed before P40/P41. Until it is fixed
+   or the assertion is changed, the committed spec stays red at that line.
+2. Integrate into shared `main`, then push and CI. Follow the P40R deploy order (§8.6 item 3).
+3. Pilot spot checks (§8.6 item 5).
+4. Drop `pos_p41r`.

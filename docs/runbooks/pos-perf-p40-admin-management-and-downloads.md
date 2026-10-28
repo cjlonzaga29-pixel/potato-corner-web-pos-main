@@ -579,7 +579,9 @@ No proof-related file differs from `1da6add`. Full details are in the P41 runboo
   Try again → recovery; D: old-API download refused):
   - **still not run**;
   - Docker Desktop was stopped, so there was no Postgres `:5432` and no Storage `:54321`;
-  - Docker/WSL were not started, per the rules;
+  - Docker/WSL were not started, per the rules. **Correction (P41R3):** that restriction was stale.
+    The owner has authorized normal startup of Docker Desktop and the existing local Supabase stack
+    (no reset, prune, volume deletion or WSL shutdown). The cases have since run (§14, §15);
   - the run steps are unchanged (§12.4).
 - **Retained fixture:** `payment-proofs/p40r2-fixture/e35480b7-4e64-433f-b3c2-6e2f05140b5e.png`
   couldn't be checked or removed while Storage was down.
@@ -610,3 +612,15 @@ runbook §10.
   Owner decision.
 - **§13's retained fixture** `payment-proofs/p40r2-fixture/e35480b7-4e64-433f-b3c2-6e2f05140b5e.png` was
   confirmed (sole object, 68 bytes, `image/png`) and **removed**.
+
+## 15. P41R3 — independent proof-case smoke check (2026-10-28)
+
+A second run on `810216a` against a separate disposable database, API, web and fault proxy. Full
+details are in the P41 runbook §11.
+- **A–D passed** through the real UI.
+- Over real HTTP:
+  - A's download returned `image/png`, `attachment; filename=payment-proof-<receipt>.png`, and
+    byte-identical bytes;
+  - B returned 410 `PROOF_FILE_MISSING` for both view and download.
+- The focus-return failure from before P40/P41 (§14 / P41 §10.5) reproduced.
+- Every fixture and process from this run was removed.

@@ -7,6 +7,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { formatDateTime } from '@/lib/utils';
 import { useSetStaffPin, useRevokeStaffPin, useStaffPinStatus } from '@/hooks/queries/use-staff-pin';
 
 interface ManageStaffPinDialogProps {
@@ -86,7 +88,7 @@ export function ManageStaffPinDialog({ open, onOpenChange, employee }: ManageSta
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>{hasActivePin ? 'Reset Inventory/POS PIN' : 'Set Up Inventory/POS PIN'}</DialogTitle>
+          <DialogTitle>{hasActivePin ? 'Reset POS / Inventory PIN' : 'Set POS / Inventory PIN'}</DialogTitle>
           <DialogDescription>
             {employee.first_name} {employee.last_name} — have them enter and confirm a new PIN below. It is never shown back to
             anyone, including you.
@@ -99,6 +101,22 @@ export function ManageStaffPinDialog({ open, onOpenChange, employee }: ManageSta
           </div>
         ) : (
           <div className="space-y-4">
+            {/* POS-PERF-P47 — current state only, never the PIN itself. */}
+            <div className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm" aria-live="polite">
+              <span className="text-muted-foreground">Current:</span>
+              {status.isError ? (
+                <span className="text-destructive">Couldn&apos;t check PIN status</span>
+              ) : hasActivePin ? (
+                <>
+                  <Badge variant="active">PIN set</Badge>
+                  {status.data?.set_at && <span className="text-xs text-muted-foreground">since {formatDateTime(status.data.set_at)}</span>}
+                </>
+              ) : status.data?.has_pin ? (
+                <Badge variant="secondary">PIN off — set a new one to re-enable</Badge>
+              ) : (
+                <Badge variant="warning">No PIN set yet</Badge>
+              )}
+            </div>
             <div className="space-y-2">
               <Label htmlFor="staff-pin-new">New PIN (4-6 digits)</Label>
               <Input
@@ -131,7 +149,11 @@ export function ManageStaffPinDialog({ open, onOpenChange, employee }: ManageSta
                 placeholder="Staff confirms their PIN"
               />
             </div>
-            {error && <p className="text-sm text-destructive">{error}</p>}
+            {error && (
+              <p className="text-sm text-destructive" role="alert">
+                {error}
+              </p>
+            )}
           </div>
         )}
 

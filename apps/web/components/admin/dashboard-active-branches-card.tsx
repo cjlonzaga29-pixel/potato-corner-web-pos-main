@@ -31,14 +31,14 @@ function Figure({ value, label, dotClassName, valueClassName }: { value: number;
  */
 export function DashboardActiveBranchesCard({ activeCount, inactiveCount, closedCount, isLoading }: DashboardActiveBranchesCardProps) {
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-center gap-3 space-y-0">
+    <Card className="app-kpi-card">
+      <CardHeader className="app-card-padding flex flex-row items-center gap-3 space-y-0 pb-2">
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
           <Building2 className="h-4 w-4" />
         </div>
-        <CardTitle className="text-sm font-medium">Branch Status</CardTitle>
+        <CardTitle className="app-kpi-label font-medium text-muted-foreground">Branch Status</CardTitle>
       </CardHeader>
-      <CardContent>
+      <CardContent className="app-card-padding pt-0">
         {isLoading ? (
           <Skeleton className="h-8 w-full" />
         ) : (

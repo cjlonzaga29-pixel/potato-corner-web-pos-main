@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
-import type { AttendanceResponse, InventoryStockAlert, TransactionResponse } from '@potato-corner/shared';
+import type { AttendanceSummaryResponse, InventoryStockAlert, TransactionResponse } from '@potato-corner/shared';
 import SupervisorDashboardPage from './page';
 
 const {
@@ -10,7 +10,7 @@ const {
   mockUseTransactionsRealtimeSync,
   mockUseBranchInventoryAlerts,
   mockUseInventoryRealtimeSync,
-  mockUseAttendanceByBranch,
+  mockUseAttendanceSummary,
   mockUseAttendanceRealtimeSync,
   mockUseBranchStore,
   mockUseSocketStore,
@@ -24,7 +24,7 @@ const {
   mockUseTransactionsRealtimeSync: vi.fn(),
   mockUseBranchInventoryAlerts: vi.fn(),
   mockUseInventoryRealtimeSync: vi.fn(),
-  mockUseAttendanceByBranch: vi.fn(),
+  mockUseAttendanceSummary: vi.fn(),
   mockUseAttendanceRealtimeSync: vi.fn(),
   mockUseBranchStore: vi.fn(),
   mockUseSocketStore: vi.fn(),
@@ -65,7 +65,7 @@ vi.mock('@/hooks/queries/use-universal-inventory', () => ({
 }));
 
 vi.mock('@/hooks/queries/use-attendance', () => ({
-  useAttendanceByBranch: mockUseAttendanceByBranch,
+  useAttendanceSummary: mockUseAttendanceSummary,
   useAttendanceRealtimeSync: mockUseAttendanceRealtimeSync,
 }));
 
@@ -96,8 +96,8 @@ vi.mock('@/components/shared/dashboard/top-products-panel', () => ({
  * elsewhere) is untouched in production.
  */
 vi.mock('@/components/shared/charts/kpi-card', () => ({
-  KpiCard: ({ title, value, prefix, isLoading }: { title: string; value: number; prefix?: string; isLoading?: boolean }) => (
-    <div>
+  KpiCard: ({ title, value, prefix, isLoading, href }: { title: string; value: number; prefix?: string; isLoading?: boolean; href?: string }) => (
+    <div data-testid={`kpi-${title}`} data-href={href ?? ''}>
       <span>{title}</span>
       <span>{isLoading ? 'loading' : `${prefix ?? ''}${Number.isInteger(value) ? value : value.toFixed(2)}`}</span>
     </div>
@@ -201,33 +201,24 @@ function inventoryAlert(overrides: Partial<InventoryStockAlert> = {}): Inventory
   };
 }
 
-function attendanceRecord(overrides: Partial<AttendanceResponse> = {}): AttendanceResponse {
+function attendanceSummary(overrides: Partial<AttendanceSummaryResponse> = {}): AttendanceSummaryResponse {
   return {
-    id: 'record-1',
-    employee_id: 'employee-1234-5678',
-    employee_name: null,
-    employee_code: null,
-    employee_status: null,
     branch_id: 'branch-1',
-    clock_in_server_time: '2026-07-16T01:00:00.000Z',
-    clock_in_gps_lat: 14.5995,
-    clock_in_gps_lng: 120.9842,
-    clock_in_gps_status: 'within_radius',
-    clock_in_time_flag: false,
-    clock_out_server_time: null,
-    clock_out_gps_lat: null,
-    clock_out_gps_lng: null,
-    break_minutes: 0,
-    actual_work_minutes: null,
-    overtime_minutes: 0,
-    status: 'present',
-    correction_reason: null,
-    corrected_by: null,
-    original_record_id: null,
-    created_at: '2026-07-16T01:00:00.000Z',
+    business_date: '2026-07-16',
+    clocked_in: [],
+    clocked_out_today: [],
+    excluded_open_count: 0,
     ...overrides,
   };
 }
+
+const CLOCKED_IN = {
+  record_id: '00000000-0000-4000-8000-0000000000a1',
+  employee_id: '00000000-0000-4000-8000-0000000000e1',
+  employee_name: 'Juan Dela Cruz',
+  clock_in_server_time: '2026-07-16T01:00:00.000Z',
+  clock_in_gps_status: 'within_radius' as const,
+};
 
 beforeEach(() => {
   mockBranchState({ activeBranchId: 'branch-1', activeBranch: { id: 'branch-1', name: 'Main Branch' } });
@@ -239,7 +230,7 @@ beforeEach(() => {
   mockUseAllBranchStats.mockReturnValue({ data: [branchStats()], isLoading: false });
   mockUseTransactions.mockReturnValue({ data: undefined, isLoading: false });
   mockUseBranchInventoryAlerts.mockReturnValue({ data: undefined, isLoading: false });
-  mockUseAttendanceByBranch.mockReturnValue({ data: undefined, isLoading: false });
+  mockUseAttendanceSummary.mockReturnValue({ data: undefined, isLoading: false });
   mockUseBranches.mockReturnValue({ data: { branches: [{ id: 'branch-1' }], total: 1 }, isLoading: false, isError: false });
   mockUseDashboardSalesTrendReport.mockReturnValue({ data: { data: [] }, isLoading: false });
 });
@@ -293,7 +284,7 @@ describe('SupervisorDashboardPage', () => {
     mockUseAllBranchStats.mockReturnValue({ data: undefined, isLoading: true });
     mockUseTransactions.mockReturnValue({ data: undefined, isLoading: true });
     mockUseBranchInventoryAlerts.mockReturnValue({ data: undefined, isLoading: true });
-    mockUseAttendanceByBranch.mockReturnValue({ data: undefined, isLoading: true });
+    mockUseAttendanceSummary.mockReturnValue({ data: undefined, isLoading: true });
 
     const { container } = render(<SupervisorDashboardPage />);
 
@@ -323,18 +314,60 @@ describe('SupervisorDashboardPage', () => {
     expect(screen.getByText('₱11500')).toBeInTheDocument();
   });
 
-  it("renders Today's Expenses, Staff Clocked In, and Low Stock Items from branch day-stats", () => {
-    mockUseAllBranchStats.mockReturnValue({
-      data: [branchStats({ todayExpenses: 250.5, staffTimedInCount: 3, lowStockIngredientCount: 2 })],
-      isLoading: false,
-    });
+  it("renders Today's Expenses from branch day-stats", () => {
+    mockUseAllBranchStats.mockReturnValue({ data: [branchStats({ todayExpenses: 250.5 })], isLoading: false });
     render(<SupervisorDashboardPage />);
     expect(screen.getByText("Today's Expenses")).toBeInTheDocument();
     expect(screen.getByText('₱250.50')).toBeInTheDocument();
-    expect(screen.getByText('Staff Clocked In')).toBeInTheDocument();
-    expect(screen.getByText('3')).toBeInTheDocument();
-    expect(screen.getByText('Low Stock Items')).toBeInTheDocument();
-    expect(screen.getByText('2')).toBeInTheDocument();
+  });
+
+  // POS-PERF-P47 — actionable, branch-matched cards.
+  it('derives Low Stock Items and Inventory Alerts from the alert list the linked inventory filter uses', () => {
+    mockUseBranchInventoryAlerts.mockReturnValue({
+      data: {
+        branch_id: 'branch-1',
+        alerts: [
+          inventoryAlert({ inventory_item_id: 'l1', severity: 'low' }),
+          inventoryAlert({ inventory_item_id: 'l2', severity: 'low' }),
+          inventoryAlert({ inventory_item_id: 'c1', severity: 'critical' }),
+        ],
+      },
+      isLoading: false,
+    });
+    render(<SupervisorDashboardPage />);
+    const low = screen.getByTestId('kpi-Low Stock Items');
+    expect(low).toHaveTextContent('2');
+    expect(low).toHaveAttribute('data-href', '/supervisor/inventory?status=low');
+    const alerts = screen.getByTestId('kpi-Inventory Alerts');
+    expect(alerts).toHaveTextContent('3');
+    expect(alerts).toHaveAttribute('data-href', '/supervisor/inventory?status=alerts');
+    expect(screen.getByRole('link', { name: /View all 3/ })).toHaveAttribute('href', '/supervisor/inventory?status=alerts');
+  });
+
+  it('counts Staff Clocked In from attendance records (the summary), not from logins or branch stats', () => {
+    mockUseAllBranchStats.mockReturnValue({ data: [branchStats({ staffTimedInCount: 9 })], isLoading: false });
+    mockUseAttendanceSummary.mockReturnValue({ data: attendanceSummary({ clocked_in: [CLOCKED_IN] }), isLoading: false, isError: false });
+    render(<SupervisorDashboardPage />);
+    const card = screen.getByTestId('kpi-Staff Clocked In');
+    expect(card).toHaveTextContent('1');
+    expect(card).toHaveAttribute('data-href', '/supervisor/attendance');
+  });
+
+  it('never shows a previous branch’s payloads after a branch switch — loading until the new branch answers', () => {
+    mockBranchState({ activeBranchId: 'branch-2', activeBranch: { id: 'branch-2', name: 'Second Branch' } });
+    mockUseAllBranchStats.mockReturnValue({ data: [branchStats({ branchId: 'branch-1', todayGrossSales: 999 })], isLoading: false });
+    mockUseBranchInventoryAlerts.mockReturnValue({
+      data: { branch_id: 'branch-1', alerts: [inventoryAlert({ name: 'Branch One Item' })] },
+      isLoading: false,
+    });
+    mockUseAttendanceSummary.mockReturnValue({ data: attendanceSummary({ clocked_in: [CLOCKED_IN] }), isLoading: false, isError: false });
+    render(<SupervisorDashboardPage />);
+    expect(screen.queryByText('₱999')).not.toBeInTheDocument();
+    expect(screen.queryByText('Branch One Item')).not.toBeInTheDocument();
+    expect(screen.queryByText('Juan Dela Cruz')).not.toBeInTheDocument();
+    expect(screen.getByTestId('kpi-Gross Sales Today')).toHaveTextContent('loading');
+    expect(screen.getByTestId('kpi-Inventory Alerts')).toHaveTextContent('loading');
+    expect(screen.getByTestId('kpi-Staff Clocked In')).toHaveTextContent('loading');
   });
 
   it('never renders Net Sales, (Estimated) Profit, or Discounts Given — not part of the TASK 165 KPI set', () => {
@@ -361,23 +394,32 @@ describe('SupervisorDashboardPage', () => {
     expect(screen.getByText('All stock levels are healthy')).toBeInTheDocument();
   });
 
-  it('renders the clocked-in count from records with a null clock_out_server_time', () => {
-    mockUseAttendanceByBranch.mockReturnValue({
-      data: { records: [attendanceRecord({ id: 'r1', clock_out_server_time: null }), attendanceRecord({ id: 'r2', clock_out_server_time: '2026-07-16T09:00:00.000Z' })], total: 2, page: 1, limit: 100 },
+  it('renders the attendance overview from the summary: clocked in now vs clocked out today', () => {
+    mockUseAttendanceSummary.mockReturnValue({
+      data: attendanceSummary({
+        clocked_in: [CLOCKED_IN],
+        clocked_out_today: [
+          {
+            record_id: '00000000-0000-4000-8000-0000000000a2',
+            employee_id: '00000000-0000-4000-8000-0000000000e2',
+            employee_name: 'Maria Santos',
+            clock_in_server_time: '2026-07-16T00:00:00.000Z',
+            clock_out_server_time: '2026-07-16T04:00:00.000Z',
+          },
+        ],
+      }),
       isLoading: false,
+      isError: false,
     });
     render(<SupervisorDashboardPage />);
-    expect(screen.getByText('1 clocked in')).toBeInTheDocument();
-    expect(screen.getByText('1 clocked out')).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Clocked in now' })).toHaveTextContent('Juan Dela Cruz');
+    expect(screen.getByRole('region', { name: 'Clocked out today' })).toHaveTextContent('Maria Santos');
   });
 
-  it('renders the no-staff-clocked-in empty state when all records have clocked out', () => {
-    mockUseAttendanceByBranch.mockReturnValue({
-      data: { records: [attendanceRecord({ clock_out_server_time: '2026-07-16T09:00:00.000Z' })], total: 1, page: 1, limit: 100 },
-      isLoading: false,
-    });
+  it('renders the attendance empty state when nobody clocked in today', () => {
+    mockUseAttendanceSummary.mockReturnValue({ data: attendanceSummary(), isLoading: false, isError: false });
     render(<SupervisorDashboardPage />);
-    expect(screen.getByText('No staff currently clocked in')).toBeInTheDocument();
+    expect(screen.getByText('No clock-ins recorded today')).toBeInTheDocument();
   });
 
   it('renders the recent transactions feed', () => {

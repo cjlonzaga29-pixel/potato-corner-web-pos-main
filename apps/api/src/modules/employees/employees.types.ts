@@ -1,5 +1,17 @@
 import type { EmploymentType, Role } from '@potato-corner/shared';
 
+/** POS-PERF-P47 — history categories that block a permanent delete (see employeesRepository.countHistoryReferences). */
+export type EmployeeHistoryCategory =
+  | 'sales'
+  | 'shifts'
+  | 'attendance'
+  | 'audit'
+  | 'inventory'
+  | 'expenses'
+  | 'catalog'
+  | 'settings'
+  | 'pin_use';
+
 export interface EmployeeListFilters {
   role?: Role;
   employmentType?: EmploymentType;

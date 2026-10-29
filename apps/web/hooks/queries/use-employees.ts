@@ -239,10 +239,61 @@ export function useSetEmployeeStatus(employeeId: string) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['employee', employeeId] });
       void queryClient.invalidateQueries({ queryKey: ['employees'] });
+      void queryClient.invalidateQueries({ queryKey: ['supervisors'] });
       toast.success('Employee status updated');
     },
     // Deliberately no onError toast here — ACTIVE_SHIFT_ACKNOWLEDGMENT_REQUIRED is an
     // expected first-attempt outcome the dialog handles inline, not a failure to surface as a toast.
+  });
+}
+
+export type EmployeeHistoryCategory = 'sales' | 'shifts' | 'attendance' | 'audit' | 'inventory' | 'expenses' | 'catalog' | 'settings' | 'pin_use';
+
+export interface EmployeeDeletionEligibility {
+  employee_id: string;
+  can_delete: boolean;
+  blocked_reason: 'has_history' | 'branch_account' | null;
+  references: Record<EmployeeHistoryCategory, number>;
+}
+
+/**
+ * POS-PERF-P47 — whether this person can be permanently deleted (no
+ * history at all) or must be deactivated instead. Fetched fresh each time
+ * the Remove dialog opens (staleTime 0) since a sale or clock-in a minute
+ * ago changes the answer.
+ */
+export function useEmployeeDeletionEligibility(employeeId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['employee', employeeId, 'deletion-eligibility'],
+    queryFn: async () => {
+      const response = await apiClient<EmployeeDeletionEligibility>(`/api/employees/${employeeId}/deletion-eligibility`);
+      if (!response.data) throwEmployeeApiError(response, 'Failed to check whether this person can be deleted');
+      return response.data;
+    },
+    enabled,
+    staleTime: 0,
+    gcTime: 0,
+    retry: false,
+  });
+}
+
+/** POS-PERF-P47 — permanent delete of an unused account; the server refuses (EMPLOYEE_HAS_HISTORY) anything with history. */
+export function useDeleteEmployee(employeeId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const response = await apiClient<{ deleted: true }>(`/api/employees/${employeeId}`, { method: 'DELETE' });
+      if (!response.data) throwEmployeeApiError(response, 'Failed to delete');
+      return response.data;
+    },
+    onSuccess: () => {
+      queryClient.removeQueries({ queryKey: ['employee', employeeId] });
+      queryClient.removeQueries({ queryKey: ['staff-pin-status', employeeId] });
+      void queryClient.invalidateQueries({ queryKey: ['employees'] });
+      void queryClient.invalidateQueries({ queryKey: ['supervisors'] });
+      toast.success('Deleted permanently');
+    },
+    // No toast on error — the dialog shows the message inline next to the action.
   });
 }
 

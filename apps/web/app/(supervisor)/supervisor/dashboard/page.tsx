@@ -1,8 +1,6 @@
 'use client';
 
-import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { startOfDay } from 'date-fns';
 import { Wallet, CalendarDays, Receipt, BadgeDollarSign, TrendingDown, Users, PackageSearch, BellRing } from 'lucide-react';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
@@ -23,12 +21,18 @@ import { useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useTransactions, useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
 import { useDashboardSalesTrendReport, useInventoryAnalyticsRealtimeSync } from '@/hooks/queries/use-reports';
 import { useBranchInventoryStockAlerts, useInventoryStockRealtimeSync } from '@/hooks/queries/use-universal-inventory';
-import { useAttendanceByBranch, useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
+import { useAttendanceSummary, useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
 import { useExpensesRealtimeSync } from '@/hooks/queries/use-expenses';
 import { MAX_LIST_LIMIT } from '@potato-corner/shared';
 
 const RECENT_TRANSACTIONS_LIMIT = 10;
-const ATTENDANCE_OVERVIEW_LIMIT = 100;
+
+// POS-PERF-P47 — destinations for the actionable cards. Both read the
+// sidebar's active branch from the same store as this dashboard, so a branch
+// switch changes the counts and what the link opens together.
+const INVENTORY_LOW_HREF = '/supervisor/inventory?status=low';
+const INVENTORY_ALERTS_HREF = '/supervisor/inventory?status=alerts';
+const ATTENDANCE_HREF = '/supervisor/attendance';
 
 export default function SupervisorDashboardPage() {
   const router = useRouter();
@@ -53,25 +57,15 @@ export default function SupervisorDashboardPage() {
   useAttendanceRealtimeSync();
   useExpensesRealtimeSync();
 
-  // Calendar-day boundary, computed once on mount — deliberately not
-  // reactive to clock ticking (the dashboard's attendance panel shows
-  // "today so far", not a live-updating window).
-  const [{ from, to }] = useState(() => {
-    const now = new Date();
-    return { from: startOfDay(now).toISOString(), to: now.toISOString() };
-  });
-
   const { data: branchStats, isLoading: isStatsLoading } = useAllBranchStats(activeBranchId ?? undefined);
   const { data: transactionsData, isLoading: isTransactionsLoading } = useTransactions({
     branch_id: activeBranchId ?? undefined,
     limit: RECENT_TRANSACTIONS_LIMIT,
   });
-  const { data: alertsData, isLoading: isAlertsLoading } = useBranchInventoryStockAlerts(activeBranchId);
-  const { data: attendanceData, isLoading: isAttendanceLoading } = useAttendanceByBranch(activeBranchId, {
-    from,
-    to,
-    limit: ATTENDANCE_OVERVIEW_LIMIT,
-  });
+  const alertsQuery = useBranchInventoryStockAlerts(activeBranchId);
+  // POS-PERF-P47 — attendance from clock-in/out records only (never logins
+  // or socket presence); same rule as the Staff Clocked In KPI.
+  const attendanceQuery = useAttendanceSummary(activeBranchId);
   const monthTrend = useDashboardSalesTrendReport({
     date_from: manilaMonthStart(),
     date_to: manilaToday(),
@@ -126,16 +120,30 @@ export default function SupervisorDashboardPage() {
   // branch-role dashboard's todayGrossSales/todayTransactionCount sourcing).
   // Shifts are auto-managed per cashier now (Phase 4-9), so there is no
   // single "the branch's shift" left to show a dedicated card for.
-  const todayStats = branchStats?.[0];
+  //
+  // POS-PERF-P47 — every branch-scoped payload is matched against the
+  // active branch before use: a response for the previously selected branch
+  // can never be shown under the new branch's name while a refetch runs.
+  const todayStats = branchStats?.find((s) => s.branchId === activeBranchId);
   const averageOrderValue =
     todayStats && todayStats.todayTransactionCount > 0 ? todayStats.todayGrossSales / todayStats.todayTransactionCount : 0;
-  const alertCount = alertsData?.alerts.length ?? 0;
+  const alerts = alertsQuery.data?.branch_id === activeBranchId ? alertsQuery.data.alerts : undefined;
+  const isAlertsLoading = alertsQuery.isLoading || (alertsQuery.data !== undefined && alerts === undefined);
+  const alertCount = alerts?.length ?? 0;
+  const criticalCount = alerts?.filter((a) => a.severity === 'critical').length ?? 0;
+  const lowCount = alertCount - criticalCount;
+  const attendanceSummary = attendanceQuery.data?.branch_id === activeBranchId ? attendanceQuery.data : undefined;
+  const isAttendanceLoading = attendanceQuery.isLoading || (attendanceQuery.data !== undefined && attendanceSummary === undefined);
+  const isTodayStatsLoading = isStatsLoading || (branchStats !== undefined && todayStats === undefined);
 
   return (
     <div className="app-section app-section-gap">
       <DashboardPageHeader
         title="Supervisor Dashboard"
-        subtitle={`${activeBranch?.name ?? activeBranchId} — ${formatDate(new Date())}`}
+        // POS-PERF-P47 — activeBranch (the object) is not persisted across a
+        // reload, only its id; fall back to the loaded branch list's name so
+        // the header never shows a raw UUID.
+        subtitle={`${activeBranch?.name ?? branchesData?.branches.find((b) => b.id === activeBranchId)?.name ?? 'Selected branch'} — ${formatDate(new Date())}`}
         actions={<DashboardConnectionBadge isConnected={isConnected} isReconnecting={isReconnecting} />}
       />
 
@@ -144,7 +152,7 @@ export default function SupervisorDashboardPage() {
           title="Gross Sales Today"
           value={todayStats?.todayGrossSales ?? 0}
           prefix="₱"
-          isLoading={isStatsLoading}
+          isLoading={isTodayStatsLoading}
           icon={Wallet}
           emphasize
           tooltip="Completed sales for the selected Manila business day."
@@ -157,8 +165,8 @@ export default function SupervisorDashboardPage() {
           icon={CalendarDays}
           tooltip="Completed sales for the current Manila calendar month."
         />
-        <KpiCard title="Today's Transactions" value={todayStats?.todayTransactionCount ?? 0} isLoading={isStatsLoading} icon={Receipt} />
-        <KpiCard title="Average Order Value" value={averageOrderValue} prefix="₱" isLoading={isStatsLoading} icon={BadgeDollarSign} />
+        <KpiCard title="Today's Transactions" value={todayStats?.todayTransactionCount ?? 0} isLoading={isTodayStatsLoading} icon={Receipt} />
+        <KpiCard title="Average Order Value" value={averageOrderValue} prefix="₱" isLoading={isTodayStatsLoading} icon={BadgeDollarSign} />
       </div>
 
       <div className="app-kpi-grid-4">
@@ -166,23 +174,37 @@ export default function SupervisorDashboardPage() {
           title="Today's Expenses"
           value={todayStats?.todayExpenses ?? 0}
           prefix="₱"
-          isLoading={isStatsLoading}
+          isLoading={isTodayStatsLoading}
           icon={TrendingDown}
         />
-        <KpiCard title="Staff Clocked In" value={todayStats?.staffTimedInCount ?? 0} isLoading={isStatsLoading} icon={Users} />
+        <KpiCard
+          title="Staff Clocked In"
+          value={attendanceSummary?.clocked_in.length ?? 0}
+          isLoading={isAttendanceLoading}
+          icon={Users}
+          href={ATTENDANCE_HREF}
+          actionLabel="View attendance"
+          tooltip="Staff with an open attendance clock-in at this branch right now. Logins and connected devices are not counted."
+        />
         <KpiCard
           title="Low Stock Items"
-          value={todayStats?.lowStockIngredientCount ?? 0}
-          isLoading={isStatsLoading}
+          value={lowCount}
+          isLoading={isAlertsLoading}
           icon={PackageSearch}
-          tone={(todayStats?.lowStockIngredientCount ?? 0) > 0 ? 'warning' : 'default'}
+          tone={lowCount > 0 ? 'warning' : 'default'}
+          href={INVENTORY_LOW_HREF}
+          actionLabel="View low stock"
+          tooltip="Items at or below their low-stock threshold but above the critical threshold."
         />
         <KpiCard
           title="Inventory Alerts"
           value={alertCount}
           isLoading={isAlertsLoading}
           icon={BellRing}
-          tone={alertCount > 0 ? 'warning' : 'default'}
+          tone={criticalCount > 0 ? 'danger' : alertCount > 0 ? 'warning' : 'default'}
+          href={INVENTORY_ALERTS_HREF}
+          actionLabel={criticalCount > 0 ? `View alerts (${criticalCount} critical)` : 'View alerts'}
+          tooltip="Every item needing attention: low stock plus critical stock."
         />
       </div>
 
@@ -201,9 +223,14 @@ export default function SupervisorDashboardPage() {
         />
       </div>
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <DashboardInventoryAlerts alerts={alertsData?.alerts} isLoading={isAlertsLoading} />
-        <DashboardAttendanceOverview records={attendanceData?.records} isLoading={isAttendanceLoading} />
+      <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-2">
+        <DashboardInventoryAlerts alerts={alerts} isLoading={isAlertsLoading} href={INVENTORY_ALERTS_HREF} />
+        <DashboardAttendanceOverview
+          summary={attendanceSummary}
+          isLoading={isAttendanceLoading}
+          isError={attendanceQuery.isError}
+          href={ATTENDANCE_HREF}
+        />
       </div>
     </div>
   );

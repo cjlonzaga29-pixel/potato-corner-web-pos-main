@@ -27,16 +27,19 @@ export function DashboardPaymentBreakdown({ breakdown, isLoading }: DashboardPay
         </div>
         <CardTitle className="text-sm font-medium">Payment Breakdown (Today)</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-4">
+      {/* POS-PERF-P47 — full-width on the Admin dashboard: total on the left,
+          the four methods in one row beside it on wide screens (stacked on
+          tablets/phones) instead of a tall, mostly empty half-width card. */}
+      <CardContent className="flex flex-col gap-4 lg:flex-row lg:items-center lg:gap-8">
         {isLoading ? (
           <Skeleton className="h-8 w-28" />
         ) : (
-          <div>
-            <div className="text-2xl font-bold tabular-nums">{formatCurrency(total)}</div>
+          <div className="shrink-0">
+            <div className="app-kpi-value font-bold tabular-nums">{formatCurrency(total)}</div>
             <p className="text-xs text-muted-foreground">Total collected across all methods</p>
           </div>
         )}
-        <PaymentMethodGrid breakdown={breakdown} isLoading={isLoading} labels={{ maya: 'PayMaya' }} />
+        <PaymentMethodGrid breakdown={breakdown} isLoading={isLoading} labels={{ maya: 'PayMaya' }} className="flex-1 lg:grid-cols-4" />
       </CardContent>
     </Card>
   );

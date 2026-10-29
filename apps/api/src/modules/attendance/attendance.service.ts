@@ -1,4 +1,4 @@
-import { ROLES, SOCKET_EVENTS, type JwtPayload } from '@potato-corner/shared';
+import { ROLES, SOCKET_EVENTS, type AttendanceSummaryResponse, type JwtPayload } from '@potato-corner/shared';
 import { attendanceRepository } from './attendance.repository.js';
 import { AttendanceError, type AttendanceListFilters, type ClockInData, type ClockOutData, type ManualOverrideData } from './attendance.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
@@ -10,6 +10,7 @@ import { prisma } from '../../lib/prisma.js';
 import { attendanceOpenSessionLockId } from '../../lib/pg-lock.js';
 import { settingsService } from '../settings/settings.service.js';
 import { branchesRepository } from '../branches/branches.repository.js';
+import { dayBounds, manilaDateKey } from '../../lib/manila-time.js';
 
 type ActorContext = { id: string; role: string };
 type GpsStatus = 'within_radius' | 'outside_radius' | 'no_gps_data';
@@ -418,6 +419,53 @@ export const attendanceService = {
   async getByBranch(branchId: string, filters: AttendanceListFilters) {
     const { records, total } = await attendanceRepository.findByBranch(branchId, filters);
     return toListResponse(records as AttendanceRow[], total, filters.page, filters.limit);
+  },
+
+  /**
+   * POS-PERF-P47 — Supervisor dashboard Attendance Overview. Branch access
+   * is enforced by the route's branchGuard. "Clocked in" uses the same rule
+   * as branches.repository.ts's countStaffTimedIn (open row + employee still
+   * active + still assigned to this branch) so the panel and the Staff
+   * Clocked In KPI can never disagree.
+   */
+  async getBranchSummary(branchId: string, now: Date = new Date()): Promise<AttendanceSummaryResponse> {
+    const { dayStart, dayEnd } = dayBounds(now);
+    const { open, closedToday } = await attendanceRepository.findSummaryRows(branchId, dayStart, dayEnd);
+
+    const working = open.filter(
+      (row) => row.employee.isActive && row.employee.status === 'active' && row.employee.branchAssignments.length > 0,
+    );
+    const workingEmployeeIds = new Set(working.map((row) => row.employeeId));
+
+    // closedToday is ordered newest clock-out first, so the first row seen
+    // per employee is their latest clock-out of the day.
+    const seen = new Set<string>();
+    const clockedOut: AttendanceSummaryResponse['clocked_out_today'] = [];
+    for (const row of closedToday) {
+      if (!row.clockOutServerTime || seen.has(row.employeeId) || workingEmployeeIds.has(row.employeeId)) continue;
+      seen.add(row.employeeId);
+      clockedOut.push({
+        record_id: row.id,
+        employee_id: row.employeeId,
+        employee_name: `${row.employee.firstName} ${row.employee.lastName}`,
+        clock_in_server_time: row.clockInServerTime.toISOString(),
+        clock_out_server_time: row.clockOutServerTime.toISOString(),
+      });
+    }
+
+    return {
+      branch_id: branchId,
+      business_date: manilaDateKey(now),
+      clocked_in: working.map((row) => ({
+        record_id: row.id,
+        employee_id: row.employeeId,
+        employee_name: `${row.employee.firstName} ${row.employee.lastName}`,
+        clock_in_server_time: row.clockInServerTime.toISOString(),
+        clock_in_gps_status: row.clockInGpsStatus,
+      })),
+      clocked_out_today: clockedOut,
+      excluded_open_count: open.length - working.length,
+    };
   },
 
   async getByEmployee(employeeId: string, filters: AttendanceListFilters, requestingUser: JwtPayload) {

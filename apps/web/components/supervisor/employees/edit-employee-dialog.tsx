@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { Loader2 } from 'lucide-react';
-import { EMPLOYMENT_TYPE, philippineMobileSchema, type EmployeeResponse, type EmploymentType } from '@potato-corner/shared';
+import { EMPLOYMENT_TYPE, ROLES, ROLE_LABELS, philippineMobileSchema, type EmployeeResponse, type EmploymentType } from '@potato-corner/shared';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
@@ -21,12 +21,18 @@ const phoneField = z.preprocess(
   philippineMobileSchema.optional(),
 );
 
+// POS-PERF-P47 — the same dialog edits supervisors from the Super Admin
+// console. Position is required for staff (cashier/crew job title) but
+// supervisors often have none, so it is optional for them; a blank value is
+// simply not sent (leaving the stored value as it was).
+const positionField = z.string().max(100).refine((value) => value.trim() === '' || value.trim().length >= 2, 'Minimum 2 characters');
+
 const formSchema = z.object({
   first_name: z.string().min(2, 'Minimum 2 characters').max(50),
   last_name: z.string().min(2, 'Minimum 2 characters').max(50),
   phone: phoneField,
   employment_type: z.enum([EMPLOYMENT_TYPE.REGULAR, EMPLOYMENT_TYPE.CONTRACTUAL, EMPLOYMENT_TYPE.PART_TIME]),
-  position: z.string().min(2, 'Minimum 2 characters').max(100),
+  position: positionField,
   notes: z.string().max(1000).optional(),
   sss_number: z.string().optional(),
   philhealth_number: z.string().optional(),
@@ -62,9 +68,16 @@ interface EditEmployeeDialogProps {
  * immutable after creation (locked rule). Employees have no email (Branch
  * Employee Authorization) — Employee ID is shown in its place.
  */
+const staffFormSchema = formSchema.refine((values) => values.position.trim().length > 0, {
+  message: 'Position is required for staff',
+  path: ['position'],
+});
+
 export function SupervisorEditEmployeeDialog({ open, onOpenChange, employee }: EditEmployeeDialogProps) {
   const updateEmployee = useUpdateEmployee(employee.id);
-  const form = useForm<FormValues>({ resolver: zodResolver(formSchema), defaultValues: toFormValues(employee) });
+  const isStaff = employee.role === ROLES.STAFF;
+  const schema = isStaff ? staffFormSchema : formSchema;
+  const form = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: toFormValues(employee) });
 
   useEffect(() => {
     if (open) form.reset(toFormValues(employee));
@@ -72,27 +85,33 @@ export function SupervisorEditEmployeeDialog({ open, onOpenChange, employee }: E
   }, [open, employee.id]);
 
   async function onSubmit(values: FormValues) {
-    const parsed = formSchema.parse(values);
-    await updateEmployee.mutateAsync({
-      first_name: parsed.first_name,
-      last_name: parsed.last_name,
-      phone: parsed.phone,
-      employment_type: parsed.employment_type,
-      position: parsed.position,
-      notes: parsed.notes || undefined,
-      sss_number: parsed.sss_number || undefined,
-      philhealth_number: parsed.philhealth_number || undefined,
-      tin_number: parsed.tin_number || undefined,
-      pagibig_number: parsed.pagibig_number || undefined,
-    });
+    const parsed = schema.parse(values);
+    try {
+      await updateEmployee.mutateAsync({
+        first_name: parsed.first_name,
+        last_name: parsed.last_name,
+        phone: parsed.phone,
+        employment_type: parsed.employment_type,
+        position: parsed.position.trim() || undefined,
+        notes: parsed.notes || undefined,
+        sss_number: parsed.sss_number || undefined,
+        philhealth_number: parsed.philhealth_number || undefined,
+        tin_number: parsed.tin_number || undefined,
+        pagibig_number: parsed.pagibig_number || undefined,
+      });
+    } catch (saveError) {
+      // Shown inline as well as in the toast, so the reason stays visible next to Save.
+      form.setError('root', { message: saveError instanceof Error ? saveError.message : 'Failed to save changes' });
+      return;
+    }
     onOpenChange(false);
   }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Edit Employee</DialogTitle>
+          <DialogTitle>Edit {isStaff ? 'Employee' : ROLE_LABELS[employee.role]}</DialogTitle>
           <DialogDescription>Employee ID and role cannot be changed after creation.</DialogDescription>
         </DialogHeader>
 
@@ -116,8 +135,8 @@ export function SupervisorEditEmployeeDialog({ open, onOpenChange, employee }: E
               <Input placeholder="+639171234567" />
             </FormFieldWrapper>
 
-            <FormFieldWrapper<FormValues> name="position" label="Position" required>
-              <Input placeholder="Cashier" />
+            <FormFieldWrapper<FormValues> name="position" label="Position" required={isStaff} description={isStaff ? undefined : 'Optional'}>
+              <Input placeholder={isStaff ? 'Cashier' : 'Area Supervisor'} />
             </FormFieldWrapper>
 
             <FormFieldWrapper<FormValues> name="notes" label="Notes" description="Optional">
@@ -171,6 +190,12 @@ export function SupervisorEditEmployeeDialog({ open, onOpenChange, employee }: E
                 </FormFieldWrapper>
               </div>
             </div>
+
+            {form.formState.errors.root?.message && (
+              <p className="text-sm text-destructive" role="alert">
+                {form.formState.errors.root.message}
+              </p>
+            )}
 
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>

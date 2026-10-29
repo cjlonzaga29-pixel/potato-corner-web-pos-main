@@ -1,6 +1,6 @@
 'use client';
 
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import type { ColumnDef } from '@tanstack/react-table';
 import { ArrowRightLeft, ClipboardCheck, ClipboardList, History, MinusCircle, PlusCircle, TriangleAlert } from 'lucide-react';
 import type { BranchInventoryStockRow } from '@potato-corner/shared';
@@ -17,6 +17,29 @@ import {
 } from '@/hooks/queries/use-universal-inventory';
 
 /**
+ * POS-PERF-P47 — `?status=` filter the Supervisor dashboard cards link to.
+ * Uses the row's own server-computed `status` (the same classification the
+ * alerts endpoint uses), so a card's count always equals the rows shown.
+ */
+const STATUS_FILTERS = [
+  { value: 'all', label: 'All items' },
+  { value: 'alerts', label: 'Needs attention' },
+  { value: 'low', label: 'Low stock' },
+  { value: 'critical', label: 'Critical' },
+] as const;
+type StatusFilter = (typeof STATUS_FILTERS)[number]['value'];
+
+function parseStatusFilter(raw: string | null): StatusFilter {
+  return STATUS_FILTERS.some((f) => f.value === raw) ? (raw as StatusFilter) : 'all';
+}
+
+function matchesStatusFilter(row: BranchInventoryStockRow, filter: StatusFilter): boolean {
+  if (filter === 'all') return true;
+  if (filter === 'alerts') return row.status !== 'healthy';
+  return row.status === filter;
+}
+
+/**
  * Shared body behind both `/supervisor/inventory` and `/branch/inventory` —
  * `basePath` is the only thing that differs between the two routes (their
  * page.tsx wrappers pass "/supervisor" or "/branch"), everything else
@@ -28,11 +51,18 @@ import {
  */
 export function InventoryList({ basePath }: { basePath: string }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const statusFilter = parseStatusFilter(searchParams.get('status'));
   const activeBranchId = useBranchStore((s) => s.activeBranchId);
   useInventoryStockRealtimeSync(activeBranchId);
   const { data, isLoading, isError, refetch } = useBranchInventoryStock(activeBranchId);
   const { data: alertsData } = useBranchInventoryStockAlerts(activeBranchId);
 
+  // Same stale-branch guard as the dashboard: rows/alerts answered for a
+  // previously selected branch are never shown under the current one.
+  const items = data?.branch_id === activeBranchId ? data.items : undefined;
+  const filteredItems = (items ?? []).filter((row) => matchesStatusFilter(row, statusFilter));
+  const isItemsLoading = isLoading || (data !== undefined && items === undefined);
   const alertCount = alertsData?.alerts.length ?? 0;
   const criticalCount = alertsData?.alerts.filter((a) => a.severity === 'critical').length ?? 0;
 
@@ -168,18 +198,55 @@ export function InventoryList({ basePath }: { basePath: string }) {
         </div>
       )}
 
+      <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Filter by stock status">
+        {STATUS_FILTERS.map((filter) => (
+          <Button
+            key={filter.value}
+            type="button"
+            size="sm"
+            variant={statusFilter === filter.value ? 'default' : 'outline'}
+            aria-pressed={statusFilter === filter.value}
+            onClick={() =>
+              router.replace(filter.value === 'all' ? `${basePath}/inventory` : `${basePath}/inventory?status=${filter.value}`, {
+                scroll: false,
+              })
+            }
+          >
+            {filter.label}
+          </Button>
+        ))}
+        {statusFilter !== 'all' && items && (
+          <span className="text-sm text-muted-foreground" aria-live="polite">
+            {filteredItems.length} of {items.length} items
+          </span>
+        )}
+      </div>
+
       <DataTable
         columns={columns}
-        data={data?.items ?? []}
-        isLoading={isLoading}
+        data={filteredItems}
+        isLoading={isItemsLoading}
         isError={isError}
         onRetry={() => void refetch()}
         emptyState={
-          <EmptyState
-            icon={ArrowRightLeft}
-            title="No inventory items yet"
-            description="Inventory items are created by an admin and assigned to branches — once assigned, they appear here."
-          />
+          statusFilter === 'all' ? (
+            <EmptyState
+              icon={ArrowRightLeft}
+              title="No inventory items yet"
+              description="Inventory items are created by an admin and assigned to branches — once assigned, they appear here."
+            />
+          ) : (
+            <EmptyState
+              compact
+              title="No items match this filter"
+              description="Every item at this branch is above its alert thresholds."
+              action={
+                <Button type="button" variant="outline" size="sm" onClick={() => router.replace(`${basePath}/inventory`)}>
+                  Show all items
+                </Button>
+              }
+            />
+          )
         }
       />
     </div>

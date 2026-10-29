@@ -2,8 +2,9 @@
 
 import { use, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, ShieldAlert } from 'lucide-react';
-import { ROLE_LABELS } from '@potato-corner/shared';
+import { useRouter } from 'next/navigation';
+import { ArrowLeft, Pencil, ShieldAlert, Trash2, UserCog } from 'lucide-react';
+import { ROLES, ROLE_LABELS } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -17,6 +18,9 @@ import { formatDate, formatDateTime } from '@/lib/utils';
 import { useEmployee, useEmployeeActivity } from '@/hooks/queries/use-employees';
 import { PayrollDataDialog } from '@/components/admin/employees/payroll-data-dialog';
 import { ManageBranchesDialog } from '@/components/admin/employees/manage-branches-dialog';
+import { SupervisorEditEmployeeDialog } from '@/components/supervisor/employees/edit-employee-dialog';
+import { SetEmployeeStatusDialog } from '@/components/supervisor/employees/set-employee-status-dialog';
+import { RemoveEmployeeDialog } from '@/components/supervisor/employees/remove-employee-dialog';
 
 interface EmployeeDetailPageProps {
   params: Promise<{ employeeId: string }>;
@@ -24,7 +28,11 @@ interface EmployeeDetailPageProps {
 
 export default function EmployeeDetailPage({ params }: EmployeeDetailPageProps) {
   const { employeeId } = use(params);
+  const router = useRouter();
   const { data: employee, isLoading, isError, refetch } = useEmployee(employeeId);
+  const [editOpen, setEditOpen] = useState(false);
+  const [statusOpen, setStatusOpen] = useState(false);
+  const [removeOpen, setRemoveOpen] = useState(false);
 
   const [payrollOpen, setPayrollOpen] = useState(false);
   const [manageBranchesOpen, setManageBranchesOpen] = useState(false);
@@ -66,6 +74,29 @@ export default function EmployeeDetailPage({ params }: EmployeeDetailPageProps) 
             <span>{employee.email}</span>
           </div>
         </div>
+        {/* POS-PERF-P47 — Super Admin edits supervisors here (supervisors can no
+            longer change each other). Super Admin accounts are never managed here. */}
+        {employee.role !== ROLES.SUPER_ADMIN && (
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
+              <Pencil className="mr-1.5 h-4 w-4" aria-hidden="true" />
+              Edit
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setStatusOpen(true)}>
+              <UserCog className="mr-1.5 h-4 w-4" aria-hidden="true" />
+              Change Status
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+              onClick={() => setRemoveOpen(true)}
+            >
+              <Trash2 className="mr-1.5 h-4 w-4" aria-hidden="true" />
+              Delete
+            </Button>
+          </div>
+        )}
       </div>
 
       <Tabs defaultValue="profile">
@@ -80,7 +111,7 @@ export default function EmployeeDetailPage({ params }: EmployeeDetailPageProps) 
           <Card>
             <CardHeader>
               <CardTitle className="text-base">Contact & Employment</CardTitle>
-              <CardDescription>Basic profile information. Edit from the Supervisor console.</CardDescription>
+              <CardDescription>Basic profile information.</CardDescription>
             </CardHeader>
             <CardContent className="grid grid-cols-2 gap-4 text-sm">
               <div>
@@ -178,7 +209,7 @@ export default function EmployeeDetailPage({ params }: EmployeeDetailPageProps) 
                 </Badge>
               </div>
               <p className="text-sm text-muted-foreground">
-                Password resets and activation status changes are managed from the Supervisor console.
+                Use Change Status above to deactivate, suspend or reactivate this account.
               </p>
             </CardContent>
           </Card>
@@ -195,6 +226,18 @@ export default function EmployeeDetailPage({ params }: EmployeeDetailPageProps) 
       <RoleGuard allowedRoles={['super_admin']}>
         <PayrollDataDialog open={payrollOpen} onOpenChange={setPayrollOpen} employee={employee} />
         <ManageBranchesDialog open={manageBranchesOpen} onOpenChange={setManageBranchesOpen} employee={employee} />
+        {employee.role !== ROLES.SUPER_ADMIN && (
+          <>
+            <SupervisorEditEmployeeDialog open={editOpen} onOpenChange={setEditOpen} employee={employee} />
+            <SetEmployeeStatusDialog open={statusOpen} onOpenChange={setStatusOpen} employee={employee} />
+            <RemoveEmployeeDialog
+              open={removeOpen}
+              onOpenChange={setRemoveOpen}
+              employee={employee}
+              onDeleted={() => router.replace('/admin/supervisors')}
+            />
+          </>
+        )}
       </RoleGuard>
     </div>
   );

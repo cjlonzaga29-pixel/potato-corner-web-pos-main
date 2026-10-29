@@ -53,7 +53,7 @@ describe('SalesAnalyticsSection', () => {
     render(<SalesAnalyticsSection branchId={undefined} />);
 
     expect(screen.getByText('Gross Sales — Last 7 Days')).toBeInTheDocument();
-    expect(screen.getByText('₱1500')).toBeInTheDocument();
+    expect(screen.getByText('₱1,500.00')).toBeInTheDocument();
   });
 
   // P3B P0-2 — Inventory Cost Consumed KPI removed from the shared dashboard

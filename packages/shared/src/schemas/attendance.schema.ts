@@ -113,3 +113,35 @@ export const attendanceListResponseSchema = z.object({
   page: z.number().int(),
   limit: z.number().int(),
 });
+
+/**
+ * POS-PERF-P47 — Supervisor dashboard Attendance Overview, computed from
+ * attendance records only (never from logins or socket presence).
+ * clocked_in follows the same "currently working" rule as the Staff Clocked
+ * In KPI; open rows it excludes (deactivated / reassigned staff) are only
+ * counted in excluded_open_count. clocked_out_today lists each employee who
+ * clocked out during the Manila business day and is not clocked in again.
+ */
+export const attendanceSummaryResponseSchema = z.object({
+  branch_id: z.uuid(),
+  business_date: z.string(),
+  clocked_in: z.array(
+    z.object({
+      record_id: z.uuid(),
+      employee_id: z.uuid(),
+      employee_name: z.string(),
+      clock_in_server_time: z.iso.datetime(),
+      clock_in_gps_status: z.enum(gpsStatusValues),
+    }),
+  ),
+  clocked_out_today: z.array(
+    z.object({
+      record_id: z.uuid(),
+      employee_id: z.uuid(),
+      employee_name: z.string(),
+      clock_in_server_time: z.iso.datetime(),
+      clock_out_server_time: z.iso.datetime(),
+    }),
+  ),
+  excluded_open_count: z.number().int(),
+});

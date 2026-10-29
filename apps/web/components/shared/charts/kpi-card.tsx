@@ -1,5 +1,6 @@
+import Link from 'next/link';
 import type { LucideIcon } from 'lucide-react';
-import { ArrowDown, ArrowUp, Info, Minus } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronRight, Info, Minus } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -21,6 +22,10 @@ interface KpiCardProps {
   tooltip?: string;
   /** Bumps the value's type scale for cards that should read as the primary figures in a mixed KPI grid (e.g. the Financial group vs. the Operational group). */
   emphasize?: boolean;
+  /** POS-PERF-P47 — makes the whole card a link to the list behind the number (e.g. the filtered inventory list). */
+  href?: string;
+  /** Visible call to action under the value when `href` is set, and the link's accessible name suffix. */
+  actionLabel?: string;
 }
 
 const TREND_ICONS = { up: ArrowUp, down: ArrowDown, neutral: Minus } as const;
@@ -65,6 +70,8 @@ export function KpiCard({
   tone = 'default',
   tooltip,
   emphasize = false,
+  href,
+  actionLabel = 'View details',
 }: KpiCardProps) {
   if (isLoading) {
     return (
@@ -85,8 +92,14 @@ export function KpiCard({
   const TrendIcon = resolvedTrend ? TREND_ICONS[resolvedTrend] : null;
   const percentageChange = previousValue !== undefined ? calculatePercentageChange(value, previousValue) : null;
 
-  return (
-    <Card className={cn('app-kpi-card hover-elevate', tone !== 'default' && `border-2 ${TONE_BORDER[tone]}`)}>
+  const card = (
+    <Card
+      className={cn(
+        'app-kpi-card hover-elevate',
+        tone !== 'default' && `border-2 ${TONE_BORDER[tone]}`,
+        href && 'h-full transition-colors group-hover:border-primary/50',
+      )}
+    >
       <CardHeader className="app-card-padding flex flex-row items-center justify-between space-y-0 pb-2">
         <CardTitle className="app-kpi-label flex items-center gap-1.5 font-medium text-muted-foreground">
           {title}
@@ -127,7 +140,24 @@ export function KpiCard({
             {trendLabel && <span className="text-xs text-muted-foreground">{trendLabel}</span>}
           </div>
         )}
+        {href && (
+          <span className="mt-1.5 inline-flex items-center gap-0.5 text-xs font-medium text-primary group-hover:underline">
+            {actionLabel}
+            <ChevronRight className="h-3 w-3" aria-hidden="true" />
+          </span>
+        )}
       </CardContent>
     </Card>
+  );
+
+  if (!href) return card;
+  return (
+    <Link
+      href={href}
+      aria-label={`${title}: ${value}. ${actionLabel}`}
+      className="group block rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+    >
+      {card}
+    </Link>
   );
 }

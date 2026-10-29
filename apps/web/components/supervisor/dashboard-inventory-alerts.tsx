@@ -1,3 +1,5 @@
+import Link from 'next/link';
+import { ChevronRight, PackageCheck } from 'lucide-react';
 import type { InventoryStockAlert } from '@potato-corner/shared';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -10,17 +12,32 @@ const SEVERITY_ORDER: Record<InventoryStockAlert['severity'], number> = { critic
 interface DashboardInventoryAlertsProps {
   alerts: InventoryStockAlert[] | undefined;
   isLoading: boolean;
+  /** POS-PERF-P47 — the filtered inventory list behind these alerts (same branch, same rule). */
+  href?: string;
 }
 
 /** Panel 3 of the supervisor dashboard — low/critical stock alerts for the active branch, sourced from InventoryStock (branch inventory cutover). Pure display, no data fetching. */
-export function DashboardInventoryAlerts({ alerts, isLoading }: DashboardInventoryAlertsProps) {
+export function DashboardInventoryAlerts({ alerts, isLoading, href }: DashboardInventoryAlertsProps) {
+  const header = (
+    <CardHeader className="app-card-padding flex flex-row items-center justify-between space-y-0 pb-2">
+      <CardTitle className="text-sm font-medium">Inventory Alerts</CardTitle>
+      {href && (alerts?.length ?? 0) > 0 && (
+        <Link
+          href={href}
+          className="inline-flex items-center gap-0.5 rounded text-xs font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          View all {alerts?.length}
+          <ChevronRight className="h-3 w-3" aria-hidden="true" />
+        </Link>
+      )}
+    </CardHeader>
+  );
+
   if (isLoading) {
     return (
       <Card>
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">Inventory Alerts</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2">
+        {header}
+        <CardContent className="app-card-padding space-y-2 pt-0">
           <Skeleton className="h-10 w-full" />
           <Skeleton className="h-10 w-full" />
           <Skeleton className="h-10 w-full" />
@@ -35,12 +52,10 @@ export function DashboardInventoryAlerts({ alerts, isLoading }: DashboardInvento
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="text-sm font-medium">Inventory Alerts</CardTitle>
-      </CardHeader>
-      <CardContent>
+      {header}
+      <CardContent className="app-card-padding pt-0">
         {sorted.length === 0 ? (
-          <EmptyState title="All stock levels are healthy" />
+          <EmptyState compact icon={PackageCheck} title="All stock levels are healthy" description="No item is at or below its low or critical threshold." />
         ) : (
           <div className="divide-y divide-border/60">
             {visible.map((alert) => (

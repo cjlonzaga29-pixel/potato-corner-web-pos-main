@@ -263,7 +263,7 @@ describe('AdminDashboardPage', () => {
     expect(screen.queryByText(/Profit/)).not.toBeInTheDocument();
   });
 
-  it("renders Today's Expenses, Staff Clocked In, Low Stock Items, and Inventory Alerts", () => {
+  it("renders Today's Expenses and Staff Clocked In, and no inventory widgets (POS-PERF-P47)", () => {
     mockUseAllBranchStats.mockReturnValue({
       data: [
         branchStat({ branchId: 'b1', todayExpenses: 500, staffTimedInCount: 4, lowStockIngredientCount: 3 }),
@@ -273,13 +273,7 @@ describe('AdminDashboardPage', () => {
       isError: false,
     });
     mockUseAdminInventoryRollup.mockReturnValue({
-      data: {
-        branches: [
-          { branch_id: 'b1', critical_stock_count: 2, out_of_stock_count: 1 },
-          { branch_id: 'b2', critical_stock_count: 0, out_of_stock_count: 2 },
-        ],
-        summary: {},
-      },
+      data: { branches: [{ branch_id: 'b1', critical_stock_count: 2, out_of_stock_count: 1 }], summary: {} },
       isLoading: false,
       isError: false,
     });
@@ -290,38 +284,10 @@ describe('AdminDashboardPage', () => {
     expect(screen.getByText('₱700')).toBeInTheDocument();
     expect(screen.getByText('Staff Clocked In')).toBeInTheDocument();
     expect(screen.getByText('6')).toBeInTheDocument();
-    expect(screen.getByText('Low Stock Items')).toBeInTheDocument();
-    // 4 total low-stock items (3 + 1) — only the KPI card now; the Low Stock Inventory widget was removed in POS-PERF-P40.
-    expect(screen.getByText('4')).toBeInTheDocument();
-    expect(screen.getByText('Inventory Alerts')).toBeInTheDocument();
-    expect(screen.getByText('5')).toBeInTheDocument();
-  });
-
-  it('scopes Inventory Alerts to the selected branch when a single branch is chosen', () => {
-    mockUseSelectedBranch.mockReturnValue({
-      selectedBranchId: 'b1',
-      setSelectedBranch: vi.fn(),
-      availableBranches: [],
-      allLabel: 'All Branches',
-      isSingleBranchUser: false,
-    });
-    mockUseAllBranchStats.mockReturnValue({ data: [branchStat({ branchId: 'b1' })], isLoading: false, isError: false });
-    mockUseAdminInventoryRollup.mockReturnValue({
-      data: {
-        branches: [
-          { branch_id: 'b1', critical_stock_count: 2, out_of_stock_count: 1 },
-          { branch_id: 'b2', critical_stock_count: 5, out_of_stock_count: 5 },
-        ],
-        summary: {},
-      },
-      isLoading: false,
-      isError: false,
-    });
-
-    render(<AdminDashboardPage />);
-
-    expect(screen.getByText('Inventory Alerts')).toBeInTheDocument();
-    expect(screen.getByText('3')).toBeInTheDocument();
+    expect(screen.queryByText('Low Stock Items')).not.toBeInTheDocument();
+    expect(screen.queryByText('Inventory Alerts')).not.toBeInTheDocument();
+    // The org-wide inventory rollup is no longer fetched by this page at all.
+    expect(mockUseAdminInventoryRollup).not.toHaveBeenCalled();
   });
 
   it('renders the payment breakdown aggregated across branches', () => {
@@ -362,9 +328,8 @@ describe('AdminDashboardPage', () => {
     expect(screen.queryByText('Low Stock Summary')).not.toBeInTheDocument();
     expect(screen.queryByText('Recent Activity')).not.toBeInTheDocument();
     expect(screen.queryByText('View Inventory')).not.toBeInTheDocument();
-    // The compact Low Stock Items KPI card stays.
-    expect(screen.getByText('Low Stock Items')).toBeInTheDocument();
-    expect(screen.getByText('3')).toBeInTheDocument();
+    // POS-PERF-P47 — the compact Low Stock Items KPI card was removed too.
+    expect(screen.queryByText('Low Stock Items')).not.toBeInTheDocument();
     expect(screen.getByText('Branch Performance Table')).toBeInTheDocument();
   });
 
@@ -404,6 +369,7 @@ describe('AdminDashboardPage', () => {
     expect(mockUseShiftsRealtimeSync).toHaveBeenCalled();
     expect(mockUseTransactionsRealtimeSync).toHaveBeenCalled();
     expect(mockUseBranchRealtimeSync).toHaveBeenCalled();
-    expect(mockUseInventoryRealtimeSync).toHaveBeenCalled();
+    // POS-PERF-P47 — no inventory widget left to keep in sync on this page.
+    expect(mockUseInventoryRealtimeSync).not.toHaveBeenCalled();
   });
 });

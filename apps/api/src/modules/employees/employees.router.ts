@@ -190,6 +190,43 @@ router.post(
   },
 );
 
+// POS-PERF-P47 — whether a permanent delete is possible (no history) or
+// the account must be deactivated instead. Same authorization as DELETE.
+router.get(
+  '/:employeeId/deletion-eligibility',
+  authenticate,
+  adminOrSupervisor,
+  requirePasswordChange,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const result = await employeesService.getDeletionEligibility(req.params.employeeId as string, req.user);
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleEmployeeError(error, res, next);
+    }
+  },
+);
+
+// POS-PERF-P47 — permanent delete of an unused account only; anything with
+// sales/attendance/audit history gets 409 EMPLOYEE_HAS_HISTORY. Role/self/
+// branch rules live in employeesService.deleteEmployee.
+router.delete(
+  '/:employeeId',
+  authenticate,
+  adminOrSupervisor,
+  requirePasswordChange,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const result = await employeesService.deleteEmployee(req.params.employeeId as string, req.user, req.ip ?? null);
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleEmployeeError(error, res, next);
+    }
+  },
+);
+
 router.patch(
   '/:employeeId',
   authenticate,

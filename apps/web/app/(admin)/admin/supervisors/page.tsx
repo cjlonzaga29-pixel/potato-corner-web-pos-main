@@ -1,9 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, type MouseEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import type { ColumnDef, PaginationState } from '@tanstack/react-table';
-import { Plus } from 'lucide-react';
+import { Pencil, Plus, Trash2, UserCog } from 'lucide-react';
 import type { EmployeeResponse, EmploymentType } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -12,8 +12,12 @@ import { DataTable } from '@/components/shared/data-table';
 import { SearchInput } from '@/components/shared/forms/search-input';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { formatDateTime } from '@/lib/utils';
+import { refocusRowAction } from '@/lib/refocus-row-action';
 import { useEmployees } from '@/hooks/queries/use-employees';
 import { AddSupervisorDialog } from '@/components/admin/employees/add-supervisor-dialog';
+import { SupervisorEditEmployeeDialog } from '@/components/supervisor/employees/edit-employee-dialog';
+import { SetEmployeeStatusDialog } from '@/components/supervisor/employees/set-employee-status-dialog';
+import { RemoveEmployeeDialog } from '@/components/supervisor/employees/remove-employee-dialog';
 
 const EMPLOYMENT_TYPE_FILTERS: { value: string; label: string }[] = [
   { value: 'all', label: 'All types' },
@@ -43,6 +47,9 @@ export default function SupervisorListPage() {
   const [status, setStatus] = useState('all');
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
   const [createOpen, setCreateOpen] = useState(false);
+  const [editing, setEditing] = useState<EmployeeResponse | null>(null);
+  const [statusTarget, setStatusTarget] = useState<EmployeeResponse | null>(null);
+  const [removeTarget, setRemoveTarget] = useState<EmployeeResponse | null>(null);
 
   const { data, isLoading, isError, refetch } = useEmployees({
     role: 'supervisor',
@@ -65,6 +72,52 @@ export default function SupervisorListPage() {
           <p className="font-mono text-xs text-muted-foreground">{row.original.employee_id}</p>
         </div>
       ),
+    },
+    {
+      // POS-PERF-P47 — explicit Edit / Status / Delete (the server enforces
+      // the same Super-Admin-only rule; Delete offers Deactivate instead when
+      // the supervisor has any history).
+      id: 'actions',
+      header: () => <span className="sr-only">Actions</span>,
+      cell: ({ row }) => {
+        const supervisor = row.original;
+        const fullName = `${supervisor.first_name} ${supervisor.last_name}`;
+        const stop = (action: () => void) => (event: MouseEvent) => {
+          event.stopPropagation();
+          action();
+        };
+        return (
+          <div className="flex items-center gap-1">
+            <Button type="button" variant="ghost" size="sm" onClick={stop(() => setEditing(supervisor))} aria-label={`Edit ${fullName}`} data-row-action={`edit:${supervisor.id}`}>
+              <Pencil className="h-3.5 w-3.5 sm:mr-1.5" aria-hidden="true" />
+              <span className="hidden sm:inline">Edit</span>
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={stop(() => setStatusTarget(supervisor))}
+              aria-label={`Change status for ${fullName}`}
+              data-row-action={`status:${supervisor.id}`}
+            >
+              <UserCog className="h-3.5 w-3.5 sm:mr-1.5" aria-hidden="true" />
+              <span className="hidden sm:inline">Status</span>
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+              onClick={stop(() => setRemoveTarget(supervisor))}
+              aria-label={`Delete or deactivate ${fullName}`}
+              data-row-action={`remove:${supervisor.id}`}
+            >
+              <Trash2 className="h-3.5 w-3.5 sm:mr-1.5" aria-hidden="true" />
+              <span className="hidden sm:inline">Delete</span>
+            </Button>
+          </div>
+        );
+      },
     },
     { accessorKey: 'email', header: 'Email' },
     {
@@ -96,7 +149,9 @@ export default function SupervisorListPage() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
           <h1 className="app-title font-bold">Supervisors</h1>
-          <p className="text-sm text-muted-foreground">Supervisor accounts and their branches. Staff are managed from the Supervisor console.</p>
+          <p className="text-sm text-muted-foreground">
+            Supervisor accounts and their branches. Staff, their PINs and staff deletion are managed from the Supervisor console.
+          </p>
         </div>
         <Button onClick={() => setCreateOpen(true)} className="w-full sm:w-auto">
           <Plus className="mr-2 h-4 w-4" />
@@ -166,6 +221,39 @@ export default function SupervisorListPage() {
       />
 
       <AddSupervisorDialog open={createOpen} onOpenChange={setCreateOpen} />
+      {editing && (
+        <SupervisorEditEmployeeDialog
+          open
+          onOpenChange={(open) => {
+            if (open) return;
+            refocusRowAction(`edit:${editing.id}`);
+            setEditing(null);
+          }}
+          employee={editing}
+        />
+      )}
+      {statusTarget && (
+        <SetEmployeeStatusDialog
+          open
+          onOpenChange={(open) => {
+            if (open) return;
+            refocusRowAction(`status:${statusTarget.id}`);
+            setStatusTarget(null);
+          }}
+          employee={statusTarget}
+        />
+      )}
+      {removeTarget && (
+        <RemoveEmployeeDialog
+          open
+          onOpenChange={(open) => {
+            if (open) return;
+            refocusRowAction(`remove:${removeTarget.id}`);
+            setRemoveTarget(null);
+          }}
+          employee={removeTarget}
+        />
+      )}
     </div>
   );
 }

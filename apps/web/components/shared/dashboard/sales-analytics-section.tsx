@@ -5,7 +5,6 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ErrorState } from '@/components/shared/feedback/error-state';
-import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { AreaChart } from '@/components/shared/charts/area-chart';
 import { DonutChart } from '@/components/shared/charts/donut-chart';
 import { CHART_PALETTE } from '@/components/shared/charts/chart-theme';
@@ -14,6 +13,7 @@ import { DENSITY_CHART_HEIGHT } from '@/lib/density-tokens';
 import { useDashboardSalesTrendReport, usePaymentMethodMixReport, useReportsTrendsRealtimeSync } from '@/hooks/queries/use-reports';
 import { manilaToday, manilaDaysAgo } from '@/lib/manila-date';
 import { MAX_LIST_LIMIT } from '@potato-corner/shared';
+import { formatCurrency } from '@/lib/utils';
 
 type Period = '7d' | '30d' | '90d';
 
@@ -99,21 +99,20 @@ export function SalesAnalyticsSection({ branchId }: SalesAnalyticsSectionProps) 
         </Select>
       </div>
 
-      <div className="grid grid-cols-1 gap-4">
-        <KpiCard
-          title={`Gross Sales — ${PERIOD_LABEL[period]}`}
-          value={grossSales}
-          prefix="₱"
-          isLoading={isLoading}
-          emphasize
-          tooltip={`Completed sales for the ${PERIOD_LABEL[period].toLowerCase()}.`}
-        />
-      </div>
-
+      {/* POS-PERF-P47 — the period total used to sit alone in a full-width
+          card (a large panel holding one number); it now heads the chart it
+          summarises. Same figure, same source. */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">
-          <CardHeader className="app-card-padding pb-2">
-            <CardTitle className="text-sm font-medium">Gross Sales ({PERIOD_LABEL[period]})</CardTitle>
+          <CardHeader className="app-card-padding space-y-1 pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">Gross Sales — {PERIOD_LABEL[period]}</CardTitle>
+            {isLoading ? (
+              <Skeleton className="h-8 w-36" />
+            ) : (
+              <p className="app-kpi-value font-extrabold tabular-nums" title={`Completed sales for the ${PERIOD_LABEL[period].toLowerCase()}.`}>
+                {formatCurrency(grossSales)}
+              </p>
+            )}
           </CardHeader>
           <CardContent className="app-card-padding pt-0">
             {isLoading ? <Skeleton style={{ height: chartHeight }} className="w-full" /> : (
@@ -130,7 +129,7 @@ export function SalesAnalyticsSection({ branchId }: SalesAnalyticsSectionProps) 
 
         <Card>
           <CardHeader className="app-card-padding pb-2">
-            <CardTitle className="text-sm font-medium">Payment Breakdown</CardTitle>
+            <CardTitle className="text-sm font-medium">Payment Breakdown — {PERIOD_LABEL[period]}</CardTitle>
           </CardHeader>
           <CardContent className="app-card-padding pt-0">
             {isLoading ? (

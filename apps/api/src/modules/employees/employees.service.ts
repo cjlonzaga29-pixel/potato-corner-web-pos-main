@@ -15,7 +15,8 @@ import {
   type UpdateBranchAccountCredentialsInput,
 } from '@potato-corner/shared';
 import { employeesRepository, type EmployeeWithAssignments, type EmployeeWithGovernmentIds } from './employees.repository.js';
-import { EmployeeError } from './employees.types.js';
+import { Prisma } from '@prisma/client';
+import { EmployeeError, type EmployeeHistoryCategory } from './employees.types.js';
 import { encryptField, decryptField } from '../../lib/encryption.js';
 import { generateTemporaryPassword } from '../../lib/generate-password.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
@@ -103,6 +104,36 @@ async function assertEmployeeAccess(requestingUser: JwtPayload, employee: Employ
   if (!hasAccess) {
     throw new EmployeeError('EMPLOYEE_ACCESS_DENIED', 'You do not have access to this employee', 403);
   }
+}
+
+/**
+ * POS-PERF-P47 — who may change whom. Branch overlap (assertEmployeeAccess)
+ * alone let a Supervisor edit, deactivate or reset another Supervisor (or a
+ * Branch Account) who happened to share a branch. Rules, enforced here so a
+ * hidden button is never the only barrier:
+ * - nobody changes a super_admin account through employee management;
+ * - nobody changes their own account here (profile has its own endpoint);
+ * - only super_admin may change supervisor or branch accounts — supervisor
+ *   (and branch) actors may only change staff.
+ */
+function assertCanManageTarget(actor: JwtPayload, target: Pick<EmployeeWithAssignments, 'id' | 'role'>): void {
+  if (target.role === ROLES.SUPER_ADMIN) {
+    throw new EmployeeError('PRIVILEGED_ACCOUNT_PROTECTED', 'Super Admin accounts cannot be changed from employee management', 403);
+  }
+  if (actor.user_id === target.id) {
+    throw new EmployeeError('SELF_ACTION_FORBIDDEN', 'You cannot change your own account from employee management', 403);
+  }
+  if (actor.role !== ROLES.SUPER_ADMIN && target.role !== ROLES.STAFF) {
+    throw new EmployeeError('TARGET_ROLE_FORBIDDEN', 'Only a Super Admin can change supervisor or branch accounts', 403);
+  }
+}
+
+export interface EmployeeDeletionEligibility {
+  employee_id: string;
+  can_delete: boolean;
+  /** Why permanent deletion is refused when can_delete is false — history references or an account type that is never hard-deleted. */
+  blocked_reason: 'has_history' | 'branch_account' | null;
+  references: Record<EmployeeHistoryCategory, number>;
 }
 
 // Employees directory = staff + supervisor only. Super Admin and Branch
@@ -305,6 +336,7 @@ export const employeesService = {
     const before = await employeesRepository.findById(employeeId);
     if (!before) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
     await assertEmployeeAccess(updatedBy, before);
+    assertCanManageTarget(updatedBy, before);
 
     if (data.branch_ids) {
       // Branch Employee Authorization: an Employee belongs to exactly one
@@ -361,6 +393,7 @@ export const employeesService = {
     const before = await employeesRepository.findById(employeeId);
     if (!before) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
     await assertEmployeeAccess(deactivatedBy, before);
+    assertCanManageTarget(deactivatedBy, before);
     if (!before.isActive) throw new EmployeeError('EMPLOYEE_ALREADY_INACTIVE', 'This employee is already deactivated', 409);
 
     const hasActiveShift = await employeesRepository.hasActiveShift(employeeId);
@@ -400,6 +433,7 @@ export const employeesService = {
     const before = await employeesRepository.findById(employeeId);
     if (!before) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
     await assertEmployeeAccess(reactivatedBy, before);
+    assertCanManageTarget(reactivatedBy, before);
     if (before.isActive) throw new EmployeeError('EMPLOYEE_ALREADY_ACTIVE', 'This employee is already active', 409);
 
     const employee = await employeesRepository.reactivate(employeeId, reactivatedBy.user_id);
@@ -441,6 +475,7 @@ export const employeesService = {
     const before = await employeesRepository.findById(employeeId);
     if (!before) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
     await assertEmployeeAccess(changedBy, before);
+    assertCanManageTarget(changedBy, before);
     if (before.status === status) {
       throw new EmployeeError('EMPLOYEE_STATUS_UNCHANGED', `This employee is already ${status}`, 409);
     }
@@ -494,6 +529,84 @@ export const employeesService = {
     return toEmployeeResponse(employee);
   },
 
+  /**
+   * POS-PERF-P47 — tells the Delete dialog up front whether a permanent
+   * delete is possible, so it can offer Deactivate instead of failing.
+   * Same authorization as the delete itself.
+   */
+  async getDeletionEligibility(employeeId: string, requestingUser: JwtPayload): Promise<EmployeeDeletionEligibility> {
+    const employee = await employeesRepository.findById(employeeId);
+    if (!employee) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
+    await assertEmployeeAccess(requestingUser, employee);
+    assertCanManageTarget(requestingUser, employee);
+
+    const references = await employeesRepository.countHistoryReferences(employeeId);
+    const hasHistory = Object.values(references).some((count) => count > 0);
+    const isBranchAccount = employee.role === ROLES.BRANCH;
+    return {
+      employee_id: employeeId,
+      can_delete: !hasHistory && !isBranchAccount,
+      blocked_reason: isBranchAccount ? 'branch_account' : hasHistory ? 'has_history' : null,
+      references,
+    };
+  },
+
+  /**
+   * POS-PERF-P47 — permanent delete, only for an account nothing refers
+   * to (created by mistake, never worked a shift, never sold, never
+   * clocked in, never acted in the audit trail). Anything with history is
+   * refused with EMPLOYEE_HAS_HISTORY and must be deactivated instead, so
+   * receipts, attendance and audit entries keep resolving to a real name.
+   * Branch accounts are never hard-deleted — they follow their branch's
+   * lifecycle. The audit entry keeps the deleted person's full snapshot.
+   */
+  async deleteEmployee(employeeId: string, deletedBy: ActorContext, ipAddress: string | null): Promise<{ deleted: true }> {
+    const before = await employeesRepository.findById(employeeId);
+    if (!before) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
+    await assertEmployeeAccess(deletedBy, before);
+    assertCanManageTarget(deletedBy, before);
+    if (before.role === ROLES.BRANCH) {
+      throw new EmployeeError('BRANCH_ACCOUNT_NOT_DELETABLE', 'Branch accounts follow their branch and cannot be deleted here', 400);
+    }
+
+    let result: Awaited<ReturnType<typeof employeesRepository.hardDeleteUnused>>;
+    try {
+      result = await employeesRepository.hardDeleteUnused(employeeId);
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003') {
+        throw new EmployeeError(
+          'EMPLOYEE_HAS_HISTORY',
+          'This person has recorded history and cannot be permanently deleted — deactivate them instead',
+          409,
+        );
+      }
+      throw error;
+    }
+    if (!result.deleted) {
+      throw new EmployeeError(
+        'EMPLOYEE_HAS_HISTORY',
+        'This person has recorded history and cannot be permanently deleted — deactivate them instead',
+        409,
+        { references: result.references },
+      );
+    }
+
+    revokeEmployeeSession(employeeId, 'deleted');
+
+    await recordAuditLog({
+      action: 'EMPLOYEE_DELETED',
+      entityType: 'user',
+      entityId: employeeId,
+      actorId: deletedBy.user_id,
+      actorRole: deletedBy.role,
+      beforeState: toEmployeeResponse(before),
+      afterState: { deleted: true },
+      ipAddress,
+    });
+
+    return { deleted: true };
+  },
+
   async resetEmployeePassword(
     employeeId: string,
     newPassword: string | undefined,
@@ -511,6 +624,12 @@ export const employeesService = {
       throw new EmployeeError('EMPLOYEE_HAS_NO_CREDENTIALS', 'Employees have no password to reset — change their status instead', 400);
     }
     await assertEmployeeAccess(resetBy, employee);
+    // POS-PERF-P47 — the existing branch-account reset by a same-branch
+    // supervisor stays allowed; resetting a super_admin, yourself, or (as a
+    // non-admin) a peer supervisor is not — that would be an account takeover.
+    if (employee.role === ROLES.SUPERVISOR || employee.role === ROLES.SUPER_ADMIN || resetBy.user_id === employee.id) {
+      assertCanManageTarget(resetBy, employee);
+    }
 
     // Caller may supply their own new_password, or omit it entirely to have
     // the server generate one — generated passwords are returned exactly

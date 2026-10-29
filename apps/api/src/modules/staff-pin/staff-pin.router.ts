@@ -59,7 +59,7 @@ router.post(
 router.get('/:userId', authenticate, adminSupervisorOrBranch, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
-    const result = await staffPinService.getStatus(req.params.userId as string);
+    const result = await staffPinService.getStatus(req.params.userId as string, req.user);
     res.status(200).json({ data: result, error: null, meta: null });
   } catch (error) {
     handleModuleError(error, res, next);

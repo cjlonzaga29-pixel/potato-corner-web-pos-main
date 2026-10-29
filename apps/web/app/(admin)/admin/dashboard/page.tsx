@@ -5,10 +5,8 @@ import { useSocketStore } from '@/stores/socket.store';
 import { useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
 import { useBranchRealtimeSync, useAllBranchStats, useBranches, useBranchPresence, type PaymentBreakdown } from '@/hooks/queries/use-branches';
-import { useInventoryStockRealtimeSync } from '@/hooks/queries/use-universal-inventory';
-import { useAdminInventoryRollup, useAdminInventoryRollupRealtimeSync } from '@/hooks/queries/use-admin-inventory-rollup';
 import { useSelectedBranch } from '@/hooks/use-selected-branch';
-import { useDashboardSalesTrendReport, useInventoryAnalyticsRealtimeSync } from '@/hooks/queries/use-reports';
+import { useDashboardSalesTrendReport } from '@/hooks/queries/use-reports';
 import { useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
 import { useExpensesRealtimeSync } from '@/hooks/queries/use-expenses';
 import { manilaToday, manilaMonthStart } from '@/lib/manila-date';
@@ -21,13 +19,18 @@ import { SalesAnalyticsSection } from '@/components/shared/dashboard/sales-analy
 import { WidgetErrorBoundary } from '@/components/shared/widget-error-boundary';
 import { DashboardPageHeader, DashboardConnectionBadge } from '@/components/shared/dashboard/dashboard-page-header';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
-import { TrendingDown, Users, PackageSearch, BellRing } from 'lucide-react';
+import { TrendingDown, Users } from 'lucide-react';
 import { MAX_LIST_LIMIT } from '@potato-corner/shared';
 
 // POS-PERF-P40 — the Low Stock Inventory card, Low Stock Summary and Recent
 // Activity sections were removed from this page. Their components, hooks
 // and APIs are untouched (Supervisor inventory still uses the same data);
 // they are simply no longer rendered on the Admin dashboard.
+//
+// POS-PERF-P47 — the Low Stock Items and Inventory Alerts cards were removed
+// from this page too (Admin dashboard only). Branch-level stock alerts stay
+// on the Supervisor dashboard and inventory pages; the org-wide rollup is
+// still on /admin/inventory. Sales/branch figures are unchanged.
 function AdminDashboardPageContent() {
   const isConnected = useSocketStore((s) => s.isConnected);
   const isReconnecting = useSocketStore((s) => s.isReconnecting);
@@ -38,11 +41,8 @@ function AdminDashboardPageContent() {
   useShiftsRealtimeSync();
   useTransactionsRealtimeSync();
   useBranchRealtimeSync();
-  useInventoryStockRealtimeSync(branchFilter);
-  useInventoryAnalyticsRealtimeSync();
   useAttendanceRealtimeSync();
   useExpensesRealtimeSync();
-  useAdminInventoryRollupRealtimeSync();
 
   const branchStatsQuery = useAllBranchStats(branchFilter);
   const { data: branchStats, isLoading: isLoadingBranchStats } = branchStatsQuery;
@@ -51,7 +51,6 @@ function AdminDashboardPageContent() {
   const inactiveTotal = useBranches({ status: 'inactive', limit: 1 });
   const closedTotal = useBranches({ status: 'closed', limit: 1 });
   const presence = useBranchPresence();
-  const { data: inventoryRollup, isLoading: isLoadingInventoryRollup } = useAdminInventoryRollup();
   const monthTrend = useDashboardSalesTrendReport({
     date_from: manilaMonthStart(),
     date_to: manilaToday(),
@@ -65,18 +64,7 @@ function AdminDashboardPageContent() {
   const averageOrderValue = grossSalesToday && transactionsToday ? grossSalesToday / transactionsToday : 0;
   const todayExpenses = branchStats?.reduce((sum, b) => sum + b.todayExpenses, 0);
   const staffClockedIn = branchStats?.reduce((sum, b) => sum + b.staffTimedInCount, 0);
-  const lowStockCount = branchStats?.reduce((sum, b) => sum + b.lowStockIngredientCount, 0);
   const grossSalesMonth = monthTrend.data?.data.reduce((sum, row) => sum + row.gross_sales, 0);
-
-  // Inventory Alerts (critical + out-of-stock) — org-wide rollup (TASK 165),
-  // scoped to the selected branch client-side since the rollup endpoint has
-  // no branch_id filter of its own; each branch row already carries its own
-  // critical_stock_count/out_of_stock_count.
-  const rollupBranches = inventoryRollup?.branches ?? [];
-  const scopedRollupBranches = branchFilter ? rollupBranches.filter((b) => b.branch_id === branchFilter) : rollupBranches;
-  const criticalStockCount = scopedRollupBranches.reduce((sum, b) => sum + b.critical_stock_count, 0);
-  const outOfStockCount = scopedRollupBranches.reduce((sum, b) => sum + b.out_of_stock_count, 0);
-  const inventoryAlertCount = criticalStockCount + outOfStockCount;
 
   const paymentBreakdown = branchStats?.reduce<PaymentBreakdown>(
     (acc, b) => ({
@@ -117,32 +105,22 @@ function AdminDashboardPageContent() {
         isLoading={isLoadingBranchStats || monthTrend.isLoading}
       />
 
-      <div className="app-kpi-grid-4">
-        <KpiCard title="Today's Expenses" value={todayExpenses ?? 0} prefix="₱" isLoading={isLoadingBranchStats} icon={TrendingDown} />
-        <KpiCard title="Staff Clocked In" value={staffClockedIn ?? 0} isLoading={isLoadingBranchStats} icon={Users} />
+      <div className="app-kpi-grid-3">
         <KpiCard
-          title="Low Stock Items"
-          value={lowStockCount ?? 0}
+          title="Today's Expenses"
+          value={todayExpenses ?? 0}
+          prefix="₱"
           isLoading={isLoadingBranchStats}
-          icon={PackageSearch}
-          tone={(lowStockCount ?? 0) > 0 ? 'warning' : 'default'}
+          icon={TrendingDown}
+          tooltip="Expenses recorded for the Manila business day, across every branch in scope."
         />
         <KpiCard
-          title="Inventory Alerts"
-          value={inventoryAlertCount}
-          isLoading={isLoadingInventoryRollup}
-          icon={BellRing}
-          tone={inventoryAlertCount > 0 ? 'warning' : 'default'}
-          tooltip={`${criticalStockCount} critical, ${outOfStockCount} out of stock — items at or below a configured alert threshold. Excludes Low Stock Items (a separate, less severe threshold).`}
+          title="Staff Clocked In"
+          value={staffClockedIn ?? 0}
+          isLoading={isLoadingBranchStats}
+          icon={Users}
+          tooltip="Staff with an open attendance clock-in right now (active and still assigned to that branch). Logins and connected devices are not counted."
         />
-      </div>
-
-      <WidgetErrorBoundary label="Sales Trend">
-        <SalesAnalyticsSection branchId={branchFilter} />
-      </WidgetErrorBoundary>
-
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <DashboardPaymentBreakdown breakdown={paymentBreakdown} isLoading={isLoadingBranchStats} />
         <DashboardActiveBranchesCard
           activeCount={activeBranchCount}
           inactiveCount={inactiveBranchCount}
@@ -150,6 +128,12 @@ function AdminDashboardPageContent() {
           isLoading={activeTotal.isLoading || inactiveTotal.isLoading || closedTotal.isLoading}
         />
       </div>
+
+      <WidgetErrorBoundary label="Sales Trend">
+        <SalesAnalyticsSection branchId={branchFilter} />
+      </WidgetErrorBoundary>
+
+      <DashboardPaymentBreakdown breakdown={paymentBreakdown} isLoading={isLoadingBranchStats} />
 
       <WidgetErrorBoundary label="Branch Performance">
         <DashboardBranchPerformanceTable

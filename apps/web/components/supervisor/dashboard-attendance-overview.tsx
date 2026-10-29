@@ -1,29 +1,54 @@
-import type { AttendanceResponse } from '@potato-corner/shared';
+import Link from 'next/link';
+import { ChevronRight, UserCheck } from 'lucide-react';
+import type { AttendanceSummaryResponse } from '@potato-corner/shared';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 
+const MAX_VISIBLE_ROWS = 8;
+
 function formatTimeOnly(date: string): string {
-  return new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(date));
+  return new Intl.DateTimeFormat('en-PH', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Manila' }).format(
+    new Date(date),
+  );
 }
 
 interface DashboardAttendanceOverviewProps {
-  records: AttendanceResponse[] | undefined;
+  summary: AttendanceSummaryResponse | undefined;
   isLoading: boolean;
+  isError?: boolean;
+  /** Where "View attendance" goes — the existing branch attendance page. */
+  href?: string;
 }
 
-/** Panel 4 of the supervisor dashboard — today's clock-in/out overview for the active branch. Pure display, no data fetching. */
-export function DashboardAttendanceOverview({ records, isLoading }: DashboardAttendanceOverviewProps) {
+/**
+ * Panel 4 of the supervisor dashboard — POS-PERF-P47: built from the
+ * attendance summary (GET /api/attendance/branch/:id/summary), i.e. actual
+ * clock-in/clock-out records only. A login, an open POS session or a socket
+ * connection never makes someone "clocked in" here. "Clocked in" uses the
+ * same rule as the Staff Clocked In KPI (open record, employee active and
+ * still assigned to this branch), so the two always agree. Pure display.
+ */
+export function DashboardAttendanceOverview({ summary, isLoading, isError = false, href }: DashboardAttendanceOverviewProps) {
+  const header = (
+    <CardHeader className="app-card-padding flex flex-row items-center justify-between space-y-0 pb-2">
+      <CardTitle className="text-sm font-medium">Attendance Overview</CardTitle>
+      {href && (
+        <Link href={href} className="inline-flex items-center gap-0.5 rounded text-xs font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          View attendance
+          <ChevronRight className="h-3 w-3" aria-hidden="true" />
+        </Link>
+      )}
+    </CardHeader>
+  );
+
   if (isLoading) {
     return (
       <Card>
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">Attendance Overview</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
+        {header}
+        <CardContent className="app-card-padding space-y-2 pt-0">
           <Skeleton className="h-6 w-full" />
-          <Skeleton className="h-8 w-full" />
           <Skeleton className="h-8 w-full" />
           <Skeleton className="h-8 w-full" />
         </CardContent>
@@ -31,37 +56,83 @@ export function DashboardAttendanceOverview({ records, isLoading }: DashboardAtt
     );
   }
 
-  const list = records ?? [];
-  const clockedIn = list.filter((r) => !r.clock_out_server_time);
-  const clockedOut = list.filter((r) => Boolean(r.clock_out_server_time));
+  if (isError || !summary) {
+    return (
+      <Card>
+        {header}
+        <CardContent className="app-card-padding pt-0">
+          <p className="text-sm text-destructive">Couldn&apos;t load attendance. It will retry automatically.</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const clockedIn = summary.clocked_in;
+  const clockedOut = summary.clocked_out_today;
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="text-sm font-medium">Attendance Overview</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="flex gap-4 text-sm">
-          <span>{clockedIn.length} clocked in</span>
-          <span className="text-muted-foreground">{clockedOut.length} clocked out</span>
-          <span className="text-muted-foreground">{list.length} total today</span>
-        </div>
-
-        {clockedIn.length === 0 ? (
-          <EmptyState title="No staff currently clocked in" />
-        ) : (
-          <div className="divide-y divide-border/60">
-            {clockedIn.map((record) => (
-              <div
-                key={record.id}
-                className="-mx-2 flex items-center justify-between gap-3 rounded-md px-2 py-2.5 text-sm transition-colors hover:bg-muted/40"
-              >
-                <span className="min-w-0 truncate font-medium">{record.employee_name ?? 'Former Employee'}</span>
-                <span className="shrink-0 tabular-nums text-muted-foreground">{formatTimeOnly(record.clock_in_server_time)}</span>
-                <StatusBadge status={record.clock_in_gps_status} type="gps" />
-              </div>
-            ))}
+      {header}
+      <CardContent className="app-card-padding space-y-3 pt-0">
+        <dl className="grid grid-cols-2 gap-2 text-center">
+          <div className="rounded-lg bg-success/10 px-3 py-2">
+            <dt className="text-xs text-muted-foreground">Clocked in now</dt>
+            <dd className="text-xl font-bold tabular-nums text-success">{clockedIn.length}</dd>
           </div>
+          <div className="rounded-lg bg-muted/50 px-3 py-2">
+            <dt className="text-xs text-muted-foreground">Clocked out today</dt>
+            <dd className="text-xl font-bold tabular-nums">{clockedOut.length}</dd>
+          </div>
+        </dl>
+
+        {clockedIn.length === 0 && clockedOut.length === 0 ? (
+          <EmptyState compact icon={UserCheck} title="No clock-ins recorded today" description="Staff appear here once they clock in at the branch." />
+        ) : (
+          <div className="space-y-3">
+            {clockedIn.length > 0 && (
+              <section aria-label="Clocked in now">
+                <ul className="divide-y divide-border/60">
+                  {clockedIn.slice(0, MAX_VISIBLE_ROWS).map((record) => (
+                    <li key={record.record_id} className="flex items-center justify-between gap-3 py-2 text-sm">
+                      <span className="min-w-0 truncate font-medium">{record.employee_name}</span>
+                      <span className="flex shrink-0 items-center gap-2">
+                        <span className="tabular-nums text-muted-foreground">In {formatTimeOnly(record.clock_in_server_time)}</span>
+                        <StatusBadge status={record.clock_in_gps_status} type="gps" />
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                {clockedIn.length > MAX_VISIBLE_ROWS && (
+                  <p className="pt-1 text-xs text-muted-foreground">and {clockedIn.length - MAX_VISIBLE_ROWS} more clocked in</p>
+                )}
+              </section>
+            )}
+            {clockedOut.length > 0 && (
+              <section aria-label="Clocked out today">
+                <p className="pb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Clocked out today</p>
+                <ul className="divide-y divide-border/60">
+                  {clockedOut.slice(0, MAX_VISIBLE_ROWS).map((record) => (
+                    <li key={record.record_id} className="flex items-center justify-between gap-3 py-1.5 text-sm text-muted-foreground">
+                      <span className="min-w-0 truncate">{record.employee_name}</span>
+                      <span className="shrink-0 tabular-nums">
+                        {formatTimeOnly(record.clock_in_server_time)} – {formatTimeOnly(record.clock_out_server_time)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                {clockedOut.length > MAX_VISIBLE_ROWS && (
+                  <p className="pt-1 text-xs text-muted-foreground">and {clockedOut.length - MAX_VISIBLE_ROWS} more clocked out</p>
+                )}
+              </section>
+            )}
+          </div>
+        )}
+
+        {summary.excluded_open_count > 0 && (
+          <p className="text-xs text-muted-foreground">
+            {summary.excluded_open_count} open clock-in{summary.excluded_open_count === 1 ? '' : 's'} belong to deactivated or reassigned
+            staff and {summary.excluded_open_count === 1 ? 'is' : 'are'} not counted. Review them on the attendance page.
+          </p>
         )}
       </CardContent>
     </Card>

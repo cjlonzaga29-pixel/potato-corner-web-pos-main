@@ -148,6 +148,43 @@ export const attendanceRepository = {
     return { records, total };
   },
 
+  /**
+   * POS-PERF-P47 — inputs for the Supervisor dashboard's Attendance
+   * Overview. Open rows are not day-bounded (a clock-in can span midnight,
+   * same as branches.repository.ts's countStaffTimedIn); clock-outs are the
+   * ones recorded inside the given Manila business day. Both carry the
+   * employee's live status + same-branch assignment so the service can
+   * apply the canonical "currently working" rule.
+   */
+  async findSummaryRows(branchId: string, dayStart: Date, dayEnd: Date) {
+    const employeeSelect = {
+      firstName: true,
+      lastName: true,
+      isActive: true,
+      status: true,
+      branchAssignments: { where: { branchId, removedAt: null }, select: { id: true } },
+    } satisfies Prisma.UserSelect;
+    const [open, closedToday] = await Promise.all([
+      prisma.attendanceRecord.findMany({
+        where: { branchId, clockOutServerTime: null, deletedAt: null },
+        select: { id: true, employeeId: true, clockInServerTime: true, clockInGpsStatus: true, employee: { select: employeeSelect } },
+        orderBy: { clockInServerTime: 'asc' },
+      }),
+      prisma.attendanceRecord.findMany({
+        where: { branchId, deletedAt: null, clockOutServerTime: { gte: dayStart, lte: dayEnd } },
+        select: {
+          id: true,
+          employeeId: true,
+          clockInServerTime: true,
+          clockOutServerTime: true,
+          employee: { select: { firstName: true, lastName: true } },
+        },
+        orderBy: { clockOutServerTime: 'desc' },
+      }),
+    ]);
+    return { open, closedToday };
+  },
+
   async findByBranch(branchId: string, filters: AttendanceListFilters) {
     const where: Prisma.AttendanceRecordWhereInput = {
       branchId,

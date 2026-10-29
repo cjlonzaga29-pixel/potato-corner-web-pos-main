@@ -2,7 +2,13 @@ import type { Prisma, EmployeeStatus as PrismaEmployeeStatus } from '@prisma/cli
 import { prisma } from '../../lib/prisma.js';
 import { nextCounterValue } from '../../lib/id-counter.js';
 import { monthBounds } from '../../lib/manila-time.js';
-import type { CreateEmployeeData, EmployeeActivityData, EmployeeListFilters, UpdateEmployeeData } from './employees.types.js';
+import type {
+  CreateEmployeeData,
+  EmployeeActivityData,
+  EmployeeHistoryCategory,
+  EmployeeListFilters,
+  UpdateEmployeeData,
+} from './employees.types.js';
 
 /**
  * Standard employee select — deliberately excludes every *_encrypted
@@ -287,6 +293,122 @@ export const employeesRepository = {
     if (!lastRemoved) return;
 
     await prisma.userBranchAssignment.update({ where: { id: lastRemoved.id }, data: { removedAt: null } });
+  },
+
+  /**
+   * POS-PERF-P47 — every record that attributes something to this person,
+   * grouped into the categories the UI explains. Any non-zero count means
+   * the account must be deactivated rather than permanently deleted:
+   * deleting it would orphan (or, for FK'd tables, be refused by) the
+   * sales / attendance / audit history that names it. Includes the
+   * non-FK user-id columns (inventory movements, approvals, catalog
+   * ownership, settings) that Postgres itself would not protect.
+   */
+  async countHistoryReferences(
+    userId: string,
+    client: Prisma.TransactionClient = prisma,
+  ): Promise<Record<EmployeeHistoryCategory, number>> {
+    const sum = (counts: number[]) => counts.reduce((total, count) => total + count, 0);
+    const [sales, shifts, attendance, audit, inventory, expenses, catalog, settings, pinUse] = await Promise.all([
+      Promise.all([
+        client.transaction.count({
+          where: { OR: [{ cashierId: userId }, { voidedById: userId }, { refundedById: userId }, { paymentProofVerifiedById: userId }] },
+        }),
+        client.checkoutAttempt.count({ where: { cashierId: userId } }),
+        client.holdOrder.count({ where: { cashierId: userId } }),
+      ]).then(sum),
+      Promise.all([
+        client.shift.count({
+          where: { OR: [{ cashierId: userId }, { openedBy: userId }, { closedBy: userId }, { varianceApprovedBy: userId }] },
+        }),
+        client.shiftReview.count({ where: { reviewedBy: userId } }),
+      ]).then(sum),
+      client.attendanceRecord.count({ where: { OR: [{ employeeId: userId }, { correctedBy: userId }] } }),
+      Promise.all([
+        client.auditLog.count({ where: { actorId: userId } }),
+        client.auditOutbox.count({ where: { actorId: userId } }),
+        client.fraudAlert.count({ where: { OR: [{ employeeId: userId }, { investigatedBy: userId }] } }),
+      ]).then(sum),
+      Promise.all([
+        client.inventoryStockMovement.count({ where: { OR: [{ performedByUserId: userId }, { responsibleUserId: userId }] } }),
+        client.inventoryMovement.count({ where: { OR: [{ approvedBy: userId }, { recordedBy: userId }] } }),
+        client.inventoryApprovalRequest.count({
+          where: {
+            OR: [
+              { submittedByUserId: userId },
+              { reviewedByUserId: userId },
+              { cancelledByUserId: userId },
+              { responsibleStaffUserId: userId },
+            ],
+          },
+        }),
+        client.inventoryCostCorrection.count({ where: { correctedByUserId: userId } }),
+        client.inventoryOperationAttempt.count({ where: { actorUserId: userId } }),
+        client.inventoryEvidenceUpload.count({ where: { uploadedByUserId: userId } }),
+        client.inventoryIdentityMapping.count({ where: { reviewedBy: userId } }),
+      ]).then(sum),
+      client.expense.count({ where: { createdBy: userId } }),
+      Promise.all([
+        client.product.count({ where: { OR: [{ createdBy: userId }, { managedBy: userId }] } }),
+        client.productCategory.count({ where: { OR: [{ createdBy: userId }, { managedBy: userId }] } }),
+        client.productOptionGroup.count({ where: { OR: [{ createdBy: userId }, { managedBy: userId }] } }),
+        client.productOption.count({ where: { OR: [{ createdBy: userId }, { managedBy: userId }] } }),
+        client.productVariantOptionGroup.count({ where: { createdBy: userId } }),
+        client.productVariant.count({ where: { OR: [{ createdById: userId }, { approvedById: userId }] } }),
+        client.productInventory.count({ where: { OR: [{ createdBy: userId }, { updatedBy: userId }] } }),
+        client.productComponent.count({ where: { OR: [{ createdBy: userId }, { updatedBy: userId }] } }),
+        client.productChangeLog.count({ where: { changedById: userId } }),
+        client.inventoryCategory.count({ where: { OR: [{ createdBy: userId }, { managedBy: userId }] } }),
+        client.unitOfMeasure.count({ where: { OR: [{ createdBy: userId }, { managedBy: userId }] } }),
+        client.unitConversion.count({ where: { OR: [{ createdBy: userId }, { managedBy: userId }] } }),
+        client.inventoryItem.count({ where: { OR: [{ createdBy: userId }, { managedBy: userId }] } }),
+        client.catalogManagementAssignment.count({
+          where: { OR: [{ previousManagedBy: userId }, { newManagedBy: userId }, { assignedBy: userId }] },
+        }),
+        client.branchProductAvailability.count({ where: { updatedBy: userId } }),
+      ]).then(sum),
+      Promise.all([
+        client.systemSetting.count({ where: { updatedBy: userId } }),
+        client.branchReceiptConfig.count({ where: { updatedBy: userId } }),
+        client.branchPaymentMethodConfig.count({ where: { updatedBy: userId } }),
+        client.initializationRun.count({ where: { initiatedBy: userId } }),
+        client.staffPin.count({ where: { setByUserId: userId, userId: { not: userId } } }),
+        client.user.count({ where: { deactivatedBy: userId, id: { not: userId } } }),
+      ]).then(sum),
+      // A PIN that was ever verified (inventory or POS) is operational
+      // history too — deleting the StaffPin would cascade those rows away.
+      client.staffPinVerification.count({ where: { staffPin: { userId } } }),
+    ]);
+    return { sales, shifts, attendance, audit, inventory, expenses, catalog, settings, pin_use: pinUse };
+  },
+
+  /**
+   * POS-PERF-P47 — permanent delete of a never-used account. Re-checks the
+   * history references inside the same transaction and removes only the
+   * rows that belong to the account itself (sessions, reset tokens, PIN,
+   * branch assignments, its notifications). Returns the blocking counts
+   * instead of deleting when any history exists; a concurrent write that
+   * lands on an FK'd table is still refused by Postgres (P2003) and rolls
+   * the whole transaction back.
+   */
+  async hardDeleteUnused(
+    userId: string,
+  ): Promise<{ deleted: true } | { deleted: false; references: Record<EmployeeHistoryCategory, number> }> {
+    return prisma.$transaction(async (tx) => {
+      const references = await employeesRepository.countHistoryReferences(userId, tx);
+      if (Object.values(references).some((count) => count > 0)) return { deleted: false as const, references };
+
+      await tx.refreshToken.deleteMany({ where: { userId } });
+      await tx.passwordResetToken.deleteMany({ where: { userId } });
+      await tx.pinCredential.deleteMany({ where: { userId } });
+      await tx.staffPin.deleteMany({ where: { userId } });
+      await tx.notification.deleteMany({ where: { recipientUserId: userId } });
+      await tx.notificationPreference.deleteMany({ where: { userId } });
+      await tx.expenseIdempotencyKey.deleteMany({ where: { userId } });
+      await tx.userBranchAssignment.deleteMany({ where: { userId } });
+      await tx.user.delete({ where: { id: userId } });
+      return { deleted: true as const };
+    });
   },
 
   async hasActiveShift(userId: string): Promise<boolean> {

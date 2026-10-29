@@ -220,6 +220,7 @@ export type ManualOverrideInput = z.infer<typeof schemas.manualOverrideSchema>;
 export type AttendanceQuery = z.infer<typeof schemas.attendanceQuerySchema>;
 export type AttendanceResponse = z.infer<typeof schemas.attendanceResponseSchema>;
 export type AttendanceListResponse = z.infer<typeof schemas.attendanceListResponseSchema>;
+export type AttendanceSummaryResponse = z.infer<typeof schemas.attendanceSummaryResponseSchema>;
 
 export type FraudAlertListQuery = z.infer<typeof schemas.fraudAlertListQuerySchema>;
 export type InvestigateFraudAlertInput = z.infer<typeof schemas.investigateFraudAlertSchema>;

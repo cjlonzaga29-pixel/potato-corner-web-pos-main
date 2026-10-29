@@ -112,7 +112,21 @@ export const staffPinService = {
     return { user_id: userId, set_at: result.setAt.toISOString() };
   },
 
-  async getStatus(userId: string): Promise<{ user_id: string; has_pin: boolean; is_active: boolean; set_at: string | null }> {
+  async getStatus(
+    userId: string,
+    actor: JwtPayload,
+  ): Promise<{ user_id: string; has_pin: boolean; is_active: boolean; set_at: string | null }> {
+    // POS-PERF-P47 — same branch scope as setPin/revokePin: a non-admin
+    // caller may only read PIN state for staff assigned to one of its own
+    // branches (previously any supervisor/branch session could query any
+    // user id). Unknown/unassigned ids get the same 403, never a 404.
+    if (actor.role !== ROLES.SUPER_ADMIN) {
+      const branchIds = await staffPinRepository.findActiveAssignedBranchIds(userId);
+      const access = await Promise.all(branchIds.map((branchId) => hasBranchAccess(actor, branchId)));
+      if (!access.some(Boolean)) {
+        throw new StaffPinError('BRANCH_ACCESS_DENIED', 'You do not have access to this staff member\'s branch', 403);
+      }
+    }
     const staffPin = await staffPinRepository.findByUserId(userId);
     return {
       user_id: userId,

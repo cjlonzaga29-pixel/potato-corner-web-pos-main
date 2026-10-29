@@ -3,7 +3,14 @@
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { SOCKET_EVENTS } from '@potato-corner/shared';
-import type { AttendanceListResponse, AttendanceResponse, ClockInInput, ClockOutInput, ManualOverrideInput } from '@potato-corner/shared';
+import type {
+  AttendanceListResponse,
+  AttendanceResponse,
+  AttendanceSummaryResponse,
+  ClockInInput,
+  ClockOutInput,
+  ManualOverrideInput,
+} from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
 import { useAuth } from '@/hooks/use-auth';
 import { useRealtimeInvalidate } from '@/hooks/use-realtime-invalidate';
@@ -92,6 +99,28 @@ export function useAttendanceByBranch(branchId: string | null | undefined, filte
     },
     enabled: Boolean(branchId),
     placeholderData: keepPreviousData,
+  });
+}
+
+/**
+ * POS-PERF-P47 — Supervisor dashboard Attendance Overview: who is clocked in
+ * right now and who clocked out today, computed server-side from attendance
+ * records with the same rule as the Staff Clocked In KPI. Keyed under
+ * 'attendance-branch' so clock-in/out realtime events and corrections
+ * refresh it. Deliberately no keepPreviousData: after a branch switch the
+ * panel shows a loading state, never the previous branch's people.
+ */
+export function useAttendanceSummary(branchId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['attendance-branch', branchId, 'summary'],
+    queryFn: async () => {
+      const response = await apiClient<AttendanceSummaryResponse>(`/api/attendance/branch/${branchId}/summary`);
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load attendance summary'));
+      return response.data;
+    },
+    enabled: Boolean(branchId),
+    staleTime: 15 * 1000,
+    refetchInterval: 60 * 1000,
   });
 }
 

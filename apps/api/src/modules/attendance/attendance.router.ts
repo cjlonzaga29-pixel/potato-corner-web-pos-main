@@ -143,6 +143,27 @@ router.get('/admin', authenticate, adminOnly, requirePasswordChange, async (req:
   }
 });
 
+// POS-PERF-P47 — Supervisor dashboard Attendance Overview: who is clocked
+// in right now and who clocked out today, from attendance records only.
+// Registered before '/branch/:branchId' purely for readability — Express
+// matches the literal '/summary' segment either way.
+router.get(
+  '/branch/:branchId/summary',
+  authenticate,
+  adminOrSupervisor,
+  requirePasswordChange,
+  branchGuard,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const result = await attendanceService.getBranchSummary(req.params.branchId as string);
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleAttendanceError(error, res, next);
+    }
+  },
+);
+
 // POS-PERF-P26 — the Branch Account's Attendance and Reports pages (the
 // only branch-role callers of this endpoint) were removed.
 router.get(

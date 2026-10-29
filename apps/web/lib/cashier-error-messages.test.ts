@@ -27,6 +27,7 @@ describe('describeCashierFailure', () => {
   it('maps other known definite-failure codes to clear, specific wording', () => {
     expect(describeCashierFailure('SHIFT_CLOSED', 'Shift is closed').title).toBe('Shift closed');
     expect(describeCashierFailure('PAYMENT_PROOF_REQUIRED', 'Proof required').title).toBe('Payment proof required');
+    expect(describeCashierFailure('PRODUCT_OPTION_REQUIRED', 'Regular requires a Seasoning selection').title).toBe('Required choice missing');
   });
 
   it('never guesses a specific title for an unrecognized or missing code', () => {

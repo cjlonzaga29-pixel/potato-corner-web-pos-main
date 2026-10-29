@@ -291,10 +291,14 @@ function variantRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** P46R2 — the group fields findVariantsForSale now selects for requirement checks: an active, optional, unlimited MULTIPLE group unless a test says otherwise. */
+const optionGroupDefaults = { selectionType: 'MULTIPLE' as const, minSelections: 0, maxSelections: null, required: false, isActive: true };
+
 /** Task 32 — one ProductVariantOptionGroup assignment row exposing a single allowed ProductOption, in the shape findVariantsForSale's optionGroupAssignments include returns. */
 function optionAssignment(productOptionId: string, priceAdjustment: number, isActive = true) {
   return {
-    optionGroup: { id: `group-${productOptionId}`, name: `Group ${productOptionId}`, posButtonLabel: null, options: [] },
+    required: null,
+    optionGroup: { ...optionGroupDefaults, id: `group-${productOptionId}`, name: `Group ${productOptionId}`, posButtonLabel: null, options: [] },
     allowedOptions: [
       { productOptionId, productOption: { id: productOptionId, name: productOptionId, isActive, priceAdjustment: decimal(priceAdjustment) } },
     ],
@@ -312,7 +316,9 @@ function optionAssignment(productOptionId: string, priceAdjustment: number, isAc
  */
 function allOptionsAssignment(groupId: string, options: { id: string; priceAdjustment: number; isActive?: boolean }[]) {
   return {
+    required: null,
     optionGroup: {
+      ...optionGroupDefaults,
       id: groupId,
       name: `Group ${groupId}`,
       posButtonLabel: null,
@@ -5058,7 +5064,9 @@ describe('transactionsService.createTransaction — Product Option price adjustm
 describe('transactionsService.createTransaction — option group selection limits (P46R)', () => {
   function limitedGroup(groupId: string, selectionType: 'SINGLE' | 'MULTIPLE', maxSelections: number | null, optionIds: string[], priceAdjustment = 5) {
     return {
+      required: null,
       optionGroup: {
+        ...optionGroupDefaults,
         id: groupId,
         name: `Group ${groupId}`,
         posButtonLabel: null,
@@ -5138,5 +5146,117 @@ describe('transactionsService.createTransaction — option group selection limit
       }),
       expect.anything(),
     );
+  });
+});
+
+// P46R2 — checkout requires each offered group's minimum per cart line, at
+// the level the POS builds lines: a folded group needs its configured
+// minimum; the lone required MULTIPLE group (a serving count, split one pick
+// per unit) needs one; an "Add-ons"-named group is optional (Task 131); a
+// deactivated group, or one with no active option, is not offered at all.
+describe('transactionsService.createTransaction — option group requirements (P46R2)', () => {
+  function group(
+    groupId: string,
+    config: { selectionType?: 'SINGLE' | 'MULTIPLE'; required?: boolean; minSelections?: number; maxSelections?: number | null; isActive?: boolean; name?: string },
+    optionIds: string[],
+    assignmentRequired: boolean | null = null,
+  ) {
+    return {
+      required: assignmentRequired,
+      optionGroup: {
+        ...optionGroupDefaults,
+        id: groupId,
+        name: config.name ?? `Group ${groupId}`,
+        posButtonLabel: null,
+        ...config,
+        options: optionIds.map((id) => ({ id, name: id, isActive: true, priceAdjustment: decimal(0) })),
+      },
+      allowedOptions: [],
+    };
+  }
+
+  function withGroups(...groups: ReturnType<typeof group>[]) {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([variantRow({ optionGroupAssignments: groups })] as never);
+  }
+
+  function sale(selectedOptionIds: string[], quantity = 1) {
+    return transactionsService.createTransaction(
+      { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity, selectedOptionIds }] },
+      null,
+    );
+  }
+
+  it('rejects a line missing a required SINGLE choice, without creating a sale', async () => {
+    withGroups(group('seasoning', { selectionType: 'SINGLE', required: true, maxSelections: 1 }, ['bbq']));
+
+    await expect(sale([])).rejects.toMatchObject({ code: 'PRODUCT_OPTION_REQUIRED', statusCode: 422 });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('takes the requirement from the variant assignment override, and from min_selections alone', async () => {
+    withGroups(group('dressing', { selectionType: 'SINGLE', required: false }, ['vinaigrette'], true));
+    await expect(sale([])).rejects.toMatchObject({ code: 'PRODUCT_OPTION_REQUIRED' });
+
+    withGroups(group('garnish', { selectionType: 'SINGLE', required: false, minSelections: 1 }, ['parsley']));
+    await expect(sale([])).rejects.toMatchObject({ code: 'PRODUCT_OPTION_REQUIRED' });
+
+    withGroups(group('dressing', { selectionType: 'SINGLE', required: true }, ['vinaigrette'], false));
+    await sale([]);
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('requires a folded MULTIPLE group\'s configured minimum when two MULTIPLE groups share the line', async () => {
+    withGroups(
+      group('sauces', { required: true, minSelections: 2, maxSelections: 2 }, ['ketchup', 'mustard']),
+      group('sides', { required: true, minSelections: 1, maxSelections: 1 }, ['coleslaw']),
+    );
+
+    await expect(sale(['ketchup', 'coleslaw'])).rejects.toMatchObject({ code: 'PRODUCT_OPTION_REQUIRED' });
+    await sale(['ketchup', 'ketchup', 'coleslaw']);
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts one pick per serving-count line (lone required MULTIPLE group), but not none', async () => {
+    withGroups(group('toppings', { required: true, minSelections: 2, maxSelections: 2 }, ['cheese', 'bacon']));
+
+    await expect(sale([], 2)).rejects.toMatchObject({ code: 'PRODUCT_OPTION_REQUIRED' });
+    await sale(['cheese'], 2);
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('a lone required MULTIPLE group stays a serving count alongside SINGLE and Add-ons groups', async () => {
+    withGroups(
+      group('toppings', { required: true, minSelections: 2, maxSelections: 2 }, ['cheese']),
+      group('size', { selectionType: 'SINGLE', required: true }, ['large']),
+      group('addons', { name: 'Add-ons', required: true, minSelections: 1 }, ['dip']),
+    );
+
+    await sale(['cheese', 'large']);
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves an "Add-ons"-named group optional even when it is flagged required (Task 131)', async () => {
+    withGroups(group('addons', { name: 'Add-ons', required: true, minSelections: 1, maxSelections: 2 }, ['cheese']));
+
+    await sale([]);
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not require a deactivated group or one with no active option, and rejects a deactivated group\'s option', async () => {
+    const hidden = group('legacy', { required: true, minSelections: 1, isActive: false }, ['old-dip']);
+    const empty = group('empty', { selectionType: 'SINGLE', required: true }, ['gone']);
+    empty.optionGroup.options = empty.optionGroup.options.map((option) => ({ ...option, isActive: false }));
+    withGroups(hidden, empty);
+
+    await sale([]);
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledTimes(1);
+    await expect(sale(['old-dip'])).rejects.toMatchObject({ code: 'PRODUCT_OPTION_NOT_AVAILABLE' });
+  });
+
+  it('leaves an optional group with zero picks valid', async () => {
+    withGroups(group('extras', { maxSelections: 2 }, ['dip']));
+
+    await sale([]);
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledTimes(1);
   });
 });

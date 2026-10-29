@@ -238,6 +238,10 @@ export const transactionsRepository = {
                 // P46R — checkout caps each group's picks per line (resolveSelectedOptions).
                 selectionType: true,
                 maxSelections: true,
+                // P46R2 — and requires each offered group's minimum; an inactive group is not offered (getPosCatalog hides it).
+                minSelections: true,
+                required: true,
+                isActive: true,
                 options: {
                   where: { isActive: true },
                   select: { id: true, name: true, isActive: true, priceAdjustment: true },

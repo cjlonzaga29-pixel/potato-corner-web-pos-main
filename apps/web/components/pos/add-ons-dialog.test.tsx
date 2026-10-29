@@ -343,3 +343,26 @@ describe('AddOnsDialog — P46 whole-card choices and optional groups', () => {
     expect(screen.getByText('Still needed: Add-ons')).toBeInTheDocument();
   });
 });
+
+describe('AddOnsDialog — P46R2 SINGLE groups follow the shared required rule', () => {
+  it('a single choice that is not flagged required but has min_selections 1 is required: Add waits, the footer names it, no un-pick', () => {
+    // dialogGroupsFor: allowNoAddOn = !required && min_selections === 0 — false here, the same minimum checkout enforces.
+    const garnish = singleFlavorGroup({ id: 'garnish', label: 'Garnish', name: 'Garnish', required: false, minSelections: 1, allowNoAddOn: false });
+    renderDialog({ groups: [garnish] });
+    expect(screen.getByRole('button', { name: 'Add' })).toBeDisabled();
+    expect(screen.getByText('Still needed: Garnish')).toBeInTheDocument();
+    expect(screen.getByText('Choose 1')).toBeInTheDocument();
+    cleanup();
+
+    const { onClearGroup } = renderDialog({ groups: [garnish], selectedOptionIds: { garnish: ['opt-bbq'] } });
+    expect(screen.getByRole('button', { name: 'Add' })).not.toBeDisabled();
+    fireEvent.click(screen.getByText('BBQ'));
+    expect(onClearGroup).not.toHaveBeenCalled();
+  });
+
+  it('an optional single choice (not required, min 0) still allows Add empty', () => {
+    renderDialog({ groups: [singleFlavorGroup({ required: false, minSelections: 0, allowNoAddOn: true })] });
+    expect(screen.getByRole('button', { name: 'Add' })).not.toBeDisabled();
+    expect(screen.getByText('Optional — choose 1 or leave empty')).toBeInTheDocument();
+  });
+});

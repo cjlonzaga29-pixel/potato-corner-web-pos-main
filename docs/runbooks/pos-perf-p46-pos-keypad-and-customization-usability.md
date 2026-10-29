@@ -226,7 +226,8 @@ customization; it was not run.
 ### 4.5 Remaining limitations
 
 1. Required MULTIPLE groups with min < max remain exact serving counts (§4.2); distinguishing them needs a model flag.
-2. Server minimums are not enforced (§4.3). A crafted request can omit a required pick, but cannot exceed any maximum.
+2. ~~Server minimums are not enforced (§4.3).~~ **Fixed in P46R2 (§5):** checkout requires each offered group's minimum at
+   the level the POS builds lines.
 3. An offline sale queued by an older client with an Add-ons-named group over its maximum would now be refused at sync
    (previously accepted). The current client cannot create one.
 4. Physical devices, real browser chrome and iOS safe areas were not tested; 360×560 was a viewport proxy.
@@ -238,3 +239,166 @@ customization; it was not run.
 
 Starting SHA `cbfcd42`; final SHA: the P46R commit itself (`git log -1`). Local only: `main` ahead of `origin/main` (`b2910f1`) by
 two commits. Clean tree after commit.
+
+## 5. P46R2 — required option choices enforced at checkout
+
+Starting HEAD `bf58969` (`main`, preceded by `cbfcd42`; `origin/main` `b2910f1`; clean tree). API + web + shared change; no
+migration, schema, dependency, Render, Vercel or production change. Not pushed or deployed. No model flag was added; the
+"choose 1–N" interpretation (§4.2) is unchanged.
+
+### 5.1 Reproduced cause
+
+On unchanged `bf58969`, against a real local Postgres (`transactions.option-requirements.integration.test.ts`, §5.4), **9 crafted
+sales were accepted** and an offline batch synced a sale with no required choice. 10 of 19 tests failed. The 9 legitimate-payload
+tests already passed, which is the baseline proving current POS payloads succeed:
+
+| Gap | Cause |
+| --- | --- |
+| Required SINGLE/MULTIPLE choice omitted or below minimum | `resolveSelectedOptions` returned early on an empty selection and otherwise checked only membership and maxima (P46R). |
+| Option from a **deactivated group** accepted | `findVariantsForSale` never selected `optionGroup.isActive`; `getPosCatalog` hides such groups, so checkout accepted options the POS never offered. |
+| Assignment-level `required` override ignored | Checkout never read `ProductVariantOptionGroup.required` (the catalog and publication check use `assignment.required ?? group.required`). |
+| Client: SINGLE group with `required false, min_selections 1` could be left empty | The dialog checked `group.required` only, while every other group, and the publication check, treat `min_selections ≥ 1` as required. |
+
+Foreign options (another product's) and inactive options were already rejected (`PRODUCT_OPTION_NOT_AVAILABLE`).
+
+**Why a plain minimum check would reject real sales:** a cart line is not always one whole group selection.
+
+- A lone required MULTIPLE group ("Toppings, exactly 2") is a serving count (Task 182). The POS splits it one pick per unit, so
+  every line carries **one** pick, never 2. Identical picks merge into one line with quantity N.
+- "Add-ons"-named groups are optional regardless of their flags (Task 131), so a required-flagged Add-ons group is legitimately
+  sent empty.
+
+The payload does **not** lose information. The server derives which shape applies from the live configuration, exactly as the
+client does. A single serving line (qty 1, one topping) is a legitimate sale because the cart owns quantity: the cashier can
+remove one serving of a pair. No payload change was needed.
+
+### 5.2 Validation rules (`transactions.service.ts#resolveSelectedOptions`)
+
+Everything comes from fresh configuration; no client grouping or count claim is trusted. **Offered group** = group active and
+at least one active effective option (`allowedOptions`, or every option when empty), which is exactly what `getPosCatalog` and
+the POS render. Configured minimum = `max(min_selections, (assignment.required ?? group.required) ? 1 : 0)` (publication rule).
+
+| Group (offered) | Fewest picks per line | Most picks per line |
+| --- | --- | --- |
+| "Add-ons"-named (`isAddOnsOptionGroup`, now in `@potato-corner/shared` and used by both sides) | 0 (Task 131) | `max_selections` (null = ∞) |
+| SINGLE | 1 if configured minimum > 0, else 0 | 1 |
+| Serving count: the only non-Add-ons MULTIPLE group, with configured minimum > 0 | 1 (one pick per unit) | `max_selections` (P46R, unchanged) |
+| Any other MULTIPLE (folded: two or more MULTIPLE groups, or optional extras) | configured minimum | `max_selections` |
+
+- Option not offered (foreign, inactive, deactivated group, not allowed for the variant) → **422 `PRODUCT_OPTION_NOT_AVAILABLE`**.
+- Over a maximum → **422 `PRODUCT_OPTION_LIMIT_EXCEEDED`** (P46R).
+- Under a minimum → **422 `PRODUCT_OPTION_REQUIRED`**, for example "Regular needs 1 Extra Dips selection".
+- Repeated ids count once per occurrence, consistently for limits, pricing, the stock pre-check and deductions.
+- All of these are thrown while resolving the cart, before the checkout transaction, reservation or deduction job.
+- A deactivated group, or one with no active option, is never required.
+- Web: `PRODUCT_OPTION_REQUIRED` is on the definite-no-commit allowlist (`checkout-recovery.ts`; the attempt is marked `failed`, so
+  a retry mints a new key) and titled "Required choice missing" (`cashier-error-messages.ts`).
+- The dialog's SINGLE groups now use `!allowNoAddOn` (required, or minimum ≥ 1) for blocking, the hint and the badge, and to stop
+  un-picking.
+
+### 5.3 Compatibility
+
+| Payload source | Result |
+| --- | --- |
+| Current POS (`bf58969` + P46R2): required single, optional extras empty or ×N, Add-ons empty, serving-count split/merged, folded groups, Mix & Max, explicit quantity | Valid. Proven against real Postgres and in the browser (§5.4). |
+| **Production web `b2910f1` (pre-P46)**: a MULTIPLE group flagged required with `min_selections 0` could be filled with the "No Add-ons" pseudo-choice, leaving zero real picks | **Now rejected** `PRODUCT_OPTION_REQUIRED`. The config says required; P46 already made the client require it. |
+| `b2910f1` and `bf58969`: a SINGLE group with `required false, min_selections 1` left empty | **Now rejected**; the P46R2 client requires it. |
+| Any client: an option from a group deactivated after the line was built (persisted cart, detached sale, queued sale) | **Now rejected** `PRODUCT_OPTION_NOT_AVAILABLE` (was accepted). |
+| Persisted carts / detached-sale retries | Same payload shape. A rejection shows "Required choice missing" with Retry and Edit Cart, and the cart is kept. In the browser the edit dialog showed the new requirement only after a **page reload** (the in-memory catalog predates the config change; the cart survives the reload). |
+| Offline queue (`lib/offline/sync-queue.ts`, same `CreateTransactionInput` shape) | `/sync-offline` returns the item as `failed` with the code and syncs the rest (integration-tested). The client **keeps** the item in IndexedDB and retries it on each reconnect. Nothing is discarded, and no missing choice is generated. **Gap (pre-existing):** a failed queued sale is reported only via `console.error`, and `pendingSyncCount` is not rendered anywhere, so a stuck queued sale is invisible to the cashier. |
+| Hold orders | `holdOrder` uses `resolveCartItems`, so the same rules apply. The web has no hold-order UI. |
+
+The older-client rows come from reading `b2910f1`'s `add-ons-dialog.tsx`/`page.tsx` and from testing the equivalent payload shapes
+(a line without the group's ids). The `b2910f1` build itself was not run. Production catalog data was not inspected, so it is
+unknown whether any production group matches the two "now rejected" configurations.
+
+**Rollout (proposal only; nothing released):** no payload change, but validation is tighter.
+
+1. Release the web first. Its payloads are a subset of what the old API accepts (the old API checks only maxima).
+2. Before the API, confirm no production terminal holds pending offline sales from a pre-P46 client (DevTools → IndexedDB
+   `offlineTransactions` with `syncedAt` null). Have an admin review groups that are required with `min_selections 0` as MULTIPLE,
+   or SINGLE with `required false, min_selections ≥ 1`.
+3. Then release the API. Terminals still on the old web during the overlap are refused for those configurations with
+   "Required choice missing"; the cashier can Edit Cart after a reload.
+
+### 5.4 Verification
+
+Disposable LOCAL database **`p46r2_10292200`** (new; not `pos_verify`, `p46_ui_*` or `p46r_*`), container
+`potato-corner-pos-postgres-1`, 127.0.0.1:5432: `prisma migrate deploy` + `prisma/seed.ts`.
+
+- A scratchpad env pinned `DATABASE_URL`/`DIRECT_URL`/`TEST_DATABASE_URL` with throwaway local secrets.
+- A guard refused any other target (and any `PRODUCTION_DATABASE_URL_DIRECT`) before migrate, seed, fixture, tests and server
+  start. The browser fixture also ran `local-db-guard.cjs`.
+- API `node dist/server.js` with `API_PORT=4482`; web `next start -p 3482` (`NEXT_PUBLIC_API_URL=http://localhost:4482`).
+
+| Check | Result |
+| --- | --- |
+| New integration suite on `bf58969` code (red first) | 10 failed / 9 passed (9 crafted sales accepted; offline incomplete sale synced) |
+| Same suite on final code | **19/19** |
+| New unit tests on old service/repository (stash) | 5 of 8 failed; the 3 passing are preservation guards (serving count with SINGLE + Add-ons, Add-ons optional, optional empty) |
+| API unit, affected (`transactions`, `stock-availability`, `products`, `product-options`, `product-readiness`), local `DATABASE_URL` | Three runs of the same command: **797 passed / 84 skipped**; then **1 file failed** (`products.publication-setup.integration.test.ts` setup, 11 tests not counted; error output not captured); then **797/84** again on final code. That file passes 11/11 alone. ~20 product integration files gate on a local `DATABASE_URL` and run in parallel on one DB, the cross-file interference §4.4 also saw. |
+| API full unit suite (one run, before the final message-wording change) | 178 files, **3053 passed**, 251 skipped |
+| API integration, serial (`option-requirements`, `transactions.integration`, `checkout-worker`, `builder-recipe-match`), final code | **57/57** |
+| Web full suite (one run, 566 s) | **1384 passed, 3 failed**: `dashboard-low-stock-summary`, `daily-sales-drilldown` and `supervisor/reports/page` each hit the 5 s timeout. None touches changed code; the 3 files pass alone (57 tests). The full-run result stands. |
+| Web affected (`app/(branch)`, `components/pos`, `lib`) | 37 files, **441/441** |
+| `type-check` web / api / shared | pass / pass / pass |
+| `lint` web / api / shared | 0 errors, 1 pre-existing warning / 0 errors, 308 pre-existing warnings (unchanged count) / clean |
+| `build` shared / api / web (production) | pass / pass / pass. API rebuilt after the final error-message wording change; web unchanged since its build. |
+
+**Real browser (Chromium, final builds, branch account, staff PIN via `POST /api/staff-pin/:id/pin`, service workers
+blocked): 20/20.** Earlier runs were not counted:
+
+- Three stopped on script errors: a wrong card name ("Add one …"), a wrong table name, and an intercept on the API origin while
+  the web calls same-origin `/api` via its rewrite. That last one let one honest ₱480 sale through (`…000001`).
+- The next run stopped at the stale-cart Save (the exact-max rule below) after storing `…000002`; its "honest retry 201" check
+  read the status too early ("Next Customer" also shows while saving), so the script now waits for "View Receipt".
+- The run before the final one ended 19/20 on a wrong expectation, corrected below; it stored `…000003` and `…000004`.
+- The final run stored `…000005` and the corrected stale-cart sale `…000006`.
+
+Final run:
+
+- Fries: Add disabled; footer "Still needed: Seasoning" only (required-flagged Add-ons stays optional); Garlic Mayo ×2 + BBQ enables Add.
+- Garnish Fries (`required false, min 1`): Add disabled, "Still needed: Garnish" (client fix).
+- Topping Cup: "Adds 2 items" serving note. Combo: Ketchup ×2 + Coleslaw folded.
+- Crafted 1, the real checkout intercepted with Seasoning dropped: **422 `PRODUCT_OPTION_REQUIRED`**. Transactions, deduction jobs,
+  movements and every stock row's on-hand/reserved were unchanged. The POS showed "Required choice missing" with Retry and Edit
+  Cart, and kept the cart.
+- Crafted 2, on Retry, with the Cheese Topping serving line's pick removed: **422**, ledger unchanged.
+- Honest Retry: **201**, `MAIN01-20261029-000005` ₱480.00. Payload: fries 1 line `[BBQ, Garlic Mayo, Garlic Mayo]`; two cup lines
+  with one pick each; combo 3 picks.
+- Stale cart: Fries + Cheese added, then Extra Dips set to `min_selections 1` in the DB. Checkout → **422** "Regular needs 1 Extra
+  Dips selection", nothing written. Edit Cart → the edit dialog required Extra Dips **after a page reload**. Extra Dips was then the
+  lone required MULTIPLE group, so it behaved as an exact-max (2) serving count, the unchanged §4.2 rule. Garlic Mayo ×2 → Save
+  produced one line of qty 2 (identical picks merged) → **201**. An earlier run expected two lines; the expectation was wrong and
+  was corrected.
+
+Stored `…000005`:
+
+| Line | Qty | Total | Options |
+| --- | --- | --- | --- |
+| P46R2 Fries | 1 | ₱100 | BBQ, Garlic Mayo, Garlic Mayo |
+| P46R2 Garnish Fries | 1 | ₱90 | Parsley |
+| P46R2 Topping Cup | 1 | ₱80 | Cheese Topping |
+| P46R2 Topping Cup | 1 | ₱75 | Bacon Bits |
+| P46R2 Combo | 1 | ₱135 | Ketchup, Ketchup, Coleslaw |
+
+Deduction job `completed`; movements: Potato −500 g (5 × 100), Garlic Mayo −30 g (2 occurrences × 15), Cheese Dip −30 g.
+
+Mix & Max is covered by the integration suite: a parent with packaging, two flavor slots and a required Dip. It was rejected
+without the Dip and accepted with it (box and snack deducted). `builder-recipe-match` also passes. The P36R Mix & Max browser spec
+was not re-run.
+
+### 5.5 Remaining limitations
+
+1. The "choose 1–N" required MULTIPLE interpretation is unchanged (§4.2); this needs an owner decision and a model flag.
+2. A required-flagged "Add-ons"-named group stays optional on both client and server (Task 131). Changing that is an owner decision.
+3. Queued offline sales that fail sync are invisible to the cashier (console only, §5.3). This is pre-existing and not fixed here.
+4. After a catalog change, the POS needs a reload before Edit shows a new requirement.
+5. Not tested: production data, the `b2910f1` build itself, physical devices.
+6. Local leftovers: database `p46r2_10292200` (drop when done) and scratchpad env/fixture/screenshots. The servers on 4482/3482 were
+   stopped after verification. Earlier sessions' databases were not touched.
+
+### 5.6 State
+
+Starting SHA `bf58969`; final SHA: the P46R2 commit itself (`git log -1`). Local only: `main` ahead of `origin/main` (`b2910f1`) by
+three commits. Clean tree after commit.

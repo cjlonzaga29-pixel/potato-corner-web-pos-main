@@ -182,7 +182,8 @@ export function AddOnsDialog({
   const singleGroups = groups.filter((group) => !group.simplified && group.selectionType === 'SINGLE');
   const multiGroups = groups.filter((group) => !group.simplified && group.selectionType === 'MULTIPLE');
 
-  const missingRequired = singleGroups.filter((group) => group.required && (selectedOptionIds[group.id] ?? []).length !== 1);
+  // P46R2 — a SINGLE group is required by the same rule as every other group (!allowNoAddOn: required, or min_selections ≥ 1), which checkout now enforces.
+  const missingRequired = singleGroups.filter((group) => !group.allowNoAddOn && (selectedOptionIds[group.id] ?? []).length !== 1);
   const incompleteMulti = multiGroups.filter((group) => !isMultiGroupComplete(group, assignments[group.id]));
   // P46R — an edited line can carry more add-ons than the group now allows; it must be trimmed before saving, exactly as checkout would refuse it.
   const overLimitSimplified = simplifiedGroups.filter((group) => {
@@ -223,9 +224,9 @@ export function AddOnsDialog({
                 <GroupHeading
                   id={headingId}
                   label={group.label}
-                  hint={group.required ? 'Choose 1' : 'Optional — choose 1 or leave empty'}
+                  hint={group.allowNoAddOn ? 'Optional — choose 1 or leave empty' : 'Choose 1'}
                   badge={
-                    group.required ? (
+                    !group.allowNoAddOn ? (
                       <Badge variant={selectedId ? 'active' : 'warning'} className="shrink-0 text-[10px] font-medium">
                         {selectedId ? 'Selected' : 'Required'}
                       </Badge>
@@ -243,7 +244,7 @@ export function AddOnsDialog({
                         selected={isSelected}
                         onActivate={() => {
                           if (isSelected) {
-                            if (!group.required) onClearGroup(group.id);
+                            if (group.allowNoAddOn) onClearGroup(group.id);
                             return;
                           }
                           onSelectOption(group.id, option.id);

@@ -45,6 +45,7 @@ const TITLES: Record<string, string> = {
   PRODUCT_UNAVAILABLE: 'Item unavailable',
   PRODUCT_OPTION_NOT_AVAILABLE: 'Item option unavailable',
   PRODUCT_OPTION_LIMIT_EXCEEDED: 'Too many options selected',
+  PRODUCT_OPTION_REQUIRED: 'Required choice missing',
   FLAVOR_SLOTS_INVALID: 'Flavor selection invalid',
   FLAVOR_SELECTION_REQUIRED: 'Flavor selection required',
   FLAVOR_NOT_AVAILABLE_FOR_VARIANT: 'Flavor unavailable',

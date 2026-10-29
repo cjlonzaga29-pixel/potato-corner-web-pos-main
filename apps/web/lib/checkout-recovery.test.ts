@@ -11,6 +11,7 @@ import {
   readPendingCheckoutAttempt,
   clearPendingCheckoutAttempt,
   transactionToSaleSnapshot,
+  isDefiniteNoCommitErrorCode,
 } from './checkout-recovery';
 
 beforeEach(() => {
@@ -250,5 +251,13 @@ describe('transactionToSaleSnapshot', () => {
       cashTendered: 100,
       changeGiven: 10,
     });
+  });
+});
+
+describe('isDefiniteNoCommitErrorCode', () => {
+  it('treats the option-selection rejections as definite no-commit (thrown before the sale transaction opens)', () => {
+    expect(isDefiniteNoCommitErrorCode('PRODUCT_OPTION_REQUIRED')).toBe(true);
+    expect(isDefiniteNoCommitErrorCode('PRODUCT_OPTION_LIMIT_EXCEEDED')).toBe(true);
+    expect(isDefiniteNoCommitErrorCode('PRODUCT_OPTION_NOT_AVAILABLE')).toBe(true);
   });
 });

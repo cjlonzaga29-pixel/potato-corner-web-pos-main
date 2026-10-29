@@ -8,6 +8,7 @@ import {
   PAYMENT_METHOD,
   ROLES,
   TRANSACTION_PDF_MAX_ROWS,
+  isAddOnsOptionGroup,
   type ImageProofType,
 } from '@potato-corner/shared';
 import { manilaDateKey } from '../../lib/manila-time.js';
@@ -454,17 +455,42 @@ interface SelectedOptionsResolution {
  * products.service.ts's getPosCatalog option_groups mapping, the source the
  * POS terminal renders selectable options from). This must apply the exact
  * same fallback, or checkout rejects an option the POS itself offered.
+ *
+ * P46R2 — also requires each offered group's minimum on every cart line,
+ * read from the live configuration (never from anything the client claims
+ * about grouping or counts). A group is offered exactly when getPosCatalog
+ * shows it and the POS renders it: the group is active and the variant has
+ * at least one active option in it. An option of a deactivated group is
+ * therefore not available, like an inactive option. The minimum per line
+ * follows how the POS builds lines (terminal/page.tsx#handleAddOnsConfirm):
+ *
+ * - "Add-ons"-named group (isAddOnsOptionGroup): none — optional by the
+ *   Task 131 decision whatever its flags; capped by max_selections.
+ * - SINGLE group: one if required, otherwise none.
+ * - The serving-count group — the only non-Add-ons MULTIPLE group, required
+ *   (Task 182): one. The POS splits its picks one per unit, so a line holds
+ *   one pick per unit, never the group's whole count; and the cart owns
+ *   quantity, so a single serving is a legitimate sale.
+ * - Any other MULTIPLE group (folded onto the line — two or more MULTIPLE
+ *   groups, Task 193B; or an optional one, P46R): its configured minimum.
+ *
+ * "Required" is the publication check's rule (products.service.ts):
+ * max(min_selections, (assignment.required ?? group.required) ? 1 : 0) > 0.
  */
 function resolveSelectedOptions(
   variant: {
     name: string;
     optionGroupAssignments?: {
+      required: boolean | null;
       optionGroup: {
         id: string;
         name: string;
         posButtonLabel: string | null;
         selectionType: 'SINGLE' | 'MULTIPLE';
+        minSelections: number;
         maxSelections: number | null;
+        required: boolean;
+        isActive: boolean;
         options: { id: string; name: string; isActive: boolean; priceAdjustment: { toNumber(): number } }[];
       };
       allowedOptions: {
@@ -475,52 +501,59 @@ function resolveSelectedOptions(
   },
   selectedOptionIds: string[] | undefined,
 ): SelectedOptionsResolution {
-  if (!selectedOptionIds || selectedOptionIds.length === 0) return { premium: 0, snapshot: [] };
-
   const allowedOptions = new Map<
     string,
     { priceAdjustment: number; optionName: string; optionGroupId: string; optionGroupName: string }
   >();
-  // P46R — the most picks one cart line may carry from each group: one for a
-  // SINGLE group, max_selections for a MULTIPLE group (null = unlimited, as
-  // the admin's ∞). Per line, because one line is one product configuration
-  // (a required serving-count group's split lines each carry one pick).
-  const pickLimitByGroup = new Map<string, { limit: number | null; groupName: string }>();
-  for (const assignment of variant.optionGroupAssignments ?? []) {
-    const optionGroupName = assignment.optionGroup.posButtonLabel?.trim() || assignment.optionGroup.name;
-    pickLimitByGroup.set(assignment.optionGroup.id, {
-      limit: assignment.optionGroup.selectionType === 'SINGLE' ? 1 : (assignment.optionGroup.maxSelections ?? null),
-      groupName: optionGroupName,
-    });
-    // Empty allowedOptions means "all options" — fall back to every active
-    // option in the assigned group, mirroring getPosCatalog exactly.
-    const effectiveOptions =
+  // Empty allowedOptions means "all options" — fall back to every active
+  // option in the assigned group, mirroring getPosCatalog exactly.
+  const offeredAssignments = (variant.optionGroupAssignments ?? []).flatMap((assignment) => {
+    if (!assignment.optionGroup.isActive) return [];
+    const effectiveOptions = (
       assignment.allowedOptions.length > 0
         ? assignment.allowedOptions.map((allowed) => ({ productOptionId: allowed.productOptionId, productOption: allowed.productOption }))
-        : assignment.optionGroup.options.map((option) => ({ productOptionId: option.id, productOption: option }));
+        : assignment.optionGroup.options.map((option) => ({ productOptionId: option.id, productOption: option }))
+    ).filter((allowed) => allowed.productOption.isActive);
+    if (effectiveOptions.length === 0) return [];
+    const configuredMinimum = Math.max(assignment.optionGroup.minSelections, (assignment.required ?? assignment.optionGroup.required) ? 1 : 0);
+    return [{ group: assignment.optionGroup, effectiveOptions, configuredMinimum, addOns: isAddOnsOptionGroup(assignment.optionGroup) }];
+  });
+  const quantityGroups = offeredAssignments.filter((offered) => !offered.addOns && offered.group.selectionType === 'MULTIPLE');
+  const servingCountGroupId = quantityGroups.length === 1 && quantityGroups[0] && quantityGroups[0].configuredMinimum > 0 ? quantityGroups[0].group.id : null;
+
+  // P46R — the most picks one cart line may carry from each group: one for a
+  // SINGLE group, max_selections for a MULTIPLE group (null = unlimited, as
+  // the admin's ∞). P46R2 — and the fewest (see above).
+  const pickRangeByGroup = new Map<string, { minimum: number; limit: number | null; groupName: string }>();
+  for (const { group, effectiveOptions, configuredMinimum, addOns } of offeredAssignments) {
+    const optionGroupName = group.posButtonLabel?.trim() || group.name;
+    const perUnit = group.selectionType === 'SINGLE' || group.id === servingCountGroupId;
+    pickRangeByGroup.set(group.id, {
+      minimum: addOns ? 0 : perUnit ? Math.min(configuredMinimum, 1) : configuredMinimum,
+      limit: group.selectionType === 'SINGLE' ? 1 : (group.maxSelections ?? null),
+      groupName: optionGroupName,
+    });
     for (const allowed of effectiveOptions) {
-      if (allowed.productOption.isActive) {
-        allowedOptions.set(allowed.productOptionId, {
-          priceAdjustment: allowed.productOption.priceAdjustment.toNumber(),
-          optionName: allowed.productOption.name,
-          optionGroupId: assignment.optionGroup.id,
-          optionGroupName,
-        });
-      }
+      allowedOptions.set(allowed.productOptionId, {
+        priceAdjustment: allowed.productOption.priceAdjustment.toNumber(),
+        optionName: allowed.productOption.name,
+        optionGroupId: group.id,
+        optionGroupName,
+      });
     }
   }
 
   let premium = 0;
   const snapshot: SelectedOptionSnapshot[] = [];
   const picksByGroup = new Map<string, number>();
-  for (const optionId of selectedOptionIds) {
+  for (const optionId of selectedOptionIds ?? []) {
     const resolved = allowedOptions.get(optionId);
     if (resolved === undefined) {
       throw new TransactionError('PRODUCT_OPTION_NOT_AVAILABLE', `Selected product option is not available for ${variant.name}`, 422);
     }
     const picks = (picksByGroup.get(resolved.optionGroupId) ?? 0) + 1;
     picksByGroup.set(resolved.optionGroupId, picks);
-    const cap = pickLimitByGroup.get(resolved.optionGroupId);
+    const cap = pickRangeByGroup.get(resolved.optionGroupId);
     if (cap && cap.limit !== null && picks > cap.limit) {
       throw new TransactionError(
         'PRODUCT_OPTION_LIMIT_EXCEEDED',
@@ -536,6 +569,15 @@ function resolveSelectedOptions(
       optionGroupName: resolved.optionGroupName,
       priceAdjustment: resolved.priceAdjustment,
     });
+  }
+  for (const [groupId, range] of pickRangeByGroup) {
+    if ((picksByGroup.get(groupId) ?? 0) < range.minimum) {
+      throw new TransactionError(
+        'PRODUCT_OPTION_REQUIRED',
+        `${variant.name} needs ${range.minimum === 1 ? '1' : `at least ${range.minimum}`} ${range.groupName} selection${range.minimum === 1 ? '' : 's'}`,
+        422,
+      );
+    }
   }
   return { premium, snapshot };
 }

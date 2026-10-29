@@ -13,12 +13,21 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { AddOnsDialog, multiGroupTarget, type AddOnsDialogGroup, type AddOnSelections } from '@/components/pos/add-ons-dialog';
 import { PinKeypad } from '@/components/pos/pin-keypad';
+import { OptionChoiceCard } from '@/components/pos/option-choice-card';
+import {
+  CUSTOMIZATION_CHOICE_GRID,
+  CUSTOMIZATION_DIALOG_BODY,
+  CUSTOMIZATION_DIALOG_CONTENT,
+  CUSTOMIZATION_DIALOG_FOOTER,
+  CUSTOMIZATION_DIALOG_HEADER,
+} from '@/components/pos/customization-dialog-layout';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { ProductCard } from '@/components/pos/product-card';
 import { ProductCardSkeleton } from '@/components/pos/product-card-skeleton';
 import { CartLineItem, type CartLine } from '@/components/pos/cart-line-item';
 import type { DiscountChoice } from '@/components/pos/payment-footer';
 import { CheckoutWorkspace } from '@/components/pos/checkout-workspace';
-import { splitAddOnLines, isAddOnsGroup, NO_ADD_ON_KEY, type AddOnAssignments } from '@/lib/pos/split-add-ons';
+import { splitAddOnLines, isAddOnsGroup, chosenQuantity, fillWithNoAddOn, type AddOnAssignments } from '@/lib/pos/split-add-ons';
 import { cartLineKey, type PosCartItem, type PosCartSelectedOption } from '@/stores/cart.store';
 import { toAvailabilityLines, useCartStockValidation } from '@/hooks/use-cart-stock-validation';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -199,7 +208,8 @@ function dialogGroupsFor(variant: PosCatalogProduct['variants'][number]): AddOns
     id: group.id,
     name: resolveGroupLabel(group),
     label: resolveGroupLabel(group),
-    allowNoAddOn: group.min_selections === 0,
+    // P46 — optional means no minimum at all, the same rule as the server's publication check (max(min_selections, required ? 1 : 0)).
+    allowNoAddOn: !group.required && group.min_selections === 0,
     simplified: isAddOnsGroup(group),
     selectionType: group.selection_type,
     required: group.required,
@@ -1299,6 +1309,26 @@ export default function TerminalPage() {
     [branchId, items, checkCartAvailability],
   );
 
+  // P46 — the product card (or cart Edit button) that opened a
+  // customization dialog. Radix returns focus to whatever was focused when a
+  // dialog mounted, which for the add-ons dialog opened from the flavor
+  // picker is a flavor card that no longer exists — so both dialogs return
+  // focus here instead, once no customization dialog is left open (the
+  // flavor picker handing off to the add-ons dialog keeps focus in the new
+  // dialog).
+  const customizationOpenerRef = useRef<HTMLElement | null>(null);
+  const rememberCustomizationOpener = useCallback(() => {
+    customizationOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  }, []);
+  const restoreCustomizationFocus = useCallback((event: Event) => {
+    event.preventDefault();
+    const opener = customizationOpenerRef.current;
+    requestAnimationFrame(() => {
+      if (document.querySelector('[role="dialog"][data-state="open"]')) return;
+      if (opener?.isConnected) opener.focus();
+    });
+  }, []);
+
   // Task 194A — useCallback'd so ProductCard (React.memo) can treat onTap as
   // a stable prop: every dependency here (maybeOpenAddOnsPrompt, addItem,
   // the setState setters) is itself stable, so this never changes identity
@@ -1315,6 +1345,7 @@ export default function TerminalPage() {
   const handleProductTap = useCallback(
     (product: PosCatalogProduct, variant: PosCatalogProduct['variants'][number]) => {
       if (!variant.live_ready) return;
+      rememberCustomizationOpener();
       if (variant.stock_status === 'out_of_stock') {
         toast.error("Can't add — out of stock", {
           description: `${product.name} (${variant.name}) is out of stock right now. Try again shortly or ask a supervisor to restock.`,
@@ -1334,15 +1365,23 @@ export default function TerminalPage() {
       addItem(item);
       noteIncrease(cartLineKey(item), 1);
     },
-    [maybeOpenAddOnsPrompt, addItem, noteIncrease],
+    [maybeOpenAddOnsPrompt, addItem, noteIncrease, rememberCustomizationOpener],
   );
 
-  function handleAddOnsAssignmentChange(groupId: string, choiceKey: string, quantity: number) {
+  // P46 — applied to the latest state (not the value the tapped card last
+  // rendered), so two taps landing before a re-render both count, and
+  // clamped to the group's limit so no burst of taps can overshoot it.
+  function handleAdjustAddOnAssignment(groupId: string, optionId: string, delta: 1 | -1) {
     setAddOnsPrompt((prev) => {
       if (!prev) return prev;
+      const group = dialogGroupsFor(prev.variant).find((candidate) => candidate.id === groupId);
+      if (!group) return prev;
+      const groupAssignment = prev.assignments[groupId] ?? {};
+      const current = groupAssignment[optionId] ?? 0;
+      if (delta < 0 ? current === 0 : chosenQuantity(groupAssignment) >= multiGroupTarget(group)) return prev;
       return {
         ...prev,
-        assignments: { ...prev.assignments, [groupId]: { ...prev.assignments[groupId], [choiceKey]: quantity } },
+        assignments: { ...prev.assignments, [groupId]: { ...groupAssignment, [optionId]: current + delta } },
       };
     });
   }
@@ -1445,8 +1484,16 @@ export default function TerminalPage() {
     // Task 182 — a genuine multi-slot (MULTIPLE) group's allocator is sized
     // to the group's own required count, not the cart line's quantity; that
     // required count now drives how many lines/units this add produces.
+    // P46 — an optional group the cashier left (partly) empty is filled with
+    // no-add-on units here, so the split still covers the whole target.
     const baseLines = splittableGroup
-      ? splitAddOnLines([splittableGroup], assignments, multiGroupTarget(splittableGroup))
+      ? splitAddOnLines(
+          [splittableGroup],
+          splittableGroup.allowNoAddOn
+            ? { [splittableGroup.id]: fillWithNoAddOn(assignments[splittableGroup.id], multiGroupTarget(splittableGroup)) }
+            : assignments,
+          multiGroupTarget(splittableGroup),
+        )
       : [{ quantity, selected_options: [] as PosCartSelectedOption[] }];
 
     const newItems = baseLines.map((line) => {
@@ -1503,6 +1550,7 @@ export default function TerminalPage() {
       const { product, variant } = info;
       const groups = dialogGroupsFor(variant);
       if (groups.length === 0) return;
+      rememberCustomizationOpener();
       const assignments: AddOnAssignments = {};
       const selectedOptionIds: AddOnSelections = {};
       for (const group of groups) {
@@ -1511,12 +1559,11 @@ export default function TerminalPage() {
           selectedOptionIds[group.id] = selectedForGroup.map((option) => option.option_id);
           continue;
         }
+        // P46 — an optional group with nothing picked preloads as empty: "no add-ons" is no longer a counted choice.
         if (selectedForGroup.length > 0) {
           const counts: Record<string, number> = {};
           for (const option of selectedForGroup) counts[option.option_id] = (counts[option.option_id] ?? 0) + 1;
           assignments[group.id] = counts;
-        } else if (group.allowNoAddOn) {
-          assignments[group.id] = { [NO_ADD_ON_KEY]: multiGroupTarget(group) };
         }
       }
       setAddOnsPrompt({
@@ -1530,7 +1577,7 @@ export default function TerminalPage() {
         editingIndex: index,
       });
     },
-    [items, variantIndex],
+    [items, variantIndex, rememberCustomizationOpener],
   );
 
   function handleFlavorPick(flavorId: string) {
@@ -2408,47 +2455,90 @@ export default function TerminalPage() {
             ? 'Clock In & Open POS'
             : 'Continue';
 
+    // P46 — an integrated terminal screen rather than a small boxed card: a
+    // status panel (branch, terminal state, identified employee) beside a
+    // full-width keypad from `md` up, stacked into one compact column on a
+    // phone. Every handler, label and verification rule above is unchanged.
+    const lockedReason = lockContext?.reason === 'idle' ? 'Locked after inactivity' : 'Waiting for a staff PIN';
+    const clockStatus =
+      pinVerification?.isClockedIn === true ? 'Clocked in' : pinVerification?.isClockedIn === false ? 'Not clocked in yet' : null;
+
     return (
-      <div className="mx-auto flex h-full max-w-sm flex-col items-center justify-center gap-4 p-4 sm:p-6">
-        <Card className="w-full">
-          <CardContent className="flex flex-col items-center gap-4 p-5 sm:p-6">
-            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">
-              <LockKeyhole className="h-7 w-7" aria-hidden="true" />
-            </div>
-            <div className="space-y-1.5 text-center">
-              <h1 className="app-title font-bold">Open POS Terminal</h1>
-              <div className="flex items-center justify-center gap-1.5 text-sm text-muted-foreground">
-                <span className="font-medium text-foreground">{branch?.name ?? 'This branch'}</span>
-                <span aria-hidden="true">·</span>
-                <Badge variant="secondary" className="gap-1">
-                  <Lock className="h-3 w-3" aria-hidden="true" />
-                  Terminal Locked
-                </Badge>
+      <div className="flex min-h-full w-full items-stretch justify-center sm:items-center sm:p-6">
+        <section
+          aria-labelledby="pos-lock-title"
+          className="grid w-full max-w-5xl content-start overflow-hidden bg-card sm:rounded-2xl sm:border sm:shadow-sm md:min-h-[min(36rem,calc(100dvh-8rem))] md:grid-cols-[minmax(0,5fr)_minmax(0,6fr)] md:content-stretch"
+        >
+          <div className="flex flex-col gap-4 border-b bg-primary/5 p-4 sm:p-6 md:justify-between md:border-b-0 md:border-r md:p-8">
+            <div className="flex items-center gap-3 md:flex-col md:items-start md:gap-4">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary md:h-14 md:w-14">
+                <LockKeyhole className="h-6 w-6 md:h-7 md:w-7" aria-hidden="true" />
               </div>
-              {!isOnline && (
-                <p className="flex items-center justify-center gap-1 text-xs font-medium text-warning">
-                  <WifiOff className="h-3.5 w-3.5" aria-hidden="true" />
-                  Offline — PIN verification needs a connection.
-                </p>
-              )}
+              <div className="min-w-0 space-y-1">
+                <h1 id="pos-lock-title" className="app-title font-bold">
+                  Open POS Terminal
+                </h1>
+                <p className="text-sm text-muted-foreground">{lockedReason}</p>
+              </div>
             </div>
 
+            <dl className="grid grid-cols-1 gap-3 text-sm min-[420px]:grid-cols-3 md:grid-cols-1 md:gap-4">
+              <div className="min-w-0">
+                <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Branch</dt>
+                <dd className="break-words font-semibold">{branch?.name ?? 'This branch'}</dd>
+              </div>
+              <div className="min-w-0">
+                <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Terminal</dt>
+                <dd className="mt-0.5 flex flex-wrap items-center gap-1.5">
+                  <Badge variant="secondary" className="gap-1">
+                    <Lock className="h-3 w-3" aria-hidden="true" />
+                    Terminal Locked
+                  </Badge>
+                </dd>
+              </div>
+              <div className="min-w-0">
+                <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Employee</dt>
+                {/* The verified name itself is shown once, large, beside the confirm button. */}
+                <dd className="break-words">
+                  {pinVerification ? (
+                    <span className="font-semibold text-success">PIN verified{clockStatus ? ` · ${clockStatus}` : ''}</span>
+                  ) : (
+                    <span className="text-muted-foreground">Not identified yet</span>
+                  )}
+                </dd>
+              </div>
+            </dl>
+
+            {!isOnline && (
+              <p className="flex items-center gap-1 text-xs font-medium text-warning">
+                <WifiOff className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                Offline — PIN verification needs a connection.
+              </p>
+            )}
+
+            <p className="hidden items-center gap-1 text-xs text-muted-foreground md:flex">
+              <KeyRound className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              No PIN or forgot it? Ask your supervisor.
+            </p>
+          </div>
+
+          <div className="flex flex-col items-center justify-center gap-4 p-4 sm:p-6 md:p-8">
             {selectEmployeeError && (
-              <Alert variant="destructive" className="w-full" role="alert">
+              <Alert variant="destructive" className="w-full max-w-sm" role="alert">
                 <AlertTitle>Could not start employee session</AlertTitle>
                 <AlertDescription>{selectEmployeeError}</AlertDescription>
               </Alert>
             )}
 
             {pinVerification ? (
-              <div className="flex w-full flex-col items-center gap-4">
+              <div className="flex w-full max-w-sm flex-col items-center gap-5">
                 <div className="text-center">
                   <p className="text-sm text-muted-foreground">Verified</p>
-                  <p className="text-xl font-semibold">{pinVerification.staffName}</p>
+                  <p className="break-words text-2xl font-semibold">{pinVerification.staffName}</p>
                 </div>
                 <div className="flex w-full flex-col gap-2">
                   <Button
-                    className="w-full touch-target"
+                    className="h-14 w-full touch-target text-base"
                     size="lg"
                     onClick={() => void handleConfirmIdentity()}
                     disabled={isSelectingEmployee}
@@ -2456,13 +2546,13 @@ export default function TerminalPage() {
                     {isSelectingEmployee && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
                     {primaryActionLabel}
                   </Button>
-                  <Button variant="ghost" size="sm" onClick={handleCancelPinVerification} disabled={isSelectingEmployee}>
+                  <Button variant="ghost" className="touch-target" onClick={handleCancelPinVerification} disabled={isSelectingEmployee}>
                     Not me — enter a different PIN
                   </Button>
                 </div>
               </div>
             ) : (
-              <div className="flex w-full flex-col items-center gap-4">
+              <div className="flex w-full max-w-sm flex-col items-center gap-4">
                 <p className="text-sm text-muted-foreground">Enter your staff PIN to continue.</p>
                 <PinKeypad
                   value={pin}
@@ -2476,13 +2566,13 @@ export default function TerminalPage() {
                   aria-label="Staff PIN"
                 />
                 {pinError && (
-                  <p className="text-sm font-medium text-destructive" role="alert" aria-live="assertive">
+                  <p className="text-center text-sm font-medium text-destructive" role="alert" aria-live="assertive">
                     {pinError}
                   </p>
                 )}
                 <Button
                   type="button"
-                  className="w-full touch-target"
+                  className="h-14 w-full touch-target text-base"
                   size="lg"
                   onClick={() => void handlePinVerify()}
                   disabled={verifyPosPin.isPending || pin.length < STAFF_PIN_MIN_LENGTH}
@@ -2490,14 +2580,14 @@ export default function TerminalPage() {
                   {verifyPosPin.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
                   Continue
                 </Button>
-                <p className="flex items-center gap-1 text-xs text-muted-foreground">
-                  <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
+                <p className="flex items-center gap-1 text-xs text-muted-foreground md:hidden">
+                  <KeyRound className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                   No PIN or forgot it? Ask your supervisor.
                 </p>
               </div>
             )}
-          </CardContent>
-        </Card>
+          </div>
+        </section>
       </div>
     );
   }
@@ -2882,25 +2972,43 @@ export default function TerminalPage() {
           </div>
         )}
 
+        {/* P46 — a real dialog (focus trap, Escape, focus return) laid out like
+            the add-ons dialog, with one whole-card button per flavor. A flavor is
+            required, so tapping one picks it at once; there is no empty choice. */}
         {flavorPrompt && (
-          <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/50 p-4">
-            <Card className="max-h-[calc(100vh-2rem)] w-full max-w-sm overflow-y-auto">
-              <CardContent className="space-y-3 p-4">
-                <p className="font-medium">Choose a flavor — {flavorPrompt.product.name} ({flavorPrompt.variant.name})</p>
-                <div className="grid grid-cols-2 gap-2">
+          <Dialog
+            open
+            onOpenChange={(open) => {
+              if (!open) setFlavorPrompt(null);
+            }}
+          >
+            <DialogContent className={CUSTOMIZATION_DIALOG_CONTENT} onCloseAutoFocus={restoreCustomizationFocus}>
+              <DialogHeader className={CUSTOMIZATION_DIALOG_HEADER}>
+                <DialogTitle className="break-words text-lg leading-tight sm:text-xl">{flavorPrompt.product.name}</DialogTitle>
+                <DialogDescription className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-md bg-secondary px-2 py-0.5 text-xs font-semibold text-secondary-foreground">{flavorPrompt.variant.name}</span>
+                  <span className="text-xs">Choose a flavor</span>
+                </DialogDescription>
+              </DialogHeader>
+              <div className={CUSTOMIZATION_DIALOG_BODY}>
+                <div role="group" aria-label="Flavor" className={CUSTOMIZATION_CHOICE_GRID}>
                   {flavorPrompt.variant.flavors.map((flavor) => (
-                    <Button key={flavor.flavor_id} variant="outline" onClick={() => handleFlavorPick(flavor.flavor_id)}>
-                      {flavor.name}
-                      {flavor.price_premium > 0 ? ` (+${formatPeso(flavor.price_premium)})` : ''}
-                    </Button>
+                    <OptionChoiceCard
+                      key={flavor.flavor_id}
+                      name={flavor.name}
+                      priceAdjustment={flavor.price_premium}
+                      onActivate={() => handleFlavorPick(flavor.flavor_id)}
+                    />
                   ))}
                 </div>
-                <Button variant="outline" className="w-full" onClick={() => setFlavorPrompt(null)}>
+              </div>
+              <DialogFooter className={CUSTOMIZATION_DIALOG_FOOTER}>
+                <Button variant="outline" className="touch-target h-12 w-full" onClick={() => setFlavorPrompt(null)}>
                   Cancel
                 </Button>
-              </CardContent>
-            </Card>
-          </div>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         )}
 
         {slotPrompt && (
@@ -2986,13 +3094,14 @@ export default function TerminalPage() {
             groups={dialogGroupsFor(addOnsPrompt.variant)}
             quantity={addOnsPrompt.quantity}
             assignments={addOnsPrompt.assignments}
-            onAssignmentChange={handleAddOnsAssignmentChange}
+            onAdjustAssignment={handleAdjustAddOnAssignment}
             selectedOptionIds={addOnsPrompt.selectedOptionIds}
             onToggleOption={handleToggleAddOnOption}
             onSelectOption={handleSelectSingleOption}
             onClearGroup={handleClearAddOnGroup}
             onCancel={() => setAddOnsPrompt(null)}
             onConfirm={handleAddOnsConfirm}
+            onCloseAutoFocus={restoreCustomizationFocus}
             isEditMode={addOnsPrompt.editingIndex !== undefined}
           />
         )}

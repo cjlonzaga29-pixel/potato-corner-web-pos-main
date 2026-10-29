@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
-import { AddOnsDialog, multiGroupTarget, type AddOnsDialogGroup, type AddOnSelections } from './add-ons-dialog';
+import { AddOnsDialog, isMultiGroupComplete, multiGroupTarget, type AddOnsDialogGroup, type AddOnSelections } from './add-ons-dialog';
 import type { AddOnAssignments } from '@/lib/pos/split-add-ons';
 
 afterEach(() => {
@@ -34,7 +34,7 @@ function premiumAddOnGroup(overrides: Partial<AddOnsDialogGroup> = {}): AddOnsDi
     id: 'premium-group',
     name: 'Premium Flavor Upgrade',
     label: 'Premium Flavor Upgrade',
-    allowNoAddOn: true,
+    allowNoAddOn: false,
     simplified: false,
     selectionType: 'MULTIPLE',
     required: true,
@@ -57,7 +57,7 @@ interface HarnessOverrides {
 }
 
 function renderDialog({ groups = [], selectedOptionIds = {}, assignments = {}, onConfirm = vi.fn(), onCancel = vi.fn() }: HarnessOverrides = {}) {
-  const onAssignmentChange = vi.fn();
+  const onAdjustAssignment = vi.fn();
   const onToggleOption = vi.fn();
   const onSelectOption = vi.fn();
   const onClearGroup = vi.fn();
@@ -69,7 +69,7 @@ function renderDialog({ groups = [], selectedOptionIds = {}, assignments = {}, o
       groups={groups}
       quantity={1}
       assignments={assignments}
-      onAssignmentChange={onAssignmentChange}
+      onAdjustAssignment={onAdjustAssignment}
       selectedOptionIds={selectedOptionIds}
       onToggleOption={onToggleOption}
       onSelectOption={onSelectOption}
@@ -79,7 +79,7 @@ function renderDialog({ groups = [], selectedOptionIds = {}, assignments = {}, o
     />,
   );
 
-  return { ...utils, onAssignmentChange, onToggleOption, onSelectOption, onClearGroup, onConfirm, onCancel };
+  return { ...utils, onAdjustAssignment, onToggleOption, onSelectOption, onClearGroup, onConfirm, onCancel };
 }
 
 describe('AddOnsDialog — header and instructions', () => {
@@ -108,16 +108,16 @@ describe('AddOnsDialog — long option names', () => {
     expect(longLabel.className).not.toMatch(/\btruncate\b|\bwhitespace-nowrap\b/);
   });
 
-  it('gives the counter/button column a stable, shrink-proof width next to a long premium option name', () => {
+  it('gives the Remove-one control a stable, shrink-proof width next to a long premium option name', () => {
     const longPremiumGroup = premiumAddOnGroup({
       options: [{ id: 'opt-long-premium', name: LONG_FLAVOR_NAME, price_adjustment: 30 }],
       minSelections: 1,
       maxSelections: 1,
     });
-    renderDialog({ groups: [longPremiumGroup] });
-    const decreaseButton = screen.getByRole('button', { name: `Decrease ${LONG_FLAVOR_NAME} quantity` });
-    const controlColumn = decreaseButton.parentElement;
-    expect(controlColumn?.className).toContain('shrink-0');
+    renderDialog({ groups: [longPremiumGroup], assignments: { 'premium-group': { 'opt-long-premium': 1 } } });
+    const removeButton = screen.getByRole('button', { name: `Remove one ${LONG_FLAVOR_NAME}` });
+    expect(removeButton.className).toContain('shrink-0');
+    expect(screen.getByText(LONG_FLAVOR_NAME).className).toContain('break-words');
   });
 });
 
@@ -142,18 +142,32 @@ describe('AddOnsDialog — regular (SINGLE-selection) flavors', () => {
 });
 
 describe('AddOnsDialog — premium (MULTIPLE-selection) add-ons', () => {
-  it('renders plus/minus controls per option with accessible names and calls onAssignmentChange', () => {
-    const { onAssignmentChange } = renderDialog({ groups: [premiumAddOnGroup()] });
-    const increase = screen.getByRole('button', { name: 'Increase Cheese Sauce quantity' });
-    fireEvent.click(increase);
-    expect(onAssignmentChange).toHaveBeenCalledWith('premium-group', 'opt-cheese', 1);
+  it('tapping anywhere on a quantity card adds exactly one', () => {
+    const { onAdjustAssignment } = renderDialog({ groups: [premiumAddOnGroup()] });
+    // The name and price live inside the card's one button, so a tap on either reaches the same single handler.
+    fireEvent.click(screen.getByText('Cheese Sauce'));
+    fireEvent.click(screen.getByText('+₱20.00'));
+    expect(onAdjustAssignment).toHaveBeenCalledTimes(2);
+    expect(onAdjustAssignment).toHaveBeenNthCalledWith(1, 'premium-group', 'opt-cheese', 1);
+    expect(onAdjustAssignment).toHaveBeenNthCalledWith(2, 'premium-group', 'opt-cheese', 1);
   });
 
-  it('never calls onAssignmentChange with a negative quantity from Decrease at zero', () => {
-    const { onAssignmentChange } = renderDialog({ groups: [premiumAddOnGroup()] });
-    const decrease = screen.getByRole('button', { name: 'Decrease Cheese Sauce quantity' });
-    fireEvent.click(decrease);
-    expect(onAssignmentChange).not.toHaveBeenCalled();
+  it('shows the picked quantity as a badge and offers Remove one only once something is picked', () => {
+    const { onAdjustAssignment } = renderDialog({ groups: [premiumAddOnGroup()], assignments: { 'premium-group': { 'opt-cheese': 2 } } });
+    expect(screen.getByText('×2')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Remove one Caramel Drizzle' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove one Cheese Sauce' }));
+    expect(onAdjustAssignment).toHaveBeenCalledTimes(1);
+    expect(onAdjustAssignment).toHaveBeenCalledWith('premium-group', 'opt-cheese', -1);
+  });
+
+  it('a card at the group limit stays focusable but adds nothing', () => {
+    const { onAdjustAssignment } = renderDialog({ groups: [premiumAddOnGroup()], assignments: { 'premium-group': { 'opt-cheese': 2 } } });
+    const caramel = screen.getByRole('button', { name: 'Add one Caramel Drizzle' });
+    expect(caramel).toHaveAttribute('aria-disabled', 'true');
+    expect(caramel).not.toBeDisabled();
+    fireEvent.click(caramel);
+    expect(onAdjustAssignment).not.toHaveBeenCalled();
   });
 
   it('shows the "Assigned N / M" progress text tied to the group and gates Add on it', () => {
@@ -172,12 +186,19 @@ describe('AddOnsDialog — premium (MULTIPLE-selection) add-ons', () => {
 });
 
 describe('AddOnsDialog — structure (mobile/desktop-agnostic, single shared markup)', () => {
-  it('keeps the footer (Cancel/Add) sticky and visually separate from the scrolling option list', () => {
+  it('scrolls only the choices: title, Close, Cancel and Add sit outside the scroll region', () => {
     renderDialog({ groups: [singleFlavorGroup(), premiumAddOnGroup()] });
-    const addButton = screen.getByRole('button', { name: 'Add' });
-    const footer = addButton.closest('div');
-    expect(footer?.className).toContain('sticky');
-    expect(footer?.className).toContain('bottom-0');
+    const region = screen.getByTestId('add-ons-scroll-region');
+    expect(region.className).toContain('overflow-y-auto');
+    expect(region.className).toContain('min-h-0');
+    expect(region).toContainElement(screen.getByText('BBQ'));
+    for (const name of ['Add', 'Cancel', 'Close']) {
+      expect(region).not.toContainElement(screen.getByRole('button', { name }));
+    }
+    expect(region).not.toContainElement(screen.getByText('Overload Bites'));
+    const dialog = screen.getByRole('dialog');
+    expect(dialog.className).toContain('flex-col');
+    expect(dialog.className).toContain('overflow-hidden');
   });
 
   it('renders Cancel and calls onCancel', () => {
@@ -195,7 +216,7 @@ describe('AddOnsDialog — structure (mobile/desktop-agnostic, single shared mar
         groups={[singleFlavorGroup()]}
         quantity={2}
         assignments={{}}
-        onAssignmentChange={vi.fn()}
+        onAdjustAssignment={vi.fn()}
         selectedOptionIds={{ 'flavor-group': ['opt-bbq'] }}
         onToggleOption={vi.fn()}
         onSelectOption={vi.fn()}
@@ -206,5 +227,86 @@ describe('AddOnsDialog — structure (mobile/desktop-agnostic, single shared mar
       />,
     );
     expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument();
+  });
+});
+
+function addOnsChecklistGroup(overrides: Partial<AddOnsDialogGroup> = {}): AddOnsDialogGroup {
+  return {
+    id: 'addons-group',
+    name: 'Add-ons',
+    label: 'Add-ons',
+    allowNoAddOn: true,
+    simplified: true,
+    selectionType: 'MULTIPLE',
+    required: false,
+    minSelections: 0,
+    maxSelections: null,
+    options: [
+      { id: 'opt-cheese-dip', name: 'Cheese Dip', price_adjustment: 15 },
+      { id: 'opt-ketchup', name: 'Ketchup', price_adjustment: 0 },
+    ],
+    ...overrides,
+  };
+}
+
+describe('AddOnsDialog — P46 whole-card choices and optional groups', () => {
+  it('renders every choice as one pressed/unpressed card button carrying its name and price', () => {
+    renderDialog({ groups: [singleFlavorGroup()], selectedOptionIds: { 'flavor-group': ['opt-bbq'] } });
+    expect(screen.getByRole('button', { name: /^BBQ/, pressed: true })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Sour Cream/, pressed: false })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Truffle.*\+₱15\.00$/ })).toBeInTheDocument();
+  });
+
+  it('a required single choice is not un-picked by tapping it again', () => {
+    const { onSelectOption, onClearGroup } = renderDialog({ groups: [singleFlavorGroup()], selectedOptionIds: { 'flavor-group': ['opt-bbq'] } });
+    fireEvent.click(screen.getByText('BBQ'));
+    expect(onSelectOption).not.toHaveBeenCalled();
+    expect(onClearGroup).not.toHaveBeenCalled();
+  });
+
+  it('an optional single choice un-picks on a second tap', () => {
+    const { onClearGroup } = renderDialog({
+      groups: [singleFlavorGroup({ required: false, minSelections: 0, allowNoAddOn: true })],
+      selectedOptionIds: { 'flavor-group': ['opt-bbq'] },
+    });
+    fireEvent.click(screen.getByText('BBQ'));
+    expect(onClearGroup).toHaveBeenCalledWith('flavor-group');
+  });
+
+  it('an optional Add-ons checklist left empty allows Add and never shows a No Add-ons choice', () => {
+    renderDialog({ groups: [addOnsChecklistGroup()] });
+    expect(screen.queryByText('No Add-ons')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add' })).not.toBeDisabled();
+  });
+
+  it('tapping an Add-ons card toggles it, and Clear empties the group', () => {
+    const { onToggleOption, onClearGroup } = renderDialog({ groups: [addOnsChecklistGroup()], selectedOptionIds: { 'addons-group': ['opt-ketchup'] } });
+    fireEvent.click(screen.getByText('Cheese Dip'));
+    expect(onToggleOption).toHaveBeenCalledWith('addons-group', 'opt-cheese-dip');
+    fireEvent.click(screen.getByRole('button', { name: 'Clear Add-ons' }));
+    expect(onClearGroup).toHaveBeenCalledWith('addons-group');
+  });
+
+  it('an optional MULTIPLE group is valid empty or partly filled, never over its limit', () => {
+    const optional = premiumAddOnGroup({ allowNoAddOn: true, required: false, minSelections: 0, maxSelections: 2 });
+    renderDialog({ groups: [optional] });
+    expect(screen.getByText('Optional')).toBeInTheDocument();
+    expect(screen.queryByText('No Add-ons')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add' })).not.toBeDisabled();
+    expect(isMultiGroupComplete(optional, { 'opt-cheese': 1 })).toBe(true);
+    expect(isMultiGroupComplete(optional, { 'opt-cheese': 3 })).toBe(false);
+  });
+
+  it('a required MULTIPLE group still needs its exact count, and the footer names what is missing', () => {
+    renderDialog({ groups: [singleFlavorGroup(), premiumAddOnGroup()], assignments: { 'premium-group': { 'opt-cheese': 1 } } });
+    expect(screen.getByRole('button', { name: 'Add' })).toBeDisabled();
+    expect(screen.getByText('Still needed: Flavor, Premium Flavor Upgrade')).toBeInTheDocument();
+  });
+
+  it('a legacy No-Add-on sentinel never counts as a pick', () => {
+    const optional = premiumAddOnGroup({ allowNoAddOn: true, required: false, minSelections: 0, maxSelections: 2 });
+    renderDialog({ groups: [optional], assignments: { 'premium-group': { __none__: 2 } } });
+    expect(screen.getByText('Assigned 0 / 2')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add one Cheese Sauce' })).not.toHaveAttribute('aria-disabled');
   });
 });

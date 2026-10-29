@@ -826,7 +826,7 @@ describe('TerminalPage — Add-ons dialog splits into cart lines before adding (
     expect(mockAddItem).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: 'Add' })).toBeInTheDocument();
     expect(screen.getByText('Small')).toBeInTheDocument();
-    expect(screen.getByText('Large (+₱20.00)')).toBeInTheDocument();
+    expect(screen.getByText('Large')).toBeInTheDocument();
   });
 
   it('keeps Add disabled until the required Flavor/Size group has a selection', () => {
@@ -841,8 +841,8 @@ describe('TerminalPage — Add-ons dialog splits into cart lines before adding (
 
   // Task 182 — the top-level product Quantity control (and the per-choice
   // minus/zero/plus allocator it drove) is gone for a required
-  // SINGLE-selection group; each option renders as one checkbox-style row.
-  it('renders a required SINGLE-selection group as checkbox rows with no Quantity control and no per-option allocator', () => {
+  // SINGLE-selection group; P46 — each option renders as one whole-card toggle button.
+  it('renders a required SINGLE-selection group as card buttons with no Quantity control and no per-option allocator', () => {
     mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant()]), isLoading: false });
     render(<TerminalPage />);
     fireEvent.click(screen.getByText('Mega Mix Fries'));
@@ -852,8 +852,9 @@ describe('TerminalPage — Add-ons dialog splits into cart lines before adding (
     expect(screen.queryByRole('button', { name: 'Decrease quantity' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Increase Small quantity' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Decrease Small quantity' })).not.toBeInTheDocument();
-    expect(screen.getByRole('checkbox', { name: /Small/ })).toBeInTheDocument();
-    expect(screen.getByRole('checkbox', { name: /Large/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Add one Small' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Small/, pressed: false })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Large.*\+₱20\.00$/, pressed: false })).toBeInTheDocument();
   });
 
   it('selecting the required Flavor/Size option adds the product to the cart at quantity 1', async () => {
@@ -877,7 +878,7 @@ describe('TerminalPage — Add-ons dialog splits into cart lines before adding (
     render(<TerminalPage />);
     fireEvent.click(screen.getByText('Mega Mix Fries'));
     fireEvent.click(screen.getByText('Small'));
-    fireEvent.click(screen.getByText('Large (+₱20.00)'));
+    fireEvent.click(screen.getByText('Large'));
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
     await waitFor(() => expect(mockAddItem).toHaveBeenCalledTimes(1));
@@ -1026,7 +1027,7 @@ describe('TerminalPage — Edit reuses the Add-ons dialog to change a cart line 
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
 
     // Preloaded selection (Large) already satisfies the required group — Save starts enabled. No quantity control to preload/show (Task 182).
-    expect(screen.getByRole('checkbox', { name: /Large/ })).toBeChecked();
+    expect(screen.getByRole('button', { name: /^Large/, pressed: true })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Increase quantity' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Save' })).not.toBeDisabled();
     expect(screen.queryByRole('button', { name: 'Add' })).not.toBeInTheDocument();
@@ -1079,7 +1080,7 @@ describe('TerminalPage — Edit reuses the Add-ons dialog to change a cart line 
     ]);
     render(<TerminalPage />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
-    fireEvent.click(screen.getByText('Large (+₱20.00)'));
+    fireEvent.click(screen.getByText('Large'));
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() => expect(mockReplaceItem).toHaveBeenCalledTimes(1));
@@ -1193,7 +1194,7 @@ describe('TerminalPage — Add-ons group simplified optional multi-select (Task 
     mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [addOnsGroup()] })]), isLoading: false });
     render(<TerminalPage />);
     fireEvent.click(screen.getByText('Mega Mix Fries'));
-    fireEvent.click(screen.getByText('Cheese (+₱10.00)'));
+    fireEvent.click(screen.getByText('Cheese'));
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
     await waitFor(() => expect(mockAddItem).toHaveBeenCalledTimes(1));
@@ -1211,8 +1212,8 @@ describe('TerminalPage — Add-ons group simplified optional multi-select (Task 
     mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [addOnsGroup()] })]), isLoading: false });
     render(<TerminalPage />);
     fireEvent.click(screen.getByText('Mega Mix Fries'));
-    fireEvent.click(screen.getByText('Cheese (+₱10.00)'));
-    fireEvent.click(screen.getByText('BBQ (+₱10.00)'));
+    fireEvent.click(screen.getByText('Cheese'));
+    fireEvent.click(screen.getByText('BBQ'));
     fireEvent.click(screen.getByText('Sour Cream'));
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
@@ -1229,12 +1230,13 @@ describe('TerminalPage — Add-ons group simplified optional multi-select (Task 
     });
   });
 
-  it('selecting No Add-ons after choosing options clears the selection', async () => {
+  it('Clear after choosing options empties the selection', async () => {
     mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [addOnsGroup()] })]), isLoading: false });
     render(<TerminalPage />);
     fireEvent.click(screen.getByText('Mega Mix Fries'));
-    fireEvent.click(screen.getByText('Cheese (+₱10.00)'));
-    fireEvent.click(screen.getByText('No Add-ons'));
+    fireEvent.click(screen.getByText('Cheese'));
+    expect(screen.queryByText('No Add-ons')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear Add-ons' }));
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
     await waitFor(() =>
@@ -1242,12 +1244,14 @@ describe('TerminalPage — Add-ons group simplified optional multi-select (Task 
     );
   });
 
-  it('selecting an add-on after No Add-ons results in only that add-on being applied', async () => {
+  it('tapping an add-on card twice removes it, and another tap applies only that add-on', async () => {
     mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [addOnsGroup()] })]), isLoading: false });
     render(<TerminalPage />);
     fireEvent.click(screen.getByText('Mega Mix Fries'));
-    fireEvent.click(screen.getByText('No Add-ons'));
-    fireEvent.click(screen.getByText('Cheese (+₱10.00)'));
+    fireEvent.click(screen.getByText('BBQ'));
+    fireEvent.click(screen.getByText('BBQ'));
+    expect(screen.getByRole('button', { name: /^BBQ/, pressed: false })).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Cheese'));
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
     await waitFor(() => expect(mockAddItem).toHaveBeenCalled());
@@ -1298,7 +1302,7 @@ describe('TerminalPage — Add-ons group simplified optional multi-select (Task 
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
 
     // Re-toggling Cheese off, then Save, must leave only BBQ selected.
-    fireEvent.click(screen.getByText('Cheese (+₱10.00)'));
+    fireEvent.click(screen.getByText('Cheese'));
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() => expect(mockReplaceItem).toHaveBeenCalled());
@@ -1314,7 +1318,7 @@ describe('TerminalPage — Add-ons group simplified optional multi-select (Task 
     ]);
   });
 
-  it('Edit can clear all add-ons via No Add-ons', async () => {
+  it('Edit can clear all add-ons via Clear', async () => {
     mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [addOnsGroup()] })]), isLoading: false });
     mockCartItems.mockReturnValue([
       {
@@ -1328,7 +1332,7 @@ describe('TerminalPage — Add-ons group simplified optional multi-select (Task 
     ]);
     render(<TerminalPage />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
-    fireEvent.click(screen.getByText('No Add-ons'));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear Add-ons' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() =>
@@ -1336,7 +1340,7 @@ describe('TerminalPage — Add-ons group simplified optional multi-select (Task 
     );
   });
 
-  it('a required, SINGLE-selection Add-ons-named group is still treated as optional (No Add-ons shown, Add enabled with zero selections)', () => {
+  it('a required, SINGLE-selection Add-ons-named group is still treated as optional (Add enabled with zero selections, no No Add-ons choice to make)', () => {
     mockUseCatalog.mockReturnValue({
       data: catalogWith([
         optionVariant({ option_groups: [addOnsGroup({ selection_type: 'SINGLE', min_selections: 1, max_selections: 1, required: true })] }),
@@ -1346,7 +1350,8 @@ describe('TerminalPage — Add-ons group simplified optional multi-select (Task 
     render(<TerminalPage />);
     fireEvent.click(screen.getByText('Mega Mix Fries'));
 
-    expect(screen.getByText('No Add-ons')).toBeInTheDocument();
+    expect(screen.queryByText('No Add-ons')).not.toBeInTheDocument();
+    expect(screen.getByText('Optional')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add' })).not.toBeDisabled();
   });
 
@@ -1365,7 +1370,7 @@ describe('TerminalPage — Add-ons group simplified optional multi-select (Task 
     fireEvent.click(screen.getByText('Small'));
     expect(screen.getByRole('button', { name: 'Add' })).not.toBeDisabled();
 
-    fireEvent.click(screen.getByText('Cheese (+₱10.00)'));
+    fireEvent.click(screen.getByText('Cheese'));
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
     await waitFor(() => expect(mockAddItem).toHaveBeenCalled());
@@ -1416,14 +1421,14 @@ describe('TerminalPage — POS product-option popup fixes (Task 182)', () => {
     render(<TerminalPage />);
     fireEvent.click(screen.getByText('Mega Mix Fries'));
 
-    expect(screen.getByRole('button', { name: 'Increase Topping A quantity' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Increase Topping B quantity' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add one Topping A' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add one Topping B' })).toBeInTheDocument();
     expect(screen.queryByRole('checkbox', { name: /Topping A/ })).not.toBeInTheDocument();
     expect(screen.getByText('Assigned 0 / 2')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add' })).toBeDisabled();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Increase Topping A quantity' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Increase Topping B quantity' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add one Topping A' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add one Topping B' }));
     expect(screen.getByText('Assigned 2 / 2')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add' })).not.toBeDisabled();
 
@@ -1454,10 +1459,13 @@ describe('TerminalPage — POS product-option popup fixes (Task 182)', () => {
     fireEvent.click(screen.getByText('Mega Mix Fries'));
 
     const dialog = screen.getByRole('dialog');
-    expect(dialog.className).toContain('w-[min(92vw,720px)]');
-    expect(dialog.className).toContain('max-w-[720px]');
-    expect(dialog.className).toContain('max-h-[min(88vh,850px)]');
-    expect(dialog.className).toContain('overflow-x-hidden');
+    // P46 — full screen on a phone; a wide, height-capped dialog from sm.
+    expect(dialog.className).toContain('h-[100dvh]');
+    expect(dialog.className).toContain('w-screen');
+    expect(dialog.className).toContain('sm:w-[min(94vw,960px)]');
+    expect(dialog.className).toContain('sm:max-h-[min(90dvh,880px)]');
+    expect(dialog.className).toContain('overflow-hidden');
+    expect(screen.getByTestId('add-ons-scroll-region').className).toContain('overflow-x-hidden');
   });
 
   // Task 193B — a variant carrying two independent required MULTIPLE groups
@@ -1494,9 +1502,9 @@ describe('TerminalPage — POS product-option popup fixes (Task 182)', () => {
     render(<TerminalPage />);
     fireEvent.click(screen.getByText('Mega Mix Fries'));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Increase Cheese quantity' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Increase Sour Cream quantity' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Increase Ketchup quantity' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add one Cheese' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add one Sour Cream' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add one Ketchup' }));
 
     expect(screen.getByText('Assigned 2 / 2')).toBeInTheDocument();
     expect(screen.getByText('Assigned 1 / 1')).toBeInTheDocument();
@@ -3388,5 +3396,120 @@ describe('TerminalPage — mobile cart Sheet (Task 196 visual redesign, Task 200
     const footer = itemsRegion?.nextElementSibling;
     expect(footer).toHaveClass('app-pos-footer');
     expect(footer).toHaveClass('shrink-0');
+  });
+});
+
+// P46 — owner video review: whole-card choices, optional groups need no
+// "No Add-ons" pick, rapid taps never overshoot a limit, and the flavor
+// picker is a real dialog. Payloads must match what the previous flow sent.
+describe('TerminalPage — P46 product customization usability', () => {
+  beforeEach(() => {
+    mockAddItem.mockClear();
+    mockReplaceItem.mockClear();
+    mockCartItems.mockReturnValue([]);
+  });
+
+  afterEach(() => cleanup());
+
+  it('an optional MULTIPLE group left empty adds with no options — the same line the old No Add-ons taps produced', async () => {
+    const optionalGroup = multiSlotGroup({ min_selections: 0, max_selections: 2, required: false });
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [optionalGroup] })]), isLoading: false });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+
+    expect(screen.queryByText('No Add-ons')).not.toBeInTheDocument();
+    expect(screen.getByText('Adds 2 items — one per Toppings pick; any left empty have none.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add' })).not.toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    await waitFor(() => expect(mockAddItem).toHaveBeenCalledTimes(1));
+    expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 2 });
+  });
+
+  it('a partly filled optional MULTIPLE group splits the remainder into a plain line', async () => {
+    const optionalGroup = multiSlotGroup({ min_selections: 0, max_selections: 2, required: false });
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [optionalGroup] })]), isLoading: false });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add one Topping A' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    await waitFor(() => expect(mockAddItem).toHaveBeenCalledTimes(2));
+    expect(mockAddItem).toHaveBeenCalledWith({
+      product_id: 'product-1',
+      product_variant_id: 'variant-1',
+      selected_options: [
+        { option_group_id: 'toppings-group', option_group_name: 'Toppings', option_id: 'top-a', option_name: 'Topping A', price_adjustment: 5 },
+      ],
+      quantity: 1,
+    });
+    expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 });
+  });
+
+  it('rapid taps past the limit are ignored, and Remove one takes exactly one away', async () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [multiSlotGroup()] })]), isLoading: false });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+
+    const toppingA = screen.getByRole('button', { name: 'Add one Topping A' });
+    act(() => {
+      // Three taps inside one act() land before any re-render — the state-updater form must still count each one and stop at 2.
+      toppingA.click();
+      toppingA.click();
+      toppingA.click();
+    });
+    expect(screen.getByText('Assigned 2 / 2')).toBeInTheDocument();
+    expect(screen.getByText('×2')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add one Topping B' })).toHaveAttribute('aria-disabled', 'true');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove one Topping A' }));
+    expect(screen.getByText('Assigned 1 / 2')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Add one Topping B' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    await waitFor(() => expect(mockAddItem).toHaveBeenCalledTimes(2));
+    expect(mockAddItem).toHaveBeenCalledWith(
+      expect.objectContaining({ selected_options: [expect.objectContaining({ option_id: 'top-a' })], quantity: 1 }),
+    );
+    expect(mockAddItem).toHaveBeenCalledWith(
+      expect.objectContaining({ selected_options: [expect.objectContaining({ option_id: 'top-b' })], quantity: 1 }),
+    );
+  });
+
+  it('a required MULTIPLE group (min 0 but marked required) stays required — no empty Add', () => {
+    const requiredGroup = multiSlotGroup({ min_selections: 0, max_selections: 1, required: true });
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [requiredGroup] })]), isLoading: false });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+
+    expect(screen.getByText('Choose 1')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add' })).toBeDisabled();
+    expect(screen.getByText('Still needed: Toppings')).toBeInTheDocument();
+  });
+
+  it('the flavor picker is a dialog of whole-card flavor buttons, and picking one adds the flavored item', async () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [], flavors: [{ flavor_id: 'flavor-2', name: 'BBQ', color_hex: null, price_premium: 5 }] })]), isLoading: false });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveTextContent('Choose a flavor');
+    fireEvent.click(screen.getByRole('button', { name: /^BBQ.*\+₱5\.00$/ }));
+
+    await waitFor(() =>
+      expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', flavor_id: 'flavor-2', quantity: 1 }),
+    );
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('Escape cancels the customization dialog without adding anything', () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant()]), isLoading: false });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(mockAddItem).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { splitAddOnLines, assignedQuantity, NO_ADD_ON_KEY, type AddOnSplitGroup } from './split-add-ons';
+import { splitAddOnLines, assignedQuantity, chosenQuantity, fillWithNoAddOn, NO_ADD_ON_KEY, type AddOnSplitGroup } from './split-add-ons';
 
 const friesGroup: AddOnSplitGroup = {
   id: 'group-1',
@@ -89,5 +89,31 @@ describe('assignedQuantity', () => {
 
   it('returns 0 for an undefined assignment', () => {
     expect(assignedQuantity(undefined)).toBe(0);
+  });
+});
+
+describe('chosenQuantity / fillWithNoAddOn (P46)', () => {
+  it('counts real picks only, never the No Add-on sentinel', () => {
+    expect(chosenQuantity({ a: 1, b: 2, [NO_ADD_ON_KEY]: 3 })).toBe(3);
+    expect(chosenQuantity(undefined)).toBe(0);
+  });
+
+  it('fills an empty optional group entirely with no-add-on units', () => {
+    expect(fillWithNoAddOn(undefined, 2)).toEqual({ [NO_ADD_ON_KEY]: 2 });
+  });
+
+  it('fills only the unpicked remainder and drops a stale sentinel or zero counts', () => {
+    expect(fillWithNoAddOn({ a: 1, b: 0, [NO_ADD_ON_KEY]: 5 }, 3)).toEqual({ a: 1, [NO_ADD_ON_KEY]: 2 });
+  });
+
+  it('adds no sentinel once the picks already reach the target', () => {
+    expect(fillWithNoAddOn({ a: 2 }, 2)).toEqual({ a: 2 });
+  });
+
+  it('a partly filled optional group splits into the same lines the old manual No Add-ons flow produced', () => {
+    const filled = fillWithNoAddOn({ cheese: 1 }, 3);
+    expect(splitAddOnLines([friesGroup], { [friesGroup.id]: filled }, 3)).toEqual(
+      splitAddOnLines([friesGroup], { [friesGroup.id]: { cheese: 1, [NO_ADD_ON_KEY]: 2 } }, 3),
+    );
   });
 });

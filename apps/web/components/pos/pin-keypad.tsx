@@ -7,6 +7,9 @@ import { cn } from '@/lib/utils';
 
 const KEYPAD_ROWS_1_TO_9 = ['1', '2', '3', '4', '5', '6', '7', '8', '9'] as const;
 
+// Height follows the viewport (min 52px touch floor, max 80px) so the pad never pushes the Continue button off a short screen.
+const KEY_CLASSES = 'touch-target h-[clamp(3.25rem,9dvh,5rem)] w-full rounded-xl';
+
 interface PinKeypadProps {
   value: string;
   maxLength: number;
@@ -24,6 +27,12 @@ interface PinKeypadProps {
  * the parent terminal page still owns the actual PIN string so it can clear
  * it the instant a verify attempt settles (success or failure), same as
  * before this component existed.
+ *
+ * P46 — keys are full-width cells of a 3-column grid (not fixed 56px
+ * circles) sized from the viewport: tall enough to hit reliably on a phone
+ * or a counter tablet, capped on desktop, and shrunk on short landscape
+ * screens so the whole pad fits without scrolling. The grid's width comes
+ * from the parent, so the terminal layout decides how wide the pad is.
  */
 export function PinKeypad({ value, maxLength, disabled, onChange, onSubmit, 'aria-label': ariaLabel }: PinKeypadProps) {
   const hiddenInputRef = useRef<HTMLInputElement>(null);
@@ -44,7 +53,7 @@ export function PinKeypad({ value, maxLength, disabled, onChange, onSubmit, 'ari
   }
 
   return (
-    <div className="flex flex-col items-center gap-4">
+    <div className="flex w-full flex-col items-center gap-4 sm:gap-5">
       {/* Masked dots — the actual PIN is never rendered as text anywhere in this component. A visually-hidden input mirrors the value for screen readers and keeps physical-keyboard entry (digits, Backspace, paste, Enter) working without a visible text field. */}
       <label className="sr-only" htmlFor="pos-pin-hidden-input">
         {ariaLabel ?? 'Staff PIN'}
@@ -73,7 +82,7 @@ export function PinKeypad({ value, maxLength, disabled, onChange, onSubmit, 'ari
         id="pos-pin-dots"
         role="status"
         aria-live="off"
-        className="flex items-center justify-center gap-3"
+        className="flex min-h-6 items-center justify-center gap-3 sm:gap-4"
         onClick={() => hiddenInputRef.current?.focus()}
       >
         {Array.from({ length: maxLength }, (_, i) => (
@@ -81,7 +90,7 @@ export function PinKeypad({ value, maxLength, disabled, onChange, onSubmit, 'ari
             key={i}
             aria-hidden="true"
             className={cn(
-              'h-4 w-4 rounded-full border-2 border-input transition-colors',
+              'h-4 w-4 rounded-full border-2 border-input transition-colors sm:h-5 sm:w-5',
               i < value.length ? 'border-primary bg-primary' : 'bg-transparent',
             )}
           />
@@ -91,14 +100,14 @@ export function PinKeypad({ value, maxLength, disabled, onChange, onSubmit, 'ari
         </span>
       </div>
 
-      <div className="grid grid-cols-3 gap-2.5">
+      <div className="grid w-full grid-cols-3 gap-2 sm:gap-3">
         {KEYPAD_ROWS_1_TO_9.map((digit) => (
           <Button
             key={digit}
             type="button"
             variant="outline"
             size="lg"
-            className="touch-target h-14 w-14 rounded-full text-xl font-semibold"
+            className={cn(KEY_CLASSES, 'text-2xl font-semibold')}
             disabled={disabled}
             onClick={() => {
               appendDigit(digit);
@@ -113,7 +122,7 @@ export function PinKeypad({ value, maxLength, disabled, onChange, onSubmit, 'ari
           type="button"
           variant="ghost"
           size="lg"
-          className="touch-target h-14 w-14 rounded-full text-sm font-medium"
+          className={cn(KEY_CLASSES, 'text-base font-medium text-muted-foreground')}
           disabled={disabled || value.length === 0}
           onClick={clear}
           aria-label="Clear PIN"
@@ -124,7 +133,7 @@ export function PinKeypad({ value, maxLength, disabled, onChange, onSubmit, 'ari
           type="button"
           variant="outline"
           size="lg"
-          className="touch-target h-14 w-14 rounded-full text-xl font-semibold"
+          className={cn(KEY_CLASSES, 'text-2xl font-semibold')}
           disabled={disabled}
           onClick={() => {
             appendDigit('0');
@@ -138,7 +147,7 @@ export function PinKeypad({ value, maxLength, disabled, onChange, onSubmit, 'ari
           type="button"
           variant="outline"
           size="lg"
-          className="touch-target h-14 w-14 rounded-full"
+          className={KEY_CLASSES}
           disabled={disabled || value.length === 0}
           onClick={() => {
             backspace();
@@ -146,7 +155,7 @@ export function PinKeypad({ value, maxLength, disabled, onChange, onSubmit, 'ari
           }}
           aria-label="Backspace"
         >
-          <Delete className="h-5 w-5" />
+          <Delete className="h-6 w-6" />
         </Button>
       </div>
     </div>

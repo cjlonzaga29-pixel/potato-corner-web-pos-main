@@ -236,12 +236,19 @@ router.post(
           deviceId: getDeviceIdHeader(req),
           transactions: body.transactions.map((item) => ({
             offlineProvisionalNumber: item.offline_provisional_number,
-            shiftId: item.shift_id,
+            // P46R3 — the shift the sale was rung under when the client knew
+            // it, otherwise the one shiftGuard resolved for this cashier (the
+            // shift live checkout would have used).
+            shiftId: item.shift_id ?? req.activeShift?.id,
             items: item.items.map((cartItem) => ({
               productId: cartItem.product_id,
               productVariantId: cartItem.product_variant_id,
               flavorId: cartItem.flavor_id,
               selectedFlavors: cartItem.selected_flavors?.map((sf) => ({ slotIndex: sf.slot_index, snackProductVariantId: sf.snack_product_variant_id, flavorId: sf.flavor_id })),
+              // P46R3 — was dropped here (live checkout above always forwarded
+              // it), so a queued sale synced without its options: unpriced and
+              // undeducted before P46R2, PRODUCT_OPTION_REQUIRED after it.
+              selectedOptionIds: cartItem.selected_option_ids,
               quantity: cartItem.quantity,
             })),
             paymentMethod: item.payment_method,

@@ -112,6 +112,7 @@ async function runHandlers(handlers: Middleware[], req: Request, res: Response):
 const BRANCH_1 = randomUUID();
 const BRANCH_2 = randomUUID();
 const SHIFT_1 = randomUUID();
+const SHIFT_2 = randomUUID();
 const TXN_1 = randomUUID();
 
 function validCreateBody(overrides: Record<string, unknown> = {}) {
@@ -389,6 +390,52 @@ describe('POST /sync-offline', () => {
 
     expect(transactionsService.syncOfflineTransactions).toHaveBeenCalledWith(
       expect.objectContaining({ deviceId: 'device-abc-123' }),
+      null,
+    );
+  });
+
+  // P46R3 — the queued sale's option ids must reach the service exactly as
+  // live checkout's do; dropping them synced the sale without its options.
+  it("forwards each queued item's selected_option_ids to the service", async () => {
+    const handlers = getRouteHandlers(transactionsRouter, 'post', '/sync-offline');
+    const token = generateStaffToken(BRANCH_1);
+    const optionIds = [randomUUID(), randomUUID()];
+    const [queued] = validSyncOfflineBody().transactions;
+    const body = validSyncOfflineBody({
+      transactions: [{ ...queued, items: [{ product_id: randomUUID(), product_variant_id: randomUUID(), selected_option_ids: optionIds, quantity: 2 }] }],
+    });
+    const req = mockReq({ ...authHeader(token), body });
+    const res = mockRes();
+    vi.mocked(transactionsService.syncOfflineTransactions).mockResolvedValue({ results: [], synced_count: 0 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(transactionsService.syncOfflineTransactions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        transactions: [expect.objectContaining({ items: [expect.objectContaining({ selectedOptionIds: optionIds, quantity: 2 })] })],
+      }),
+      null,
+    );
+  });
+
+  // P46R3 — a Branch Account terminal queues sales without a shift id; the
+  // batch must not fail validation, and the item takes the shift shiftGuard
+  // resolved for the syncing cashier.
+  it("accepts a queued item without shift_id and uses the cashier's active shift", async () => {
+    const handlers = getRouteHandlers(transactionsRouter, 'post', '/sync-offline');
+    const token = generateStaffToken(BRANCH_1);
+    const [queued] = validSyncOfflineBody().transactions;
+    const withoutShift = { ...queued, shift_id: undefined };
+    const req = mockReq({ ...authHeader(token), body: validSyncOfflineBody({ transactions: [withoutShift, { ...queued, offline_provisional_number: 'PC-MAIN01-20260719-OFFLINE-0002', shift_id: SHIFT_2 }] }) });
+    const res = mockRes();
+    vi.mocked(transactionsService.syncOfflineTransactions).mockResolvedValue({ results: [], synced_count: 0 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(transactionsService.syncOfflineTransactions).toHaveBeenCalledWith(
+      expect.objectContaining({ transactions: [expect.objectContaining({ shiftId: SHIFT_1 }), expect.objectContaining({ shiftId: SHIFT_2 })] }),
       null,
     );
   });

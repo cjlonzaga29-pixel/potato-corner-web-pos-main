@@ -99,7 +99,8 @@ export interface CreateHoldOrderData {
 
 export interface OfflineTransactionItemInput {
   offlineProvisionalNumber: string;
-  shiftId: string;
+  /** P46R3 — absent only when neither the client nor shiftGuard supplied one (admin/supervisor without a shift id); that item fails INVALID_SHIFT. */
+  shiftId: string | undefined;
   items: CartItemInput[];
   paymentMethod: PaymentMethod;
   discountType?: 'pwd' | 'senior_citizen' | 'employee' | 'manager_override' | 'promotional';

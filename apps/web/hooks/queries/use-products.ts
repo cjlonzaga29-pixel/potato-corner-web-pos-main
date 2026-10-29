@@ -1,5 +1,6 @@
 'use client';
 
+import { useCallback } from 'react';
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
@@ -203,6 +204,55 @@ export function useCatalog(branchId: string | null | undefined) {
     // sit on a stale query indefinitely past the 60s staleTime.
     refetchInterval: PRODUCT_CACHE_REFRESH_MINUTES * 60 * 1000,
   });
+}
+
+/**
+ * P46R3 — one catalog read that only the network can answer, for recovering
+ * after an option refusal. The service worker's runtime cache answers /api
+ * GETs NetworkFirst (falling back to its cached copy offline or after a 10 s
+ * timeout), and the Dexie snapshot and TanStack cache can be just as old. A
+ * never-before-used URL has no cached copy to fall back to, and `no-store`
+ * skips the HTTP cache, so a response here is the server's current answer
+ * and a failure is a failure. The copy the service worker stores under that
+ * one-off URL is deleted afterwards (best effort) so it can't crowd out
+ * entries the offline fallback needs.
+ */
+export async function fetchConfirmedCatalog(branchId: string): Promise<PosCatalogResponse> {
+  const nonce = crypto.randomUUID();
+  try {
+    const response = await apiClient<PosCatalogResponse>(`/api/products/catalog?branch_id=${branchId}&fresh=${nonce}`, { cache: 'no-store' });
+    if (!response.data) throw new Error(errorMessage(response, 'Could not load the current product options'));
+    return response.data;
+  } finally {
+    void forgetCachedResponses(nonce);
+  }
+}
+
+/** P46R3 — fetchConfirmedCatalog, also handed to the terminal's catalog query so every price on screen comes from the same confirmed copy. */
+export function useConfirmCatalog() {
+  const queryClient = useQueryClient();
+  return useCallback(
+    async (branchId: string) => {
+      const fresh = await fetchConfirmedCatalog(branchId);
+      queryClient.setQueryData(['catalog', branchId], fresh);
+      return fresh;
+    },
+    [queryClient],
+  );
+}
+
+async function forgetCachedResponses(nonce: string): Promise<void> {
+  if (typeof caches === 'undefined') return;
+  try {
+    for (const name of await caches.keys()) {
+      const cache = await caches.open(name);
+      for (const request of await cache.keys()) {
+        if (request.url.includes(nonce)) await cache.delete(request);
+      }
+    }
+  } catch {
+    // Cache Storage unavailable (private mode, no service worker): nothing was stored.
+  }
 }
 
 /** Keeps the POS terminal's catalog (item availability/pricing) in sync with stock-driven changes at its own branch, without a manual refresh. */

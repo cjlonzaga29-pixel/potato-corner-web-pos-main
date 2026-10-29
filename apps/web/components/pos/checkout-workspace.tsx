@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type ComponentProps } from 'react';
+import { useEffect, useState, type ComponentProps, type ReactNode } from 'react';
 import { Receipt, ShoppingCart } from 'lucide-react';
 import type { ImageProofType } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
@@ -23,6 +23,8 @@ interface OrderReviewPanelProps {
   vatAmount: number;
   discountAmount: number;
   totalAmount: number;
+  /** P46R3 — shown above the lines (the Edit Cart option check). */
+  notice?: ReactNode;
   className?: string;
 }
 
@@ -45,11 +47,13 @@ export function OrderReviewPanel({
   vatAmount,
   discountAmount,
   totalAmount,
+  notice,
   className,
 }: OrderReviewPanelProps) {
   return (
     <div className={`flex min-h-0 flex-1 flex-col ${className ?? ''}`}>
       <div className="app-pos-section-padding min-h-0 flex-1 overflow-y-auto">
+        {notice}
         {cartLines.length === 0 ? (
           <EmptyState compact icon={ShoppingCart} title="Cart is empty" description="Add products before checking out." />
         ) : (
@@ -145,6 +149,7 @@ interface CheckoutWorkspaceProps extends PaymentFooterProps {
   subtotal: number;
   vatAmount: number;
   discountAmount: number;
+  reviewNotice?: ReactNode;
 }
 
 /**
@@ -168,6 +173,7 @@ export function CheckoutWorkspace({
   subtotal,
   vatAmount,
   discountAmount,
+  reviewNotice,
   ...paymentFooterProps
 }: CheckoutWorkspaceProps) {
   const { totalAmount, isChargePending, discountType, paymentMethod } = paymentFooterProps;
@@ -191,6 +197,7 @@ export function CheckoutWorkspace({
       vatAmount={vatAmount}
       discountAmount={discountAmount}
       totalAmount={totalAmount}
+      notice={reviewNotice}
     />
   );
   const paymentPanel = <PaymentPanel {...paymentFooterProps} />;

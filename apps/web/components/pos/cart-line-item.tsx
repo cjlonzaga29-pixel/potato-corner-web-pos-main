@@ -35,6 +35,8 @@ export interface CartLine {
   lineTotal: number;
   vatableCapAmount: number | null;
   hasOptionGroups: boolean;
+  /** P46R3 — what this line still needs under the freshly confirmed options (Edit Cart after an option refusal); absent otherwise. */
+  optionIssues?: string[];
 }
 
 interface CartLineItemProps {
@@ -123,6 +125,16 @@ export const CartLineItem = memo(function CartLineItem({ line, showDivider, onEd
               <p key={opt.option_id} className="text-xs leading-tight text-muted-foreground">
                 {opt.option_group_name}: {opt.option_name}
                 {opt.price_adjustment !== 0 ? formatAdjustment(opt.price_adjustment) : ''}
+              </p>
+            ))}
+          </div>
+        )}
+
+        {line.optionIssues && line.optionIssues.length > 0 && (
+          <div role="alert" className="space-y-0.5" data-testid="cart-line-option-issues">
+            {line.optionIssues.map((issue) => (
+              <p key={issue} className="text-xs font-medium leading-tight text-destructive">
+                {issue}
               </p>
             ))}
           </div>

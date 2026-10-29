@@ -402,3 +402,169 @@ was not re-run.
 
 Starting SHA `bf58969`; final SHA: the P46R2 commit itself (`git log -1`). Local only: `main` ahead of `origin/main` (`b2910f1`) by
 three commits. Clean tree after commit.
+
+## 6. P46R3 — visible offline-sale rejection and fresh Edit Cart configuration
+
+Starting HEAD `d22ce1f` (`main`, then `bf58969`, `cbfcd42`; `origin/main` `b2910f1`; clean tree). API + web + shared change; no
+migration, schema, dependency, workflow, Render, Vercel or production change. Not pushed or deployed. Server validation is
+unchanged or stricter. "Add-ons" naming and the "choose 1–N" interpretation (§4.2) are unchanged.
+
+### 6.1 Causes
+
+| # | Cause (all reproduced in a real browser or over real HTTP, §6.5) | Effect |
+| --- | --- | --- |
+| 1 | Sync failures were `console.error` only; `pendingSyncCount` was never rendered. | A refused queued sale was invisible and resent on every reconnect. |
+| 2 | `POST /sync-offline` dropped `selected_option_ids` when mapping items (live checkout forwarded them). P46R2's offline test called the service directly, so it never saw this. | `b2910f1` API: a queued ₱110 sale (Cheese + Garlic Mayo) was recorded as **₱100 with no options and no option deduction**. With P46R2 validation, every queued sale with a required option would be refused. |
+| 3 | `useMyActiveShift` asks for the Branch Account's *own* shift (`mine=true`), which never exists, so Branch Account terminals queue sales with no `shift_id`; the offline schema required it. | The whole batch failed `VALIDATION_ERROR` on every reconnect. Live checkout never hit this because the server uses `req.activeShift`. |
+| 4 | The queue stored no cashier; sync used the session token. On a Branch Account that token is never clocked in. | Batch `403 NOT_CLOCKED_IN`; a direct login would attribute every queued sale to whoever signed in last. |
+| 5 | Edit Cart reused the terminal's catalog copy. `/api/*` GETs are served by the service worker `NetworkFirst` (falls back to its `apis` cache offline or after 10 s). | The editor showed the configuration the server had just refused until a page reload (P46R2 §5.3). Offline, a "refetch" silently returned the stale catalog (proven: 200 with the retired option still active). |
+| 6 | next-pwa `reloadOnOnline: true` reloads the page on reconnect. The pre-P46R3 client synced only from the `online` event. | On `b2910f1` the sync request is cut off by the reload and never retried: **old queues effectively never drain** (§6.4). |
+
+### 6.2 Changes
+
+API (`transactions.router.ts`, `transactions.service.ts`, `transactions.types.ts`, shared `offlineTransactionItemSchema`):
+- `/sync-offline` forwards `selected_option_ids` exactly as live checkout does.
+- `shift_id` is optional per queued item; the router uses the item's `shift_id`, otherwise the shift `shiftGuard` resolved for the
+  authenticated, clocked-in cashier (the shift live checkout uses). A client `shift_id` is still checked by `createTransaction`
+  (unknown → `INVALID_SHIFT`, closed → `SHIFT_CLOSED`). An item with neither (supervisor/admin, exempt from `shiftGuard`) fails
+  `INVALID_SHIFT` on its own; no shift is guessed. Cashier is always `req.user`; a body `cashier_id` is ignored.
+
+Web:
+- `lib/offline/sync-queue.ts` / `db.ts`: rows record `cashierUserId`, `cashierName`, a display summary, `rejection` and `lastError`
+  (non-indexed fields, so no Dexie version bump). Sync is serialized, per branch, and sends only the current cashier's rows under that
+  cashier's token (the Branch Account employee token, with the same refresh live checkout uses).
+- `hooks/use-offline.ts`: syncs on reconnect **and** on mount / cashier change (so a reload-on-reconnect no longer loses the sync).
+- `components/pos/offline-sales-list.tsx`: queued sales in Pending (counted in the tab badge) and synced ones in Done with the receipt
+  number.
+- Edit Cart (`terminal/page.tsx`, `lib/pos/option-recovery.ts`, `hooks/queries/use-products.ts#fetchConfirmedCatalog`/`useConfirmCatalog`):
+  for `PRODUCT_OPTION_REQUIRED`/`_LIMIT_EXCEEDED`/`_NOT_AVAILABLE` it reads the catalog from a never-used URL with `cache: 'no-store'`
+  (the SW has nothing to fall back to; the one-off cache entry is deleted afterwards), feeds the same copy to the catalog query (no
+  reload), marks each line's problems, lists price changes and the new total before Charge, opens the editor on the first problem line
+  with only still-offered choices preloaded, and blocks Charge until the marked lines are fixed. A failed read keeps the cart and offers
+  "Try again"; nothing is shown as confirmed. Choices are never substituted; still-offered options only get their current name/price.
+
+### 6.3 Queue states and retry rules
+
+| State (Pending tab) | When | Sent automatically? | Cashier action |
+| --- | --- | --- | --- |
+| Waiting to sync | Recorded cashier = current cashier; no refusal | Yes: reconnect, mount, cashier change, Sync now | — |
+| Waiting, "Last try: …" | Batch failed, no answer, server error, or a non-definitive per-item code (stock, shift, unknown) | Yes, same triggers | Sync now |
+| Not accepted | Per-item `PRODUCT_OPTION_REQUIRED`/`_LIMIT_EXCEEDED`/`_NOT_AVAILABLE` | **No** | Retry (own sales only), after a supervisor fixes the option |
+| Waiting for *name* | Rung by another cashier | Only when that cashier is signed in | — |
+| Cashier not recorded | Queued by a pre-P46R3 client | **Never** (any login type) | Give a supervisor the ID, time and amount; keep browser data |
+| Synced (Done) | Server returned `synced` | — | — |
+
+Rules: a definitive refusal is final for that identity at that moment because the server's `(branch, X-Device-ID, provisional number)`
+replay lookup runs first and option validation throws before the sale transaction. Retry resends the identical payload under the same
+provisional number and device, so a sale that did commit (lost response) comes back `synced` with the original receipt. Rows are never
+deleted, edited, re-rung or auto-filled. Correcting a queued sale's options was deliberately **not** added: it was already paid at the
+offline price, so changing it is a business decision, not a sync fix.
+
+### 6.4 Compatibility and rollout
+
+Actual production sequence (`deploy-production.yml`): validate → production approval → staged web build → migrations → **Render API
+live** → web promotion → smoke. P46R3 has no migration and no payload change; it relaxes one request field (`shift_id`) and fixes
+mapping, so **API first is required** for offline sales to be recorded correctly. Results, all real browser on local builds:
+
+| Client → API | Observed |
+| --- | --- |
+| `b2910f1` web → current API, Branch Account | Queued rows have no cashier and no shift. On reconnect the old client sent the batch, the page reloaded, nothing was recorded (server rows 0); it never retries after the reload. Queue invisible. |
+| `b2910f1` web → current API, live checkout refused by a new requirement | 422; generic "Couldn't save sale" + server message; its Edit Cart still showed the old configuration ("No Add-ons" filling the group) until reload. Old allocator turned one tap into qty 2 (pre-P46 behavior). |
+| current web → `b2910f1` API, Branch Account | Batch 422 `VALIDATION_ERROR` (missing `shift_id`); row stays visible as "Waiting… Last try: Order details invalid", retryable. |
+| current web → `b2910f1` API, direct staff login | Synced, but **₱100 with no options** for a ₱110 Cheese + Garlic Mayo sale (old router). |
+| current web → `b2910f1` API, Edit Cart after `PRODUCT_OPTION_NOT_AVAILABLE` | Recovery works (fresh read confirmed, retired option marked). |
+| `b2910f1` web upgraded in place to the current web (same origin, same profile) | See §6.5 S4b: new service worker took over, legacy rows survived unchanged, flagged, never sent. |
+
+**Ordering does not fix old terminals.** Terminals left open on `b2910f1` after the web promotion keep the old client until their
+service worker updates (S4b: a navigation installed the new worker and `controllerchange` fired within seconds; a terminal that is
+never navigated or reloaded keeps the old code). Operator prerequisite:
+
+1. Before approving the release: on each terminal, check for unsynced offline sales (old client: DevTools → IndexedDB
+   `potato-corner-pos` → `offlineTransactions`, `syncedAt` null). They cannot be drained by the old client (cause 6) and will not be
+   sent by the new one (no cashier recorded).
+2. After the web is promoted: reload every POS terminal (or sign out and in) so the new service worker takes control.
+3. Any "Cashier not recorded" rows then listed in Pending must be reconciled manually by a supervisor from the ID, time and amount
+   shown (the sale was paid; it is not in sales). Do not clear browser data on that device. Re-ringing it under someone is an owner
+   decision; this release does not do it.
+4. Production catalog data was not inspected (no authorization); whether production groups match the "now rejected" configurations of
+   §5.3 is still unknown.
+
+### 6.5 Verification
+
+Disposable LOCAL database **`p46r3_10292319`** (new), container `potato-corner-pos-postgres-1`, 127.0.0.1:5432: `prisma migrate
+deploy` + seed + a scratchpad fixture (P46R3 Fries: required SINGLE Seasoning, optional MULTIPLE Extra Dips max 2 with Garlic Mayo
+₱10 → 15 g; a second staff "Bob Reyes"). A scratchpad guard refused anything but `127.0.0.1:5432/p46r3_*` (and any
+`PRODUCTION_DATABASE_URL_DIRECT`) before migrate, seed, fixture, tests and servers. Current API `:4483`, `b2910f1` API `:4484`
+(built from `git archive b2910f1`), a local switch proxy `:4490`, current web `:3483`/`:3484`, `b2910f1` web `:3484`. Production
+builds with the service worker active; Chromium via Playwright 1.61.1.
+
+| Check | Result |
+| --- | --- |
+| Router test for option forwarding on the old router (red) | 1 failed / 64 passed; fixed router 65/65 (final file 66/66 with the shift test) |
+| API transactions module, final code, serial, real Postgres (incl. option-requirements, transactions integration, checkout-worker, builder-recipe-match) | **9 files, 435/435** |
+| Shared | 4 files, 30/30; type-check and lint clean |
+| Web affected (`app/(branch)`, `components/pos`, `hooks`, `lib`), one run, final code | **636 passed, 3 failed** — all in `terminal/page.test.tsx`, each at the 5 s timeout (5.0–5.6 s). Re-run of that file alone: 140/141, the P19 "bounded backlog" test timed out again. That test on **HEAD with P46R3 stashed**: 3.36 s pass, then 5.9 s **fail**; with P46R3: 3.0 s and 3.2 s pass. A pre-existing timing flake; the failures stand as recorded. |
+| type-check web / api / shared | pass / pass / pass |
+| lint (changed files) web / api / shared | clean / clean / clean |
+| build shared / api / web (production) | pass / pass / pass (web rebuilt after the last change) |
+
+**S1 — current web + current API, Branch Account, SW controlling the page: 35/35** on the final build (also 35/35 on the
+previous build). Covers: rows record the cashier; nothing sent offline; option retired while queued → "Not accepted" with "Item
+option unavailable", retained, no server row; the valid sale synced once as Alice with its option; Done shows its receipt; after the
+refusal, two more reconnects sent it **0** more times (it was sent twice before the refusal was stored because the reconnect reload
+cut off the first response; reloads seen: 3); connection reset → "Waiting… Last try" → Sync now → synced once (₱120, Garlic Mayo ×2);
+lost response (server committed, browser aborted) → replay → one sale, same receipt; Alice's queued sale never sent during Bob's
+session, shown "Syncs when Jenny Santos…", synced under Alice when she returned; Retry after restoring the option → synced once as
+Alice (₱110, BBQ + Garlic Mayo), all 3 sends byte-identical to the queued items; Edit Cart: 422 → fresh read → "1 item needs a
+change", "₱100.00 → ₱105.00", editor opened with Extra Dips now required (Garlic Mayo +₱12) → Save → Charge 201 once at ₱117 (422,201),
+deduction job completed (Potato −100 g, Garlic Mayo −15 g), no page load; offline: the ordinary catalog URL was served by the SW
+with the retired option still active, while Edit Cart showed "Couldn't confirm" and kept the cart; after reconnect (cart survived the
+reload) an online fault on the fresh read kept the cart with "Try again", which then confirmed and named the retired option; no
+`fresh=` entries left in Cache Storage; corrected cart charged ₱105.
+
+**S6 — real HTTP against the current API: 11/11.** No `shift_id` → accepted, recorded on the branch's active shift with
+`cashier_id` = token user; option ids with repeats preserved (Cheese, Garlic Mayo, Garlic Mayo); 2 × (100+10+10) = ₱240; deduction
+job completed, Potato −200 g, Garlic Mayo −60 g; replay → same transaction id, no new row or movement; body `cashier_id` ignored;
+unknown shift → `INVALID_SHIFT`, closed shift → `SHIFT_CLOSED`, nothing written; Branch Account session → 403 `NOT_CLOCKED_IN`;
+another branch → 403 `BRANCH_ACCESS_DENIED`; supervisor without `shift_id` → per-item `INVALID_SHIFT`.
+
+**S4b — same browser context, same origin (`:3484`), same IndexedDB, real service-worker update: 10/10 (attempt 2).**
+`b2910f1` worker active and controlling → two legacy sales queued (no cashier, no shift) → old client's reconnect sync cut off, 0
+recorded → server swapped to the current build → `controllerchange`, controller `/sw.js` = the new build's file → both legacy rows
+byte-identical to before → listed "Cashier not recorded" with the supervisor instruction, no cashier name, **0** sync requests
+containing them, 0 server rows → a new offline sale on the upgraded build kept Alice and its options and synced once (₱110, Cheese +
+Garlic Mayo) → two reconnects and a reload: still one row → legacy rows still unchanged.
+
+Failed and discarded attempts (not counted above):
+- S1: several runs stopped on script errors (Playwright `require` path; admin login sharing the browser cookies; P46 lock-screen
+  wording; `selected_options` uses camelCase keys; `reloadOnOnline` reloads not handled; Pending tab left open; a check expecting 1
+  send). One run hit "Too many requests" on `select-employee` — express-rate-limit's in-memory store after many runs; the local API
+  was restarted, limits were not changed. Each stored real sales in the disposable DB only.
+- The first full S1 found cause 3 (batch `VALIDATION_ERROR`, no `shift_id`), fixed in the API before the counted runs.
+- S4 (persistent profile) **stalled**: the script awaited `navigator.serviceWorker.ready` without a timeout. API logs showed login and
+  PIN provisioning 200, the terminal loaded, no `verify-pos` call, no 429. Probe: in a Playwright persistent profile the worker never
+  installs (registration without an installing/active worker, even after a manual `register()`), while a normal context registers and
+  controls. The stalled processes were stopped; the profile `profile-branch` was kept in the scratchpad. S4b replaced it with one
+  context held across the server swap and bounded, logged steps.
+- S4b attempt 1: 9 checks recorded, then stopped — its "new build" marker assumed a PIN screen, but the new build restored Alice's
+  session without one, and the unlock step waited for a PIN box. Log kept as `s4b-run-attempt1.log`. Fixed the marker (worker script
+  hash vs the new file) and the restored-session case; attempt 2 above.
+
+### 6.6 Remaining limitations
+
+1. Legacy rows ("Cashier not recorded") have no automated recovery by design; manual supervisor reconciliation (§6.4).
+2. Shift failures (`SHIFT_CLOSED`, `INVALID_SHIFT`) and stock failures remain retryable, so such a row is resent on each trigger and
+   shows its reason; only option refusals are treated as final.
+3. A queued sale whose cashier never signs in on that terminal again stays waiting (shown with their name).
+4. `reloadOnOnline` still reloads the terminal on reconnect; the new client re-syncs on mount, and the cashier may be restored or asked
+   for a PIN.
+5. Edit Cart refreshes only after an option refusal; normal catalog staleness (60 s / realtime stock events) is unchanged.
+6. Not tested: production data, physical devices, the `b2910f1` *API* against old queues with options beyond the cases above.
+7. Supersedes §5.5 items 3 and 4.
+8. Local leftovers: database `p46r3_10292319`, scratchpad env, builds, profiles, logs and scripts; servers on 3483/3484/4483/4484/4490
+   are stopped after this session. Other sessions' databases were not touched.
+
+### 6.7 State
+
+Starting SHA `d22ce1f`; final SHA: the P46R3 commit itself (`git log -1`). Local only: `main` ahead of `origin/main` (`b2910f1`) by
+four commits. Clean tree after commit.

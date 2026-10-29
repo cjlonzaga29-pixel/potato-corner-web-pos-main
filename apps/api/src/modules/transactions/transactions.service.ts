@@ -2571,6 +2571,15 @@ export const transactionsService = {
           }
         }
 
+        if (!item.shiftId) {
+          results.push({
+            offline_provisional_number: item.offlineProvisionalNumber,
+            status: 'failed',
+            error: { code: 'INVALID_SHIFT', message: 'No shift to record this sale on' },
+          });
+          continue;
+        }
+
         let transaction: ReturnType<typeof toTransactionResponse>;
         try {
           transaction = await transactionsService.createTransaction(

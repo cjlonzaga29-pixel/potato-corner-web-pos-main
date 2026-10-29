@@ -148,6 +148,24 @@ vi.mock('@/lib/geolocation', () => ({
   GeolocationError: MockGeolocationError,
 }));
 
+// P46R3 — the offline queue view and the Edit Cart option check.
+const { mockUseOffline, mockConfirmCatalog, mockRetryOfflineSale } = vi.hoisted(() => {
+  const mockRetryOfflineSale = vi.fn();
+  return {
+    mockRetryOfflineSale,
+    mockUseOffline: vi.fn((_operator?: unknown) => ({
+      isOnline: true,
+      offlineSales: [] as unknown[],
+      pendingSyncCount: 0,
+      isSyncing: false,
+      syncNow: vi.fn(),
+      retryOfflineSale: mockRetryOfflineSale,
+      refreshOfflineSales: vi.fn(),
+    })),
+    mockConfirmCatalog: vi.fn(),
+  };
+});
+
 const { mockCartItems, mockRollbackUnconfirmed, mockUpdateItemQuantity } = vi.hoisted(() => ({
   mockCartItems: vi.fn(() => [] as unknown[]),
   mockRollbackUnconfirmed: vi.fn(() => 0),
@@ -169,13 +187,14 @@ vi.mock('@/hooks/use-cart', () => ({
 }));
 
 vi.mock('@/hooks/use-offline', () => ({
-  useOffline: () => ({ isOnline: true }),
+  useOffline: mockUseOffline,
 }));
 
 vi.mock('@/hooks/queries/use-products', () => ({
   useCatalog: mockUseCatalog,
   useCatalogRealtimeSync: () => undefined,
   useCheckCartAvailability: () => ({ mutateAsync: mockCheckCartAvailabilityMutateAsync }),
+  useConfirmCatalog: () => mockConfirmCatalog,
 }));
 
 vi.mock('@/hooks/queries/use-shifts', () => ({
@@ -3630,5 +3649,168 @@ describe('TerminalPage — P46 product customization usability', () => {
 
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(mockAddItem).not.toHaveBeenCalled();
+  });
+});
+
+// P46R3 — Edit Cart after an option refusal re-reads the options from the
+// network (useConfirmCatalog) before the cashier edits; queued offline sales
+// are listed in Pending with their server answer.
+describe('TerminalPage — P46R3 option recovery and offline queue', () => {
+  const stalePrice = 80;
+  const freshCatalog = () =>
+    catalogWith([
+      optionVariant({
+        price: 90,
+        option_groups: [
+          optionGroup({ options: [{ id: 'opt-2', name: 'Large', price_adjustment: 25, sort_order: 2, is_active: true }] }),
+          optionGroup({
+            id: 'dips',
+            name: 'Dips',
+            required: true,
+            min_selections: 1,
+            options: [{ id: 'dip-1', name: 'Garlic', price_adjustment: 0, sort_order: 1, is_active: true }],
+          }),
+        ],
+      }),
+    ]);
+  const LARGE = { option_group_id: 'group-1', option_group_name: 'Size', option_id: 'opt-2', option_name: 'Large', price_adjustment: 20 };
+
+  beforeEach(() => {
+    mockUseAuth.mockReturnValue({ user: STAFF_USER, selectEmployee: mockSelectEmployee, refreshEmployeeSession: mockRefreshEmployeeSession });
+    useAuthStore.setState({ user: STAFF_USER, accessToken: 'staff-token', isAuthenticated: true, isLoading: false });
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ price: stalePrice })]), isLoading: false });
+    mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isLoading: false });
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' }, isLoading: false });
+    mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', selected_options: [LARGE], quantity: 2 }]);
+    mockCreateTransactionMutateAsync.mockReset();
+    mockReplaceItem.mockClear();
+    mockClearCart.mockClear();
+    mockConfirmCatalog.mockReset();
+    mockRetryOfflineSale.mockClear();
+  });
+
+  afterEach(() => {
+    mockUseOffline.mockClear();
+    cleanup();
+  });
+
+  async function chargeAndGetRefused(code: string, message: string) {
+    const { TransactionApiError } = await import('@/hooks/queries/use-transactions');
+    mockCreateTransactionMutateAsync.mockRejectedValueOnce(new TransactionApiError(message, code));
+    render(<TerminalPage />);
+    openCheckout();
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '500' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Charge/ }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Edit Cart' })).toBeInTheDocument());
+  }
+
+  it('re-reads the options before editing, marks what changed, opens the editor on it and blocks Charge until fixed', async () => {
+    mockConfirmCatalog.mockImplementation(async () => {
+      // What useConfirmCatalog's setQueryData does to the live catalog query.
+      mockUseCatalog.mockReturnValue({ data: freshCatalog(), isLoading: false });
+      return freshCatalog();
+    });
+    await chargeAndGetRefused('PRODUCT_OPTION_REQUIRED', 'Regular needs 1 Dips selection');
+    expect(screen.getByText('Required choice missing')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Cart' }));
+
+    await waitFor(() => expect(mockConfirmCatalog).toHaveBeenCalledWith('branch-1'));
+    // Same choice, current price — never a different option.
+    await waitFor(() =>
+      expect(mockReplaceItem).toHaveBeenCalledWith(0, [expect.objectContaining({ selected_options: [{ ...LARGE, price_adjustment: 25 }], quantity: 2 })]),
+    );
+    const notice = await screen.findByTestId('option-recovery-notice');
+    await waitFor(() => expect(notice).toHaveTextContent('Options confirmed with the server'));
+    expect(notice).toHaveTextContent('1 item needs a change');
+    expect(notice).toHaveTextContent('Price changed: Mega Mix Fries (Regular) ₱100.00 → ₱110.00 each');
+    // Marked on the line in both the side cart and the checkout review.
+    for (const issues of screen.getAllByTestId('cart-line-option-issues')) expect(issues).toHaveTextContent('Choose Dips');
+    // The editor opened on that line with the fresh groups.
+    const editor = await screen.findByRole('dialog', { name: /Mega Mix Fries/ });
+    expect(editor).toHaveTextContent('Dips');
+    expect(editor).toHaveTextContent('Garlic');
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getAllByText('Update the items marked in the order before charging.').length).toBeGreaterThan(0);
+    expect(mockClearCart).not.toHaveBeenCalled();
+  });
+
+  it('keeps the cart and offers another try when the options cannot be confirmed', async () => {
+    mockConfirmCatalog.mockRejectedValueOnce(new Error('Could not reach the server'));
+    await chargeAndGetRefused('PRODUCT_OPTION_NOT_AVAILABLE', 'Option not available');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Cart' }));
+
+    await waitFor(() => expect(screen.getByTestId('option-recovery-notice')).toHaveTextContent("Couldn't confirm the current product options."));
+    const notice = screen.getByTestId('option-recovery-notice');
+    expect(notice).toHaveTextContent('Your cart is kept as it was');
+    expect(notice).not.toHaveTextContent('Options confirmed');
+    expect(screen.queryByTestId('cart-line-option-issues')).not.toBeInTheDocument();
+    expect(mockReplaceItem).not.toHaveBeenCalled();
+    expect(mockClearCart).not.toHaveBeenCalled();
+
+    mockConfirmCatalog.mockResolvedValueOnce(catalogWith([optionVariant({ price: stalePrice })]));
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(mockConfirmCatalog).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByTestId('option-recovery-notice')).toHaveTextContent('Every item matches the current options.'));
+  });
+
+  it('does not re-read the catalog for a refusal unrelated to options', async () => {
+    await chargeAndGetRefused('INSUFFICIENT_STOCK', 'Not enough Potato');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Cart' }));
+
+    expect(mockConfirmCatalog).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('option-recovery-notice')).not.toBeInTheDocument();
+  });
+
+  it('records the cashier and a summary when a sale is queued offline', async () => {
+    const { enqueueOfflineTransaction } = await import('@/lib/offline/sync-queue');
+    vi.mocked(enqueueOfflineTransaction).mockResolvedValueOnce('PC-branch-1-20260101-OFFLINE-0001');
+    const base = mockUseOffline();
+    mockUseOffline.mockReturnValue({ ...base, isOnline: false });
+    render(<TerminalPage />);
+    openCheckout();
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '500' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Charge/ }));
+
+    await waitFor(() => expect(enqueueOfflineTransaction).toHaveBeenCalled());
+    expect(vi.mocked(enqueueOfflineTransaction).mock.calls[0]?.[2]).toEqual({ cashierUserId: 'user-1', cashierName: 'Jamie Cruz', itemCount: 2, totalAmount: 200 });
+    expect(mockUseOffline).toHaveBeenCalledWith(expect.objectContaining({ branchId: 'branch-1', cashierUserId: 'user-1', isBranchAccount: false }));
+    mockUseOffline.mockReturnValue(base);
+  });
+
+  it('lists a refused offline sale in Pending with its reason and an explicit Retry, never as done', async () => {
+    const base = mockUseOffline();
+    mockUseOffline.mockReturnValue({
+      ...base,
+      pendingSyncCount: 1,
+      offlineSales: [
+        {
+          id: 'PC-branch-1-20260101-OFFLINE-0001',
+          payload: { branch_id: 'branch-1', items: [{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 2 }], payment_method: 'cash' },
+          createdAt: Date.now(),
+          syncedAt: null,
+          officialTransactionNumber: null,
+          cashierUserId: 'user-1',
+          cashierName: 'Jamie Cruz',
+          summary: { itemCount: 2, totalAmount: 200 },
+          rejection: { code: 'PRODUCT_OPTION_REQUIRED', message: 'Regular needs 1 Dips selection', at: Date.now() },
+        },
+      ],
+    });
+    render(<TerminalPage />);
+
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: 'Pending (1)' }));
+
+    const row = await screen.findByTestId('offline-sale');
+    expect(row).toHaveTextContent('Not accepted');
+    expect(row).toHaveTextContent('Required choice missing');
+    expect(row).toHaveTextContent('Regular needs 1 Dips selection');
+    expect(row).toHaveTextContent('Jamie Cruz');
+    expect(row).not.toHaveTextContent('Synced');
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(mockRetryOfflineSale).toHaveBeenCalledWith('PC-branch-1-20260101-OFFLINE-0001');
+    mockUseOffline.mockReturnValue(base);
   });
 });

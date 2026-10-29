@@ -1,12 +1,30 @@
 import Dexie, { type EntityTable } from 'dexie';
 import type { CreateTransactionInput } from '@potato-corner/shared';
 
-interface OfflineTransaction {
+/** P46R3 — a server answer for one queued sale, kept so the cashier can see it (was console-only). */
+export interface OfflineSyncError {
+  code: string;
+  message: string | null;
+  at: number;
+}
+
+export interface OfflineTransaction {
   id: string; // provisional local id, e.g. PC-[BRANCH]-[DATE]-OFFLINE-[LOCAL_SEQ]
   payload: CreateTransactionInput;
   createdAt: number;
   syncedAt: number | null;
   officialTransactionNumber: string | null;
+  // P46R3 — the fields below are not indexed, so no schema version bump; rows
+  // queued before P46R3 simply lack them.
+  /** Who rang the sale. Sync only ever sends it under this user's own token, so the server's cashier_id stays theirs. */
+  cashierUserId?: string;
+  cashierName?: string;
+  /** Display only — the server recomputes every amount. */
+  summary?: { itemCount: number; totalAmount: number };
+  /** A definitive server refusal (see isDefinitiveQueueRejection). Never resent automatically; only an explicit Retry clears it. */
+  rejection?: OfflineSyncError | null;
+  /** The latest failed attempt that proves nothing permanent (connection, server error, unknown code). Retried on the next sync. */
+  lastError?: OfflineSyncError | null;
 }
 
 interface CachedProduct {

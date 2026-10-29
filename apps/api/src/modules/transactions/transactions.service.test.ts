@@ -3107,6 +3107,24 @@ describe('transactionsService.syncOfflineTransactions', () => {
     expect(result.results[0]?.transaction).toMatchObject({ inventory_deduction_status: 'pending' });
   });
 
+  // P46R3 — neither the client nor shiftGuard supplied a shift: that item
+  // fails on its own, before any lookup or write, and the rest still sync.
+  it('fails an item with no shift as INVALID_SHIFT without touching the rest of the batch', async () => {
+    const noShift = offlineItem({ offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0200', shiftId: undefined, clientCreatedAt: 1000 });
+    const valid = offlineItem({ offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0201', clientCreatedAt: 2000 });
+
+    const result = await transactionsService.syncOfflineTransactions(
+      { branchId: 'branch-1', cashierId: 'user-1', deviceId: 'device-1', transactions: [noShift, valid] },
+      null,
+    );
+
+    expect(result.results).toEqual([
+      expect.objectContaining({ offline_provisional_number: noShift.offlineProvisionalNumber, status: 'failed', error: expect.objectContaining({ code: 'INVALID_SHIFT' }) }),
+      expect.objectContaining({ offline_provisional_number: valid.offlineProvisionalNumber, status: 'synced' }),
+    ]);
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledTimes(1);
+  });
+
   it('marks a failed item without stopping the rest of the batch from syncing', async () => {
     const insufficientCash = offlineItem({ offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0004', cashTendered: 1, clientCreatedAt: 1000 });
     const valid = offlineItem({ offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0005', cashTendered: 100, clientCreatedAt: 2000 });

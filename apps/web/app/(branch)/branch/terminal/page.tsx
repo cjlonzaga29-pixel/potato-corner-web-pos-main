@@ -43,7 +43,7 @@ import { LocationAccessRecovery } from '@/components/shared/feedback/location-ac
 import { useAuth } from '@/hooks/use-auth';
 import { useCart } from '@/hooks/use-cart';
 import { useOffline } from '@/hooks/use-offline';
-import { useCatalog, useCatalogRealtimeSync, useCheckCartAvailability } from '@/hooks/queries/use-products';
+import { useCatalog, useCatalogRealtimeSync, useCheckCartAvailability, useConfirmCatalog } from '@/hooks/queries/use-products';
 import { useClockIn, useClockOut } from '@/hooks/queries/use-attendance';
 import { useBranch } from '@/hooks/queries/use-branches';
 import { useTerminalOperator } from '@/hooks/use-terminal-operator';
@@ -84,6 +84,8 @@ import {
   NOT_SAVED_SAFE_TO_RETRY,
 } from '@/lib/cashier-error-messages';
 import { OrderTabContent } from '@/components/pos/order-tabs-content';
+import { OfflineSalesList } from '@/components/pos/offline-sales-list';
+import { isOptionConfigErrorCode, refreshCartLineOptionDetails, reviewCartLineOptions } from '@/lib/pos/option-recovery';
 import { VoidRefundSaleDialog } from '@/components/pos/void-refund-sale-dialog';
 import { toast } from 'sonner';
 
@@ -160,6 +162,27 @@ function formatPeso(amount: number): string {
 // leaves room for the mobile sticky "View Cart" bar, which overlaps the
 // bottom of this scroll region below `lg`.
 const EMPTY_CATALOG: PosCatalogProduct[] = [];
+
+type VariantIndex = Map<string, { product: PosCatalogProduct; variant: PosCatalogProduct['variants'][number] }>;
+
+function buildVariantIndex(products: PosCatalogProduct[]): VariantIndex {
+  const map: VariantIndex = new Map();
+  for (const product of products) {
+    for (const variant of product.variants) map.set(variant.id, { product, variant });
+  }
+  return map;
+}
+
+/** P46R3 — see optionRecovery's declaration. `before` holds each line's unit price (by cartLineKey) and the total when the check started, to show what the fresh prices change. */
+type OptionRecovery =
+  | { status: 'checking' }
+  | { status: 'failed'; message: string }
+  | {
+      status: 'confirmed';
+      checkedAt: number;
+      variants: VariantIndex;
+      before: { unitPrices: Map<string, { name: string; unitPrice: number }>; totalAmount: number };
+    };
 
 function productGridClasses(densityMode: DensityMode): string {
   return `grid content-start gap-1.5 p-3 pb-24 lg:gap-2 lg:p-4 lg:pb-4 ${DENSITY_POS_GRID_COLUMNS[densityMode]}`;
@@ -462,6 +485,7 @@ export default function TerminalPage() {
   }, [activeEmployee, refreshEmployeeSession, clearTerminalOperator]);
 
   const { items, addItem, removeItem, updateItemQuantity, replaceItem, rollbackUnconfirmed, getItems, clearCart } = useCart();
+  const confirmCatalog = useConfirmCatalog();
   const {
     data: liveCatalog,
     isLoading: isCatalogLoading,
@@ -515,7 +539,31 @@ export default function TerminalPage() {
   // blocked on this client-side lookup being loaded or fresh.
   const { shift } = useMyActiveShift(branchId);
   useShiftsRealtimeSync();
-  const { isOnline } = useOffline();
+  // P46R3 — queued offline sales sync under the cashier who rang them (their
+  // own employee token on a Branch Account, exactly as live checkout), and a
+  // refusal is shown in Pending instead of only logged.
+  const offlineCashierId = (isBranchAccount ? activeEmployee?.id : user?.id) ?? null;
+  const {
+    isOnline,
+    offlineSales,
+    pendingSyncCount,
+    isSyncing: isOfflineSyncing,
+    syncNow: syncOfflineSalesNow,
+    retryOfflineSale,
+    refreshOfflineSales,
+  } = useOffline({
+    branchId: branchId ?? null,
+    cashierUserId: offlineCashierId,
+    isBranchAccount,
+    accessToken: operatorToken,
+    refreshAccessToken: refreshEmployeeToken,
+    onRejected: (ids) =>
+      toast.error('Offline sale not accepted', {
+        id: 'offline-sale-rejected',
+        description: `${ids.length === 1 ? 'A queued sale was' : `${ids.length} queued sales were`} refused by the server. It is kept on this device — open Pending to see why.`,
+        action: { label: 'Open', onClick: () => setActiveMainTab('pending') },
+      }),
+  });
   const createTransaction = useCreateTransaction(operatorToken, refreshEmployeeToken);
   const uploadPaymentProof = useUploadPaymentProof(operatorToken, refreshEmployeeToken);
   const uploadDiscountProof = useUploadDiscountProof(operatorToken, refreshEmployeeToken);
@@ -741,6 +789,12 @@ export default function TerminalPage() {
   // not specifically "does the CURRENT/live cart have a charge in flight".
   const [isChargeInFlight, setIsChargeInFlight] = useState(false);
   const [queuedNotice, setQueuedNotice] = useState<string | null>(null);
+  // P46R3 — Edit Cart after an option refusal re-reads the options from the
+  // network (fetchConfirmedCatalog) before the cashier edits anything. Only a
+  // 'confirmed' read drives the per-line checks and the editor; 'failed'
+  // keeps the cart and offers another try.
+  const [optionRecovery, setOptionRecovery] = useState<OptionRecovery | null>(null);
+  const autoEditAfterRecoveryRef = useRef(false);
   // POS-PERF-P19 — bounded-backlog message when the cashier tries to detach
   // a 6th concurrent unresolved sale (MAX_DETACHED_SALES). Transient,
   // dismissed by the cashier the same way unresolvedAttemptNotice is.
@@ -1222,13 +1276,11 @@ export default function TerminalPage() {
     );
   }, [catalog, activeCategory, productSearch]);
 
-  const variantIndex = useMemo(() => {
-    const map = new Map<string, { product: PosCatalogProduct; variant: PosCatalogProduct['variants'][number] }>();
-    for (const product of catalog) {
-      for (const variant of product.variants) map.set(variant.id, { product, variant });
-    }
-    return map;
-  }, [catalog]);
+  const variantIndex = useMemo(() => buildVariantIndex(catalog), [catalog]);
+  // P46R3 — while an Edit Cart option check is confirmed, the editor and the
+  // per-line checks read that network-confirmed copy, not whatever the
+  // catalog query last got (which may be a service-worker fallback).
+  const editVariantIndex = optionRecovery?.status === 'confirmed' ? optionRecovery.variants : variantIndex;
 
   // Opens the Add-ons dialog for a product about to be added to the cart —
   // called only after any flavor/slot choice is already resolved. Returns
@@ -1548,7 +1600,7 @@ export default function TerminalPage() {
     (index: number) => {
       const item = items[index];
       if (!item) return;
-      const info = variantIndex.get(item.product_variant_id);
+      const info = editVariantIndex.get(item.product_variant_id);
       if (!info) return;
       const { product, variant } = info;
       const groups = dialogGroupsFor(variant);
@@ -1557,7 +1609,13 @@ export default function TerminalPage() {
       const assignments: AddOnAssignments = {};
       const selectedOptionIds: AddOnSelections = {};
       for (const group of groups) {
-        const selectedForGroup = (item.selected_options ?? []).filter((option) => option.option_group_id === group.id);
+        // P46R3 — only choices the group still offers are preloaded, so a
+        // retired option can't count toward a requirement; the review list
+        // names it (reviewCartLineOptions) and Save leaves it out.
+        const offeredIds = new Set(group.options.map((option) => option.id));
+        const selectedForGroup = (item.selected_options ?? []).filter(
+          (option) => option.option_group_id === group.id && offeredIds.has(option.option_id),
+        );
         if (group.simplified || group.selectionType === 'SINGLE') {
           selectedOptionIds[group.id] = selectedForGroup.map((option) => option.option_id);
           continue;
@@ -1580,7 +1638,7 @@ export default function TerminalPage() {
         editingIndex: index,
       });
     },
-    [items, variantIndex, rememberCustomizationOpener],
+    [items, editVariantIndex, rememberCustomizationOpener],
   );
 
   function handleFlavorPick(flavorId: string) {
@@ -1663,6 +1721,21 @@ export default function TerminalPage() {
   // Memoized so it only recomputes when the cart or catalog actually change —
   // without this, every keystroke in an unrelated field (cash tendered,
   // discount ID, payment reference) re-derived every cart line from scratch.
+  // P46R3 — what each line still needs under the confirmed options; null
+  // outside an Edit Cart option check.
+  const optionIssuesByIndex = useMemo(() => {
+    if (optionRecovery?.status !== 'confirmed') return null;
+    return items.map((item) => {
+      const info = optionRecovery.variants.get(item.product_variant_id);
+      const groups = info && info.variant.live_ready ? dialogGroupsFor(info.variant) : null;
+      const issues = reviewCartLineOptions(item, groups);
+      // No option groups left means no Edit button for this line.
+      if (issues.length > 0 && groups?.length === 0) issues.push('Remove this line and add the product again');
+      return issues;
+    });
+  }, [items, optionRecovery]);
+  const cartOptionIssueCount = optionIssuesByIndex?.filter((issues) => issues.length > 0).length ?? 0;
+
   const cartLines = useMemo<CartLine[]>(
     () =>
       items.map((item, index) => {
@@ -1701,10 +1774,25 @@ export default function TerminalPage() {
           lineTotal: round2(unitPrice * item.quantity),
           vatableCapAmount: info?.variant.vatable_cap_amount ?? null,
           hasOptionGroups: info ? activeOptionGroups(info.variant).length > 0 : false,
+          ...(optionIssuesByIndex?.[index]?.length ? { optionIssues: optionIssuesByIndex[index] } : {}),
         };
       }),
-    [items, variantIndex],
+    [items, variantIndex, optionIssuesByIndex],
   );
+
+  // P46R3 — the option check belongs to this cart; a sale or a cleared cart ends it.
+  useEffect(() => {
+    if (items.length === 0 && optionRecovery) setOptionRecovery(null);
+  }, [items.length, optionRecovery]);
+
+  // P46R3 — once confirmed, Edit Cart opens the editor on the first line that
+  // still needs a change (the others stay marked in the review list).
+  useEffect(() => {
+    if (!autoEditAfterRecoveryRef.current || optionRecovery?.status !== 'confirmed' || !optionIssuesByIndex) return;
+    autoEditAfterRecoveryRef.current = false;
+    const index = optionIssuesByIndex.findIndex((issues, i) => issues.length > 0 && cartLines[i]?.hasOptionGroups);
+    if (index >= 0) handleEditLine(index);
+  }, [optionRecovery, optionIssuesByIndex, cartLines, handleEditLine]);
 
   // Memoized alongside cartLines/previewAmounts below — same reasoning: this
   // used to recompute on every render (e.g. every Cash Tendered keystroke)
@@ -1724,6 +1812,8 @@ export default function TerminalPage() {
   // cashier would naturally fix them.
   const chargeDisabledReason: string | null = (() => {
     if (isChargeInFlight) return 'Checkout is already processing.';
+    if (optionRecovery?.status === 'checking') return 'Checking the current product options…';
+    if (cartOptionIssueCount > 0) return 'Update the items marked in the order before charging.';
     if (stockValidation.status === 'checking' || stockValidation.pendingKeys.size > 0) return 'Checking stock for the latest cart changes…';
     if (!isClockedIn) return 'Clock in before completing a sale.';
     if (cartLines.length === 0) return 'Add items to the cart to start a sale.';
@@ -1899,7 +1989,20 @@ export default function TerminalPage() {
       try {
         // Real BIR receipt numbers are only ever assigned by the server at
         // sync time — this provisional id just needs to be locally unique.
-        const provisionalId = await enqueueOfflineTransaction(branchId.slice(0, 8), payload);
+        // P46R3 — record who rang it, so sync can send it under their token.
+        const provisionalId = await enqueueOfflineTransaction(
+          branchId.slice(0, 8),
+          payload,
+          offlineCashierId
+            ? {
+                cashierUserId: offlineCashierId,
+                cashierName: operatorName ?? '',
+                itemCount: items.reduce((sum, item) => sum + item.quantity, 0),
+                totalAmount,
+              }
+            : undefined,
+        );
+        void refreshOfflineSales();
         clearCart();
         resetPaymentFields();
         // Task 209.25 — close the workspace on a confirmed outcome (queued
@@ -2140,11 +2243,45 @@ export default function TerminalPage() {
   // dialog. Cart and payment fields were never touched on failure, so the
   // cashier lands back exactly where they left off.
   function handleEditCartFromSaleError() {
+    const refusedCode = saleErrorCode;
     setSalePhase(null);
     setSaleSnapshot(null);
     setSaleErrorMessage(null);
     setSaleErrorCode(null);
     setIsCheckoutOpen(true);
+    // P46R3 — the terminal's copy of the options built the refused line, so
+    // re-read them from the network before anything is edited.
+    if (isOptionConfigErrorCode(refusedCode)) {
+      autoEditAfterRecoveryRef.current = true;
+      void confirmCurrentOptions();
+    }
+  }
+
+  // P46R3 — the option check behind Edit Cart. The cart is never cleared or
+  // re-chosen here: still-offered options only get their current name/price
+  // (refreshCartLineOptionDetails), and everything else is reported per line.
+  // The live catalog query gets the same fresh copy, so the terminal's
+  // prices match without a reload.
+  async function confirmCurrentOptions() {
+    if (!branchId) return;
+    const before = {
+      unitPrices: new Map(cartLines.map((line) => [cartLineKey(line.item), { name: line.variantName ? `${line.productName} (${line.variantName})` : line.productName, unitPrice: line.unitPrice }])),
+      totalAmount,
+    };
+    setOptionRecovery({ status: 'checking' });
+    try {
+      const fresh = await confirmCatalog(branchId);
+      const variants = buildVariantIndex(fresh.products);
+      getItems().forEach((item, index) => {
+        const info = variants.get(item.product_variant_id);
+        const refreshed = refreshCartLineOptionDetails(item, info ? dialogGroupsFor(info.variant) : null);
+        if (refreshed !== item) replaceItem(index, [refreshed]);
+      });
+      setOptionRecovery({ status: 'confirmed', checkedAt: Date.now(), variants, before });
+    } catch (error) {
+      autoEditAfterRecoveryRef.current = false;
+      setOptionRecovery({ status: 'failed', message: error instanceof Error ? error.message : 'Could not load the current product options' });
+    }
   }
 
   function handleViewReceipt() {
@@ -2390,6 +2527,12 @@ export default function TerminalPage() {
     () => detachedSales.filter((e) => e.status === 'success').sort((a, b) => b.createdAt - a.createdAt),
     [detachedSales],
   );
+  // P46R3 — queued offline sales share the tabs: unsynced ones (waiting or
+  // refused) count as Pending until the server records them.
+  const unsyncedOfflineSales = useMemo(() => offlineSales.filter((sale) => sale.syncedAt === null), [offlineSales]);
+  const syncedOfflineSales = useMemo(() => offlineSales.filter((sale) => sale.syncedAt !== null), [offlineSales]);
+  const pendingTabCount = pendingOrderEntries.length + pendingSyncCount;
+  const doneTabCount = doneOrderEntries.length + syncedOfflineSales.length;
 
   // Task 209.54 — same reasoning as the branch dashboard: `user` (and so
   // `branchId`) is briefly null on every reload while useAuth's silent
@@ -2705,6 +2848,64 @@ export default function TerminalPage() {
   // Task 209.25 — consumes the same cart/payment/discount/proof state and
   // totals/validation/charge-handler as before (no duplicated pricing or
   // transaction logic); only which pane is visible responsively is new.
+  // P46R3 — the Edit Cart option check's result, above the order lines. A
+  // price change is listed here before the cashier can charge it.
+  const optionPriceChanges =
+    optionRecovery?.status === 'confirmed'
+      ? cartLines.flatMap((line) => {
+          const prior = optionRecovery.before.unitPrices.get(cartLineKey(line.item));
+          return prior && prior.unitPrice !== line.unitPrice ? [{ key: cartLineKey(line.item), name: prior.name, before: prior.unitPrice, after: line.unitPrice }] : [];
+        })
+      : [];
+  const optionRecoveryNotice = optionRecovery ? (
+    <div
+      role="status"
+      data-testid="option-recovery-notice"
+      className={`mb-3 space-y-1.5 rounded-lg border p-3 text-xs ${optionRecovery.status === 'failed' || cartOptionIssueCount > 0 ? 'border-destructive/40 bg-destructive/5' : 'bg-muted/40'}`}
+    >
+      {optionRecovery.status === 'checking' && (
+        <p className="flex items-center gap-2 font-medium">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+          Checking the current product options… Your cart is kept.
+        </p>
+      )}
+      {optionRecovery.status === 'failed' && (
+        <>
+          <p className="font-semibold text-destructive">Couldn&apos;t confirm the current product options.</p>
+          <p className="text-muted-foreground">{optionRecovery.message.replace(/\.$/, '')}. Your cart is kept as it was; nothing has been changed or charged.</p>
+        </>
+      )}
+      {optionRecovery.status === 'confirmed' && (
+        <>
+          <p className="font-medium">
+            Options confirmed with the server at{' '}
+            {new Date(optionRecovery.checkedAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' })}.
+          </p>
+          <p className={cartOptionIssueCount > 0 ? 'font-semibold text-destructive' : 'text-muted-foreground'}>
+            {cartOptionIssueCount > 0
+              ? `${cartOptionIssueCount} item${cartOptionIssueCount === 1 ? ' needs' : 's need'} a change — marked below. Tap Edit to choose again.`
+              : 'Every item matches the current options.'}
+          </p>
+          {optionPriceChanges.map((change) => (
+            <p key={change.key} className="font-medium">
+              Price changed: {change.name} {formatPeso(change.before)} → {formatPeso(change.after)} each
+            </p>
+          ))}
+          {optionRecovery.before.totalAmount !== totalAmount && (
+            <p className="font-semibold">
+              Total is now {formatPeso(totalAmount)} (was {formatPeso(optionRecovery.before.totalAmount)}).
+            </p>
+          )}
+        </>
+      )}
+      {optionRecovery.status !== 'checking' && (
+        <Button type="button" size="sm" variant="outline" className="app-control" onClick={() => void confirmCurrentOptions()}>
+          {optionRecovery.status === 'failed' ? 'Try again' : 'Check again'}
+        </Button>
+      )}
+    </div>
+  ) : null;
+
   const checkoutWorkspaceElement = (
     <CheckoutWorkspace
       open={isCheckoutOpen}
@@ -2714,6 +2915,7 @@ export default function TerminalPage() {
       onEditLine={handleEditLine}
       onRemoveLine={handleRemoveLine}
       onQuantityChange={handleQuantityChange}
+      reviewNotice={optionRecoveryNotice}
       subtotal={subtotal}
       vatAmount={vatAmount}
       discountAmount={discountAmount}
@@ -2844,10 +3046,10 @@ export default function TerminalPage() {
           <TabsList aria-label="POS sections" className="app-control w-full items-stretch justify-start overflow-x-auto sm:w-auto">
             <TabsTrigger value="products" className="h-full">Products</TabsTrigger>
             <TabsTrigger value="pending" className="h-full">
-              Pending{pendingOrderEntries.length > 0 ? ` (${pendingOrderEntries.length})` : ''}
+              Pending{pendingTabCount > 0 ? ` (${pendingTabCount})` : ''}
             </TabsTrigger>
             <TabsTrigger value="done" className="h-full">
-              Done{doneOrderEntries.length > 0 ? ` (${doneOrderEntries.length})` : ''}
+              Done{doneTabCount > 0 ? ` (${doneTabCount})` : ''}
             </TabsTrigger>
           </TabsList>
         </Tabs>
@@ -2968,15 +3170,28 @@ export default function TerminalPage() {
 
         {activeMainTab !== 'products' && (
           <div className="lg:flex-1 lg:overflow-y-auto">
-            <OrderTabContent
+            <OfflineSalesList
               status={activeMainTab}
-              entries={activeMainTab === 'pending' ? pendingOrderEntries : doneOrderEntries}
-              busyKeys={detachedSalesBusyKeys}
-              onRetry={(entry) => void handleRetryDetachedSale(entry)}
-              onRecheck={(entry) => void handleRecheckDetachedSale(entry)}
-              onDismiss={handleDismissDetachedSale}
-              onViewReceipt={handleViewDetachedSaleReceipt}
+              sales={activeMainTab === 'pending' ? unsyncedOfflineSales : syncedOfflineSales}
+              currentCashierId={offlineCashierId}
+              isOnline={isOnline}
+              isSyncing={isOfflineSyncing}
+              onSyncNow={() => void syncOfflineSalesNow()}
+              onRetry={(id) => void retryOfflineSale(id)}
             />
+            {/* Its empty state would contradict offline sales listed above. */}
+            {((activeMainTab === 'pending' ? pendingOrderEntries : doneOrderEntries).length > 0 ||
+              (activeMainTab === 'pending' ? unsyncedOfflineSales : syncedOfflineSales).length === 0) && (
+              <OrderTabContent
+                status={activeMainTab}
+                entries={activeMainTab === 'pending' ? pendingOrderEntries : doneOrderEntries}
+                busyKeys={detachedSalesBusyKeys}
+                onRetry={(entry) => void handleRetryDetachedSale(entry)}
+                onRecheck={(entry) => void handleRecheckDetachedSale(entry)}
+                onDismiss={handleDismissDetachedSale}
+                onViewReceipt={handleViewDetachedSaleReceipt}
+              />
+            )}
           </div>
         )}
 

@@ -332,7 +332,12 @@ export const transactionListResponseSchema = z.object({
 export const offlineTransactionItemSchema = z
   .object({
     offline_provisional_number: z.string().min(1),
-    shift_id: z.uuid(),
+    // P46R3 — optional: a Branch Account terminal never knows the shift id
+    // (useMyActiveShift asks for the Branch Account's own shift, which it
+    // never has), so its queued sales arrived without one and the whole batch
+    // failed validation on every reconnect. The router falls back to the
+    // syncing cashier's active shift, as live checkout does.
+    shift_id: z.uuid().optional(),
     items: z.array(cartItemSchema).min(1),
     payment_method: z.enum(paymentMethodValues),
     discount_type: z.enum(discountTypeValues).optional(),

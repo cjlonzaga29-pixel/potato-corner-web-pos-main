@@ -235,6 +235,9 @@ export const transactionsRepository = {
                 id: true,
                 name: true,
                 posButtonLabel: true,
+                // P46R — checkout caps each group's picks per line (resolveSelectedOptions).
+                selectionType: true,
+                maxSelections: true,
                 options: {
                   where: { isActive: true },
                   select: { id: true, name: true, isActive: true, priceAdjustment: true },

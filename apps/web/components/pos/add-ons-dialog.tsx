@@ -69,16 +69,41 @@ interface AddOnsDialogProps {
   onCloseAutoFocus?: (event: Event) => void;
 }
 
-/** How many picks a MULTIPLE group's allocator must sum to — the group's own required count, independent of product quantity (Task 182). */
+/** How many picks a required MULTIPLE group's allocator must sum to — the group's own required count, independent of product quantity (Task 182). */
 export function multiGroupTarget(group: AddOnsDialogGroup): number {
   return group.maxSelections ?? Math.max(group.minSelections, 1);
 }
 
-/** P46 — a required MULTIPLE group must be filled exactly; an optional one may hold anything from nothing up to its target. */
+/**
+ * P46R — the most picks a group may hold, or null for no limit. An optional
+ * MULTIPLE group or an Add-ons checklist is capped by max_selections (null =
+ * unlimited, the admin's ∞); a required MULTIPLE group by its exact target.
+ */
+export function groupPickLimit(group: AddOnsDialogGroup): number | null {
+  if (group.simplified || group.allowNoAddOn) return group.maxSelections;
+  if (group.selectionType === 'SINGLE') return 1;
+  return multiGroupTarget(group);
+}
+
+/** P46 — a required MULTIPLE group must be filled exactly; an optional one may hold anything from nothing up to its limit. */
 export function isMultiGroupComplete(group: AddOnsDialogGroup, assignment: Record<string, number> | undefined): boolean {
   const picked = chosenQuantity(assignment);
-  const target = multiGroupTarget(group);
-  return group.allowNoAddOn ? picked <= target : picked === target;
+  if (!group.allowNoAddOn) return picked === multiGroupTarget(group);
+  const limit = groupPickLimit(group);
+  return limit === null || picked <= limit;
+}
+
+/**
+ * P46R — the one MULTIPLE group whose picks are product units (Task 182's
+ * serving count: "Toppings, choose exactly 2" adds two items, one topping
+ * each). Only a lone *required* MULTIPLE group qualifies. An optional one
+ * (!required, min 0) holds ordinary extras on a single product instead, and
+ * two or more MULTIPLE groups all fold onto one line (Task 193B).
+ */
+export function servingCountGroup(groups: AddOnsDialogGroup[]): AddOnsDialogGroup | undefined {
+  const multiGroups = groups.filter((group) => !group.simplified && group.selectionType === 'MULTIPLE');
+  const [only] = multiGroups;
+  return multiGroups.length === 1 && only && !only.allowNoAddOn ? only : undefined;
 }
 
 function GroupHeading({ id, label, hint, badge }: { id: string; label: string; hint: string; badge?: ReactNode }) {
@@ -126,10 +151,14 @@ function GroupHeading({ id, label, hint, badge }: { id: string; label: string; h
  *   a second tap); Add-ons groups toggle; MULTIPLE groups add one per tap
  *   with a ×N badge and a separate Remove-one control.
  * - "No Add-ons" is no longer something to pick: an optional group left
- *   empty is valid and means no add-ons. An optional MULTIPLE group's
- *   unpicked remainder is filled with no-add-on units on confirm (the page,
- *   via fillWithNoAddOn), so the cart lines are what the old flow produced.
- *   Required groups are exactly as strict as before.
+ *   empty is valid and means no add-ons. Required groups are exactly as
+ *   strict as before.
+ *
+ * P46R — an optional MULTIPLE group holds extras on the one product being
+ * added (max_selections caps the extras, never the product quantity); only
+ * a lone required MULTIPLE group still splits into units (servingCountGroup).
+ * Every group's cap (groupPickLimit) is enforced here, in the page's tap
+ * handlers, and again by checkout.
  * - Focus containment and Escape come from the Radix dialog unchanged.
  */
 export function AddOnsDialog({
@@ -155,10 +184,15 @@ export function AddOnsDialog({
 
   const missingRequired = singleGroups.filter((group) => group.required && (selectedOptionIds[group.id] ?? []).length !== 1);
   const incompleteMulti = multiGroups.filter((group) => !isMultiGroupComplete(group, assignments[group.id]));
-  const isValid = quantity > 0 && missingRequired.length === 0 && incompleteMulti.length === 0;
-  const blockingLabels = [...missingRequired, ...incompleteMulti].map((group) => group.label);
-  // A lone MULTIPLE group is split one unit per pick up to its target (Task 182; the page's handleAddOnsConfirm), so say so rather than add several items silently.
-  const splitGroup = multiGroups.length === 1 ? multiGroups[0] : undefined;
+  // P46R — an edited line can carry more add-ons than the group now allows; it must be trimmed before saving, exactly as checkout would refuse it.
+  const overLimitSimplified = simplifiedGroups.filter((group) => {
+    const limit = groupPickLimit(group);
+    return limit !== null && (selectedOptionIds[group.id] ?? []).length > limit;
+  });
+  const isValid = quantity > 0 && missingRequired.length === 0 && incompleteMulti.length === 0 && overLimitSimplified.length === 0;
+  const blockingLabels = [...missingRequired, ...incompleteMulti, ...overLimitSimplified].map((group) => group.label);
+  // A lone required MULTIPLE group is split one unit per pick up to its target (Task 182; the page's handleAddOnsConfirm), so say so rather than add several items silently.
+  const splitGroup = servingCountGroup(groups);
   const unitsAdded = splitGroup ? multiGroupTarget(splitGroup) : quantity;
 
   return (
@@ -224,17 +258,19 @@ export function AddOnsDialog({
 
           {multiGroups.map((group) => {
             const target = multiGroupTarget(group);
+            const limit = groupPickLimit(group);
             const groupAssignment = assignments[group.id] ?? {};
             const assigned = chosenQuantity(groupAssignment);
-            const atLimit = assigned >= target;
+            const atLimit = limit !== null && assigned >= limit;
             const complete = isMultiGroupComplete(group, groupAssignment);
             const headingId = `${headingIdPrefix}-${group.id}`;
+            const optionalHint = limit === null ? 'Optional extras — tap to add. Leave empty for none.' : `Optional — up to ${limit} extras. Leave empty for none.`;
             return (
               <section key={group.id} role="group" aria-labelledby={headingId} className="min-w-0 space-y-2">
                 <GroupHeading
                   id={headingId}
                   label={group.label}
-                  hint={group.allowNoAddOn ? `Optional — up to ${target}. Leave empty for none.` : `Tap to add. Choose ${target} in total.`}
+                  hint={group.allowNoAddOn ? optionalHint : `Tap to add. Choose ${target} in total.`}
                   badge={
                     group.allowNoAddOn ? (
                       <Badge variant="secondary" className="shrink-0 text-[10px] font-medium">
@@ -260,30 +296,40 @@ export function AddOnsDialog({
                     />
                   ))}
                 </div>
-                <div className="flex items-center gap-3">
-                  <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-secondary" aria-hidden="true">
-                    <div
-                      className={cn('h-full transition-all', atLimit ? 'bg-success' : 'bg-primary')}
-                      style={{ width: `${target > 0 ? Math.min(100, (assigned / target) * 100) : 0}%` }}
-                    />
+                {limit === null ? (
+                  <p className="text-xs text-muted-foreground">{assigned} selected</p>
+                ) : (
+                  <div className="flex items-center gap-3">
+                    <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-secondary" aria-hidden="true">
+                      <div
+                        className={cn('h-full transition-all', atLimit ? 'bg-success' : 'bg-primary')}
+                        style={{ width: `${limit > 0 ? Math.min(100, (assigned / limit) * 100) : 0}%` }}
+                      />
+                    </div>
+                    <p className={cn('shrink-0 text-xs', complete ? 'text-muted-foreground' : 'font-medium text-destructive')}>
+                      Assigned {assigned} / {limit}
+                    </p>
                   </div>
-                  <p className={cn('shrink-0 text-xs', complete ? 'text-muted-foreground' : 'font-medium text-destructive')}>
-                    Assigned {assigned} / {target}
-                  </p>
-                </div>
+                )}
               </section>
             );
           })}
 
           {simplifiedGroups.map((group) => {
             const selected = selectedOptionIds[group.id] ?? [];
+            const limit = groupPickLimit(group);
+            const atLimit = limit !== null && selected.length >= limit;
             const headingId = `${headingIdPrefix}-${group.id}`;
             return (
               <section key={group.id} role="group" aria-labelledby={headingId} className="min-w-0 space-y-2">
                 <GroupHeading
                   id={headingId}
                   label={group.label}
-                  hint="Optional — tap to add, tap again to remove. Leave empty for no add-ons."
+                  hint={
+                    limit === null
+                      ? 'Optional — tap to add, tap again to remove. Leave empty for no add-ons.'
+                      : `Optional — up to ${limit}. Tap to add, tap again to remove.`
+                  }
                   badge={
                     selected.length > 0 ? (
                       <Button
@@ -310,6 +356,7 @@ export function AddOnsDialog({
                       name={option.name}
                       priceAdjustment={option.price_adjustment}
                       selected={selected.includes(option.id)}
+                      addDisabled={atLimit}
                       onActivate={() => onToggleOption(group.id, option.id)}
                     />
                   ))}
@@ -327,7 +374,7 @@ export function AddOnsDialog({
           )}
           {splitGroup && unitsAdded > 1 && (
             <p className="text-xs text-muted-foreground">
-              {isEditMode ? 'Saves' : 'Adds'} {unitsAdded} items — one per {splitGroup.label} pick{splitGroup.allowNoAddOn ? '; any left empty have none' : ''}.
+              {isEditMode ? 'Saves' : 'Adds'} {unitsAdded} items — one per {splitGroup.label} pick.
             </p>
           )}
           <div className="flex w-full gap-2">

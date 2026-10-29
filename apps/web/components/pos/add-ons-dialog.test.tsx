@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
-import { AddOnsDialog, isMultiGroupComplete, multiGroupTarget, type AddOnsDialogGroup, type AddOnSelections } from './add-ons-dialog';
+import { AddOnsDialog, groupPickLimit, isMultiGroupComplete, multiGroupTarget, servingCountGroup, type AddOnsDialogGroup, type AddOnSelections } from './add-ons-dialog';
 import type { AddOnAssignments } from '@/lib/pos/split-add-ons';
 
 afterEach(() => {
@@ -308,5 +308,38 @@ describe('AddOnsDialog — P46 whole-card choices and optional groups', () => {
     renderDialog({ groups: [optional], assignments: { 'premium-group': { __none__: 2 } } });
     expect(screen.getByText('Assigned 0 / 2')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add one Cheese Sauce' })).not.toHaveAttribute('aria-disabled');
+  });
+
+  it('P46R — only a lone required MULTIPLE group is a serving count; optional ones are extras on one product', () => {
+    const required = premiumAddOnGroup();
+    const optional = premiumAddOnGroup({ id: 'extras', allowNoAddOn: true, required: false, minSelections: 0, maxSelections: 2 });
+    expect(servingCountGroup([required])).toBe(required);
+    expect(servingCountGroup([optional])).toBeUndefined();
+    expect(servingCountGroup([required, optional])).toBeUndefined();
+    expect(servingCountGroup([singleFlavorGroup()])).toBeUndefined();
+  });
+
+  it('P46R — pick limits: max_selections for optional and Add-ons groups (null = unlimited), the exact target when required', () => {
+    expect(groupPickLimit(premiumAddOnGroup())).toBe(2);
+    expect(groupPickLimit(premiumAddOnGroup({ allowNoAddOn: true, required: false, minSelections: 0, maxSelections: null }))).toBeNull();
+    expect(groupPickLimit(premiumAddOnGroup({ simplified: true, maxSelections: 3 }))).toBe(3);
+    expect(groupPickLimit(singleFlavorGroup())).toBe(1);
+    const unlimited = premiumAddOnGroup({ allowNoAddOn: true, required: false, minSelections: 0, maxSelections: null });
+    expect(isMultiGroupComplete(unlimited, { 'opt-cheese': 9 })).toBe(true);
+  });
+
+  it('P46R — no "Adds N items" note for optional extras; the note stays for a required serving count', () => {
+    renderDialog({ groups: [premiumAddOnGroup({ allowNoAddOn: true, required: false, minSelections: 0, maxSelections: 2 })] });
+    expect(screen.queryByText(/Adds \d+ items/)).not.toBeInTheDocument();
+    cleanup();
+    renderDialog({ groups: [premiumAddOnGroup()] });
+    expect(screen.getByText('Adds 2 items — one per Premium Flavor Upgrade pick.')).toBeInTheDocument();
+  });
+
+  it('P46R — an edited Add-ons selection above the group maximum blocks Save until trimmed', () => {
+    const addOns = { ...premiumAddOnGroup({ id: 'addons', label: 'Add-ons', name: 'Add-ons', simplified: true, allowNoAddOn: true, required: false, minSelections: 0, maxSelections: 1 }) };
+    renderDialog({ groups: [addOns], selectedOptionIds: { addons: ['opt-cheese', 'opt-caramel'] } });
+    expect(screen.getByRole('button', { name: 'Add' })).toBeDisabled();
+    expect(screen.getByText('Still needed: Add-ons')).toBeInTheDocument();
   });
 });

@@ -1516,6 +1516,160 @@ describe('TerminalPage — POS product-option popup fixes (Task 182)', () => {
   });
 });
 
+// P46R — an optional MULTIPLE group (!required, min 0) is an ordinary set of
+// extras on ONE product: max_selections caps the extras, never the product
+// quantity. A required MULTIPLE group keeps Task 182's one-unit-per-pick
+// serving count. Add-ons-named groups obey max_selections too.
+const TOP_A = { option_group_id: 'toppings-group', option_group_name: 'Toppings', option_id: 'top-a', option_name: 'Topping A', price_adjustment: 5 };
+const TOP_B = { option_group_id: 'toppings-group', option_group_name: 'Toppings', option_id: 'top-b', option_name: 'Topping B', price_adjustment: 5 };
+
+describe('TerminalPage — P46R ordinary add-ons and selection limits', () => {
+  beforeEach(() => {
+    mockAddItem.mockClear();
+    mockReplaceItem.mockClear();
+    mockCartItems.mockReturnValue([]);
+  });
+
+  afterEach(() => cleanup());
+
+  const optionalExtras = (overrides: Partial<OptionGroup> = {}) => multiSlotGroup({ min_selections: 0, max_selections: 2, required: false, ...overrides });
+
+  it('an optional group with max 2 and no extras adds exactly one plain product', async () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [optionalExtras()] })]), isLoading: false });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+
+    expect(screen.queryByText(/Adds \d+ items/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    await waitFor(() => expect(mockAddItem).toHaveBeenCalledTimes(1));
+    expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 });
+  });
+
+  it('one extra attaches to the one product', async () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [optionalExtras()] })]), isLoading: false });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add one Topping A' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    await waitFor(() => expect(mockAddItem).toHaveBeenCalledTimes(1));
+    expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', selected_options: [TOP_A], quantity: 1 });
+  });
+
+  it('two extras (the same one twice, or two different) stay on one product of quantity 1', async () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [optionalExtras()] })]), isLoading: false });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add one Topping A' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add one Topping A' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    await waitFor(() => expect(mockAddItem).toHaveBeenCalledTimes(1));
+    expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', selected_options: [TOP_A, TOP_A], quantity: 1 });
+    cleanup();
+    mockAddItem.mockClear();
+
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add one Topping A' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add one Topping B' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    await waitFor(() => expect(mockAddItem).toHaveBeenCalledTimes(1));
+    expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', selected_options: [TOP_A, TOP_B], quantity: 1 });
+  });
+
+  it('rapid taps on optional extras stop at max 2; Remove one works', () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [optionalExtras()] })]), isLoading: false });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+    const toppingA = screen.getByRole('button', { name: 'Add one Topping A' });
+    act(() => {
+      toppingA.click();
+      toppingA.click();
+      toppingA.click();
+    });
+    expect(screen.getByText('×2')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add one Topping B' })).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'Remove one Topping A' }));
+    expect(screen.queryByText('×2')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add one Topping B' })).not.toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('an optional group with no maximum (null) is unlimited, not capped at one', () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [optionalExtras({ max_selections: null })] })]), isLoading: false });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+    const toppingA = screen.getByRole('button', { name: 'Add one Topping A' });
+    act(() => {
+      toppingA.click();
+      toppingA.click();
+      toppingA.click();
+    });
+    expect(screen.getByText('×3')).toBeInTheDocument();
+  });
+
+  it('editing extras on a line of quantity 3 keeps quantity 3', async () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [optionalExtras()] })]), isLoading: false });
+    mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', selected_options: [TOP_A], quantity: 3 }]);
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add one Topping B' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(mockReplaceItem).toHaveBeenCalledTimes(1));
+    expect(mockReplaceItem).toHaveBeenCalledWith(0, [
+      { product_id: 'product-1', product_variant_id: 'variant-1', selected_options: [TOP_A, TOP_B], quantity: 3 },
+    ]);
+  });
+
+  it('a required serving-count group (exactly 2) still adds one unit per pick — distinct from extras', async () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [multiSlotGroup()] })]), isLoading: false });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+    expect(screen.getByRole('button', { name: 'Add' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Add one Topping A' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add one Topping A' }));
+    expect(screen.getByText('Adds 2 items — one per Toppings pick.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    await waitFor(() => expect(mockAddItem).toHaveBeenCalledTimes(1));
+    expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', selected_options: [TOP_A], quantity: 2 });
+  });
+
+  it('a group named "Add-ons" obeys max_selections — a third pick is refused, rapid taps included', async () => {
+    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [addOnsGroup({ max_selections: 2 })] })]), isLoading: false });
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByText('Mega Mix Fries'));
+    const cheese = screen.getByRole('button', { name: /^Cheese/ });
+    const bbq = screen.getByRole('button', { name: /^BBQ/ });
+    const sourCream = screen.getByRole('button', { name: /^Sour Cream/ });
+    act(() => {
+      cheese.click();
+      bbq.click();
+      sourCream.click();
+    });
+    expect(cheese).toHaveAttribute('aria-pressed', 'true');
+    expect(bbq).toHaveAttribute('aria-pressed', 'true');
+    expect(sourCream).toHaveAttribute('aria-pressed', 'false');
+    expect(sourCream).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByText('Optional — up to 2. Tap to add, tap again to remove.')).toBeInTheDocument();
+
+    // Removing one frees the limit again.
+    fireEvent.click(bbq);
+    expect(bbq).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(sourCream);
+    expect(sourCream).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    await waitFor(() => expect(mockAddItem).toHaveBeenCalledTimes(1));
+    expect(mockAddItem).toHaveBeenCalledWith(
+      expect.objectContaining({ selected_options: [expect.objectContaining({ option_id: 'cheese' }), expect.objectContaining({ option_id: 'sour-cream' })], quantity: 1 }),
+    );
+  });
+});
+
 // Task 139 — GCash, Maya, and Other are unified onto one photo-proof-only
 // flow: no reference number or note field for any of them, matching cash's
 // simplicity of "one input, then Charge".
@@ -3410,41 +3564,6 @@ describe('TerminalPage — P46 product customization usability', () => {
   });
 
   afterEach(() => cleanup());
-
-  it('an optional MULTIPLE group left empty adds with no options — the same line the old No Add-ons taps produced', async () => {
-    const optionalGroup = multiSlotGroup({ min_selections: 0, max_selections: 2, required: false });
-    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [optionalGroup] })]), isLoading: false });
-    render(<TerminalPage />);
-    fireEvent.click(screen.getByText('Mega Mix Fries'));
-
-    expect(screen.queryByText('No Add-ons')).not.toBeInTheDocument();
-    expect(screen.getByText('Adds 2 items — one per Toppings pick; any left empty have none.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Add' })).not.toBeDisabled();
-    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
-
-    await waitFor(() => expect(mockAddItem).toHaveBeenCalledTimes(1));
-    expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 2 });
-  });
-
-  it('a partly filled optional MULTIPLE group splits the remainder into a plain line', async () => {
-    const optionalGroup = multiSlotGroup({ min_selections: 0, max_selections: 2, required: false });
-    mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [optionalGroup] })]), isLoading: false });
-    render(<TerminalPage />);
-    fireEvent.click(screen.getByText('Mega Mix Fries'));
-    fireEvent.click(screen.getByRole('button', { name: 'Add one Topping A' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
-
-    await waitFor(() => expect(mockAddItem).toHaveBeenCalledTimes(2));
-    expect(mockAddItem).toHaveBeenCalledWith({
-      product_id: 'product-1',
-      product_variant_id: 'variant-1',
-      selected_options: [
-        { option_group_id: 'toppings-group', option_group_name: 'Toppings', option_id: 'top-a', option_name: 'Topping A', price_adjustment: 5 },
-      ],
-      quantity: 1,
-    });
-    expect(mockAddItem).toHaveBeenCalledWith({ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 });
-  });
 
   it('rapid taps past the limit are ignored, and Remove one takes exactly one away', async () => {
     mockUseCatalog.mockReturnValue({ data: catalogWith([optionVariant({ option_groups: [multiSlotGroup()] })]), isLoading: false });

@@ -76,8 +76,9 @@ function useBranchContextReady(): boolean {
 export default function BranchLayout({ children }: { children: ReactNode }) {
   const branchContextReady = useBranchContextReady();
   const { user } = useAuth();
+  // P46R — 100dvh where supported: on a phone 100vh (h-screen) is the height with the browser's toolbars retracted, so the bottom of every branch page (the PIN Continue button included) sat under the URL bar.
   return (
-    <div className="flex h-screen overflow-hidden bg-background print:hidden">
+    <div className="flex h-screen overflow-hidden bg-background print:hidden supports-[height:100dvh]:h-[100dvh]">
       <SocketInitializer />
       <BranchContextSync />
       <BranchSidebar />

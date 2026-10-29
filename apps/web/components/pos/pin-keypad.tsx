@@ -7,8 +7,8 @@ import { cn } from '@/lib/utils';
 
 const KEYPAD_ROWS_1_TO_9 = ['1', '2', '3', '4', '5', '6', '7', '8', '9'] as const;
 
-// Height follows the viewport (min 52px touch floor, max 80px) so the pad never pushes the Continue button off a short screen.
-const KEY_CLASSES = 'touch-target h-[clamp(3.25rem,9dvh,5rem)] w-full rounded-xl';
+// Height follows the visible viewport (dvh, so browser chrome is excluded): 48px floor (the POS touch-target minimum, P46R — 52px pushed Continue off a 360×640 phone), max 80px.
+const KEY_CLASSES = 'touch-target h-[clamp(3rem,9dvh,5rem)] w-full rounded-xl';
 
 interface PinKeypadProps {
   value: string;
@@ -53,7 +53,7 @@ export function PinKeypad({ value, maxLength, disabled, onChange, onSubmit, 'ari
   }
 
   return (
-    <div className="flex w-full flex-col items-center gap-4 sm:gap-5">
+    <div className="flex w-full flex-col items-center gap-3 sm:gap-5">
       {/* Masked dots — the actual PIN is never rendered as text anywhere in this component. A visually-hidden input mirrors the value for screen readers and keeps physical-keyboard entry (digits, Backspace, paste, Enter) working without a visible text field. */}
       <label className="sr-only" htmlFor="pos-pin-hidden-input">
         {ariaLabel ?? 'Staff PIN'}

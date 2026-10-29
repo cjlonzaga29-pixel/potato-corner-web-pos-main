@@ -5049,3 +5049,94 @@ describe('transactionsService.createTransaction — Product Option price adjustm
     expect(itemsCall()).toMatchObject({ subtotal: 100, totalAmount: 100 });
   });
 });
+
+// P46R — checkout enforces each option group's configured maximum per cart
+// line (a SINGLE group holds at most one; a MULTIPLE group at most
+// max_selections, null = unlimited), so a crafted request can't bypass the
+// POS dialog's cap. A repeated option id is one extra each time it appears:
+// priced and deducted once per occurrence.
+describe('transactionsService.createTransaction — option group selection limits (P46R)', () => {
+  function limitedGroup(groupId: string, selectionType: 'SINGLE' | 'MULTIPLE', maxSelections: number | null, optionIds: string[], priceAdjustment = 5) {
+    return {
+      optionGroup: {
+        id: groupId,
+        name: `Group ${groupId}`,
+        posButtonLabel: null,
+        selectionType,
+        maxSelections,
+        options: optionIds.map((id) => ({ id, name: id, isActive: true, priceAdjustment: decimal(priceAdjustment) })),
+      },
+      allowedOptions: [],
+    };
+  }
+
+  function sale(selectedOptionIds: string[], quantity = 1) {
+    return transactionsService.createTransaction(
+      { ...baseInput, items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity, selectedOptionIds }] },
+      null,
+    );
+  }
+
+  it('rejects more picks than a MULTIPLE group allows, without creating a sale', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ optionGroupAssignments: [limitedGroup('extras', 'MULTIPLE', 2, ['dip-a', 'dip-b'])] }),
+    ] as never);
+
+    await expect(sale(['dip-a', 'dip-a', 'dip-b'])).rejects.toMatchObject({ code: 'PRODUCT_OPTION_LIMIT_EXCEEDED', statusCode: 422 });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects an Add-ons-named group over its maximum the same way', async () => {
+    const addOns = limitedGroup('addons', 'MULTIPLE', 2, ['cheese', 'bbq', 'sour-cream']);
+    addOns.optionGroup.name = 'Add-ons';
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([variantRow({ optionGroupAssignments: [addOns] })] as never);
+
+    await expect(sale(['cheese', 'bbq', 'sour-cream'])).rejects.toMatchObject({ code: 'PRODUCT_OPTION_LIMIT_EXCEEDED' });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects two picks from a SINGLE group', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ optionGroupAssignments: [limitedGroup('size', 'SINGLE', 1, ['small', 'large'])] }),
+    ] as never);
+
+    await expect(sale(['small', 'large'])).rejects.toMatchObject({ code: 'PRODUCT_OPTION_LIMIT_EXCEEDED' });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('accepts any number of picks when max_selections is null (unlimited)', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ optionGroupAssignments: [limitedGroup('extras', 'MULTIPLE', null, ['dip-a'])] }),
+    ] as never);
+
+    await sale(['dip-a', 'dip-a', 'dip-a', 'dip-a']);
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('a repeated extra within the limit is priced and deducted once per occurrence, times the line quantity', async () => {
+    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([
+      variantRow({ optionGroupAssignments: [limitedGroup('extras', 'MULTIPLE', 2, ['dip-a'], 20)] }),
+    ] as never);
+    vi.mocked(computeBomDeduction).mockResolvedValueOnce([]);
+    vi.mocked(transactionsRepository.findOptionInventoryMappings).mockResolvedValueOnce([
+      { productOptionId: 'dip-a', inventoryItemId: 'item-dip', quantityRequired: 30, deductionUnitId: 'unit-g', inventoryItem: { baseUnitId: 'unit-g', deletedAt: null } },
+    ] as never);
+
+    await sale(['dip-a', 'dip-a'], 3);
+
+    expect(transactionsRepository.findOptionInventoryMappings).toHaveBeenCalledWith(['dip-a']);
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        items: [
+          expect.objectContaining({
+            unitPrice: 140,
+            quantity: 3,
+            lineTotal: 420,
+            deductionSnapshot: [{ inventoryItemId: 'item-dip', quantity: 180, baseUnitId: 'unit-g', componentUnitCost: null, componentCost: null }],
+          }),
+        ],
+      }),
+      expect.anything(),
+    );
+  });
+});

@@ -463,6 +463,8 @@ function resolveSelectedOptions(
         id: string;
         name: string;
         posButtonLabel: string | null;
+        selectionType: 'SINGLE' | 'MULTIPLE';
+        maxSelections: number | null;
         options: { id: string; name: string; isActive: boolean; priceAdjustment: { toNumber(): number } }[];
       };
       allowedOptions: {
@@ -479,8 +481,17 @@ function resolveSelectedOptions(
     string,
     { priceAdjustment: number; optionName: string; optionGroupId: string; optionGroupName: string }
   >();
+  // P46R — the most picks one cart line may carry from each group: one for a
+  // SINGLE group, max_selections for a MULTIPLE group (null = unlimited, as
+  // the admin's ∞). Per line, because one line is one product configuration
+  // (a required serving-count group's split lines each carry one pick).
+  const pickLimitByGroup = new Map<string, { limit: number | null; groupName: string }>();
   for (const assignment of variant.optionGroupAssignments ?? []) {
     const optionGroupName = assignment.optionGroup.posButtonLabel?.trim() || assignment.optionGroup.name;
+    pickLimitByGroup.set(assignment.optionGroup.id, {
+      limit: assignment.optionGroup.selectionType === 'SINGLE' ? 1 : (assignment.optionGroup.maxSelections ?? null),
+      groupName: optionGroupName,
+    });
     // Empty allowedOptions means "all options" — fall back to every active
     // option in the assigned group, mirroring getPosCatalog exactly.
     const effectiveOptions =
@@ -501,10 +512,21 @@ function resolveSelectedOptions(
 
   let premium = 0;
   const snapshot: SelectedOptionSnapshot[] = [];
+  const picksByGroup = new Map<string, number>();
   for (const optionId of selectedOptionIds) {
     const resolved = allowedOptions.get(optionId);
     if (resolved === undefined) {
       throw new TransactionError('PRODUCT_OPTION_NOT_AVAILABLE', `Selected product option is not available for ${variant.name}`, 422);
+    }
+    const picks = (picksByGroup.get(resolved.optionGroupId) ?? 0) + 1;
+    picksByGroup.set(resolved.optionGroupId, picks);
+    const cap = pickLimitByGroup.get(resolved.optionGroupId);
+    if (cap && cap.limit !== null && picks > cap.limit) {
+      throw new TransactionError(
+        'PRODUCT_OPTION_LIMIT_EXCEEDED',
+        `${variant.name} allows at most ${cap.limit} ${cap.groupName} selection${cap.limit === 1 ? '' : 's'}`,
+        422,
+      );
     }
     premium += resolved.priceAdjustment;
     snapshot.push({
@@ -559,7 +581,12 @@ async function computeBaseRecipeDeductionOrThrow(compute: () => Promise<BomDeduc
 async function computeOptionDeductionLines(selectedOptionIds: string[] | undefined, quantitySold: number): Promise<BomDeductionLine[]> {
   if (!selectedOptionIds || selectedOptionIds.length === 0) return [];
 
-  const mappings = await transactionsRepository.findOptionInventoryMappings(selectedOptionIds);
+  // P46R — an option listed twice is two of that extra on every unit (the
+  // same rule pricing and the stock pre-check apply), so its mapping is
+  // deducted once per occurrence; the lookup itself needs each id only once.
+  const occurrences = new Map<string, number>();
+  for (const optionId of selectedOptionIds) occurrences.set(optionId, (occurrences.get(optionId) ?? 0) + 1);
+  const mappings = await transactionsRepository.findOptionInventoryMappings([...occurrences.keys()]);
   const map = new Map<string, BomDeductionLine>();
   for (const mapping of mappings) {
     if (mapping.inventoryItem.deletedAt !== null) {
@@ -591,7 +618,7 @@ async function computeOptionDeductionLines(selectedOptionIds: string[] | undefin
       }
       throw error;
     }
-    const quantity = baseQuantity.toNumber() * quantitySold;
+    const quantity = baseQuantity.toNumber() * quantitySold * (occurrences.get(mapping.productOptionId) ?? 1);
     const existing = map.get(mapping.inventoryItemId);
     if (existing) {
       existing.quantity += quantity;

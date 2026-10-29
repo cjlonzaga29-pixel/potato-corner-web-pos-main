@@ -43,17 +43,6 @@ export function chosenQuantity(assignment: Record<string, number> | undefined): 
 }
 
 /**
- * P46 — an optional group's unpicked remainder, filled with "no add-on" so
- * splitAddOnLines still sees exactly `target` units: the same cart lines a
- * cashier used to get by tapping No Add-ons up to the target by hand.
- */
-export function fillWithNoAddOn(assignment: Record<string, number> | undefined, target: number): Record<string, number> {
-  const picked = Object.fromEntries(Object.entries(assignment ?? {}).filter(([key, qty]) => key !== NO_ADD_ON_KEY && qty > 0));
-  const remainder = target - chosenQuantity(picked);
-  return remainder > 0 ? { ...picked, [NO_ADD_ON_KEY]: remainder } : picked;
-}
-
-/**
  * Task 107 — per-unit add-on assignment, not per-line applied_quantity.
  * Every group's assigned quantities must sum to exactly `quantity`
  * (validated by the caller before invoking this). Expands each group's

@@ -68,6 +68,8 @@ describe('transactionsRepository.findVariantsForSale', () => {
                 id: true,
                 name: true,
                 posButtonLabel: true,
+                selectionType: true,
+                maxSelections: true,
                 options: {
                   where: { isActive: true },
                   select: { id: true, name: true, isActive: true, priceAdjustment: true },

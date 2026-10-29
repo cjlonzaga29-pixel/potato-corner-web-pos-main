@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
-import { AddOnsDialog, multiGroupTarget, type AddOnsDialogGroup, type AddOnSelections } from '@/components/pos/add-ons-dialog';
+import { AddOnsDialog, groupPickLimit, multiGroupTarget, servingCountGroup, type AddOnsDialogGroup, type AddOnSelections } from '@/components/pos/add-ons-dialog';
 import { PinKeypad } from '@/components/pos/pin-keypad';
 import { OptionChoiceCard } from '@/components/pos/option-choice-card';
 import {
@@ -27,7 +27,7 @@ import { ProductCardSkeleton } from '@/components/pos/product-card-skeleton';
 import { CartLineItem, type CartLine } from '@/components/pos/cart-line-item';
 import type { DiscountChoice } from '@/components/pos/payment-footer';
 import { CheckoutWorkspace } from '@/components/pos/checkout-workspace';
-import { splitAddOnLines, isAddOnsGroup, chosenQuantity, fillWithNoAddOn, type AddOnAssignments } from '@/lib/pos/split-add-ons';
+import { splitAddOnLines, isAddOnsGroup, chosenQuantity, type AddOnAssignments } from '@/lib/pos/split-add-ons';
 import { cartLineKey, type PosCartItem, type PosCartSelectedOption } from '@/stores/cart.store';
 import { toAvailabilityLines, useCartStockValidation } from '@/hooks/use-cart-stock-validation';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -1378,7 +1378,8 @@ export default function TerminalPage() {
       if (!group) return prev;
       const groupAssignment = prev.assignments[groupId] ?? {};
       const current = groupAssignment[optionId] ?? 0;
-      if (delta < 0 ? current === 0 : chosenQuantity(groupAssignment) >= multiGroupTarget(group)) return prev;
+      const limit = groupPickLimit(group);
+      if (delta < 0 ? current === 0 : limit !== null && chosenQuantity(groupAssignment) >= limit) return prev;
       return {
         ...prev,
         assignments: { ...prev.assignments, [groupId]: { ...groupAssignment, [optionId]: current + delta } },
@@ -1389,11 +1390,17 @@ export default function TerminalPage() {
   // Task 131 — toggles one option within a simplified Add-ons group's
   // selection; selecting any option implicitly clears "No Add-ons" (an empty
   // array), never a separate flag to keep in sync.
+  // P46R — a pick past the group's max_selections is dropped, checked
+  // against the latest state so a burst of taps can't overshoot it.
   function handleToggleAddOnOption(groupId: string, optionId: string) {
     setAddOnsPrompt((prev) => {
       if (!prev) return prev;
       const current = prev.selectedOptionIds[groupId] ?? [];
-      const next = current.includes(optionId) ? current.filter((id) => id !== optionId) : [...current, optionId];
+      const removing = current.includes(optionId);
+      const group = dialogGroupsFor(prev.variant).find((candidate) => candidate.id === groupId);
+      const limit = group ? groupPickLimit(group) : null;
+      if (!removing && limit !== null && current.length >= limit) return prev;
+      const next = removing ? current.filter((id) => id !== optionId) : [...current, optionId];
       return { ...prev, selectedOptionIds: { ...prev.selectedOptionIds, [groupId]: next } };
     });
   }
@@ -1448,8 +1455,10 @@ export default function TerminalPage() {
     // its own target. When more than one MULTIPLE group is present, fold
     // every group's picks directly onto a single line instead — the same
     // "chosen once for the whole line" treatment flatGroups already gets.
-    const splittableGroup = legacyGroups.length === 1 ? legacyGroups[0] : undefined;
-    const flatMultiGroups = splittableGroup ? [] : legacyGroups;
+    // P46R — a lone *optional* MULTIPLE group is ordinary extras, folded the
+    // same way: its picks ride on the one product, ×N as N repeated options.
+    const splittableGroup = servingCountGroup(groups);
+    const flatMultiGroups = legacyGroups.filter((group) => group !== splittableGroup);
 
     const addOnSelectedOptions: PosCartSelectedOption[] = [
       ...flatGroups.flatMap((group) =>
@@ -1484,16 +1493,10 @@ export default function TerminalPage() {
     // Task 182 — a genuine multi-slot (MULTIPLE) group's allocator is sized
     // to the group's own required count, not the cart line's quantity; that
     // required count now drives how many lines/units this add produces.
-    // P46 — an optional group the cashier left (partly) empty is filled with
-    // no-add-on units here, so the split still covers the whole target.
+    // Everything else keeps the prompt's quantity: 1 on a new add, the cart
+    // line's own quantity on an edit.
     const baseLines = splittableGroup
-      ? splitAddOnLines(
-          [splittableGroup],
-          splittableGroup.allowNoAddOn
-            ? { [splittableGroup.id]: fillWithNoAddOn(assignments[splittableGroup.id], multiGroupTarget(splittableGroup)) }
-            : assignments,
-          multiGroupTarget(splittableGroup),
-        )
+      ? splitAddOnLines([splittableGroup], assignments, multiGroupTarget(splittableGroup))
       : [{ quantity, selected_options: [] as PosCartSelectedOption[] }];
 
     const newItems = baseLines.map((line) => {
@@ -2459,6 +2462,10 @@ export default function TerminalPage() {
     // status panel (branch, terminal state, identified employee) beside a
     // full-width keypad from `md` up, stacked into one compact column on a
     // phone. Every handler, label and verification rule above is unchanged.
+    // P46R — on a phone the status rows are one label/value line each and
+    // the gaps are tighter, so the keypad and Continue fit a 360×640 screen;
+    // the bottom padding clears a home-indicator safe area. A shorter screen
+    // or enlarged text still scrolls (the branch layout's <main>).
     const lockedReason = lockContext?.reason === 'idle' ? 'Locked after inactivity' : 'Waiting for a staff PIN';
     const clockStatus =
       pinVerification?.isClockedIn === true ? 'Clocked in' : pinVerification?.isClockedIn === false ? 'Not clocked in yet' : null;
@@ -2469,9 +2476,9 @@ export default function TerminalPage() {
           aria-labelledby="pos-lock-title"
           className="grid w-full max-w-5xl content-start overflow-hidden bg-card sm:rounded-2xl sm:border sm:shadow-sm md:min-h-[min(36rem,calc(100dvh-8rem))] md:grid-cols-[minmax(0,5fr)_minmax(0,6fr)] md:content-stretch"
         >
-          <div className="flex flex-col gap-4 border-b bg-primary/5 p-4 sm:p-6 md:justify-between md:border-b-0 md:border-r md:p-8">
+          <div className="flex flex-col gap-2 border-b bg-primary/5 px-4 py-3 sm:gap-4 sm:p-6 md:justify-between md:border-b-0 md:border-r md:p-8">
             <div className="flex items-center gap-3 md:flex-col md:items-start md:gap-4">
-              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary md:h-14 md:w-14">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary sm:h-11 sm:w-11 md:h-14 md:w-14">
                 <LockKeyhole className="h-6 w-6 md:h-7 md:w-7" aria-hidden="true" />
               </div>
               <div className="min-w-0 space-y-1">
@@ -2482,24 +2489,24 @@ export default function TerminalPage() {
               </div>
             </div>
 
-            <dl className="grid grid-cols-1 gap-3 text-sm min-[420px]:grid-cols-3 md:grid-cols-1 md:gap-4">
-              <div className="min-w-0">
+            <dl className="grid grid-cols-1 gap-1.5 text-sm min-[420px]:grid-cols-3 min-[420px]:gap-3 md:grid-cols-1 md:gap-4">
+              <div className="flex min-w-0 items-center justify-between gap-3 min-[420px]:block">
                 <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Branch</dt>
-                <dd className="break-words font-semibold">{branch?.name ?? 'This branch'}</dd>
+                <dd className="break-words text-right font-semibold min-[420px]:text-left">{branch?.name ?? 'This branch'}</dd>
               </div>
-              <div className="min-w-0">
+              <div className="flex min-w-0 items-center justify-between gap-3 min-[420px]:block">
                 <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Terminal</dt>
-                <dd className="mt-0.5 flex flex-wrap items-center gap-1.5">
+                <dd className="flex flex-wrap items-center gap-1.5 min-[420px]:mt-0.5">
                   <Badge variant="secondary" className="gap-1">
                     <Lock className="h-3 w-3" aria-hidden="true" />
                     Terminal Locked
                   </Badge>
                 </dd>
               </div>
-              <div className="min-w-0">
+              <div className="flex min-w-0 items-center justify-between gap-3 min-[420px]:block">
                 <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Employee</dt>
                 {/* The verified name itself is shown once, large, beside the confirm button. */}
-                <dd className="break-words">
+                <dd className="break-words text-right min-[420px]:text-left">
                   {pinVerification ? (
                     <span className="font-semibold text-success">PIN verified{clockStatus ? ` · ${clockStatus}` : ''}</span>
                   ) : (
@@ -2522,7 +2529,7 @@ export default function TerminalPage() {
             </p>
           </div>
 
-          <div className="flex flex-col items-center justify-center gap-4 p-4 sm:p-6 md:p-8">
+          <div className="flex flex-col items-center justify-center gap-3 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 sm:gap-4 sm:p-6 md:p-8">
             {selectEmployeeError && (
               <Alert variant="destructive" className="w-full max-w-sm" role="alert">
                 <AlertTitle>Could not start employee session</AlertTitle>
@@ -2552,8 +2559,9 @@ export default function TerminalPage() {
                 </div>
               </div>
             ) : (
-              <div className="flex w-full max-w-sm flex-col items-center gap-4">
-                <p className="text-sm text-muted-foreground">Enter your staff PIN to continue.</p>
+              <div className="flex w-full max-w-sm flex-col items-center gap-3 sm:gap-4">
+                {/* Said already by the status panel ("Waiting for a staff PIN"); kept for screen readers on a short phone so the keypad fits. */}
+                <p className="text-sm text-muted-foreground max-md:[@media(max-height:700px)]:sr-only">Enter your staff PIN to continue.</p>
                 <PinKeypad
                   value={pin}
                   maxLength={STAFF_PIN_MAX_LENGTH}

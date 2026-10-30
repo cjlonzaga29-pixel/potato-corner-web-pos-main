@@ -290,11 +290,12 @@ export function useAuth() {
    * resolved and displayed the staff name for confirmation before this is
    * called.
    */
-  async function selectEmployee(verificationToken: string) {
+  /** POS-PERF-P51 — allowOnBreak: set only by Resume Work / Clock Out on the locked screen, which record the break end with the minted token straight away; otherwise the server refuses an employee on break (EMPLOYEE_ON_BREAK). */
+  async function selectEmployee(verificationToken: string, options: { allowOnBreak?: boolean } = {}) {
     const deviceId = getOrCreateDeviceId();
     const response = await apiClient<SelectEmployeeResponseData>('/api/auth/select-employee', {
       method: 'POST',
-      body: JSON.stringify({ verification_token: verificationToken, device_id: deviceId }),
+      body: JSON.stringify({ verification_token: verificationToken, device_id: deviceId, ...(options.allowOnBreak ? { allow_on_break: true } : {}) }),
     });
 
     if (!response.data) {

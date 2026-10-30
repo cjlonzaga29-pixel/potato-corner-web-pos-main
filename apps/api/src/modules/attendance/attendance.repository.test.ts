@@ -62,6 +62,12 @@ describe('attendanceRepository.clockIn', () => {
   });
 });
 
+/** POS-PERF-P51 — the break history every record read now carries. */
+const BREAKS_INCLUDE = {
+  select: { id: true, startedAt: true, endedAt: true, endReason: true },
+  orderBy: { startedAt: 'asc' },
+};
+
 describe('attendanceRepository.findActiveRecord', () => {
   it('scopes to an employee with an open (clockOutServerTime null) and non-deleted record', async () => {
     vi.mocked(prisma.attendanceRecord.findFirst).mockResolvedValue({ id: 'record-1' } as never);
@@ -108,6 +114,8 @@ describe('attendanceRepository.clockOut', () => {
         actualWorkMinutes: 480,
         overtimeMinutes: 0,
       },
+      // POS-PERF-P51 — returns the break history with the closed record.
+      include: { breaks: BREAKS_INCLUDE },
     });
   });
 });
@@ -182,7 +190,7 @@ describe('attendanceRepository.findByBranch', () => {
         employeeId: 'employee-1',
         clockInServerTime: { gte: new Date('2026-07-01T00:00:00.000Z'), lte: new Date('2026-07-15T23:59:59.000Z') },
       },
-      include: { employee: { select: { firstName: true, lastName: true, employeeId: true, status: true } } },
+      include: { employee: { select: { firstName: true, lastName: true, employeeId: true, status: true } }, breaks: BREAKS_INCLUDE },
       orderBy: { clockInServerTime: 'desc' },
       skip: 10,
       take: 10,
@@ -218,6 +226,7 @@ describe('attendanceRepository.findByEmployee', () => {
 
     expect(prisma.attendanceRecord.findMany).toHaveBeenCalledWith({
       where: { employeeId: 'employee-1', deletedAt: null },
+      include: { breaks: BREAKS_INCLUDE },
       orderBy: { clockInServerTime: 'desc' },
       skip: 0,
       take: 25,

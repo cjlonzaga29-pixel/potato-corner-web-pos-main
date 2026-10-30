@@ -1,5 +1,6 @@
 'use client';
 
+import { useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { SOCKET_EVENTS } from '@potato-corner/shared';
@@ -155,7 +156,17 @@ export function useIsClockedIn(employeeIdOverride?: string) {
   const query = useAttendanceByEmployee(employeeIdOverride ?? user?.id, { limit: 1 });
   const latestRecord = query.data?.records[0] ?? null;
   const isClockedIn = latestRecord !== null && latestRecord.clock_out_server_time === null;
-  return { isClockedIn, record: isClockedIn ? latestRecord : null, isLoading: query.isLoading, isError: query.isError, refetch: query.refetch };
+  // POS-PERF-P51 — still clocked in (the record stays open) but must not sell
+  // until they Resume Work. A pre-P51 API omits attendance_state → false.
+  const isOnBreak = isClockedIn && latestRecord.attendance_state === 'on_break';
+  return {
+    isClockedIn,
+    isOnBreak,
+    record: isClockedIn ? latestRecord : null,
+    isLoading: query.isLoading,
+    isError: query.isError,
+    refetch: query.refetch,
+  };
 }
 
 function invalidateAttendance(queryClient: ReturnType<typeof useQueryClient>) {
@@ -163,10 +174,33 @@ function invalidateAttendance(queryClient: ReturnType<typeof useQueryClient>) {
   void queryClient.invalidateQueries({ queryKey: ['attendance-employee'] });
 }
 
-/** Keeps attendance DataTables in sync with clock-ins/outs recorded from any other device, without a manual refresh. */
+/**
+ * POS-PERF-P51 — the two cache steps the terminal's break flows need, kept
+ * here with the query keys they touch. forgetEmployee drops an employee's
+ * cached attendance read so the terminal waits for a fresh server read
+ * (instead of acting on a stale "working"/"on break" answer) right after a
+ * break starts or ends; refreshAll re-fetches every attendance view.
+ */
+export function useAttendanceCache() {
+  const queryClient = useQueryClient();
+  return useMemo(
+    () => ({
+      forgetEmployee: (employeeId: string) => queryClient.removeQueries({ queryKey: ['attendance-employee', employeeId] }),
+      refreshAll: () => invalidateAttendance(queryClient),
+    }),
+    [queryClient],
+  );
+}
+
+/** Keeps attendance DataTables in sync with clock-ins/outs and breaks recorded from any other device, without a manual refresh. */
 export function useAttendanceRealtimeSync(): void {
   useRealtimeInvalidate(
-    [SOCKET_EVENTS.ATTENDANCE_CLOCKED_IN, SOCKET_EVENTS.ATTENDANCE_CLOCKED_OUT],
+    [
+      SOCKET_EVENTS.ATTENDANCE_CLOCKED_IN,
+      SOCKET_EVENTS.ATTENDANCE_CLOCKED_OUT,
+      SOCKET_EVENTS.ATTENDANCE_BREAK_STARTED,
+      SOCKET_EVENTS.ATTENDANCE_BREAK_ENDED,
+    ],
     [['attendance-branch'], ['attendance-employee'], ['branches']],
   );
 }

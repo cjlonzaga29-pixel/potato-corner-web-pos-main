@@ -46,6 +46,24 @@ interface CreateOverrideRow {
   originalRecordId: string;
 }
 
+/** POS-PERF-P51 — every break interval of a record, oldest first. Small (a handful per shift), so list reads include it directly. */
+const breaksInclude = {
+  select: { id: true, startedAt: true, endedAt: true, endReason: true },
+  orderBy: { startedAt: 'asc' },
+} satisfies Prisma.AttendanceRecord$breaksArgs;
+
+interface CreateBreakRow {
+  attendanceRecordId: string;
+  startedAt: Date;
+  startedBy: string;
+}
+
+interface CloseBreakRow {
+  endedAt: Date;
+  endedBy: string;
+  endReason: 'resumed' | 'clock_out';
+}
+
 function dateRangeWhere(from?: Date, to?: Date): Prisma.DateTimeFilter | undefined {
   if (!from && !to) return undefined;
   return { ...(from && { gte: from }), ...(to && { lte: to }) };
@@ -65,8 +83,45 @@ export const attendanceRepository = {
     });
   },
 
+  /**
+   * POS-PERF-P51 — the open record plus its open break (if any), in one
+   * query. Used by every gate that must tell "working" from "on break":
+   * shiftGuard (checkout/sync/hold/proof uploads), select-employee,
+   * refresh-employee-session and verify-pos.
+   */
+  findActiveRecordWithOpenBreak(employeeId: string, tx?: Prisma.TransactionClient) {
+    const client = tx ?? prisma;
+    return client.attendanceRecord.findFirst({
+      where: { employeeId, clockOutServerTime: null, deletedAt: null },
+      orderBy: { clockInServerTime: 'desc' },
+      include: { breaks: { where: { endedAt: null }, select: { id: true, startedAt: true }, take: 1 } },
+    });
+  },
+
   findById(id: string) {
-    return prisma.attendanceRecord.findUnique({ where: { id } });
+    return prisma.attendanceRecord.findUnique({ where: { id }, include: { breaks: breaksInclude } });
+  },
+
+  /** POS-PERF-P51 — all intervals of one record (oldest first), read through the caller's tx so totals are computed under the same lock as the write. */
+  findBreaks(attendanceRecordId: string, tx?: Prisma.TransactionClient) {
+    const client = tx ?? prisma;
+    return client.attendanceBreak.findMany({ where: { attendanceRecordId }, orderBy: { startedAt: 'asc' } });
+  },
+
+  createBreak(data: CreateBreakRow, tx: Prisma.TransactionClient) {
+    return tx.attendanceBreak.create({ data });
+  },
+
+  /** Closes the break only if it is still open — returns how many rows changed (0 = someone else already closed it). */
+  async closeBreak(id: string, data: CloseBreakRow, tx: Prisma.TransactionClient): Promise<number> {
+    const result = await tx.attendanceBreak.updateMany({ where: { id, endedAt: null }, data });
+    return result.count;
+  },
+
+  /** The record with its full break history — the shape every write endpoint returns. */
+  findByIdWithBreaks(id: string, tx?: Prisma.TransactionClient) {
+    const client = tx ?? prisma;
+    return client.attendanceRecord.findUnique({ where: { id }, include: { breaks: breaksInclude } });
   },
 
   findBranchAssignment(employeeId: string, branchId: string) {
@@ -92,8 +147,9 @@ export const attendanceRepository = {
     return client.attendanceRecord.create({ data });
   },
 
-  clockOut(id: string, data: ClockOutRow) {
-    return prisma.attendanceRecord.update({ where: { id }, data });
+  clockOut(id: string, data: ClockOutRow, tx?: Prisma.TransactionClient) {
+    const client = tx ?? prisma;
+    return client.attendanceRecord.update({ where: { id }, data, include: { breaks: breaksInclude } });
   },
 
   /** Creates the correction row. The original row it supersedes is soft-deleted separately via softDelete — never in the same call, so the service can audit-log both steps distinctly. */
@@ -137,6 +193,7 @@ export const attendanceRepository = {
             },
           },
           branch: { select: { name: true, status: true } },
+          breaks: breaksInclude,
         },
         orderBy: [{ clockInServerTime: 'desc' }, { id: 'asc' }],
         skip: (filters.page - 1) * filters.limit,
@@ -167,7 +224,15 @@ export const attendanceRepository = {
     const [open, closedToday] = await Promise.all([
       prisma.attendanceRecord.findMany({
         where: { branchId, clockOutServerTime: null, deletedAt: null },
-        select: { id: true, employeeId: true, clockInServerTime: true, clockInGpsStatus: true, employee: { select: employeeSelect } },
+        select: {
+          id: true,
+          employeeId: true,
+          clockInServerTime: true,
+          clockInGpsStatus: true,
+          employee: { select: employeeSelect },
+          // POS-PERF-P51 — the open break, if any (at most one per record).
+          breaks: { where: { endedAt: null }, select: { startedAt: true }, take: 1 },
+        },
         orderBy: { clockInServerTime: 'asc' },
       }),
       prisma.attendanceRecord.findMany({
@@ -202,7 +267,7 @@ export const attendanceRepository = {
         // separate, filtered/capped roster query) so a reassigned,
         // deactivated, or terminated employee still shows a name instead of
         // a raw UUID — see Cross-Dashboard Correctness audit.
-        include: { employee: { select: { firstName: true, lastName: true, employeeId: true, status: true } } },
+        include: { employee: { select: { firstName: true, lastName: true, employeeId: true, status: true } }, breaks: breaksInclude },
         orderBy: { clockInServerTime: 'desc' },
         skip: (filters.page - 1) * filters.limit,
         take: filters.limit,
@@ -225,6 +290,7 @@ export const attendanceRepository = {
     const [records, total] = await Promise.all([
       prisma.attendanceRecord.findMany({
         where,
+        include: { breaks: breaksInclude },
         orderBy: { clockInServerTime: 'desc' },
         skip: (filters.page - 1) * filters.limit,
         take: filters.limit,

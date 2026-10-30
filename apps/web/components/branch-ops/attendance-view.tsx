@@ -92,6 +92,14 @@ export function AttendanceView() {
       header: 'Clock Out',
       cell: ({ row }) => {
         if (row.original.clock_out_server_time) return formatDateTime(row.original.clock_out_server_time);
+        // POS-PERF-P51 — clocked in but on an open break (server state).
+        if (row.original.attendance_state === 'on_break') {
+          return (
+            <Badge variant="warning" className="whitespace-nowrap">
+              On Break{row.original.current_break_started_at ? ` since ${formatDateTime(row.original.current_break_started_at)}` : ''}
+            </Badge>
+          );
+        }
         if (isStaleOpenShift(row.original)) {
           return (
             <TooltipProvider>

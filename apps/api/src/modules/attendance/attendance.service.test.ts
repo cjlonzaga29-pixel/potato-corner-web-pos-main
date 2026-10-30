@@ -14,6 +14,11 @@ vi.mock('./attendance.repository.js', () => ({
     findActiveRecord: vi.fn(),
     findBranchById: vi.fn(),
     findById: vi.fn(),
+    findBreaks: vi.fn(),
+    createBreak: vi.fn(),
+    closeBreak: vi.fn(),
+    findByIdWithBreaks: vi.fn(),
+    findSummaryRows: vi.fn(),
     clockIn: vi.fn(),
     clockOut: vi.fn(),
     createOverride: vi.fn(),
@@ -184,6 +189,8 @@ function shiftRow(overrides: Partial<Record<string, unknown>> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // POS-PERF-P51 — no break intervals unless a test sets them up.
+  vi.mocked(attendanceRepository.findBreaks).mockResolvedValue([]);
   // Default: the pre-P3D-P4 hardcoded 8h/480min threshold — matches
   // production behavior when no work_hours_policy row exists.
   vi.mocked(settingsService.getRegularShiftMinutes).mockResolvedValue(480);
@@ -404,6 +411,7 @@ describe('attendanceService.clockOut', () => {
     expect(attendanceRepository.clockOut).toHaveBeenCalledWith(
       'record-1',
       expect.objectContaining({ breakMinutes: 60, clockOutServerTime: expect.any(Date) }),
+      expect.anything(),
     );
     expect(result.clock_out_server_time).not.toBeNull();
     expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'ATTENDANCE_CLOCKED_OUT' }));

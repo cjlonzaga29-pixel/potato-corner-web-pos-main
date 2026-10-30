@@ -20,6 +20,18 @@ function isStaleOpenShift(record: AttendanceResponse): boolean {
   return record.clock_out_server_time === null && manilaDateString(new Date(record.clock_in_server_time)) !== manilaToday();
 }
 
+function formatManilaTime(iso: string): string {
+  return new Intl.DateTimeFormat('en-PH', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'Asia/Manila' }).format(new Date(iso));
+}
+
+/** POS-PERF-P51 — break minutes to show: live server total for an open record, stored minutes otherwise (and for a pre-P51 API). */
+export function breakMinutesOf(record: AttendanceResponse): number {
+  if (record.clock_out_server_time === null && record.elapsed_break_seconds !== undefined) {
+    return Math.floor(record.elapsed_break_seconds / 60);
+  }
+  return record.break_minutes;
+}
+
 export interface AttendanceColumnOptions {
   employeeNames: Map<string, string>;
   branchNames: Map<string, string>;
@@ -80,6 +92,14 @@ export function createAttendanceColumns({ employeeNames, branchNames, employeeRo
             </span>
           );
         }
+        // POS-PERF-P51 — clocked in but on an open break (server state).
+        if (row.original.attendance_state === 'on_break') {
+          return (
+            <Badge variant="warning" className="whitespace-nowrap">
+              On Break{row.original.current_break_started_at ? ` since ${formatManilaTime(row.original.current_break_started_at)}` : ''}
+            </Badge>
+          );
+        }
         if (isStaleOpenShift(row.original)) {
           return (
             <TooltipProvider>
@@ -101,7 +121,9 @@ export function createAttendanceColumns({ employeeNames, branchNames, employeeRo
     {
       id: 'break_minutes',
       header: 'Break',
-      cell: ({ row }) => formatDuration(row.original.break_minutes),
+      // POS-PERF-P51 — an open record shows break time so far, from the
+      // server's recorded intervals; a closed one its stored break_minutes.
+      cell: ({ row }) => formatDuration(breakMinutesOf(row.original)),
     },
     {
       id: 'actual_work_minutes',

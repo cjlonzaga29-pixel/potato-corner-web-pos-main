@@ -36,8 +36,18 @@ vi.mock('../cash/cash.service.js', () => ({
   cashService: { autoOpenShift: vi.fn() },
 }));
 
+// POS-PERF-P51 — the gates now read the open record together with its open
+// break; delegate to the findActiveRecord mock (no open break) unless a test
+// overrides it.
+const findActiveRecordMock = vi.hoisted(() => vi.fn());
 vi.mock('../attendance/attendance.repository.js', () => ({
-  attendanceRepository: { findActiveRecord: vi.fn() },
+  attendanceRepository: {
+    findActiveRecord: findActiveRecordMock,
+    findActiveRecordWithOpenBreak: vi.fn(async (employeeId: string) => {
+      const record = (await findActiveRecordMock(employeeId)) as Record<string, unknown> | null;
+      return record ? { breaks: [], ...record } : record;
+    }),
+  },
 }));
 
 vi.mock('../../lib/prisma.js', () => ({

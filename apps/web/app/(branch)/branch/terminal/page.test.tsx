@@ -79,6 +79,23 @@ const {
   mockClearCart: vi.fn(),
 }));
 
+// POS-PERF-P51 — break flows. The server round trips live in
+// lib/attendance-breaks.ts (its own tests); here they are stubbed so the
+// page's ordering and locking rules can be asserted.
+const { mockAttendanceCache, mockStartBreakConfirmed, mockEndBreakConfirmed, mockReadAttendanceState } = vi.hoisted(() => ({
+  mockAttendanceCache: { forgetEmployee: vi.fn(), refreshAll: vi.fn() },
+  mockStartBreakConfirmed: vi.fn(),
+  mockEndBreakConfirmed: vi.fn(),
+  mockReadAttendanceState: vi.fn(),
+}));
+
+vi.mock('@/lib/attendance-breaks', () => ({
+  startBreakConfirmed: mockStartBreakConfirmed,
+  endBreakConfirmed: mockEndBreakConfirmed,
+  readAttendanceState: mockReadAttendanceState,
+  formatBreakSince: (iso: string | null | undefined) => (iso ? '2:05 PM' : null),
+}));
+
 // jsdom implements neither createImageBitmap nor canvas 2D drawing/encoding —
 // ImageUpload's compression pipeline needs both to drive a real gallery
 // upload interaction in "payment proof still works" tests below.
@@ -207,6 +224,7 @@ vi.mock('@/hooks/queries/use-shifts', () => ({
 
 vi.mock('@/hooks/queries/use-attendance', () => ({
   useIsClockedIn: mockUseIsClockedIn,
+  useAttendanceCache: () => mockAttendanceCache,
   useClockIn: (accessTokenOverride?: string, refreshOverrideToken?: () => Promise<string | null>) => {
     mockUseClockIn(accessTokenOverride, refreshOverrideToken);
     return { mutateAsync: mockClockInMutateAsync, isPending: false };
@@ -4149,5 +4167,207 @@ describe('TerminalPage — P50R custom discounts and required choice', () => {
     charge();
     await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalled());
     expect((mockCreateTransactionMutateAsync.mock.calls[0]?.[0] as CreateTransactionInput).discount_choice).toBe('selected');
+  });
+});
+
+// POS-PERF-P51 — Start Break / Resume Work on a Branch Account terminal. The
+// server round trips (lib/attendance-breaks.ts) are stubbed; these assert
+// the page's rules: confirm first, lock after; resume recorded before the
+// employee becomes the operator; another employee's PIN is a normal
+// handoff; nothing is discarded or reassigned.
+describe('TerminalPage — break time (POS-PERF-P51)', () => {
+  function selectionFor(id: string, firstName: string, lastName: string, accessToken: string) {
+    return { user: { id, role: 'staff' as const, email: null, firstName, lastName, branchIds: ['branch-1'] }, accessToken };
+  }
+
+  async function unlockAs(staff: { id: string; name: string; state: 'working' | 'on_break' | 'clocked_out'; token: string }) {
+    mockVerifyPosPinMutateAsync.mockResolvedValueOnce({
+      staff_id: staff.id,
+      staff_name: staff.name,
+      is_clocked_in: staff.state !== 'clocked_out',
+      attendance_state: staff.state,
+      break_started_at: staff.state === 'on_break' ? '2026-01-01T06:05:00.000Z' : null,
+      verification_token: staff.token,
+      expires_at: '2026-01-01T00:05:00.000Z',
+    });
+    fireEvent.change(screen.getByPlaceholderText('Enter 4-6 digit PIN'), { target: { value: '1111' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByText(staff.name);
+  }
+
+  beforeEach(() => {
+    mockUseAuth.mockReturnValue({ user: BRANCH_USER, selectEmployee: mockSelectEmployee, refreshEmployeeSession: mockRefreshEmployeeSession });
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' }, isLoading: false });
+    useAuthStore.setState({ user: BRANCH_USER, accessToken: 'branch-token', isAuthenticated: true, isLoading: false });
+    useTerminalOperatorStore.setState({
+      branchId: null,
+      employeeId: null,
+      employeeToken: null,
+      firstName: undefined,
+      lastName: undefined,
+      role: undefined,
+      hasHydrated: true,
+    });
+    mockUseCatalog.mockReturnValue({ data: catalogWith([]), isLoading: false });
+    mockCartItems.mockReturnValue([]);
+    mockSelectEmployee.mockReset();
+    mockRefreshEmployeeSession.mockReset();
+    mockVerifyPosPinMutateAsync.mockReset();
+    mockStartBreakConfirmed.mockReset();
+    mockEndBreakConfirmed.mockReset();
+    mockReadAttendanceState.mockReset();
+    mockAttendanceCache.forgetEmployee.mockClear();
+    mockAttendanceCache.refreshAll.mockClear();
+    mockUseCreateTransaction.mockClear();
+    mockClockOutMutateAsync.mockClear();
+    mockClockInMutateAsync.mockClear();
+    mockClearCart.mockClear();
+  });
+
+  afterEach(() => {
+    cleanup();
+    mockUseOffline.mockImplementation(() => ({
+      isOnline: true,
+      offlineSales: [] as unknown[],
+      pendingSyncCount: 0,
+      isSyncing: false,
+      syncNow: vi.fn(),
+      retryOfflineSale: mockRetryOfflineSale,
+      refreshOfflineSales: vi.fn(),
+    }));
+  });
+
+  async function openPosAs(id: string, first: string, last: string, token: string) {
+    mockSelectEmployee.mockResolvedValueOnce(selectionFor(id, first, last, token));
+    render(<TerminalPage />);
+    await unlockAs({ id, name: `${first} ${last}`, state: 'working', token: `verify-${id}` });
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(`Continue as ${first}`) }));
+    await screen.findByRole('button', { name: /Start Break/ });
+  }
+
+  it('Start Break records the break on the server first, then locks the terminal without clocking out', async () => {
+    await openPosAs('employee-a', 'Ana', 'Reyes', 'ana-token');
+    mockStartBreakConfirmed.mockResolvedValueOnce({ status: 'confirmed', record: null });
+
+    fireEvent.click(screen.getByRole('button', { name: /Start Break/ }));
+
+    expect(await screen.findByText('Locked for a break — shift still open')).toBeInTheDocument();
+    expect(mockStartBreakConfirmed).toHaveBeenCalledWith('employee-a', 'branch-1', 'ana-token', expect.any(Function));
+    expect(mockClockOutMutateAsync).not.toHaveBeenCalled();
+    expect(mockAttendanceCache.forgetEmployee).toHaveBeenCalledWith('employee-a');
+    // The Branch Account session is untouched.
+    expect(useAuthStore.getState().accessToken).toBe('branch-token');
+  });
+
+  it('a failed / unconfirmed Start Break never claims the break started — the cashier stays on the selling screen', async () => {
+    await openPosAs('employee-a', 'Ana', 'Reyes', 'ana-token');
+    mockStartBreakConfirmed.mockResolvedValueOnce({ status: 'failed', code: 'NETWORK_ERROR', message: 'The break has NOT started' });
+    const errorSpy = vi.spyOn(toast, 'error');
+
+    fireEvent.click(screen.getByRole('button', { name: /Start Break/ }));
+
+    await waitFor(() => expect(errorSpy).toHaveBeenCalledWith('Break not started', expect.objectContaining({ description: 'The break has NOT started' })));
+    expect(screen.getByRole('button', { name: /Start Break/ })).toBeInTheDocument();
+    expect(screen.queryByText('Locked for a break — shift still open')).not.toBeInTheDocument();
+    errorSpy.mockRestore();
+  });
+
+  it('refuses to start a break with an unresolved cart — nothing is sent, nothing discarded', async () => {
+    mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
+    await openPosAs('employee-a', 'Ana', 'Reyes', 'ana-token');
+    const errorSpy = vi.spyOn(toast, 'error');
+
+    fireEvent.click(screen.getByRole('button', { name: /Start Break/ }));
+
+    await waitFor(() => expect(errorSpy).toHaveBeenCalledWith('Finish or clear the current cart before starting a break.'));
+    expect(mockStartBreakConfirmed).not.toHaveBeenCalled();
+    expect(mockClearCart).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it('offline: explains the break cannot be confirmed and sends nothing (no queued timestamp)', async () => {
+    mockUseOffline.mockImplementation(() => ({
+      isOnline: false,
+      offlineSales: [] as unknown[],
+      pendingSyncCount: 0,
+      isSyncing: false,
+      syncNow: vi.fn(),
+      retryOfflineSale: mockRetryOfflineSale,
+      refreshOfflineSales: vi.fn(),
+    }));
+    await openPosAs('employee-a', 'Ana', 'Reyes', 'ana-token');
+    const errorSpy = vi.spyOn(toast, 'error');
+
+    fireEvent.click(screen.getByRole('button', { name: /Start Break/ }));
+
+    await waitFor(() => expect(errorSpy).toHaveBeenCalledWith('You are offline', expect.anything()));
+    expect(mockStartBreakConfirmed).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it("the employee's own PIN shows Resume Work; the break end is confirmed BEFORE they become the operator", async () => {
+    render(<TerminalPage />);
+    await unlockAs({ id: 'employee-a', name: 'Ana Reyes', state: 'on_break', token: 'verify-ana' });
+
+    expect(screen.getByText(/On break since 2:05 PM · shift still open/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Clock Out \(end shift\)/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Continue as Ana/ })).not.toBeInTheDocument();
+
+    mockSelectEmployee.mockResolvedValueOnce(selectionFor('employee-a', 'Ana', 'Reyes', 'ana-token-2'));
+    let resolveEnd: (value: unknown) => void = () => undefined;
+    mockEndBreakConfirmed.mockReturnValueOnce(new Promise((resolve) => (resolveEnd = resolve)));
+    fireEvent.click(screen.getByRole('button', { name: 'Resume Work' }));
+
+    await waitFor(() => expect(mockEndBreakConfirmed).toHaveBeenCalledWith('employee-a', 'branch-1', 'ana-token-2'));
+    expect(mockSelectEmployee).toHaveBeenCalledWith('verify-ana', { allowOnBreak: true });
+    // Still locked while the server has not confirmed.
+    expect(screen.queryByRole('button', { name: /Start Break/ })).not.toBeInTheDocument();
+
+    await act(async () => resolveEnd({ status: 'confirmed', record: null }));
+    expect(await screen.findByRole('button', { name: /Start Break/ })).toBeInTheDocument();
+    expect(screen.getByText('Ana Reyes')).toBeInTheDocument();
+    expect(mockClockInMutateAsync).not.toHaveBeenCalled();
+  });
+
+  it('a Resume Work the server cannot confirm keeps the terminal locked and drops the minted token', async () => {
+    render(<TerminalPage />);
+    await unlockAs({ id: 'employee-a', name: 'Ana Reyes', state: 'on_break', token: 'verify-ana' });
+    mockSelectEmployee.mockResolvedValueOnce(selectionFor('employee-a', 'Ana', 'Reyes', 'ana-token-2'));
+    mockEndBreakConfirmed.mockResolvedValueOnce({ status: 'failed', code: 'NETWORK_ERROR', message: 'You are still on break — try again.' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Resume Work' }));
+
+    expect(await screen.findByText('You are still on break — try again.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Start Break/ })).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Enter 4-6 digit PIN')).toBeInTheDocument();
+    expect(mockUseCreateTransaction).not.toHaveBeenCalledWith('ana-token-2', expect.any(Function));
+  });
+
+  it("another employee's PIN is a normal handoff (Continue as …) and never touches the first employee's break", async () => {
+    render(<TerminalPage />);
+    await unlockAs({ id: 'employee-b', name: 'Ben Cruz', state: 'working', token: 'verify-ben' });
+
+    expect(screen.queryByRole('button', { name: 'Resume Work' })).not.toBeInTheDocument();
+    mockSelectEmployee.mockResolvedValueOnce(selectionFor('employee-b', 'Ben', 'Cruz', 'ben-token'));
+    fireEvent.click(screen.getByRole('button', { name: /Continue as Ben/ }));
+
+    await screen.findByRole('button', { name: /Start Break/ });
+    expect(mockSelectEmployee).toHaveBeenCalledWith('verify-ben');
+    expect(mockEndBreakConfirmed).not.toHaveBeenCalled();
+  });
+
+  it('Switch Cashier only locks — it never starts a break or clocks out', async () => {
+    await openPosAs('employee-a', 'Ana', 'Reyes', 'ana-token');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch Cashier' }));
+
+    await screen.findByText('Waiting for a staff PIN');
+    expect(mockStartBreakConfirmed).not.toHaveBeenCalled();
+    expect(mockClockOutMutateAsync).not.toHaveBeenCalled();
+  });
+
+  it('the selling screen labels the attendance state Working', async () => {
+    await openPosAs('employee-a', 'Ana', 'Reyes', 'ana-token');
+    expect(screen.getByText('Working')).toBeInTheDocument();
   });
 });

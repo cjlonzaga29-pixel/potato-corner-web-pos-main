@@ -218,3 +218,38 @@ describe('useTerminalOperator', () => {
     expect(result.current.isRestoringOperator).toBe(false);
   });
 });
+
+describe('useTerminalOperator — POS-PERF-P51 breaks', () => {
+  function onBreak() {
+    return { isClockedIn: true, isOnBreak: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z', attendance_state: 'on_break' }, isLoading: false };
+  }
+
+  it('never restores a persisted operator who is on break (refresh / device change shows the PIN screen)', async () => {
+    useTerminalOperatorStore.getState().setTerminalOperator({
+      branchId: 'branch-1',
+      employeeId: 'employee-1',
+      employeeToken: 'employee-token',
+      firstName: 'Jane',
+      lastName: 'Doe',
+      role: 'staff',
+    });
+    mockUseIsClockedIn.mockReturnValue(onBreak());
+
+    const { setActiveEmployee } = renderTerminalOperator();
+
+    await waitFor(() => expect(useTerminalOperatorStore.getState().employeeId).toBeNull());
+    expect(setActiveEmployee).not.toHaveBeenCalled();
+  });
+
+  it('locks the terminal when the server says the active operator went on break (e.g. from another device)', async () => {
+    mockUseIsClockedIn.mockReturnValue(onBreak());
+
+    const { setActiveEmployee, setActiveEmployeeToken } = renderTerminalOperator({
+      activeEmployee: { id: 'employee-1', firstName: 'Jane', lastName: 'Doe', role: 'staff' },
+      activeEmployeeToken: 'employee-token',
+    });
+
+    await waitFor(() => expect(setActiveEmployee).toHaveBeenCalledWith(null));
+    expect(setActiveEmployeeToken).toHaveBeenCalledWith(null);
+  });
+});

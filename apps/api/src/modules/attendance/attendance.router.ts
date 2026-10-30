@@ -1,9 +1,9 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
-import { clockInSchema, clockOutSchema, manualOverrideSchema, attendanceQuerySchema, adminAttendanceQuerySchema } from '@potato-corner/shared';
+import { clockInSchema, clockOutSchema, manualOverrideSchema, attendanceQuerySchema, adminAttendanceQuerySchema, breakActionSchema } from '@potato-corner/shared';
 import { attendanceService } from './attendance.service.js';
 import { AttendanceError } from './attendance.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOnly, adminOrSupervisor, allRoles } from '../../middleware/authorize.js';
+import { adminOnly, adminOrSupervisor, allRoles, staffOnly } from '../../middleware/authorize.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
 import { requireActiveEmployee } from '../../middleware/require-active-employee.js';
@@ -103,6 +103,49 @@ router.post(
         },
         { id: req.user.user_id, role: req.user.role },
       );
+      res.status(200).json({ data: record, error: null, meta: null });
+    } catch (error) {
+      handleAttendanceError(error, res, next);
+    }
+  },
+);
+
+// POS-PERF-P51 — Start Break / Resume Work. staffOnly: the actor is always the
+// employee's own PIN-minted session, and the service acts on req.user only —
+// there is no employee_id in the body, so one employee's token can never
+// start or end another's break. Server confirmation is the only source of
+// truth; neither route accepts a client timestamp.
+router.post(
+  '/break/start',
+  authenticate,
+  staffOnly,
+  requireActiveEmployee,
+  branchGuard,
+  validate(breakActionSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const body = req.body as { branch_id: string };
+      const record = await attendanceService.startBreak(req.user.user_id, body.branch_id, { id: req.user.user_id, role: req.user.role });
+      res.status(201).json({ data: record, error: null, meta: null });
+    } catch (error) {
+      handleAttendanceError(error, res, next);
+    }
+  },
+);
+
+router.post(
+  '/break/end',
+  authenticate,
+  staffOnly,
+  requireActiveEmployee,
+  branchGuard,
+  validate(breakActionSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const body = req.body as { branch_id: string };
+      const record = await attendanceService.endBreak(req.user.user_id, body.branch_id, { id: req.user.user_id, role: req.user.role });
       res.status(200).json({ data: record, error: null, meta: null });
     } catch (error) {
       handleAttendanceError(error, res, next);

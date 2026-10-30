@@ -28,6 +28,16 @@ export const clockOutSchema = z.object({
   break_minutes: z.number().int().nonnegative().optional(),
 });
 
+/**
+ * POS-PERF-P51 — Start Break / Resume Work. No employee_id: the server acts
+ * only on the authenticated employee's own session (their PIN-minted token),
+ * so one employee can never start or end another's break. branch_id is what
+ * branchGuard checks against that token's branch.
+ */
+export const breakActionSchema = z.object({
+  branch_id: z.uuid(),
+});
+
 /** correction_reason is required and non-trivial — matches deactivateEmployeeSchema's reason length floor. */
 export const manualOverrideSchema = z.object({
   original_record_id: z.uuid(),
@@ -78,6 +88,20 @@ export const adminAttendanceQuerySchema = attendanceQuerySchema.extend({
     .optional(),
 });
 
+/**
+ * POS-PERF-P51 — attendance state, distinct from browser login, socket
+ * presence and terminal lock: `working` = clocked in with no open break,
+ * `on_break` = clocked in with an open break, `clocked_out` = record closed.
+ */
+export const attendanceStateSchema = z.enum(['working', 'on_break', 'clocked_out']);
+
+export const attendanceBreakIntervalSchema = z.object({
+  id: z.uuid(),
+  started_at: z.iso.datetime(),
+  ended_at: z.iso.datetime().nullable(),
+  end_reason: z.enum(['resumed', 'clock_out']).nullable(),
+});
+
 export const attendanceResponseSchema = z.object({
   id: z.uuid(),
   employee_id: z.uuid(),
@@ -105,6 +129,18 @@ export const attendanceResponseSchema = z.object({
   corrected_by: z.uuid().nullable(),
   original_record_id: z.uuid().nullable(),
   created_at: z.iso.datetime(),
+  // POS-PERF-P51 — optional only because a pre-P51 API omits them; every
+  // P51 response sends all five. elapsed_* are server-computed at response
+  // time (an open record counts up to "now", a closed one to its clock-out):
+  // work = (end − clock-in) − break. Break time comes from the recorded
+  // intervals, or — for a record with none (pre-P51 history or a manual
+  // correction) — from the stored break_minutes. No paid/unpaid policy is
+  // applied here.
+  attendance_state: attendanceStateSchema.optional(),
+  current_break_started_at: z.iso.datetime().nullable().optional(),
+  breaks: z.array(attendanceBreakIntervalSchema).optional(),
+  elapsed_break_seconds: z.number().int().nonnegative().optional(),
+  elapsed_work_seconds: z.number().int().nonnegative().optional(),
 });
 
 export const attendanceListResponseSchema = z.object({
@@ -132,6 +168,12 @@ export const attendanceSummaryResponseSchema = z.object({
       employee_name: z.string(),
       clock_in_server_time: z.iso.datetime(),
       clock_in_gps_status: z.enum(gpsStatusValues),
+      // POS-PERF-P51 — clocked_in still lists everyone with an open record
+      // (so it keeps reconciling with the Staff Clocked In KPI); this says
+      // which of them are on break right now. Optional: absent from a
+      // pre-P51 API.
+      attendance_state: z.enum(['working', 'on_break']).optional(),
+      break_started_at: z.iso.datetime().nullable().optional(),
     }),
   ),
   clocked_out_today: z.array(
@@ -144,4 +186,6 @@ export const attendanceSummaryResponseSchema = z.object({
     }),
   ),
   excluded_open_count: z.number().int(),
+  /** POS-PERF-P51 — how many clocked_in rows are on break. Optional: absent from a pre-P51 API. */
+  on_break_count: z.number().int().optional(),
 });

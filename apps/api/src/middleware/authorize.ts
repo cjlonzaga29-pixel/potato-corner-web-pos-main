@@ -53,3 +53,5 @@ export const branchOnly = authorize(ROLES.BRANCH);
 export const adminOrBranch = authorize(ROLES.SUPER_ADMIN, ROLES.BRANCH);
 export const adminSupervisorOrBranch = authorize(ROLES.SUPER_ADMIN, ROLES.SUPERVISOR, ROLES.BRANCH);
 export const allRoles = authorize(ROLES.SUPER_ADMIN, ROLES.SUPERVISOR, ROLES.BRANCH, ROLES.STAFF);
+/** POS-PERF-P51 — an employee's own PIN-minted session only (Start Break / Resume Work act on req.user themselves). */
+export const staffOnly = authorize(ROLES.STAFF);

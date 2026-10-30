@@ -23,9 +23,17 @@ vi.mock('../modules/cash/cash.service.js', () => ({
   },
 }));
 
+// POS-PERF-P51 — the gates now read the open record together with its open
+// break; delegate to the findActiveRecord mock (no open break) unless a test
+// overrides it.
+const findActiveRecordMock = vi.hoisted(() => vi.fn());
 vi.mock('../modules/attendance/attendance.repository.js', () => ({
   attendanceRepository: {
-    findActiveRecord: vi.fn(),
+    findActiveRecord: findActiveRecordMock,
+    findActiveRecordWithOpenBreak: vi.fn(async (employeeId: string) => {
+      const record = (await findActiveRecordMock(employeeId)) as Record<string, unknown> | null;
+      return record ? { breaks: [], ...record } : record;
+    }),
   },
 }));
 
@@ -449,6 +457,28 @@ describe('shift-guard middleware', () => {
     await shiftGuard(req, res, vi.fn());
     expect(res.status).toHaveBeenCalledWith(403);
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: { code: 'NOT_CLOCKED_IN' } }));
+  });
+
+  it('POS-PERF-P51: staff clocked in but ON BREAK returns 403 ON_BREAK before any shift work — a stale/direct token cannot sell', async () => {
+    vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue({
+      id: 'att-1',
+      employeeId: 't1',
+      branchId: 'branch-1',
+      breaks: [{ id: 'brk-1', startedAt: new Date() }],
+    } as never);
+    vi.mocked(cashRepository.findActiveShiftByBranch).mockResolvedValue({ id: 'shift-1' } as never);
+    const req = mockReq({
+      user: { user_id: 't1', role: ROLES.STAFF, email: 't@test.com', branch_ids: ['branch-1'], iat: 0, exp: 9999999999 },
+      params: { branchId: 'branch-1' },
+    });
+    const res = mockRes();
+    const next = vi.fn();
+    await shiftGuard(req, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.objectContaining({ code: 'ON_BREAK' }) }));
+    expect(cashService.autoOpenShift).not.toHaveBeenCalled();
+    expect(req.activeShift).toBeUndefined();
   });
 
   it('staff clocked in with no active shift yet auto-opens one and attaches it', async () => {

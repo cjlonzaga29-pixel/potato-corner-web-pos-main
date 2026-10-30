@@ -510,6 +510,7 @@ export const authService = {
     branchActor: JwtPayload,
     verificationToken: string,
     ipAddress: string | null,
+    options: { allowOnBreak?: boolean } = {},
   ): Promise<LoginResponse> {
     if (!('branch_ids' in branchActor) || branchActor.branch_ids.length === 0) {
       throw new AuthError('EMPLOYEE_ACCESS_DENIED', 'No branch assigned to this session', 403);
@@ -542,6 +543,23 @@ export const authService = {
 
     if (employee.status !== 'active' || !employee.isActive) {
       throw new AuthError('EMPLOYEE_INACTIVE', 'This employee is not active', 403);
+    }
+
+    // POS-PERF-P51 — an employee on break is only let through for a client
+    // that says it will immediately record Resume Work / Clock Out with this
+    // token (allow_on_break). A pre-P51 terminal never sends it, so it gets
+    // a clear refusal instead of opening a selling screen whose every sale
+    // shiftGuard would refuse. The token itself still cannot sell while the
+    // break is open (shiftGuard ON_BREAK), whichever client holds it.
+    if (!options.allowOnBreak) {
+      const openAttendance = await attendanceRepository.findActiveRecordWithOpenBreak(employee.id);
+      if (openAttendance && openAttendance.breaks.length > 0) {
+        throw new AuthError(
+          'EMPLOYEE_ON_BREAK',
+          `${employee.firstName} is on break. Resume work on a terminal with the latest POS update.`,
+          409,
+        );
+      }
     }
 
     const accessToken = generateAccessToken({
@@ -607,9 +625,15 @@ export const authService = {
       throw new AuthError('EMPLOYEE_INACTIVE', 'This employee is not active', 403);
     }
 
-    const openAttendance = await attendanceRepository.findActiveRecord(employeeId);
+    const openAttendance = await attendanceRepository.findActiveRecordWithOpenBreak(employeeId);
     if (!openAttendance || openAttendance.branchId !== branchId) {
       throw new AuthError('EMPLOYEE_NOT_CLOCKED_IN', 'This employee must clock in again before continuing', 409);
+    }
+    // POS-PERF-P51 — no silent re-mint for an employee on break: a terminal
+    // still holding their identity (stale tab, another device) must go back
+    // through the PIN screen, where only their own PIN can Resume Work.
+    if (openAttendance.breaks.length > 0) {
+      throw new AuthError('EMPLOYEE_ON_BREAK', 'This employee is on break and must resume work with their own PIN', 409);
     }
 
     const accessToken = generateAccessToken({

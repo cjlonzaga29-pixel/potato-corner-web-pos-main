@@ -41,6 +41,15 @@ export interface DetachedSale {
   /** True once a check has confirmed the server definitely never committed anything under this key (see checkout-recovery.ts isDefiniteNoCommitErrorCode / resolveAndFenceCheckoutAttempt) — Retry-from-panel can resubmit immediately; otherwise it must resolve first. */
   safeToRetryDirectly: boolean;
   createdAt: number;
+  /**
+   * POS-PERF-P51 — the cashier whose token submitted this sale. The server
+   * records the submitting token's user as the sale's cashier, so a Retry
+   * that resubmits the payload is only allowed for this same cashier (a
+   * break or Switch Cashier hands the terminal to someone else, who must not
+   * become the cashier of an order they did not ring). Read-only rechecks
+   * stay open to anyone. Absent on entries written before P51.
+   */
+  cashierUserId?: string | null;
 }
 
 /**

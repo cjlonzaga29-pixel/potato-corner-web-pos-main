@@ -4,6 +4,7 @@ import type { AttendanceSummaryResponse } from '@potato-corner/shared';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { StatusBadge } from '@/components/shared/status-badge';
+import { Badge } from '@/components/ui/badge';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 
 const MAX_VISIBLE_ROWS = 8;
@@ -69,15 +70,23 @@ export function DashboardAttendanceOverview({ summary, isLoading, isError = fals
 
   const clockedIn = summary.clocked_in;
   const clockedOut = summary.clocked_out_today;
+  // POS-PERF-P51 — on break is still clocked in (so "Clocked in now" keeps
+  // matching the Staff Clocked In KPI); it is counted and labelled
+  // separately. A pre-P51 API sends no attendance_state → never "on break".
+  const onBreakCount = summary.on_break_count ?? clockedIn.filter((record) => record.attendance_state === 'on_break').length;
 
   return (
     <Card>
       {header}
       <CardContent className="app-card-padding space-y-3 pt-0">
-        <dl className="grid grid-cols-2 gap-2 text-center">
+        <dl className="grid grid-cols-3 gap-2 text-center">
           <div className="rounded-lg bg-success/10 px-3 py-2">
             <dt className="text-xs text-muted-foreground">Clocked in now</dt>
             <dd className="text-xl font-bold tabular-nums text-success">{clockedIn.length}</dd>
+          </div>
+          <div className="rounded-lg bg-warning/10 px-3 py-2">
+            <dt className="text-xs text-muted-foreground">On break</dt>
+            <dd className="text-xl font-bold tabular-nums text-warning">{onBreakCount}</dd>
           </div>
           <div className="rounded-lg bg-muted/50 px-3 py-2">
             <dt className="text-xs text-muted-foreground">Clocked out today</dt>
@@ -97,7 +106,13 @@ export function DashboardAttendanceOverview({ summary, isLoading, isError = fals
                       <span className="min-w-0 truncate font-medium">{record.employee_name}</span>
                       <span className="flex shrink-0 items-center gap-2">
                         <span className="tabular-nums text-muted-foreground">In {formatTimeOnly(record.clock_in_server_time)}</span>
-                        <StatusBadge status={record.clock_in_gps_status} type="gps" />
+                        {record.attendance_state === 'on_break' ? (
+                          <Badge variant="warning">
+                            On break{record.break_started_at ? ` since ${formatTimeOnly(record.break_started_at)}` : ''}
+                          </Badge>
+                        ) : (
+                          <StatusBadge status={record.clock_in_gps_status} type="gps" />
+                        )}
                       </span>
                     </li>
                   ))}

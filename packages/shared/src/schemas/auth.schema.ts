@@ -172,6 +172,13 @@ export const jwtPayloadSchema = z.discriminatedUnion('role', [
 export const selectEmployeeSchema = z.object({
   verification_token: z.string().min(1),
   device_id: z.uuid(),
+  // POS-PERF-P51 — a P51 terminal sets this when the PIN belongs to an
+  // employee on break, because it will immediately record Resume Work (or
+  // Clock Out) with the minted token. Without it the server refuses an
+  // on-break employee (EMPLOYEE_ON_BREAK), so a pre-P51 terminal can never
+  // unlock someone on break into a selling screen. An older API strips the
+  // field (Zod objects strip unknown keys).
+  allow_on_break: z.boolean().optional(),
 });
 
 /**

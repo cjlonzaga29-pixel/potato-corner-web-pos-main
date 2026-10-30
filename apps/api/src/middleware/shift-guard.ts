@@ -45,11 +45,24 @@ export async function shiftGuard(req: Request, res: Response, next: NextFunction
   // no different from never having fetched it, since nothing reads or
   // mutates it before that check.
   const [activeAttendance, initialShift] = await Promise.all([
-    attendanceRepository.findActiveRecord(req.user.user_id),
+    attendanceRepository.findActiveRecordWithOpenBreak(req.user.user_id),
     cashRepository.findActiveShiftByBranch(branchId),
   ]);
   if (!activeAttendance || activeAttendance.branchId !== branchId) {
     res.status(403).json({ data: null, error: { code: 'NOT_CLOCKED_IN' }, meta: null });
+    return;
+  }
+  // POS-PERF-P51 — clocked in but on break: no checkout, offline-batch sync,
+  // hold order or proof upload under this employee's token until they
+  // Resume Work. Checked here, on every request, so a token minted before
+  // the break (still inside its 15-minute TTL) or a direct API call gets the
+  // same refusal as the terminal. 403 before any write: nothing is recorded.
+  if (activeAttendance.breaks.length > 0) {
+    res.status(403).json({
+      data: null,
+      error: { code: 'ON_BREAK', message: 'This employee is on break. Resume work with your own PIN before selling.' },
+      meta: null,
+    });
     return;
   }
 

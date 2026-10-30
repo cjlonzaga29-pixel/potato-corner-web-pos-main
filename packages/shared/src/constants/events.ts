@@ -26,6 +26,10 @@ export const SOCKET_EVENTS = {
   HOLD_ORDER_EXPIRED: 'hold_order:expired',
   ATTENDANCE_CLOCKED_IN: 'attendance:clocked_in',
   ATTENDANCE_CLOCKED_OUT: 'attendance:clocked_out',
+  // POS-PERF-P51 — break interval opened / closed (a clock-out that closes an
+  // open break emits ATTENDANCE_CLOCKED_OUT only).
+  ATTENDANCE_BREAK_STARTED: 'attendance:break_started',
+  ATTENDANCE_BREAK_ENDED: 'attendance:break_ended',
   FRAUD_ALERT_CREATED: 'fraud:alert_created',
   // Phase 18 — notification types with no other socket event to reuse.
   LARGE_ADJUSTMENT_APPROVAL_NEEDED: 'notification:large_adjustment_approval_needed',

@@ -2553,6 +2553,7 @@ model AttendanceRecord {
   corrector      User?              @relation("AttendanceCorrector", fields: [correctedBy], references: [id])
   originalRecord AttendanceRecord?  @relation("AttendanceCorrection", fields: [originalRecordId], references: [id])
   corrections    AttendanceRecord[] @relation("AttendanceCorrection")
+  breaks         AttendanceBreak[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -2562,6 +2563,40 @@ model AttendanceRecord {
   @@index([correctedBy])
   @@index([originalRecordId])
   @@map("attendance_records")
+}
+
+/// POS-PERF-P51 — how an open break was closed. `resumed`: the employee
+/// entered their own PIN and chose Resume Work. `clock_out`: the attendance
+/// record was clocked out while the break was still open, so the break
+/// ended at the same server timestamp as the clock-out.
+enum AttendanceBreakEndReason {
+  resumed
+  clock_out
+}
+
+/// POS-PERF-P51 — one break interval inside one attendance record, both ends
+/// stamped with server time. Never written from a device clock. At most one
+/// open (ended_at IS NULL) row per record — enforced by the partial unique
+/// index `attendance_breaks_one_open_per_record` in the migration (Prisma
+/// cannot express partial indexes), on top of the per-employee advisory lock
+/// the service holds for every break/clock-out write. started_by / ended_by
+/// are the authenticated actor's user id (the employee's own PIN session).
+model AttendanceBreak {
+  id                 String                    @id @default(uuid())
+  attendanceRecordId String                    @map("attendance_record_id")
+  startedAt          DateTime                  @map("started_at")
+  endedAt            DateTime?                 @map("ended_at")
+  startedBy          String                    @map("started_by")
+  endedBy            String?                   @map("ended_by")
+  endReason          AttendanceBreakEndReason? @map("end_reason")
+
+  attendanceRecord AttendanceRecord @relation(fields: [attendanceRecordId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([attendanceRecordId, startedAt])
+  @@map("attendance_breaks")
 }
 
 // ---------------------------------------------------------------------------

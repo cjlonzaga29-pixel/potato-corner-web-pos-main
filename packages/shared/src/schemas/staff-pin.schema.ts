@@ -54,6 +54,11 @@ export const staffPinVerifyPosResponseSchema = z.object({
   // (Clock In & Open POS vs Continue as / Unlock POS) BEFORE the staff
   // taps through, without the client guessing attendance state itself.
   is_clocked_in: z.boolean(),
+  // POS-PERF-P51 — is_clocked_in stays true while on break (the record is
+  // still open); this tells the locked screen to offer Resume Work instead
+  // of Continue. Optional: absent from a pre-P51 API.
+  attendance_state: z.enum(['working', 'on_break', 'clocked_out']).optional(),
+  break_started_at: z.iso.datetime().nullable().optional(),
   verification_token: z.string(),
   expires_at: z.iso.datetime(),
 });

@@ -1,4 +1,5 @@
-import { ROLES, SOCKET_EVENTS, type AttendanceSummaryResponse, type JwtPayload } from '@potato-corner/shared';
+import { Prisma } from '@prisma/client';
+import { ROLES, SOCKET_EVENTS, type AttendanceState, type AttendanceSummaryResponse, type JwtPayload } from '@potato-corner/shared';
 import { attendanceRepository } from './attendance.repository.js';
 import { AttendanceError, type AttendanceListFilters, type ClockInData, type ClockOutData, type ManualOverrideData } from './attendance.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
@@ -21,6 +22,14 @@ const EARTH_RADIUS_METERS = 6371000;
 
 interface DecimalLike {
   toNumber(): number;
+}
+
+/** POS-PERF-P51 — one break interval as read back from attendance_breaks. */
+export interface BreakIntervalRow {
+  id: string;
+  startedAt: Date;
+  endedAt: Date | null;
+  endReason: 'resumed' | 'clock_out' | null;
 }
 
 interface AttendanceRow {
@@ -48,6 +57,8 @@ interface AttendanceRow {
   createdAt: Date;
   /** Present only when the query included the relation (branch-scoped list reads) — see attendance.repository.ts findByBranch. */
   employee?: { firstName: string; lastName: string; employeeId: string | null; status: string } | null;
+  /** POS-PERF-P51 — present when the query included the breaks relation; a write that returns the bare row has none to show. */
+  breaks?: BreakIntervalRow[];
 }
 
 interface BranchRow {
@@ -86,7 +97,49 @@ function resolveTimeFlag(serverTime: Date, deviceTime?: Date): boolean {
   return Math.abs(serverTime.getTime() - deviceTime.getTime()) > TIME_DELTA_FLAG_THRESHOLD_MS;
 }
 
-function toResponse(record: AttendanceRow) {
+/**
+ * POS-PERF-P51 — server-side time accounting for one attendance record.
+ * Every input is a server timestamp; nothing here reads a device clock.
+ * Durations are differences of absolute instants, so an overnight shift (or
+ * a break that spans midnight) needs no special casing — the Manila business
+ * timezone only matters for "which day" grouping, never for elapsed time.
+ *
+ * - Open record: counts up to `now`; an open break counts up to `now` too.
+ * - Closed record: counts up to its clock-out.
+ * - Break time = the sum of recorded intervals. A record with no intervals
+ *   (pre-P51 history, a manual correction, or a legacy client that sent
+ *   break_minutes at clock-out) falls back to its stored break_minutes —
+ *   never a fabricated interval.
+ * - Work = elapsed − break, floored at 0. No paid/unpaid break policy.
+ */
+export function computeAttendanceTimes(
+  record: Pick<AttendanceRow, 'clockInServerTime' | 'clockOutServerTime' | 'breakMinutes' | 'breaks'>,
+  now: Date,
+): { state: AttendanceState; openBreakStartedAt: Date | null; breakMs: number; workMs: number } {
+  const end = record.clockOutServerTime ?? now;
+  const breaks = record.breaks ?? [];
+  const totalMs = Math.max(0, end.getTime() - record.clockInServerTime.getTime());
+  let breakMs: number;
+  if (breaks.length > 0) {
+    breakMs = breaks.reduce((sum, b) => {
+      const breakEnd = Math.min((b.endedAt ?? end).getTime(), end.getTime());
+      return sum + Math.max(0, breakEnd - b.startedAt.getTime());
+    }, 0);
+  } else {
+    breakMs = record.breakMinutes * 60_000;
+  }
+  const openBreak = record.clockOutServerTime === null ? (breaks.find((b) => b.endedAt === null) ?? null) : null;
+  const state: AttendanceState = record.clockOutServerTime !== null ? 'clocked_out' : openBreak ? 'on_break' : 'working';
+  return { state, openBreakStartedAt: openBreak?.startedAt ?? null, breakMs, workMs: Math.max(0, totalMs - breakMs) };
+}
+
+/** Whichever is later — keeps a new timestamp from ever landing before one already recorded for this record (guards against clock differences between API instances). */
+function notBefore(candidate: Date, floor: Date | null | undefined): Date {
+  return floor && floor.getTime() > candidate.getTime() ? floor : candidate;
+}
+
+function toResponse(record: AttendanceRow, now: Date = new Date()) {
+  const times = computeAttendanceTimes(record, now);
   return {
     id: record.id,
     employee_id: record.employeeId,
@@ -113,11 +166,22 @@ function toResponse(record: AttendanceRow) {
     corrected_by: record.correctedBy,
     original_record_id: record.originalRecordId,
     created_at: record.createdAt.toISOString(),
+    attendance_state: times.state,
+    current_break_started_at: times.openBreakStartedAt?.toISOString() ?? null,
+    breaks: (record.breaks ?? []).map((b) => ({
+      id: b.id,
+      started_at: b.startedAt.toISOString(),
+      ended_at: b.endedAt?.toISOString() ?? null,
+      end_reason: b.endReason,
+    })),
+    elapsed_break_seconds: Math.floor(times.breakMs / 1000),
+    elapsed_work_seconds: Math.floor(times.workMs / 1000),
   };
 }
 
 function toListResponse(records: AttendanceRow[], total: number, page: number, limit: number) {
-  return { records: records.map(toResponse), total, page, limit };
+  const now = new Date();
+  return { records: records.map((record) => toResponse(record, now)), total, page, limit };
 }
 
 /**
@@ -249,23 +313,81 @@ export const attendanceService = {
       await cashService.autoCloseShift(openShift.id, requester, null);
     }
 
-    const clockOutServerTime = new Date();
-    const breakMinutes = data.breakMinutes ?? active.breakMinutes;
-    const totalMinutes = Math.max(0, Math.round((clockOutServerTime.getTime() - active.clockInServerTime.getTime()) / 60000));
-    const actualWorkMinutes = Math.max(0, totalMinutes - breakMinutes);
     // POS-PERF-P40 — the branch's own Work Hours override when it has one, else the global policy.
     const regularShiftMinutes = await settingsService.getRegularShiftMinutes(active.branchId);
-    const overtimeMinutes = Math.max(0, actualWorkMinutes - regularShiftMinutes);
 
-    const updated = (await attendanceRepository.clockOut(active.id, {
-      clockOutServerTime,
-      clockOutDeviceTime: data.deviceTime,
-      clockOutGpsLat: data.gpsLat,
-      clockOutGpsLng: data.gpsLng,
-      breakMinutes,
-      actualWorkMinutes,
-      overtimeMinutes,
+    // POS-PERF-P51 — clock-out now runs under the same per-employee advisory
+    // lock as clock-in and Start Break / Resume Work, re-reading the open
+    // record through the tx: a concurrent second clock-out finds nothing open
+    // and gets 404 instead of overwriting the first one's clock-out time, and
+    // a break can never be started or ended halfway through this. An open
+    // break is closed at exactly the clock-out timestamp, in the same
+    // transaction, so the break and the attendance record can't disagree.
+    let closedBreakId: string | null = null;
+    const updated = (await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${attendanceOpenSessionLockId(employeeId)})`;
+      const locked = (await attendanceRepository.findActiveRecord(employeeId, tx)) as AttendanceRow | null;
+      if (!locked) {
+        throw new AttendanceError('RECORD_NOT_FOUND', 'No open attendance record found for this employee', 404);
+      }
+
+      const breaks = (await attendanceRepository.findBreaks(locked.id, tx)) as BreakIntervalRow[];
+      const latestBreakTime = breaks.reduce<Date | null>((latest, b) => {
+        const t = b.endedAt ?? b.startedAt;
+        return latest && latest.getTime() >= t.getTime() ? latest : t;
+      }, null);
+      const clockOutServerTime = notBefore(new Date(), latestBreakTime);
+
+      const openBreak = breaks.find((b) => b.endedAt === null);
+      if (openBreak) {
+        await attendanceRepository.closeBreak(openBreak.id, { endedAt: clockOutServerTime, endedBy: requester.id, endReason: 'clock_out' }, tx);
+        openBreak.endedAt = clockOutServerTime;
+        openBreak.endReason = 'clock_out';
+        closedBreakId = openBreak.id;
+      }
+
+      let breakMinutes: number;
+      let actualWorkMinutes: number;
+      if (breaks.length > 0) {
+        // Recorded intervals are authoritative — a client-sent break_minutes
+        // is ignored once the server has real intervals for this record.
+        const times = computeAttendanceTimes({ ...locked, clockOutServerTime, breaks }, clockOutServerTime);
+        breakMinutes = Math.round(times.breakMs / 60000);
+        actualWorkMinutes = Math.round(times.workMs / 60000);
+      } else {
+        // Unchanged pre-P51 behavior for a record with no intervals.
+        breakMinutes = data.breakMinutes ?? locked.breakMinutes;
+        const totalMinutes = Math.max(0, Math.round((clockOutServerTime.getTime() - locked.clockInServerTime.getTime()) / 60000));
+        actualWorkMinutes = Math.max(0, totalMinutes - breakMinutes);
+      }
+      const overtimeMinutes = Math.max(0, actualWorkMinutes - regularShiftMinutes);
+
+      return attendanceRepository.clockOut(
+        locked.id,
+        {
+          clockOutServerTime,
+          clockOutDeviceTime: data.deviceTime,
+          clockOutGpsLat: data.gpsLat,
+          clockOutGpsLng: data.gpsLng,
+          breakMinutes,
+          actualWorkMinutes,
+          overtimeMinutes,
+        },
+        tx,
+      );
     })) as AttendanceRow;
+
+    if (closedBreakId) {
+      await recordAuditLog({
+        action: 'ATTENDANCE_BREAK_ENDED',
+        entityType: 'attendance_break',
+        entityId: closedBreakId,
+        actorId: requester.id,
+        actorRole: requester.role,
+        branchId: updated.branchId,
+        afterState: { attendance_record_id: updated.id, ended_at: updated.clockOutServerTime?.toISOString() ?? null, end_reason: 'clock_out' },
+      });
+    }
 
     const response = toResponse(updated);
 
@@ -286,10 +408,118 @@ export const attendanceService = {
     return response;
   },
 
+  /**
+   * POS-PERF-P51 — Start Break for the authenticated employee themselves
+   * (the router passes req.user — never a client-supplied employee id).
+   * Recorded on the server before the terminal locks; the shift stays open
+   * and no clock-out is recorded. Safe to repeat: under the per-employee
+   * advisory lock a second request finds the open break and gets 409
+   * ALREADY_ON_BREAK (with the existing break in details) instead of a
+   * second interval, and the partial unique index refuses a second open
+   * row even if the lock were ever bypassed.
+   */
+  async startBreak(employeeId: string, branchId: string, requester: ActorContext) {
+    const { record, breakId } = await prisma
+      .$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${attendanceOpenSessionLockId(employeeId)})`;
+        const active = (await attendanceRepository.findActiveRecord(employeeId, tx)) as AttendanceRow | null;
+        if (!active || active.branchId !== branchId) {
+          throw new AttendanceError('NOT_CLOCKED_IN', 'You must be clocked in at this branch to start a break', 409);
+        }
+        const breaks = (await attendanceRepository.findBreaks(active.id, tx)) as BreakIntervalRow[];
+        const open = breaks.find((b) => b.endedAt === null);
+        if (open) {
+          throw new AttendanceError('ALREADY_ON_BREAK', 'A break is already in progress', 409, {
+            break_id: open.id,
+            started_at: open.startedAt.toISOString(),
+          });
+        }
+        const lastEnded = breaks.at(-1)?.endedAt ?? null;
+        const startedAt = notBefore(new Date(), notBefore(active.clockInServerTime, lastEnded));
+        const created = await attendanceRepository.createBreak({ attendanceRecordId: active.id, startedAt, startedBy: requester.id }, tx);
+        const withBreaks = (await attendanceRepository.findByIdWithBreaks(active.id, tx)) as AttendanceRow | null;
+        return { record: withBreaks ?? active, breakId: created.id };
+      })
+      .catch((error: unknown) => {
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+          throw new AttendanceError('ALREADY_ON_BREAK', 'A break is already in progress', 409);
+        }
+        throw error;
+      });
+
+    const response = toResponse(record);
+    await recordAuditLog({
+      action: 'ATTENDANCE_BREAK_STARTED',
+      entityType: 'attendance_break',
+      entityId: breakId,
+      actorId: requester.id,
+      actorRole: requester.role,
+      branchId: record.branchId,
+      afterState: { attendance_record_id: record.id, started_at: response.current_break_started_at },
+    });
+    notifyBranch(record.branchId, SOCKET_EVENTS.ATTENDANCE_BREAK_STARTED, response);
+    notifySuperAdmin(SOCKET_EVENTS.ATTENDANCE_BREAK_STARTED, response);
+    return response;
+  },
+
+  /**
+   * POS-PERF-P51 — Resume Work: closes the authenticated employee's own open
+   * break. The same open record (and auto-managed shift) continues; no new
+   * clock-in. 409 NOT_ON_BREAK when there is nothing open — the expected
+   * answer to a retry whose first attempt already committed, so the caller
+   * reads attendance state rather than treating it as a failure.
+   */
+  async endBreak(employeeId: string, branchId: string, requester: ActorContext) {
+    const { record, breakId } = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${attendanceOpenSessionLockId(employeeId)})`;
+      const active = (await attendanceRepository.findActiveRecord(employeeId, tx)) as AttendanceRow | null;
+      if (!active || active.branchId !== branchId) {
+        throw new AttendanceError('NOT_CLOCKED_IN', 'You are not clocked in at this branch', 409);
+      }
+      const breaks = (await attendanceRepository.findBreaks(active.id, tx)) as BreakIntervalRow[];
+      const open = breaks.find((b) => b.endedAt === null);
+      if (!open) {
+        throw new AttendanceError('NOT_ON_BREAK', 'No break is in progress', 409);
+      }
+      const endedAt = notBefore(new Date(), open.startedAt);
+      const changed = await attendanceRepository.closeBreak(open.id, { endedAt, endedBy: requester.id, endReason: 'resumed' }, tx);
+      if (changed === 0) {
+        throw new AttendanceError('NOT_ON_BREAK', 'No break is in progress', 409);
+      }
+      const withBreaks = (await attendanceRepository.findByIdWithBreaks(active.id, tx)) as AttendanceRow | null;
+      return { record: withBreaks ?? active, breakId: open.id };
+    });
+
+    const response = toResponse(record);
+    const ended = response.breaks.find((b) => b.id === breakId);
+    await recordAuditLog({
+      action: 'ATTENDANCE_BREAK_ENDED',
+      entityType: 'attendance_break',
+      entityId: breakId,
+      actorId: requester.id,
+      actorRole: requester.role,
+      branchId: record.branchId,
+      afterState: { attendance_record_id: record.id, started_at: ended?.started_at ?? null, ended_at: ended?.ended_at ?? null, end_reason: 'resumed' },
+    });
+    notifyBranch(record.branchId, SOCKET_EVENTS.ATTENDANCE_BREAK_ENDED, response);
+    notifySuperAdmin(SOCKET_EVENTS.ATTENDANCE_BREAK_ENDED, response);
+    return response;
+  },
+
   async manualOverride(originalRecordId: string, overrideData: ManualOverrideData, requester: ActorContext) {
     const original = (await attendanceRepository.findById(originalRecordId)) as AttendanceRow | null;
     if (!original || original.deletedAt) {
       throw new AttendanceError('RECORD_NOT_FOUND', 'Attendance record not found', 404);
+    }
+
+    // POS-PERF-P51 — a correction copies the record into a new row; the break
+    // intervals stay with the original. Correcting while a break is still
+    // open would leave that break dangling on a soft-deleted row and silently
+    // put the employee back to "working", so the break must be ended (Resume
+    // Work, or Clock Out) first. Corrections of closed records carry the
+    // computed break_minutes over as before.
+    if (original.clockOutServerTime === null && (original.breaks ?? []).some((b) => b.endedAt === null)) {
+      throw new AttendanceError('BREAK_IN_PROGRESS', 'This employee is on break — end the break or clock out before correcting this record', 409);
     }
 
     const assignment = await attendanceRepository.findBranchAssignment(requester.id, original.branchId);
@@ -456,15 +686,21 @@ export const attendanceService = {
     return {
       branch_id: branchId,
       business_date: manilaDateKey(now),
-      clocked_in: working.map((row) => ({
-        record_id: row.id,
-        employee_id: row.employeeId,
-        employee_name: `${row.employee.firstName} ${row.employee.lastName}`,
-        clock_in_server_time: row.clockInServerTime.toISOString(),
-        clock_in_gps_status: row.clockInGpsStatus,
-      })),
+      clocked_in: working.map((row) => {
+        const openBreak = row.breaks[0] ?? null;
+        return {
+          record_id: row.id,
+          employee_id: row.employeeId,
+          employee_name: `${row.employee.firstName} ${row.employee.lastName}`,
+          clock_in_server_time: row.clockInServerTime.toISOString(),
+          clock_in_gps_status: row.clockInGpsStatus,
+          attendance_state: openBreak ? ('on_break' as const) : ('working' as const),
+          break_started_at: openBreak?.startedAt.toISOString() ?? null,
+        };
+      }),
       clocked_out_today: clockedOut,
       excluded_open_count: open.length - working.length,
+      on_break_count: working.filter((row) => row.breaks.length > 0).length,
     };
   },
 

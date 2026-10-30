@@ -14,6 +14,8 @@ vi.mock('./attendance.service.js', () => ({
     clockIn: vi.fn(),
     clockOut: vi.fn(),
     manualOverride: vi.fn(),
+    startBreak: vi.fn(),
+    endBreak: vi.fn(),
     getByBranch: vi.fn(),
     getByEmployee: vi.fn(),
   },
@@ -105,6 +107,8 @@ describe('attendance routes — authentication', () => {
     { method: 'get', path: '/branch/:branchId' },
     { method: 'get', path: '/employee/:employeeId' },
     { method: 'post', path: '/override' },
+    { method: 'post', path: '/break/start' },
+    { method: 'post', path: '/break/end' },
   ];
 
   it.each(protectedRoutes)('$method $path returns 401 with no Authorization header', async ({ method, path }) => {
@@ -161,6 +165,65 @@ describe('POST /clock-in', () => {
     expect(res.status).toHaveBeenCalledWith(403);
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: { code: 'BRANCH_ACCESS_DENIED' } }));
     expect(attendanceService.clockIn).not.toHaveBeenCalled();
+  });
+});
+
+// POS-PERF-P51 — Start Break / Resume Work act on the token's own user only.
+describe.each([
+  { path: '/break/start', method: 'startBreak' as const, status: 201 },
+  { path: '/break/end', method: 'endBreak' as const, status: 200 },
+])('POST $path', ({ path, method, status }) => {
+  it('acts on the authenticated employee themselves — the body carries no employee id and an injected one is ignored', async () => {
+    const handlers = getRouteHandlers(attendanceRouter, 'post', path);
+    const token = generateStaffToken(BRANCH_1, { userId: EMPLOYEE_1 });
+    const other = randomUUID();
+    const req = mockReq({ ...authHeader(token), body: { branch_id: BRANCH_1, employee_id: other } });
+    const res = mockRes();
+    vi.mocked(attendanceService[method]).mockResolvedValue({ id: RECORD_1 } as never);
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(status);
+    expect(attendanceService[method]).toHaveBeenCalledWith(EMPLOYEE_1, BRANCH_1, { id: EMPLOYEE_1, role: 'staff' });
+  });
+
+  it.each([
+    ['branch', () => generateBranchToken(BRANCH_1)],
+    ['supervisor', () => generateSupervisorToken([BRANCH_1])],
+    ['super_admin', () => generateSuperAdminToken()],
+  ])('%s sessions are refused (403) — only the employee\'s own PIN session may start/end a break', async (_role, makeToken) => {
+    const handlers = getRouteHandlers(attendanceRouter, 'post', path);
+    const req = mockReq({ ...authHeader(makeToken()), body: { branch_id: BRANCH_1 } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(attendanceService[method]).not.toHaveBeenCalled();
+  });
+
+  it('another branch is refused by branchGuard (403) before the service', async () => {
+    const handlers = getRouteHandlers(attendanceRouter, 'post', path);
+    const token = generateStaffToken(BRANCH_1, { userId: EMPLOYEE_1 });
+    const req = mockReq({ ...authHeader(token), body: { branch_id: BRANCH_2 } });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(attendanceService[method]).not.toHaveBeenCalled();
+  });
+
+  it('a missing branch_id is refused before the service', async () => {
+    const handlers = getRouteHandlers(attendanceRouter, 'post', path);
+    const token = generateStaffToken(BRANCH_1, { userId: EMPLOYEE_1 });
+    const req = mockReq({ ...authHeader(token), body: {} });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(vi.mocked(res.status).mock.calls[0]?.[0]).toBeGreaterThanOrEqual(400);
+    expect(attendanceService[method]).not.toHaveBeenCalled();
   });
 });
 

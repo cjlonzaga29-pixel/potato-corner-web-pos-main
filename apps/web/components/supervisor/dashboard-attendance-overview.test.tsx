@@ -73,3 +73,29 @@ describe('DashboardAttendanceOverview (POS-PERF-P47 — attendance records only)
     expect(screen.getByText(/Couldn.t load attendance/)).toBeInTheDocument();
   });
 });
+
+describe('DashboardAttendanceOverview — POS-PERF-P51 On Break', () => {
+  it('keeps on-break staff in Clocked in now, and shows the On break count and badge separately', () => {
+    render(
+      <DashboardAttendanceOverview
+        summary={summary({
+          clocked_in: [
+            { ...IN_JUAN, attendance_state: 'on_break', break_started_at: '2026-10-30T05:05:00.000Z' },
+            { ...IN_JUAN, record_id: '00000000-0000-4000-8000-0000000000a3', employee_name: 'Ana Reyes', attendance_state: 'working', break_started_at: null },
+          ],
+          on_break_count: 1,
+        })}
+        isLoading={false}
+      />,
+    );
+
+    expect(within(screen.getByText('Clocked in now').closest('div') as HTMLElement).getByText('2')).toBeInTheDocument();
+    expect(within(screen.getByText('On break').closest('div') as HTMLElement).getByText('1')).toBeInTheDocument();
+    expect(screen.getByText(/On break since 01:05 PM/)).toBeInTheDocument();
+  });
+
+  it('a pre-P51 API (no attendance_state / on_break_count) shows nobody on break', () => {
+    render(<DashboardAttendanceOverview summary={summary({ clocked_in: [IN_JUAN] })} isLoading={false} />);
+    expect(within(screen.getByText('On break').closest('div') as HTMLElement).getByText('0')).toBeInTheDocument();
+  });
+});

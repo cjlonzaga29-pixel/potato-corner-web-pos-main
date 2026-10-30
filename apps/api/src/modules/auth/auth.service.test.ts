@@ -81,9 +81,17 @@ vi.mock('../staff-pin/staff-pin.service.js', () => ({
   },
 }));
 
+// POS-PERF-P51 — the gates now read the open record together with its open
+// break; delegate to the findActiveRecord mock (no open break) unless a test
+// overrides it.
+const findActiveRecordMock = vi.hoisted(() => vi.fn());
 vi.mock('../attendance/attendance.repository.js', () => ({
   attendanceRepository: {
-    findActiveRecord: vi.fn(),
+    findActiveRecord: findActiveRecordMock,
+    findActiveRecordWithOpenBreak: vi.fn(async (employeeId: string) => {
+      const record = (await findActiveRecordMock(employeeId)) as Record<string, unknown> | null | undefined;
+      return record ? { breaks: [], ...record } : (record ?? null);
+    }),
   },
 }));
 
@@ -608,6 +616,46 @@ describe('authService.selectEmployee', () => {
     } as never);
   }
 
+  // POS-PERF-P51 — an employee on break: a pre-P51 terminal (no
+  // allow_on_break) is refused with a clear message instead of being let
+  // into a selling screen; a P51 terminal's Resume Work / Clock Out gets a
+  // token, which still cannot sell until the break is ended (shiftGuard).
+  it('P51: refuses an employee on break with 409 EMPLOYEE_ON_BREAK when the client did not opt in', async () => {
+    mockResolvedVerification();
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildStaffEmployee() as never);
+    vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue({
+      branchId: 'branch-1',
+      breaks: [{ id: 'brk-1', startedAt: new Date() }],
+    } as never);
+
+    await expect(authService.selectEmployee(BRANCH_ACTOR, 'tok-1', null)).rejects.toMatchObject({
+      code: 'EMPLOYEE_ON_BREAK',
+      statusCode: 409,
+      message: expect.stringContaining('Juan is on break'),
+    });
+  });
+
+  it('P51: mints a token for an employee on break when the client opted in (Resume Work / Clock Out)', async () => {
+    mockResolvedVerification();
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildStaffEmployee() as never);
+    vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue({
+      branchId: 'branch-1',
+      breaks: [{ id: 'brk-1', startedAt: new Date() }],
+    } as never);
+
+    const result = await authService.selectEmployee(BRANCH_ACTOR, 'tok-1', null, { allowOnBreak: true });
+
+    expect(result.user.id).toBe('emp-1');
+  });
+
+  it('P51: a working (not on break) employee is selected exactly as before, with or without the opt-in', async () => {
+    mockResolvedVerification();
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildStaffEmployee() as never);
+    vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue({ branchId: 'branch-1' } as never);
+
+    await expect(authService.selectEmployee(BRANCH_ACTOR, 'tok-1', null)).resolves.toMatchObject({ user: { id: 'emp-1' } });
+  });
+
   it('mints a staff access token bound to the branch actor own branch when the employee is active and assigned there, without creating a refresh token', async () => {
     mockResolvedVerification();
     vi.mocked(employeesRepository.findById).mockResolvedValue(buildStaffEmployee() as never);
@@ -725,6 +773,19 @@ describe('authService.refreshEmployeeSession', () => {
 
     await expect(authService.refreshEmployeeSession(BRANCH_ACTOR, 'emp-1', null)).rejects.toMatchObject({
       code: 'EMPLOYEE_NOT_CLOCKED_IN',
+    });
+  });
+
+  it('POS-PERF-P51: refuses to silently re-mint a token for an employee on break (409 EMPLOYEE_ON_BREAK)', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildStaffEmployee() as never);
+    vi.mocked(attendanceRepository.findActiveRecord).mockResolvedValue({
+      branchId: 'branch-1',
+      breaks: [{ id: 'brk-1', startedAt: new Date() }],
+    } as never);
+
+    await expect(authService.refreshEmployeeSession(BRANCH_ACTOR, 'emp-1', null)).rejects.toMatchObject({
+      code: 'EMPLOYEE_ON_BREAK',
+      statusCode: 409,
     });
   });
 });

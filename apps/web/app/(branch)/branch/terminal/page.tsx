@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDensityMode, type DensityMode } from '@/hooks/use-density-mode';
 import { DENSITY_POS_GRID_COLUMNS } from '@/lib/density-tokens';
 import { shouldShowInlineCart } from '@/lib/pos/cart-layout';
-import { KeyRound, Loader2, Lock, LockKeyhole, LogOut, ShoppingCart, WifiOff } from 'lucide-react';
+import { Coffee, KeyRound, Loader2, Lock, LockKeyhole, LogOut, ShoppingCart, WifiOff } from 'lucide-react';
 import { ROLES, STAFF_PIN_MAX_LENGTH, STAFF_PIN_MIN_LENGTH, VAT_RATE_PERCENT, computeSaleTax, discountRateFor, type SaleDiscountRates } from '@potato-corner/shared';
 import type { CreateTransactionInput, ImageProofType, PosCatalogProduct, TransactionResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
@@ -44,7 +44,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { useCart } from '@/hooks/use-cart';
 import { useOffline } from '@/hooks/use-offline';
 import { useCatalog, useCatalogRealtimeSync, useCheckCartAvailability, useConfirmCatalog } from '@/hooks/queries/use-products';
-import { useClockIn, useClockOut } from '@/hooks/queries/use-attendance';
+import { useAttendanceCache, useClockIn, useClockOut } from '@/hooks/queries/use-attendance';
 import { useBranch } from '@/hooks/queries/use-branches';
 import { useTerminalOperator } from '@/hooks/use-terminal-operator';
 import { useClockInLocation } from '@/hooks/use-clock-in-location';
@@ -55,6 +55,8 @@ import { useDiscountPolicy } from '@/hooks/queries/use-settings';
 import { cacheProductCatalog, getCachedProductCatalog } from '@/lib/offline/cache';
 import { enqueueOfflineTransaction } from '@/lib/offline/sync-queue';
 import { getCurrentPosition, type GpsCoords } from '@/lib/geolocation';
+import { apiClient } from '@/lib/api-client';
+import { endBreakConfirmed, formatBreakSince, readAttendanceState, startBreakConfirmed } from '@/lib/attendance-breaks';
 import { ReceiptModal } from '@/components/pos/receipt-modal';
 import { SaleStatusModal, type SaleSnapshot, type SalePopupPhase } from '@/components/pos/sale-status-modal';
 import {
@@ -370,10 +372,16 @@ export default function TerminalPage() {
   // handlePinVerify's `typeof` guards below and primaryActionLabel's
   // three-way (true/false/unknown) branch — an old API's omission must never
   // be coerced into `false` and surfaced as a guessed "Clock In & Open POS".
+  // POS-PERF-P51 — attendanceState/breakStartedAt come from the same
+  // verify-pos response (null when a pre-P51 API doesn't send them). Only
+  // 'on_break' changes anything: the confirmation then offers Resume Work /
+  // Clock Out for THIS verified employee instead of Continue.
   const [pinVerification, setPinVerification] = useState<{
     staffId: string | null;
     staffName: string;
     isClockedIn: boolean | null;
+    attendanceState: 'working' | 'on_break' | 'clocked_out' | null;
+    breakStartedAt: string | null;
     token: string;
   } | null>(null);
   const [selectEmployeeError, setSelectEmployeeError] = useState<string | null>(null);
@@ -388,7 +396,11 @@ export default function TerminalPage() {
   // former also requires pinVerification.isClockedIn to be true. Cleared the
   // moment a clock-out or a successful identity switch moves past it, so a
   // stale lock reason never survives into the next employee's screen.
-  const [lockContext, setLockContext] = useState<{ reason: 'idle' | 'manual'; employeeId: string } | null>(null);
+  // POS-PERF-P51 — 'break': this employee started a break here (server-confirmed).
+  const [lockContext, setLockContext] = useState<{ reason: 'idle' | 'manual' | 'break'; employeeId: string } | null>(null);
+  const [isStartingBreak, setIsStartingBreak] = useState(false);
+  const [isClockingOutFromBreak, setIsClockingOutFromBreak] = useState(false);
+  const attendanceCache = useAttendanceCache();
   const verifyPosPin = useVerifyPosPin(branchId);
   const { data: branch } = useBranch(branchId);
 
@@ -592,6 +604,11 @@ export default function TerminalPage() {
         staffId: typeof result.staff_id === 'string' ? result.staff_id : null,
         staffName: result.staff_name,
         isClockedIn: typeof result.is_clocked_in === 'boolean' ? result.is_clocked_in : null,
+        attendanceState:
+          result.attendance_state === 'working' || result.attendance_state === 'on_break' || result.attendance_state === 'clocked_out'
+            ? result.attendance_state
+            : null,
+        breakStartedAt: typeof result.break_started_at === 'string' ? result.break_started_at : null,
         token: result.verification_token,
       });
     } catch (error) {
@@ -628,6 +645,104 @@ export default function TerminalPage() {
       setPinVerification(null);
     } finally {
       setIsSelectingEmployee(false);
+    }
+  }
+
+  /**
+   * POS-PERF-P51 — Resume Work for the employee whose own PIN was just
+   * verified (pinVerification is bound to that PIN; another employee's PIN
+   * resolves to that other employee and never reaches here for this one).
+   * Order matters: the break end is recorded and confirmed by the server
+   * BEFORE this employee becomes the terminal operator, so no sale can be
+   * rung on top of an open break. If it can't be confirmed the minted token
+   * is dropped and the terminal stays locked. The same attendance record and
+   * shift continue — there is no second clock-in.
+   */
+  async function handleResumeWork() {
+    if (!pinVerification || isSelectingEmployee || !branchId) return;
+    if (!isOnline) {
+      setSelectEmployeeError('You are offline. Resume Work needs the server to record the time — reconnect and enter your PIN again.');
+      setPinVerification(null);
+      return;
+    }
+    setIsSelectingEmployee(true);
+    setSelectEmployeeError(null);
+    try {
+      const selected = await selectEmployee(pinVerification.token, { allowOnBreak: true });
+      const result = await endBreakConfirmed(selected.user.id, branchId, selected.accessToken);
+      if (result.status === 'failed') {
+        setSelectEmployeeError(result.message);
+        setPinVerification(null);
+        return;
+      }
+      // Drop any cached "on break" read for this employee so the operator
+      // hook waits for a fresh server read instead of re-locking on it.
+      attendanceCache.forgetEmployee(selected.user.id);
+      attendanceCache.refreshAll();
+      setActiveEmployee({ id: selected.user.id, firstName: selected.user.firstName, lastName: selected.user.lastName, role: selected.user.role });
+      setActiveEmployeeToken(selected.accessToken);
+      setPinVerification(null);
+      setLockContext(null);
+      toast.success('Break ended', { description: `Welcome back, ${selected.user.firstName}. Same shift, still clocked in.` });
+    } catch (error) {
+      setSelectEmployeeError(error instanceof Error ? error.message : 'Could not resume work');
+      setPinVerification(null);
+    } finally {
+      setIsSelectingEmployee(false);
+    }
+  }
+
+  /**
+   * POS-PERF-P51 — Clock Out straight from a break (the explicit end-of-shift
+   * action, still behind this employee's own PIN). The server closes the open
+   * break and the attendance record in one transaction at the same
+   * timestamp. A lost response is settled by reading the server state.
+   */
+  async function handleClockOutFromBreak() {
+    if (!pinVerification || isSelectingEmployee || !branchId) return;
+    if (!isOnline) {
+      setSelectEmployeeError('You are offline. Clock Out needs the server to record the time — reconnect and enter your PIN again.');
+      setPinVerification(null);
+      return;
+    }
+    setIsSelectingEmployee(true);
+    setIsClockingOutFromBreak(true);
+    setSelectEmployeeError(null);
+    try {
+      const selected = await selectEmployee(pinVerification.token, { allowOnBreak: true });
+      let coords: GpsCoords | null = null;
+      try {
+        coords = await getCurrentPosition();
+      } catch {
+        coords = null;
+      }
+      const response = await apiClient(
+        '/api/attendance/clock-out',
+        {
+          method: 'POST',
+          body: JSON.stringify({ employee_id: selected.user.id, branch_id: branchId, ...(coords ? { gps_lat: coords.lat, gps_lng: coords.lng } : {}) }),
+        },
+        selected.accessToken,
+      );
+      const confirmed = response.data !== null || (await readAttendanceState(selected.user.id)) === 'clocked_out';
+      attendanceCache.refreshAll();
+      if (!confirmed) {
+        const error = response.error;
+        setSelectEmployeeError(
+          (typeof error === 'string' ? error : error?.message) ?? 'Clock Out could not be confirmed. You are still on break — try again.',
+        );
+        setPinVerification(null);
+        return;
+      }
+      setPinVerification(null);
+      setLockContext(null);
+      toast.success('Clocked out', { description: `${selected.user.firstName}: break and shift ended.` });
+    } catch (error) {
+      setSelectEmployeeError(error instanceof Error ? error.message : 'Could not clock out');
+      setPinVerification(null);
+    } finally {
+      setIsSelectingEmployee(false);
+      setIsClockingOutFromBreak(false);
     }
   }
 
@@ -1185,6 +1300,59 @@ export default function TerminalPage() {
     setActiveEmployee(null);
     setActiveEmployeeToken(null);
     clearTerminalOperator();
+  }
+
+  /**
+   * POS-PERF-P51 — Start Break. Unlike Switch Cashier (which only locks),
+   * this records the break start on the server FIRST, and only locks the
+   * terminal once the server has confirmed it — a failed or unconfirmable
+   * request leaves the cashier exactly where they were. The shift stays
+   * open; nothing is clocked out. The cart must already be empty and no sale
+   * may be on screen or in flight: nothing is discarded or reassigned.
+   * Detached/queued sales stay on this device under this cashier (see
+   * handleRetryDetachedSale and lib/offline/sync-queue.ts).
+   */
+  async function handleStartBreak() {
+    if (!isBranchAccount || !activeEmployee || !branchId || isChargeInFlight || isStartingBreak) return;
+    if (items.length > 0) {
+      toast.error('Finish or clear the current cart before starting a break.');
+      return;
+    }
+    if (salePhase !== null) {
+      toast.error('Close the current sale before starting a break.');
+      return;
+    }
+    if (!isOnline) {
+      toast.error('You are offline', { description: 'A break can only start once the server confirms it. Reconnect and try again.' });
+      return;
+    }
+    const token = activeEmployeeToken;
+    if (!token) {
+      toast.error('Session expired', { description: 'Enter your PIN again, then start the break.' });
+      return;
+    }
+    const employee = activeEmployee;
+    setIsStartingBreak(true);
+    let result: Awaited<ReturnType<typeof startBreakConfirmed>>;
+    try {
+      result = await startBreakConfirmed(employee.id, branchId, token, refreshEmployeeToken);
+    } finally {
+      setIsStartingBreak(false);
+    }
+    if (result.status === 'failed') {
+      toast.error('Break not started', { description: result.message });
+      return;
+    }
+    attendanceCache.forgetEmployee(employee.id);
+    attendanceCache.refreshAll();
+    // Stale-closure guard (activeEmployeeRef) — only lock if this employee is still the operator.
+    if (activeEmployeeRef.current?.id === employee.id) {
+      setLockContext({ reason: 'break', employeeId: employee.id });
+      setActiveEmployee(null);
+      setActiveEmployeeToken(null);
+      clearTerminalOperator();
+    }
+    toast.success(`${employee.firstName} is on break`, { description: 'Shift is still open. Enter your own PIN to resume work.' });
   }
 
   async function handleClockOut() {
@@ -2392,6 +2560,8 @@ export default function TerminalPage() {
         errorMessage: null,
         safeToRetryDirectly: false,
         createdAt: Date.now(),
+        // POS-PERF-P51 — the operator who submitted it (see DetachedSale.cashierUserId).
+        cashierUserId: offlineCashierId,
       };
       // Must persist BEFORE clearing the cart below — this is the only
       // durable copy of this order once the cart is wiped. If storage is
@@ -2500,6 +2670,17 @@ export default function TerminalPage() {
       }
       // 'not-found' — confirmed nothing committed; safe to resubmit under
       // the exact same key and payload.
+      // POS-PERF-P51 — but only by the cashier who rang it: the server makes
+      // the submitting token's user the sale's cashier, so a different
+      // cashier (after a break / Switch Cashier) resubmitting would reassign
+      // the sale. It stays in Pending, unchanged, for its own cashier.
+      if (entry.cashierUserId && entry.cashierUserId !== offlineCashierId) {
+        updateDetachedSale(entry.idempotencyKey, {
+          errorMessage: 'Confirmed not charged. Only the cashier who rang this order can retry it — they can retry after entering their PIN.',
+        });
+        toast.error('Another cashier rang this order', { description: 'It stays in Pending. Its own cashier can retry it after entering their PIN.' });
+        return;
+      }
       detachedKeysRef.current.add(entry.idempotencyKey);
       updateDetachedSale(entry.idempotencyKey, { status: 'saving', errorMessage: null, errorCode: null });
       try {
@@ -2662,9 +2843,12 @@ export default function TerminalPage() {
       pinVerification.isClockedIn === true &&
       lockContext?.reason === 'idle' &&
       lockContext.employeeId === pinVerification.staffId;
+    const isResumeForThisStaff = pinVerification?.attendanceState === 'on_break';
     const primaryActionLabel = !pinVerification
       ? 'Continue'
-      : isIdleUnlockForThisStaff
+      : isResumeForThisStaff
+        ? 'Resume Work'
+        : isIdleUnlockForThisStaff
         ? 'Unlock POS'
         : pinVerification.isClockedIn === true
           ? `Continue as ${pinVerification.staffName.split(' ')[0]}`
@@ -2680,9 +2864,25 @@ export default function TerminalPage() {
     // the gaps are tighter, so the keypad and Continue fit a 360×640 screen;
     // the bottom padding clears a home-indicator safe area. A shorter screen
     // or enlarged text still scrolls (the branch layout's <main>).
-    const lockedReason = lockContext?.reason === 'idle' ? 'Locked after inactivity' : 'Waiting for a staff PIN';
+    const lockedReason =
+      lockContext?.reason === 'idle'
+        ? 'Locked after inactivity'
+        : lockContext?.reason === 'break'
+          ? 'Locked for a break — shift still open'
+          : 'Waiting for a staff PIN';
+    const breakSince = formatBreakSince(pinVerification?.breakStartedAt);
+    // POS-PERF-P51 — attendance state (Working / On Break / Clocked Out),
+    // which is not the same thing as this terminal being locked.
     const clockStatus =
-      pinVerification?.isClockedIn === true ? 'Clocked in' : pinVerification?.isClockedIn === false ? 'Not clocked in yet' : null;
+      pinVerification?.attendanceState === 'on_break'
+        ? `On Break${breakSince ? ` since ${breakSince}` : ''}`
+        : pinVerification?.attendanceState === 'working'
+          ? 'Working'
+          : pinVerification?.isClockedIn === true
+            ? 'Clocked in'
+            : pinVerification?.isClockedIn === false
+              ? 'Not clocked in yet'
+              : null;
 
     return (
       <div className="flex min-h-full w-full items-stretch justify-center sm:items-center sm:p-6">
@@ -2756,17 +2956,29 @@ export default function TerminalPage() {
                 <div className="text-center">
                   <p className="text-sm text-muted-foreground">Verified</p>
                   <p className="break-words text-2xl font-semibold">{pinVerification.staffName}</p>
+                  {isResumeForThisStaff && (
+                    <p className="mt-1 flex items-center justify-center gap-1.5 text-sm text-muted-foreground">
+                      <Coffee className="h-4 w-4 shrink-0" aria-hidden="true" />
+                      On break{breakSince ? ` since ${breakSince}` : ''} · shift still open
+                    </p>
+                  )}
                 </div>
                 <div className="flex w-full flex-col gap-2">
                   <Button
                     className="h-14 w-full touch-target text-base"
                     size="lg"
-                    onClick={() => void handleConfirmIdentity()}
+                    onClick={() => void (isResumeForThisStaff ? handleResumeWork() : handleConfirmIdentity())}
                     disabled={isSelectingEmployee}
                   >
-                    {isSelectingEmployee && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
+                    {isSelectingEmployee && !isClockingOutFromBreak && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
                     {primaryActionLabel}
                   </Button>
+                  {isResumeForThisStaff && (
+                    <Button variant="outline" className="touch-target gap-1.5" onClick={() => void handleClockOutFromBreak()} disabled={isSelectingEmployee}>
+                      {isClockingOutFromBreak ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <LogOut className="h-4 w-4" aria-hidden="true" />}
+                      Clock Out (end shift)
+                    </Button>
+                  )}
                   <Button variant="ghost" className="touch-target" onClick={handleCancelPinVerification} disabled={isSelectingEmployee}>
                     Not me — enter a different PIN
                   </Button>
@@ -3132,7 +3344,8 @@ export default function TerminalPage() {
       {/* Cashier attendance strip — Clock In happens above (the whole selling UI is hidden until then); this is Clock Out only. */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-card px-3 py-2">
         <div className="flex items-center gap-2 text-sm">
-          <Badge variant="active">Clocked In</Badge>
+          {/* POS-PERF-P51 — attendance state; the selling screen is only ever shown while Working. */}
+          <Badge variant="active">Working</Badge>
           <span className="text-muted-foreground">Current Cashier:</span>
           <span className="font-medium">{operatorName}</span>
           {attendanceRecord && (
@@ -3153,6 +3366,19 @@ export default function TerminalPage() {
             >
               <Lock className="h-4 w-4" />
               Switch Cashier
+            </Button>
+          )}
+          {isBranchAccount && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="touch-target gap-1.5"
+              onClick={() => void handleStartBreak()}
+              disabled={isChargeInFlight || isStartingBreak}
+              title={items.length > 0 ? 'Finish or clear the current cart before starting a break' : 'Lock the terminal for your break — your shift stays open'}
+            >
+              {isStartingBreak ? <Loader2 className="h-4 w-4 animate-spin" /> : <Coffee className="h-4 w-4" />}
+              Start Break
             </Button>
           )}
           <Button

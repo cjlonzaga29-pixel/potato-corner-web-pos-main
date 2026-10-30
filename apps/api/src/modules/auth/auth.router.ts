@@ -302,8 +302,8 @@ router.post(
         res.status(401).json({ data: null, error: { code: 'TOKEN_MISSING' }, meta: null });
         return;
       }
-      const { verification_token } = req.body as { verification_token: string; device_id: string };
-      const result = await authService.selectEmployee(req.user, verification_token, req.ip ?? null);
+      const { verification_token, allow_on_break } = req.body as { verification_token: string; device_id: string; allow_on_break?: boolean };
+      const result = await authService.selectEmployee(req.user, verification_token, req.ip ?? null, { allowOnBreak: allow_on_break === true });
       res.status(200).json({ data: { access_token: result.access_token, user: result.user }, error: null, meta: null });
     } catch (error) {
       handleAuthError(error, res, next);

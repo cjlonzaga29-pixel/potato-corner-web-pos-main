@@ -26,6 +26,8 @@ interface UseTerminalOperatorArgs {
 interface UseTerminalOperatorResult {
   operatorId: string | undefined;
   isClockedIn: boolean;
+  /** POS-PERF-P51 — clocked in with an open break (server state). Such an operator is never restored or kept at the terminal. */
+  isOnBreak: boolean;
   record: AttendanceResponse | null;
   isAttendanceLoading: boolean;
   /**
@@ -83,7 +85,7 @@ export function useTerminalOperator({
 
   const restoreCandidateId = !activeEmployee && hasPersistedCandidate && persistedEmployeeId !== null ? persistedEmployeeId : undefined;
   const operatorId = isBranchAccount ? (activeEmployee?.id ?? restoreCandidateId) : userId;
-  const { isClockedIn, record, isLoading: isAttendanceLoading, refetch: refetchAttendance } = useIsClockedIn(operatorId);
+  const { isClockedIn, isOnBreak, record, isLoading: isAttendanceLoading, refetch: refetchAttendance } = useIsClockedIn(operatorId);
   // Server attendance state is authoritative — when this device's tab/app
   // regains the foreground, re-check it so a clock-out made from another
   // device (e.g. desktop) is picked up without a manual refresh.
@@ -93,6 +95,15 @@ export function useTerminalOperator({
     if (!isBranchAccount || branchId == null || isAttendanceLoading) return;
 
     if (activeEmployee) {
+      // POS-PERF-P51 — the server says this operator is on break (started
+      // on another device, or this tab missed its own lock): lock the
+      // terminal. Only their own PIN can bring them back, via Resume Work.
+      if (isClockedIn && isOnBreak) {
+        setActiveEmployee(null);
+        setActiveEmployeeToken(null);
+        clearTerminalOperator();
+        return;
+      }
       // Already have a confirmed local operator — keep the persisted hint in
       // sync while they're clocked in; self-heal it away the moment they
       // aren't (covers a clock-out triggered elsewhere, not just this tab's
@@ -115,11 +126,11 @@ export function useTerminalOperator({
     }
 
     if (!hasPersistedCandidate || persistedEmployeeId === null) return;
-    if (isClockedIn) {
+    if (isClockedIn && !isOnBreak) {
       setActiveEmployee({ id: persistedEmployeeId, firstName: persistedFirstName, lastName: persistedLastName, role: persistedRole });
       setActiveEmployeeToken(persistedEmployeeToken);
     } else {
-      // Stale/clocked-out persisted operator — reject it (Part G/Part F).
+      // Stale/clocked-out (or, P51, on-break) persisted operator — reject it (Part G/Part F).
       clearTerminalOperator();
     }
   }, [
@@ -128,6 +139,7 @@ export function useTerminalOperator({
     isAttendanceLoading,
     activeEmployee,
     isClockedIn,
+    isOnBreak,
     persistedEmployeeId,
     persistedBranchId,
     persistedEmployeeToken,
@@ -144,5 +156,5 @@ export function useTerminalOperator({
 
   const isRestoringOperator = isBranchAccount && !activeEmployee && (!hasHydrated || (hasPersistedCandidate && isAttendanceLoading));
 
-  return { operatorId, isClockedIn, record, isAttendanceLoading, isRestoringOperator, clearTerminalOperator };
+  return { operatorId, isClockedIn, isOnBreak, record, isAttendanceLoading, isRestoringOperator, clearTerminalOperator };
 }

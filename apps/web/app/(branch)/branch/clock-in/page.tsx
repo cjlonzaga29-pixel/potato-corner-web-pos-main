@@ -115,7 +115,10 @@ export default function ClockInPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-sm">{isClockedIn ? 'Currently clocked in' : 'Not clocked in'}</CardTitle>
+          {/* POS-PERF-P51 — on break is still clocked in; Clock Out below closes the break with it (server-side, same timestamp). */}
+          <CardTitle className="text-sm">
+            {isClockedIn ? (latestRecord?.attendance_state === 'on_break' ? 'Currently clocked in · On break' : 'Currently clocked in') : 'Not clocked in'}
+          </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           {isError ? (

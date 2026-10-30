@@ -282,7 +282,15 @@ export const staffPinService = {
   async verifyPosPin(
     draft: VerifyPosPinDraft,
     actor: JwtPayload,
-  ): Promise<{ staff_id: string; staff_name: string; is_clocked_in: boolean; verification_token: string; expires_at: string }> {
+  ): Promise<{
+    staff_id: string;
+    staff_name: string;
+    is_clocked_in: boolean;
+    attendance_state: 'working' | 'on_break' | 'clocked_out';
+    break_started_at: string | null;
+    verification_token: string;
+    expires_at: string;
+  }> {
     const digest = hmacPin(draft.pin);
     const lookup = await staffPinRepository.findActiveBranchLookup(draft.branchId, digest);
     if (!lookup) {
@@ -322,12 +330,17 @@ export const staffPinService = {
     // query the attendance module itself uses (findActiveRecord). Purely
     // informational for the locked screen's button label; it never opens,
     // closes, or otherwise mutates attendance.
-    const activeAttendance = await attendanceRepository.findActiveRecord(user.id);
+    // POS-PERF-P51 — same read, now with the open break (if any), so the
+    // locked screen can offer Resume Work. is_clocked_in stays true on break.
+    const activeAttendance = await attendanceRepository.findActiveRecordWithOpenBreak(user.id);
+    const openBreak = activeAttendance?.breaks[0] ?? null;
 
     return {
       staff_id: user.id,
       staff_name: `${user.firstName} ${user.lastName}`,
       is_clocked_in: activeAttendance !== null,
+      attendance_state: activeAttendance === null ? 'clocked_out' : openBreak ? 'on_break' : 'working',
+      break_started_at: openBreak?.startedAt.toISOString() ?? null,
       verification_token: token,
       expires_at: expiresAt.toISOString(),
     };

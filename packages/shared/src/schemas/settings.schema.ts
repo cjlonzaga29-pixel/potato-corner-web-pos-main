@@ -115,23 +115,121 @@ export const discountPolicyResponseSchema = discountPolicySchema.extend({
   updatedBy: z.string().nullable(),
   /** POS-PERF-P50 — types whose rate/enabled state is fixed by law and refused on update (absent from older APIs). */
   statutoryTypes: z.array(z.enum(CONFIGURABLE_DISCOUNT_TYPES)).optional(),
+  /**
+   * POS-PERF-P50R — present when this is one branch's effective policy (a
+   * staff/branch caller always gets its own branch's; others pass
+   * ?branch_id=). Absent = the organization default.
+   */
+  branchId: z.uuid().optional(),
+  /** POS-PERF-P50R — the cashier must pick a discount or "No applicable discount" before charging (branch setting). */
+  requireDiscountChoice: z.boolean().optional(),
+});
+
+/**
+ * POS-PERF-P50R — one branch's discount override. Every field is optional
+ * in the stored row; null means "use the organization default". Bounds:
+ * Employee 0–100 (business choice); PWD at least the statutory 20%
+ * (RA 10754 §1: "at least twenty percent"), never disabled. Senior Citizen is
+ * not here: RA 9994 §4(a) grants exactly 20%, so it is not branch-editable.
+ */
+export const PWD_MAX_PERCENT = 100;
+
+export const branchDiscountOverrideSchema = z.object({
+  employee: discountRateEntrySchema.nullable(),
+  pwdPercentage: z.number().finite().min(20).max(PWD_MAX_PERCENT).nullable(),
+  requireDiscountChoice: z.boolean(),
+});
+
+/** PUT /api/settings/discounts/branches/:branchId — the full override (no partial merge) plus the stale-save token. */
+export const updateBranchDiscountSettingsSchema = branchDiscountOverrideSchema.extend({
+  /** The branch row's `updatedAt` the editor loaded, null = it had no override. Required: no last-write-wins path. */
+  expectedUpdatedAt: z.iso.datetime().nullable(),
+});
+
+export const DISCOUNT_SETTING_SOURCES = ['statute', 'organization', 'branch'] as const;
+export type DiscountSettingSource = (typeof DISCOUNT_SETTING_SOURCES)[number];
+
+const effectiveRateSchema = z.object({
+  percentage: z.number(),
+  isEnabled: z.boolean(),
+  source: z.enum(DISCOUNT_SETTING_SOURCES),
+});
+
+/**
+ * POS-PERF-P50R — VAT registration is a legal fact about the seller, not a
+ * tax toggle. 'unconfirmed' (the default for every existing branch) keeps
+ * the pre-P50R calculation (VAT-registered) and says so visibly.
+ * 'non_vat_registered' is listed so the editor can explain it, but this
+ * release refuses it: a non-VAT seller needs a different receipt and
+ * calculation that is not built (runbook D1).
+ */
+export const VAT_REGISTRATION_STATUSES = ['unconfirmed', 'vat_registered', 'non_vat_registered'] as const;
+export type VatRegistrationStatus = (typeof VAT_REGISTRATION_STATUSES)[number];
+export const SUPPORTED_VAT_REGISTRATION_STATUSES: readonly VatRegistrationStatus[] = ['unconfirmed', 'vat_registered'];
+
+export const branchTaxProfileSchema = z.object({
+  vatRegistration: z.enum(VAT_REGISTRATION_STATUSES),
+  /** Free-text note on where the registration was confirmed (e.g. "BIR COR 2303 seen 2026-10-30"). */
+  note: z.string().trim().max(300).nullable(),
+});
+
+/** PUT /api/settings/tax/branches/:branchId — Super Admin only. */
+export const updateBranchTaxProfileSchema = branchTaxProfileSchema.extend({
+  expectedUpdatedAt: z.iso.datetime().nullable(),
+});
+
+export const branchTaxProfileResponseSchema = branchTaxProfileSchema.extend({
+  branchId: z.uuid(),
+  /** How checkout actually calculates for this branch. Always 'vat_registered' in this release. */
+  calculatedAs: z.literal('vat_registered'),
+  updatedAt: z.iso.datetime().nullable(),
+  updatedBy: z.string().nullable(),
+});
+
+/** GET /api/settings/discounts/branches/:branchId — defaults, override, effective values and who may change what. */
+export const branchDiscountSettingsResponseSchema = z.object({
+  branchId: z.uuid(),
+  branchName: z.string(),
+  organization: z.object({
+    pwd: discountRateEntrySchema,
+    senior_citizen: discountRateEntrySchema,
+    employee: discountRateEntrySchema,
+    updatedAt: z.iso.datetime().nullable(),
+  }),
+  override: branchDiscountOverrideSchema.nullable(),
+  effective: z.object({
+    pwd: effectiveRateSchema,
+    senior_citizen: effectiveRateSchema,
+    employee: effectiveRateSchema,
+    requireDiscountChoice: z.boolean(),
+  }),
+  taxProfile: branchTaxProfileResponseSchema,
+  /** The override row's updatedAt (null = no override yet) — send back as expectedUpdatedAt. */
+  updatedAt: z.iso.datetime().nullable(),
+  updatedBy: z.string().nullable(),
+  canEdit: z.boolean(),
+  canEditTaxProfile: z.boolean(),
 });
 
 /**
  * POS-PERF-P50 — GET /api/settings/tax: the tax configuration checkout is
- * using right now. Read-only for every role: these are statutory values or
- * fixed application behavior, not settings anyone can save.
+ * using right now. The VAT rate, VAT-inclusive pricing and the exempt
+ * treatment are statutory or fixed application behavior, not settings.
+ * POS-PERF-P50R — with ?branch_id= (or for a staff/branch caller) the
+ * branch's effective discount rates and its VAT registration status.
  */
 export const taxConfigurationResponseSchema = z.object({
   vatRatePercent: z.number(),
   pricesIncludeVat: z.boolean(),
   statutoryDiscountPercent: z.number(),
   vatExemptDiscountTypes: z.array(z.string()),
-  scope: z.literal('organization'),
+  scope: z.enum(['organization', 'branch']),
   /** The discount rates checkout applies now (from Discount Settings). */
   discountRates: z.object({ pwd: z.number(), senior_citizen: z.number(), employee: z.number() }),
-  /** True when a stored PWD/Senior rate is not the statutory value (only possible for data saved before P50). */
+  /** True when a stored Senior rate is not 20% or a PWD rate is below 20%/disabled (only possible for data saved before P50). */
   statutoryRateMismatch: z.boolean(),
+  branchId: z.uuid().optional(),
+  vatRegistration: z.enum(VAT_REGISTRATION_STATUSES).optional(),
 });
 
 /**

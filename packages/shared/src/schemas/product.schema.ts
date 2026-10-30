@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { posSelectableDiscountSchema } from './promotion.schema.js';
 import { PRODUCT_STATUS, type ProductStatus } from '../constants/status.js';
 
 const productStatusValues = Object.values(PRODUCT_STATUS) as [ProductStatus, ...ProductStatus[]];
@@ -537,6 +538,9 @@ export const posCatalogProductSchema = z.object({
 export const posCatalogResponseSchema = z.object({
   categories: z.array(z.string()),
   products: z.array(posCatalogProductSchema),
+  // POS-PERF-P50R — cashier-selected discounts active at this branch now.
+  // Optional: an older API (no field) means none.
+  selectable_discounts: z.array(posSelectableDiscountSchema).optional(),
 });
 
 // POS-PERF-P24 — cart-wide stock pre-check, fired at discrete cashier

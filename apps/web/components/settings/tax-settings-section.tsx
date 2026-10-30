@@ -21,7 +21,9 @@ interface TaxRow {
 
 /**
  * POS-PERF-P50 — what VAT checkout applies, where it comes from and what it
- * affects. Read-only for every role: the VAT rate and the PWD/Senior Citizen
+ * affects. POS-PERF-P50R: the rows here are statutory or fixed behavior and
+ * have no input; editable discount rates and VAT registration are in the
+ * branch section. Read-only for every role: the VAT rate and the PWD/Senior Citizen
  * treatment are statutory, VAT-inclusive pricing is how the POS works, and
  * none of them is a setting. The example is computed with computeSaleTax —
  * the same function checkout runs — so it cannot disagree with a real sale.
@@ -54,22 +56,29 @@ export function TaxSettingsSection() {
       basis: 'How the POS works',
     },
     {
-      label: 'PWD / Senior Citizen',
-      value: `${statutory}% off, VAT-exempt`,
-      meaning: `VAT is removed first, the ${statutory}% comes off the price without VAT, and no VAT is charged.`,
-      basis: 'Set by law (RA 9994 §4(a); RA 10754)',
+      label: 'Senior Citizen',
+      value: `${rates.senior_citizen}% off, VAT-exempt`,
+      meaning: `VAT is removed first, the ${statutory}% comes off the price without VAT, and no VAT is charged. Exactly ${statutory}%; not editable.`,
+      basis: 'Set by law (RA 9994 §4(a))',
+    },
+    {
+      label: 'PWD',
+      value: `${rates.pwd}% off, VAT-exempt`,
+      meaning: `Same VAT-exempt treatment. At least ${statutory}%: it may be raised per branch, never lowered or turned off.`,
+      basis: 'Set by law (RA 10754 §1); a higher rate is a business choice',
     },
     {
       label: 'Employee discount',
       value: `${rates.employee}%`,
-      meaning: 'Comes off the VAT-inclusive price; the rest still includes VAT. Change it in Discount Settings below.',
+      meaning: 'Comes off the VAT-inclusive price; the rest still includes VAT. Set per branch, or the organization default.',
       basis: 'Business choice',
     },
     {
-      label: 'Product promotions',
+      label: 'Promotions and custom discounts',
       value: 'Per product',
-      meaning: 'Same as the employee discount. Never combined with a PWD, Senior Citizen or Employee discount.',
-      basis: 'Business choice (Promotions page)',
+      meaning:
+        'Taxed like the employee discount: never makes a sale VAT-exempt. Automatic promotions apply to eligible items; custom discounts apply only when the cashier picks them. One discount per sale.',
+      basis: 'Business choice (Discounts & Promotions page)',
     },
     {
       label: 'VAT cap (some sizes)',
@@ -86,13 +95,13 @@ export function TaxSettingsSection() {
           VAT &amp; Tax
           <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-normal text-muted-foreground">
             <Lock className="h-3 w-3" aria-hidden="true" />
-            Read-only
+            Statutory values
           </span>
         </CardTitle>
         <CardDescription>
-          How checkout calculates VAT. Applies to every branch and to checkout totals, receipts and reports. These values are set by
-          law or by how the POS works, so they change only with a software update. Past sales always keep the amounts they were rung
-          with.
+          How checkout calculates VAT, for checkout totals, receipts and reports. The VAT rate, VAT-inclusive pricing and the PWD/Senior
+          Citizen exemption are set by law or by how the POS works, so they change only with a software update. Discount rates and each
+          branch&apos;s VAT registration are shown per branch below. Past sales always keep the amounts they were rung with.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -103,8 +112,8 @@ export function TaxSettingsSection() {
         )}
         {config?.statutoryRateMismatch && (
           <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-2 text-sm text-destructive">
-            The saved PWD/Senior Citizen discount ({rates.pwd}% / {rates.senior_citizen}%) is not the {statutory}% required by law, and
-            checkout is using it. A Super Admin or Supervisor should restore it to {statutory}% in Discount Settings below.
+            The saved PWD/Senior Citizen discount ({rates.pwd}% / {rates.senior_citizen}%) is outside what the law requires, and checkout
+            is using it. A Super Admin should restore it to {statutory}% in the organization discount defaults.
           </p>
         )}
 
@@ -148,7 +157,7 @@ export function TaxSettingsSection() {
                       <td className="py-1 text-right font-semibold">{formatPeso(exempt.totalAmount)}</td>
                     </tr>
                     <tr className="border-t">
-                      <td className="py-1 pr-2">Employee ({rates.employee}%)</td>
+                      <td className="py-1 pr-2">Employee ({rates.employee}%){config?.scope === 'branch' ? '' : ', organization default'}</td>
                       <td className="py-1 pr-2 text-right">-{formatPeso(employee.discountAmount)}</td>
                       <td className="py-1 pr-2 text-right">{formatPeso(employee.vatAmount)}</td>
                       <td className="py-1 text-right font-semibold">{formatPeso(employee.totalAmount)}</td>

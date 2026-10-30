@@ -85,6 +85,7 @@ export const discountsRepository = {
         discountKind: data.discountKind,
         discountValue: data.discountValue,
         isEnabled: data.isEnabled,
+        applicationMode: data.applicationMode,
         startsOn: toDateColumn(data.startsOn),
         endsOn: toDateColumn(data.endsOn),
         createdById: actorId,
@@ -108,6 +109,7 @@ export const discountsRepository = {
           discountKind: data.discountKind,
           discountValue: data.discountValue,
           isEnabled: data.isEnabled,
+          applicationMode: data.applicationMode,
           startsOn: toDateColumn(data.startsOn),
           endsOn: toDateColumn(data.endsOn),
           updatedById: actorId,
@@ -141,6 +143,8 @@ export const discountsRepository = {
     return prisma.promotion.findMany({
       where: {
         isEnabled: true,
+        // POS-PERF-P50R — cashier-selected discounts never apply automatically.
+        applicationMode: 'automatic',
         branches: { some: { branchId } },
         products: { some: { productId: { in: productIds } } },
       },
@@ -164,6 +168,35 @@ export const discountsRepository = {
     return prisma.product.findMany({
       where: { id: { in: productIds } },
       select: { id: true, classification: true, status: true },
+    });
+  },
+
+  /**
+   * POS-PERF-P50R — enabled cashier-selected discounts at this branch, with
+   * the products they name (schedule filtered by the caller, as above).
+   * promotionId narrows to the one a checkout claims.
+   */
+  findEnabledSelectableDiscounts(branchId: string, promotionId?: string) {
+    return prisma.promotion.findMany({
+      where: {
+        isEnabled: true,
+        applicationMode: 'cashier_selected',
+        branches: { some: { branchId } },
+        ...(promotionId ? { id: promotionId } : {}),
+      },
+      select: {
+        id: true,
+        name: true,
+        discountKind: true,
+        discountValue: true,
+        isEnabled: true,
+        startsOn: true,
+        endsOn: true,
+        version: true,
+        createdAt: true,
+        products: { select: { productId: true } },
+      },
+      orderBy: [{ name: 'asc' }, { id: 'asc' }],
     });
   },
 };

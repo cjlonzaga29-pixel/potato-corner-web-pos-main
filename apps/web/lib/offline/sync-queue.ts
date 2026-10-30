@@ -183,6 +183,8 @@ async function runSync(options: SyncOfflineOptions): Promise<SyncOfflineOutcome>
             gcash_manually_verified: t.payload.gcash_manually_verified,
             // POS-PERF-P50 — absent on sales queued before P50 (no check, as before).
             tax_basis: t.payload.tax_basis,
+            // POS-PERF-P50R — recorded only; selected_discount is never queued (custom discounts are online-only).
+            ...(t.payload.discount_choice ? { discount_choice: t.payload.discount_choice } : {}),
             client_created_at: t.createdAt,
           })),
         }),

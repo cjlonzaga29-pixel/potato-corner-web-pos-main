@@ -94,6 +94,8 @@ interface CreateTransactionRow {
   isOfflineTransaction: boolean;
   offlineProvisionalNumber: string | null;
   notes?: string | null;
+  /** POS-PERF-P50R — SaleTaxSnapshot frozen at creation. */
+  taxSnapshot?: Prisma.InputJsonValue | null;
   deviceId: string | null;
   /** POS-PERF-P15 — see transactions.repository.ts findByIdempotencyKey. Null when the client omitted it (no idempotency protection, same as before this column existed). */
   idempotencyKey?: string | null;
@@ -354,6 +356,7 @@ export const transactionsRepository = {
           isOfflineTransaction: data.isOfflineTransaction,
           offlineProvisionalNumber: data.offlineProvisionalNumber,
           notes: data.notes,
+          ...(data.taxSnapshot ? { taxSnapshot: data.taxSnapshot } : {}),
           deviceId: data.deviceId,
           idempotencyKey: data.idempotencyKey ?? null,
           items: {

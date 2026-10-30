@@ -44,6 +44,7 @@ const eligible: PromotionEligibleProduct[] = [
     status: 'active',
     branch_ids: [BRANCH_MAIN],
     ineligible_reason: 'Only Promotional or Seasonal products can have a promotion. Change the classification in the product editor first.',
+    cashier_selected_ineligible_reason: null,
     variants: [{ id: 'v-plain', name: 'Regular', base_price: 45, is_active: true }],
   },
 ];
@@ -64,6 +65,7 @@ function existing(overrides: Partial<PromotionResponse> = {}): PromotionResponse
     discount_kind: 'fixed_amount',
     discount_value: 10,
     is_enabled: true,
+    application_mode: 'automatic',
     starts_on: null,
     ends_on: null,
     schedule_state: 'active',
@@ -139,6 +141,7 @@ describe('PromotionEditorDialog (P49)', () => {
         discount_kind: 'percentage',
         discount_value: 12.5,
         is_enabled: true,
+        application_mode: 'automatic',
         starts_on: null,
         ends_on: '2026-10-31',
         product_ids: [PRODUCT_A],
@@ -187,5 +190,38 @@ describe('PromotionEditorDialog (P49)', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'Promo Fries' }));
     expect(screen.getByTestId('promotion-overlap')).toHaveTextContent('Other Promo');
     expect(screen.getByTestId('promotion-overlap')).toHaveTextContent('the bigger one');
+  });
+});
+
+describe('PromotionEditorDialog — Create/Edit Discount (P50R)', () => {
+  it('a cashier-selected discount may name a Regular product, says how selection works, and is sent with its mode', async () => {
+    renderEditor();
+    fireEvent.click(screen.getByRole('radio', { name: /Cashier selects at checkout/ }));
+    expect(screen.getByTestId('selection-requirement-note')).toHaveTextContent('No applicable discount');
+    expect(screen.getByRole('checkbox', { name: 'Plain Fries' })).not.toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Discount name'), { target: { value: 'Loyalty' } });
+    fireEvent.change(screen.getByLabelText('Percent off (1–100)'), { target: { value: '10' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Plain Fries' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create discount' }));
+    await waitFor(() => expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({ application_mode: 'cashier_selected', product_ids: [PRODUCT_REGULAR] })));
+  });
+
+  it('explains the taxable VAT treatment and previews taxable amount, VAT and final price', () => {
+    renderEditor();
+    expect(screen.getByTestId('promotion-vat-treatment')).toHaveTextContent('never makes a sale VAT-exempt');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Promo Fries' }));
+    fireEvent.change(screen.getByLabelText('Percent off (1–100)'), { target: { value: '10' } });
+    // ₱39.00 − ₱3.90 = ₱35.10; VAT = 35.10 × 12/112 = ₱3.76; taxable net of VAT ₱31.34.
+    const row = within(screen.getByRole('table', { name: 'Price preview' })).getByText('Promo Fries — Regular').closest('tr') as HTMLElement;
+    expect(row).toHaveTextContent('₱31.34');
+    expect(row).toHaveTextContent('₱3.76');
+    expect(row).toHaveTextContent('₱35.10');
+  });
+
+  it('an existing promotion from an older API (no mode) edits as automatic', () => {
+    const legacy = existing();
+    delete (legacy as Partial<PromotionResponse>).application_mode;
+    renderEditor(legacy);
+    expect(screen.getByRole('radio', { name: /Automatic promotion/ })).toBeChecked();
   });
 });

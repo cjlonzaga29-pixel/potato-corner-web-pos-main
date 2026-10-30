@@ -63,6 +63,26 @@ export const DEFAULT_DISCOUNT_POLICY: DiscountPolicy = {
 
 export type UpdateDiscountPolicyData = Partial<Record<ConfigurableDiscountType, { percentage?: number; isEnabled?: boolean }>>;
 
+/**
+ * POS-PERF-P50R — one branch's discount override sits beside the
+ * organization row (same pattern as POS-PERF-P40 work hours). Value:
+ * BranchDiscountOverride; null fields mean "use the organization default".
+ * An absent row means the branch uses every organization default and does
+ * not require a discount choice — exactly the pre-P50R behavior.
+ */
+export const BRANCH_DISCOUNT_KEY_PREFIX = `${DISCOUNT_POLICY_KEY}:branch:`;
+
+export function branchDiscountKey(branchId: string): string {
+  return `${BRANCH_DISCOUNT_KEY_PREFIX}${branchId}`;
+}
+
+/** POS-PERF-P50R — a branch's recorded VAT registration (BranchTaxProfile). Absent = 'unconfirmed'. */
+export const BRANCH_TAX_PROFILE_KEY_PREFIX = 'tax_profile:branch:';
+
+export function branchTaxProfileKey(branchId: string): string {
+  return `${BRANCH_TAX_PROFILE_KEY_PREFIX}${branchId}`;
+}
+
 /** Key of the single SystemSetting row that stores the regular-work-hours policy JSON blob (P3D-P4). */
 export const WORK_HOURS_POLICY_KEY = 'work_hours_policy';
 

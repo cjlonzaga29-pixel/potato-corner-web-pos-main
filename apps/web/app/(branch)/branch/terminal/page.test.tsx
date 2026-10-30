@@ -113,7 +113,10 @@ vi.mock('@/components/ui/select', () => {
       </button>
     );
   }
-  return { Select, SelectTrigger, SelectValue, SelectContent, SelectItem };
+  function SelectGroup({ children }: { children?: React.ReactNode }) {
+    return <>{children}</>;
+  }
+  return { Select, SelectTrigger, SelectValue, SelectContent, SelectItem, SelectGroup };
 });
 
 vi.mock('@/hooks/use-auth', () => ({
@@ -260,7 +263,7 @@ vi.mock('@/hooks/queries/use-branches', () => ({
 // POS-PERF-P50 — mutable so a test can change the configured rate mid-cart
 // (refetch returns the new value, as a real refetch would).
 const { discountPolicyState, mockRefetchDiscountPolicy } = vi.hoisted(() => {
-  const state = { employee: 20 };
+  const state = { employee: 20, requireChoice: false };
   return { discountPolicyState: state, mockRefetchDiscountPolicy: vi.fn(async () => ({ isError: false, error: null })) };
 });
 vi.mock('@/hooks/queries/use-settings', () => ({
@@ -272,6 +275,7 @@ vi.mock('@/hooks/queries/use-settings', () => ({
       promotional: { percentage: 20, isEnabled: true },
       updatedAt: null,
       updatedBy: null,
+      requireDiscountChoice: discountPolicyState.requireChoice,
     },
     isLoading: false,
     refetch: mockRefetchDiscountPolicy,
@@ -3879,7 +3883,7 @@ describe('TerminalPage — P49 product promotions', () => {
     openCheckout();
     fireEvent.click(screen.getByRole('button', { name: 'PWD (20%)' }));
     fireEvent.change(screen.getByPlaceholderText('PWD / Senior Citizen ID number'), { target: { value: 'PWD-1' } });
-    expect(screen.getAllByTestId('cart-line-promotion')[0]).toHaveTextContent('not combined with PWD/Senior/Employee — regular price');
+    expect(screen.getAllByTestId('cart-line-promotion')[0]).toHaveTextContent('not combined with the chosen discount — regular price');
     charge();
 
     await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalled());
@@ -4028,5 +4032,122 @@ describe('TerminalPage — P50 tax basis', () => {
     await waitFor(() => expect(enqueueOfflineTransaction).toHaveBeenCalled());
     expect((vi.mocked(enqueueOfflineTransaction).mock.calls[0]?.[1] as CreateTransactionInput).tax_basis).toEqual({ vat_rate: 12, discount_rate: 20 });
     mockUseOffline.mockReturnValue(base);
+  });
+});
+
+// POS-PERF-P50R — cashier-selected custom discounts (offered only online,
+// only when they cover a cart line, priced like the server, sent as an
+// acknowledgement) and the branch's required discount decision (explicit
+// "No applicable discount", never a forced discount).
+describe('TerminalPage — P50R custom discounts and required choice', () => {
+  const LOYALTY = {
+    promotion_id: '77777777-7777-4777-8777-777777777777',
+    name: 'Loyalty',
+    discount_kind: 'percentage' as const,
+    discount_value: 10,
+    version: 2,
+    ends_on: null,
+    unit_discounts: { 'variant-1': 10 },
+  };
+
+  beforeEach(() => {
+    discountPolicyState.employee = 20;
+    discountPolicyState.requireChoice = false;
+    mockUseAuth.mockReturnValue({ user: STAFF_USER, selectEmployee: mockSelectEmployee, refreshEmployeeSession: mockRefreshEmployeeSession });
+    useAuthStore.setState({ user: STAFF_USER, accessToken: 'staff-token', isAuthenticated: true, isLoading: false });
+    mockUseCatalog.mockReturnValue({ data: { ...catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), selectable_discounts: [LOYALTY] }, isLoading: false });
+    mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isLoading: false });
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' }, isLoading: false });
+    mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 2 }]);
+    mockCreateTransactionMutateAsync.mockReset().mockResolvedValue({});
+  });
+
+  afterEach(() => {
+    discountPolicyState.requireChoice = false;
+    cleanup();
+  });
+
+  function charge(cash = '500') {
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: cash } });
+    fireEvent.click(screen.getByRole('button', { name: /^Charge/ }));
+  }
+
+  it('a chosen custom discount changes the total shown and is sent as id + version with per-line acknowledgements', async () => {
+    render(<TerminalPage />);
+    openCheckout();
+    expect(screen.getByRole('button', { name: /^Charge/ })).toHaveTextContent('200.00');
+    fireEvent.click(screen.getByRole('button', { name: 'Loyalty (10% off)' }));
+    // 2 × ₱100 − 2 × ₱10 = ₱180.
+    expect(screen.getByRole('button', { name: /^Charge/ })).toHaveTextContent('180.00');
+    charge();
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalled());
+    const payload = mockCreateTransactionMutateAsync.mock.calls[0]?.[0] as CreateTransactionInput;
+    expect(payload.selected_discount).toEqual({ promotion_id: LOYALTY.promotion_id, version: 2 });
+    expect(payload.items[0]?.promotion).toEqual({ promotion_id: LOYALTY.promotion_id, unit_discount: 10 });
+    expect(payload.discount_type).toBeUndefined();
+    expect(payload.tax_basis).toEqual({ vat_rate: 12, discount_rate: null });
+    expect(payload).not.toHaveProperty('discount_choice');
+  });
+
+  it('switching to Employee drops the custom discount (one discount per sale)', async () => {
+    render(<TerminalPage />);
+    openCheckout();
+    fireEvent.click(screen.getByRole('button', { name: 'Loyalty (10% off)' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Employee (20%)' }));
+    expect(screen.getByRole('button', { name: /^Charge/ })).toHaveTextContent('160.00');
+    charge();
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalled());
+    const payload = mockCreateTransactionMutateAsync.mock.calls[0]?.[0] as CreateTransactionInput;
+    expect(payload.selected_discount).toBeUndefined();
+    expect(payload.items[0]?.promotion).toBeNull();
+    expect(payload.discount_type).toBe('employee');
+  });
+
+  it('is not offered for a cart it does not cover, nor offline', () => {
+    mockUseCatalog.mockReturnValue({
+      data: { ...catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), selectable_discounts: [{ ...LOYALTY, unit_discounts: { 'other-variant': 5 } }] },
+      isLoading: false,
+    });
+    const { unmount } = render(<TerminalPage />);
+    openCheckout();
+    expect(screen.queryByRole('button', { name: /Loyalty/ })).not.toBeInTheDocument();
+    unmount();
+
+    mockUseCatalog.mockReturnValue({ data: { ...catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), selectable_discounts: [LOYALTY] }, isLoading: false });
+    const base = mockUseOffline();
+    mockUseOffline.mockReturnValue({ ...base, isOnline: false });
+    render(<TerminalPage />);
+    openCheckout();
+    expect(screen.queryByRole('button', { name: /Loyalty/ })).not.toBeInTheDocument();
+    mockUseOffline.mockReturnValue(base);
+  });
+
+  it('required choice: Charge waits for a decision; "No applicable discount" charges the regular price and says so', async () => {
+    discountPolicyState.requireChoice = true;
+    render(<TerminalPage />);
+    openCheckout();
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '500' } });
+    expect(screen.getByTestId('discount-choice-prompt')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Charge/ })).toBeDisabled();
+    expect(screen.getAllByText('Choose the discount that applies, or “No applicable discount”.').length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole('button', { name: 'No applicable discount' }));
+    expect(screen.queryByTestId('discount-choice-prompt')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Charge/ })).toHaveTextContent('200.00');
+    fireEvent.click(screen.getByRole('button', { name: /^Charge/ }));
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalled());
+    const payload = mockCreateTransactionMutateAsync.mock.calls[0]?.[0] as CreateTransactionInput;
+    expect(payload.discount_choice).toBe('none_applicable');
+    expect(payload.discount_type).toBeUndefined();
+  });
+
+  it('required choice: choosing a discount sends "selected"', async () => {
+    discountPolicyState.requireChoice = true;
+    render(<TerminalPage />);
+    openCheckout();
+    fireEvent.click(screen.getByRole('button', { name: 'Loyalty (10% off)' }));
+    charge();
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalled());
+    expect((mockCreateTransactionMutateAsync.mock.calls[0]?.[0] as CreateTransactionInput).discount_choice).toBe('selected');
   });
 });

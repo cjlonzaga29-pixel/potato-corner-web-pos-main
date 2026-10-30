@@ -5,6 +5,8 @@ import {
   updateReceiptConfigSchema,
   updatePaymentMethodConfigSchema,
   updateDiscountPolicySchema,
+  updateBranchDiscountSettingsSchema,
+  updateBranchTaxProfileSchema,
   updateWorkHoursPolicySchema,
   updateBranchWorkHoursSchema,
   updateWriteGateSchema,
@@ -97,17 +99,34 @@ router.put(
   },
 );
 
+const branchQuerySchema = z.object({ branch_id: z.uuid().optional() });
+
+/** Optional ?branch_id= (POS-PERF-P50R); 400 on a malformed id, undefined when absent. */
+function readBranchQuery(req: Request, res: Response): { ok: true; branchId: string | undefined } | { ok: false } {
+  const parsed = branchQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ data: null, error: { code: 'VALIDATION_ERROR', message: 'Invalid branch_id', details: parsed.error.issues }, meta: null });
+    return { ok: false };
+  }
+  return { ok: true, branchId: parsed.data.branch_id };
+}
+
 /**
  * Task 209.xx — GET is `allRoles`: cashier/staff and the Branch Account must
  * be able to read the configured percentages so the POS discount dropdown
- * can render "PWD (10%)" etc. (requirement: Cashier/Staff and Branch Account
- * are READ ONLY). PUT is `adminOrSupervisor`: only a Supervisor or Super
- * Admin may change a rate — matches adminOrSupervisor's existing precedent
- * (authorize.ts) for regional-oversight-level settings.
+ * can render "PWD (20%)" etc. POS-PERF-P50R — a staff/branch caller always
+ * gets its own branch's effective policy; others get the organization
+ * default or ?branch_id=. PUT stays routed for adminOrSupervisor so an older
+ * supervisor editor gets a clear 403 ORGANIZATION_DISCOUNTS_ADMIN_ONLY from
+ * the service instead of a bare FORBIDDEN; only a Super Admin may save the
+ * organization default.
  */
-router.get('/discount-policy', authenticate, allRoles, requirePasswordChange, async (_req: Request, res: Response, next: NextFunction) => {
+router.get('/discount-policy', authenticate, allRoles, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const policy = await settingsService.getDiscountPolicy();
+    if (!requireUser(req, res)) return;
+    const query = readBranchQuery(req, res);
+    if (!query.ok) return;
+    const policy = await settingsService.getDiscountPolicyFor(req.user, query.branchId);
     res.status(200).json({ data: policy, error: null, meta: null });
   } catch (error) {
     handleSettingsError(error, res, next);
@@ -133,18 +152,90 @@ router.put(
 
 /**
  * POS-PERF-P50 — read-only VAT/tax configuration, `allRoles` like
- * discount-policy: the POS and every settings page show it. There is no PUT:
- * the VAT rate, VAT-inclusive pricing and the PWD/Senior treatment are
- * statutory or fixed application behavior, changed only by a code release.
+ * discount-policy: the POS and every settings page show it. There is no PUT
+ * for the VAT rate, VAT-inclusive pricing or the PWD/Senior treatment: they
+ * are statutory or fixed application behavior, changed only by a code
+ * release. POS-PERF-P50R adds ?branch_id= and the branch VAT-registration
+ * record below.
  */
-router.get('/tax', authenticate, allRoles, requirePasswordChange, async (_req: Request, res: Response, next: NextFunction) => {
+router.get('/tax', authenticate, allRoles, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const configuration = await settingsService.getTaxConfiguration();
+    if (!requireUser(req, res)) return;
+    const query = readBranchQuery(req, res);
+    if (!query.ok) return;
+    const configuration = await settingsService.getTaxConfiguration(req.user, query.branchId);
     res.status(200).json({ data: configuration, error: null, meta: null });
   } catch (error) {
     handleSettingsError(error, res, next);
   }
 });
+
+const branchParamSchema = z.object({ branchId: z.uuid() });
+
+/**
+ * POS-PERF-P50R — one branch's discount settings. adminOrSupervisor; the
+ * service re-checks a supervisor's live assignment to that branch on every
+ * request (a forged branch id is 403, an unknown one 404).
+ */
+router.get('/discounts/branches/:branchId', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    const params = branchParamSchema.safeParse(req.params);
+    if (!params.success) {
+      res.status(400).json({ data: null, error: { code: 'VALIDATION_ERROR', message: 'Invalid branch id' }, meta: null });
+      return;
+    }
+    const result = await settingsService.getBranchDiscountSettings(params.data.branchId, req.user);
+    res.status(200).json({ data: result, error: null, meta: null });
+  } catch (error) {
+    handleSettingsError(error, res, next);
+  }
+});
+
+router.put(
+  '/discounts/branches/:branchId',
+  authenticate,
+  adminOrSupervisor,
+  requirePasswordChange,
+  validate(updateBranchDiscountSettingsSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const params = branchParamSchema.safeParse(req.params);
+      if (!params.success) {
+        res.status(400).json({ data: null, error: { code: 'VALIDATION_ERROR', message: 'Invalid branch id' }, meta: null });
+        return;
+      }
+      const result = await settingsService.updateBranchDiscountSettings(params.data.branchId, req.body, req.user, req.ip ?? null);
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleSettingsError(error, res, next);
+    }
+  },
+);
+
+/** POS-PERF-P50R — record a branch's VAT registration. Super Admin only (a legal fact the owner supplies). */
+router.put(
+  '/tax/branches/:branchId',
+  authenticate,
+  adminOnly,
+  requirePasswordChange,
+  validate(updateBranchTaxProfileSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const params = branchParamSchema.safeParse(req.params);
+      if (!params.success) {
+        res.status(400).json({ data: null, error: { code: 'VALIDATION_ERROR', message: 'Invalid branch id' }, meta: null });
+        return;
+      }
+      const result = await settingsService.updateBranchTaxProfile(params.data.branchId, req.body, req.user, req.ip ?? null);
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleSettingsError(error, res, next);
+    }
+  },
+);
 
 /**
  * P3D-P4 — GET is `allRoles` (mirrors discount-policy's precedent above):

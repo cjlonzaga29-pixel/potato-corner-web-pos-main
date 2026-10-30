@@ -71,6 +71,14 @@ enum PromotionDiscountKind {
   fixed_amount
 }
 
+// POS-PERF-P50R — automatic = applied to eligible items without cashier
+// action (P49); cashier_selected = offered in the POS discount picker and
+// applied only when the cashier chooses it for the sale.
+enum PromotionApplicationMode {
+  automatic
+  cashier_selected
+}
+
 enum TransactionStatus {
   completed
   voided
@@ -390,18 +398,18 @@ model User {
   // POS-PERF-P35R — explicit catalog-management assignment, separate from
   // the createdBy provenance relations above. A user can be the recorded
   // manager of records they did not create.
-  managedProducts            Product[]                      @relation("ProductManagedBy")
-  managedProductCategories   ProductCategory[]               @relation("ProductCategoryManagedBy")
-  managedProductOptionGroups ProductOptionGroup[]            @relation("ProductOptionGroupManagedBy")
-  managedProductOptions      ProductOption[]                 @relation("ProductOptionManagedBy")
-  managedInventoryCategories InventoryCategory[]             @relation("InventoryCategoryManagedBy")
-  managedUnitsOfMeasure      UnitOfMeasure[]                 @relation("UnitOfMeasureManagedBy")
-  managedUnitConversions     UnitConversion[]                @relation("UnitConversionManagedBy")
-  managedInventoryItems      InventoryItem[]                 @relation("InventoryItemManagedBy")
-  catalogAssignmentsMade     CatalogManagementAssignment[]   @relation("CatalogAssignmentAssignedBy")
-  catalogAssignmentsReceived CatalogManagementAssignment[]   @relation("CatalogAssignmentNewManager")
-  promotionsCreated          Promotion[]                     @relation("PromotionCreatedBy")
-  promotionsUpdated          Promotion[]                     @relation("PromotionUpdatedBy")
+  managedProducts            Product[]                     @relation("ProductManagedBy")
+  managedProductCategories   ProductCategory[]             @relation("ProductCategoryManagedBy")
+  managedProductOptionGroups ProductOptionGroup[]          @relation("ProductOptionGroupManagedBy")
+  managedProductOptions      ProductOption[]               @relation("ProductOptionManagedBy")
+  managedInventoryCategories InventoryCategory[]           @relation("InventoryCategoryManagedBy")
+  managedUnitsOfMeasure      UnitOfMeasure[]               @relation("UnitOfMeasureManagedBy")
+  managedUnitConversions     UnitConversion[]              @relation("UnitConversionManagedBy")
+  managedInventoryItems      InventoryItem[]               @relation("InventoryItemManagedBy")
+  catalogAssignmentsMade     CatalogManagementAssignment[] @relation("CatalogAssignmentAssignedBy")
+  catalogAssignmentsReceived CatalogManagementAssignment[] @relation("CatalogAssignmentNewManager")
+  promotionsCreated          Promotion[]                   @relation("PromotionCreatedBy")
+  promotionsUpdated          Promotion[]                   @relation("PromotionUpdatedBy")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -436,10 +444,10 @@ model Branch {
   fraudAlerts         FraudAlert[]
 
   // CR-006 Phase A
-  inventoryStocks InventoryStock[]
-  inventoryStockMovements InventoryStockMovement[]
+  inventoryStocks          InventoryStock[]
+  inventoryStockMovements  InventoryStockMovement[]
   inventoryCostCorrections InventoryCostCorrection[]
-  staffPinBranchLookups StaffPinBranchLookup[]
+  staffPinBranchLookups    StaffPinBranchLookup[]
 
   // CR-001
   exclusiveProducts Product[]          @relation("ProductExclusiveBranch")
@@ -593,11 +601,11 @@ model PinCredential {
 /// (branchId, digest) before the slow bcrypt compare runs -- see
 /// StaffPinBranchLookup.
 model StaffPin {
-  id               String  @id @default(uuid())
-  userId           String  @unique @map("user_id")
-  pinHash          String  @map("pin_hash")
-  pinLookupDigest  String  @map("pin_lookup_digest")
-  isActive         Boolean @default(true) @map("is_active")
+  id              String  @id @default(uuid())
+  userId          String  @unique @map("user_id")
+  pinHash         String  @map("pin_hash")
+  pinLookupDigest String  @map("pin_lookup_digest")
+  isActive        Boolean @default(true) @map("is_active")
 
   setByUserId String?   @map("set_by_user_id")
   setAt       DateTime  @default(now()) @map("set_at")
@@ -653,21 +661,21 @@ enum StaffPinPurpose {
 }
 
 model StaffPinVerification {
-  id               String   @id @default(uuid())
-  tokenDigest      String   @unique @map("token_digest")
-  staffPinId       String   @map("staff_pin_id")
-  verifiedByActorUserId String @map("verified_by_actor_user_id")
-  branchId         String   @map("branch_id")
+  id                    String                      @id @default(uuid())
+  tokenDigest           String                      @unique @map("token_digest")
+  staffPinId            String                      @map("staff_pin_id")
+  verifiedByActorUserId String                      @map("verified_by_actor_user_id")
+  branchId              String                      @map("branch_id")
   // POS-PERF-P30 -- purpose-separates this token so an inventory-operation
   // verification can never be replayed to unlock the POS (and vice versa).
   // `operation` is inventory-purpose-only (the InventoryApprovalOperation the
   // token was issued for) and is null on every `pos` row -- consumePin for
   // each purpose checks `purpose` first, before anything else, and rejects a
   // mismatch the same generic way as every other invalid-token path.
-  purpose          StaffPinPurpose @default(inventory)
-  operation        InventoryApprovalOperation?
-  inventoryItemId  String?  @map("inventory_item_id")
-  payloadHash      String   @map("payload_hash")
+  purpose               StaffPinPurpose             @default(inventory)
+  operation             InventoryApprovalOperation?
+  inventoryItemId       String?                     @map("inventory_item_id")
+  payloadHash           String                      @map("payload_hash")
 
   expiresAt  DateTime  @map("expires_at")
   consumedAt DateTime? @map("consumed_at")
@@ -689,13 +697,13 @@ model StaffPinVerification {
 /// different payloadHash is rejected as a conflict (never silently
 /// re-applied under a changed body).
 model InventoryOperationAttempt {
-  id          String   @id @default(uuid())
-  idempotencyKey String @map("idempotency_key")
-  actorUserId String   @map("actor_user_id")
-  branchId    String   @map("branch_id")
-  operation   InventoryApprovalOperation
-  payloadHash String   @map("payload_hash")
-  resultId    String?  @map("result_id")
+  id             String                     @id @default(uuid())
+  idempotencyKey String                     @map("idempotency_key")
+  actorUserId    String                     @map("actor_user_id")
+  branchId       String                     @map("branch_id")
+  operation      InventoryApprovalOperation
+  payloadHash    String                     @map("payload_hash")
+  resultId       String?                    @map("result_id")
 
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -714,13 +722,13 @@ model InventoryOperationAttempt {
 /// already linked to a request (consumedAt set) is never touched by the
 /// sweep.
 model InventoryEvidenceUpload {
-  id            String          @id @default(uuid())
-  branchId      String          @map("branch_id")
-  uploadedByUserId String       @map("uploaded_by_user_id")
-  storageKey    String          @map("storage_key")
-  proofType     ImageProofType  @map("proof_type")
-  expiresAt     DateTime        @map("expires_at")
-  consumedAt    DateTime?       @map("consumed_at")
+  id               String         @id @default(uuid())
+  branchId         String         @map("branch_id")
+  uploadedByUserId String         @map("uploaded_by_user_id")
+  storageKey       String         @map("storage_key")
+  proofType        ImageProofType @map("proof_type")
+  expiresAt        DateTime       @map("expires_at")
+  consumedAt       DateTime?      @map("consumed_at")
 
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -827,10 +835,10 @@ model Product {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  @@unique([forkedFromProductId, exclusiveBranchId])
   @@index([status])
   @@index([category])
   @@index([categoryId])
-  @@unique([forkedFromProductId, exclusiveBranchId])
   @@map("products")
 }
 
@@ -1206,7 +1214,7 @@ model ProductFlavorSlot {
   createdAt        DateTime @default(now()) @map("created_at")
   updatedAt        DateTime @updatedAt @map("updated_at")
 
-  productVariant ProductVariant @relation(fields: [productVariantId], references: [id], onDelete: Cascade)
+  productVariant ProductVariant                 @relation(fields: [productVariantId], references: [id], onDelete: Cascade)
   snackOptions   ProductFlavorSlotSnackOption[]
 
   @@unique([productVariantId, slotIndex])
@@ -1219,14 +1227,14 @@ model ProductFlavorSlot {
 /// inventory deduction resolves ProductInventory against, not the parent
 /// Mix & Max variant — see product-inventory.service.ts computeDeductionForSlots.
 model ProductFlavorSlotSnackOption {
-  id                   String   @id @default(cuid())
-  flavorSlotId         String   @map("flavor_slot_id")
-  snackProductVariantId String  @map("snack_product_variant_id")
-  createdAt            DateTime @default(now()) @map("created_at")
-  updatedAt            DateTime @updatedAt @map("updated_at")
+  id                    String   @id @default(cuid())
+  flavorSlotId          String   @map("flavor_slot_id")
+  snackProductVariantId String   @map("snack_product_variant_id")
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
 
-  flavorSlot         ProductFlavorSlot @relation(fields: [flavorSlotId], references: [id], onDelete: Cascade)
-  snackProductVariant ProductVariant   @relation("SnackOptionVariant", fields: [snackProductVariantId], references: [id], onDelete: Cascade)
+  flavorSlot          ProductFlavorSlot @relation(fields: [flavorSlotId], references: [id], onDelete: Cascade)
+  snackProductVariant ProductVariant    @relation("SnackOptionVariant", fields: [snackProductVariantId], references: [id], onDelete: Cascade)
 
   @@unique([flavorSlotId, snackProductVariantId])
   @@index([flavorSlotId])
@@ -1297,17 +1305,17 @@ enum InventoryProjectionOutboxStatus {
 /// worker can poll/retry safely. One row per movement; movementId is the
 /// projection idempotency key, enforced by the unique constraint below.
 model InventoryProjectionOutbox {
-  id            String                           @id @default(uuid())
-  movementId    String                           @unique @map("movement_id")
-  status        InventoryProjectionOutboxStatus  @default(pending)
-  attempts      Int                              @default(0)
-  lastError     String?                          @map("last_error")
-  nextAttemptAt DateTime?                        @map("next_attempt_at")
-  lockedAt      DateTime?                        @map("locked_at")
-  claimToken    String?                          @map("claim_token")
-  processedAt   DateTime?                        @map("processed_at")
-  createdAt     DateTime                         @default(now()) @map("created_at")
-  updatedAt     DateTime                         @updatedAt @map("updated_at")
+  id            String                          @id @default(uuid())
+  movementId    String                          @unique @map("movement_id")
+  status        InventoryProjectionOutboxStatus @default(pending)
+  attempts      Int                             @default(0)
+  lastError     String?                         @map("last_error")
+  nextAttemptAt DateTime?                       @map("next_attempt_at")
+  lockedAt      DateTime?                       @map("locked_at")
+  claimToken    String?                         @map("claim_token")
+  processedAt   DateTime?                       @map("processed_at")
+  createdAt     DateTime                        @default(now()) @map("created_at")
+  updatedAt     DateTime                        @updatedAt @map("updated_at")
 
   movement InventoryMovement @relation(fields: [movementId], references: [id], onDelete: Cascade)
 
@@ -1367,17 +1375,17 @@ model UnitOfMeasure {
   // POS-PERF-P35R — see Product.managedBy.
   managedBy  String?       @map("managed_by")
 
-  creator           User?                    @relation(fields: [createdBy], references: [id])
-  manager           User?                    @relation("UnitOfMeasureManagedBy", fields: [managedBy], references: [id])
-  items             InventoryItem[]
-  conversionsFrom   UnitConversion[]         @relation("UnitConversionFrom")
-  conversionsTo     UnitConversion[]         @relation("UnitConversionTo")
-  recipeComponents  ProductComponent[]
-  stockMovements    InventoryStockMovement[] @relation("InventoryStockMovementUnit")
-  enteredUnitStockMovements InventoryStockMovement[] @relation("InventoryStockMovementEnteredUnit")
-  optionDeductionMappings ProductOptionInventoryMapping[]
-  itemConversionsFrom InventoryItemUnitConversion[] @relation("InventoryItemUnitConversionFrom")
-  itemConversionsTo   InventoryItemUnitConversion[] @relation("InventoryItemUnitConversionTo")
+  creator                   User?                           @relation(fields: [createdBy], references: [id])
+  manager                   User?                           @relation("UnitOfMeasureManagedBy", fields: [managedBy], references: [id])
+  items                     InventoryItem[]
+  conversionsFrom           UnitConversion[]                @relation("UnitConversionFrom")
+  conversionsTo             UnitConversion[]                @relation("UnitConversionTo")
+  recipeComponents          ProductComponent[]
+  stockMovements            InventoryStockMovement[]        @relation("InventoryStockMovementUnit")
+  enteredUnitStockMovements InventoryStockMovement[]        @relation("InventoryStockMovementEnteredUnit")
+  optionDeductionMappings   ProductOptionInventoryMapping[]
+  itemConversionsFrom       InventoryItemUnitConversion[]   @relation("InventoryItemUnitConversionFrom")
+  itemConversionsTo         InventoryItemUnitConversion[]   @relation("InventoryItemUnitConversionTo")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1463,10 +1471,10 @@ model InventoryItem {
   // POS-PERF-P35R — see Product.managedBy.
   managedBy      String?   @map("managed_by")
 
-  category          InventoryCategory?         @relation(fields: [categoryId], references: [id])
-  baseUnit          UnitOfMeasure              @relation(fields: [baseUnitId], references: [id])
-  creator           User?                      @relation(fields: [createdBy], references: [id])
-  manager           User?                      @relation("InventoryItemManagedBy", fields: [managedBy], references: [id])
+  category          InventoryCategory?              @relation(fields: [categoryId], references: [id])
+  baseUnit          UnitOfMeasure                   @relation(fields: [baseUnitId], references: [id])
+  creator           User?                           @relation(fields: [createdBy], references: [id])
+  manager           User?                           @relation("InventoryItemManagedBy", fields: [managedBy], references: [id])
   stocks            InventoryStock[]
   stockMovements    InventoryStockMovement[]
   costCorrections   InventoryCostCorrection[]
@@ -1566,10 +1574,10 @@ model InventoryIdentityMapping {
 /// branch. version is an optimistic-concurrency guard for detecting stale
 /// projection writes -- Phase G may additionally use advisory locking.
 model InventoryStock {
-  id                String   @id @default(uuid())
-  branchId          String   @map("branch_id")
-  inventoryItemId   String   @map("inventory_item_id")
-  quantityOnHand    Decimal  @default(0) @map("quantity_on_hand") @db.Decimal(10, 3)
+  id                String    @id @default(uuid())
+  branchId          String    @map("branch_id")
+  inventoryItemId   String    @map("inventory_item_id")
+  quantityOnHand    Decimal   @default(0) @map("quantity_on_hand") @db.Decimal(10, 3)
   /// POS-PERF-P15 — quantity already committed to a sale whose inventory
   /// deduction job hasn't run yet (status pending/processing on
   /// InventoryDeductionJob). Available-for-sale quantity is always
@@ -1579,14 +1587,14 @@ model InventoryStock {
   /// is written. Released (decremented) either by the deduction worker when
   /// it actually decrements quantityOnHand, or by a void/refund that cancels
   /// a still-pending/failed job before the worker ever claimed it.
-  quantityReserved  Decimal  @default(0) @map("quantity_reserved") @db.Decimal(10, 3)
-  lowStockThreshold Decimal? @map("low_stock_threshold") @db.Decimal(10, 3)
-  criticalThreshold Decimal? @map("critical_threshold") @db.Decimal(10, 3)
+  quantityReserved  Decimal   @default(0) @map("quantity_reserved") @db.Decimal(10, 3)
+  lowStockThreshold Decimal?  @map("low_stock_threshold") @db.Decimal(10, 3)
+  criticalThreshold Decimal?  @map("critical_threshold") @db.Decimal(10, 3)
   // Branch-specific override of InventoryItem.unitCost for valuation (e.g. a
   // branch paying a different supplier price). Null means "use the item's
   // default cost" -- not "cost is zero".
-  unitCost          Decimal? @map("unit_cost") @db.Decimal(10, 4)
-  version           Int      @default(0)
+  unitCost          Decimal?  @map("unit_cost") @db.Decimal(10, 4)
+  version           Int       @default(0)
   /// CR-010A.3 -- watermark set by the reconciliation rebuild: the latest
   /// InventoryMovement.createdAt already folded into quantityOnHand as of
   /// the last rebuild. The projection worker (applyProjection) compares an
@@ -1648,25 +1656,25 @@ enum InventoryStockMovementType {
 /// Expense.receiptKey -- never a public/signed URL, resolved to a fresh
 /// signed URL only on read.
 model InventoryStockMovement {
-  id                 String                     @id @default(uuid())
-  branchId           String                     @map("branch_id")
-  inventoryItemId    String                     @map("inventory_item_id")
-  movementType       InventoryStockMovementType @map("movement_type")
-  quantityChange     Decimal                    @map("quantity_change") @db.Decimal(10, 3)
-  quantityBefore     Decimal                    @map("quantity_before") @db.Decimal(10, 3)
-  quantityAfter      Decimal                    @map("quantity_after") @db.Decimal(10, 3)
-  unitId             String?                    @map("unit_id")
-  referenceType      String?                    @map("reference_type")
-  referenceId        String?                    @map("reference_id")
-  notes              String?
-  performedByUserId  String?                    @map("performed_by_user_id")
-  unitCost           Decimal?                   @map("unit_cost") @db.Decimal(10, 4)
-  totalCost          Decimal?                   @map("total_cost") @db.Decimal(12, 4)
-  responsibleUserId  String?                    @map("responsible_user_id")
-  enteredQuantity    Decimal?                   @map("entered_quantity") @db.Decimal(12, 4)
-  enteredUnitId      String?                    @map("entered_unit_id")
-  proofKey           String?                    @map("proof_key")
-  proofType          ImageProofType?            @map("proof_type")
+  id                String                     @id @default(uuid())
+  branchId          String                     @map("branch_id")
+  inventoryItemId   String                     @map("inventory_item_id")
+  movementType      InventoryStockMovementType @map("movement_type")
+  quantityChange    Decimal                    @map("quantity_change") @db.Decimal(10, 3)
+  quantityBefore    Decimal                    @map("quantity_before") @db.Decimal(10, 3)
+  quantityAfter     Decimal                    @map("quantity_after") @db.Decimal(10, 3)
+  unitId            String?                    @map("unit_id")
+  referenceType     String?                    @map("reference_type")
+  referenceId       String?                    @map("reference_id")
+  notes             String?
+  performedByUserId String?                    @map("performed_by_user_id")
+  unitCost          Decimal?                   @map("unit_cost") @db.Decimal(10, 4)
+  totalCost         Decimal?                   @map("total_cost") @db.Decimal(12, 4)
+  responsibleUserId String?                    @map("responsible_user_id")
+  enteredQuantity   Decimal?                   @map("entered_quantity") @db.Decimal(12, 4)
+  enteredUnitId     String?                    @map("entered_unit_id")
+  proofKey          String?                    @map("proof_key")
+  proofType         ImageProofType?            @map("proof_type")
 
   // POS-PERF-P29 -- set when a supervisor/admin wrote this movement directly
   // (role-branch bypass of the Pending Review queue), never for a movement
@@ -1796,11 +1804,11 @@ enum InventoryApprovalTarget {
 /// overwrite stock those later movements already changed (see
 /// inventory-approval.service.ts#applyPhysicalCount).
 model InventoryApprovalRequest {
-  id                String   @id @default(uuid())
-  rootRequestId     String   @map("root_request_id")
-  previousRequestId String?  @map("previous_request_id")
-  revisionNumber    Int      @default(1) @map("revision_number")
-  batchId           String?  @map("batch_id")
+  id                String  @id @default(uuid())
+  rootRequestId     String  @map("root_request_id")
+  previousRequestId String? @map("previous_request_id")
+  revisionNumber    Int     @default(1) @map("revision_number")
+  batchId           String? @map("batch_id")
 
   target             InventoryApprovalTarget
   branchId           String                     @map("branch_id")
@@ -1893,8 +1901,8 @@ model ProductComponent {
   // unit". API-created rows always have this set (defaulted to the item's
   // base unit when omitted) and are validated at the service layer to share
   // the item's base unit UnitDimension.
-  recipeUnitId String? @map("recipe_unit_id")
-  version      Int     @default(1)
+  recipeUnitId     String? @map("recipe_unit_id")
+  version          Int     @default(1)
 
   // Nullable: NULL means this component applies regardless of flavor
   // (packaging, base powder, etc). Set means it only applies when this
@@ -2122,13 +2130,16 @@ model Transaction {
   refundedAt                  DateTime?                @map("refunded_at")
   refundedById                String?                  @map("refunded_by_id")
   refundReason                String?                  @map("refund_reason")
+  // POS-PERF-P50R — tax basis frozen at creation (see SaleTaxSnapshot in
+  // @potato-corner/shared). NULL on sales recorded before P50R.
+  taxSnapshot                 Json?                    @map("tax_snapshot")
 
-  branch                 Branch            @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  shift                  Shift?            @relation(fields: [shiftId], references: [id])
-  cashier                User              @relation(fields: [cashierId], references: [id])
-  voidedBy               User?             @relation("TransactionVoidedBy", fields: [voidedById], references: [id])
-  refundedBy             User?             @relation("TransactionRefundedBy", fields: [refundedById], references: [id])
-  paymentProofVerifiedBy User?             @relation("TransactionPaymentProofVerifiedBy", fields: [paymentProofVerifiedById], references: [id])
+  branch                 Branch                 @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  shift                  Shift?                 @relation(fields: [shiftId], references: [id])
+  cashier                User                   @relation(fields: [cashierId], references: [id])
+  voidedBy               User?                  @relation("TransactionVoidedBy", fields: [voidedById], references: [id])
+  refundedBy             User?                  @relation("TransactionRefundedBy", fields: [refundedById], references: [id])
+  paymentProofVerifiedBy User?                  @relation("TransactionPaymentProofVerifiedBy", fields: [paymentProofVerifiedById], references: [id])
   items                  TransactionItem[]
   deductionJob           InventoryDeductionJob?
   checkoutAttempt        CheckoutAttempt?
@@ -2136,10 +2147,6 @@ model Transaction {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  @@index([branchId, createdAt])
-  @@index([shiftId])
-  @@index([cashierId])
-  @@index([discountCustomerIdHash])
   // Task 209.47 — offline-sync idempotency invariant: one logical sale per
   // (branch, device, offline provisional number). Postgres treats every NULL
   // as distinct for uniqueness purposes, so this only ever fires when all
@@ -2147,6 +2154,10 @@ model Transaction {
   // (deviceId null) and online sales (offlineProvisionalNumber null) can
   // repeat freely.
   @@unique([branchId, deviceId, offlineProvisionalNumber], map: "transactions_branch_device_offline_number_key")
+  @@index([branchId, createdAt])
+  @@index([shiftId])
+  @@index([cashierId])
+  @@index([discountCustomerIdHash])
   @@map("transactions")
 }
 
@@ -2160,18 +2171,19 @@ model Transaction {
 // ---------------------------------------------------------------------------
 
 model Promotion {
-  id            String                @id @default(uuid())
-  name          String
-  discountKind  PromotionDiscountKind @map("discount_kind")
+  id              String                   @id @default(uuid())
+  name            String
+  discountKind    PromotionDiscountKind    @map("discount_kind")
   // percentage: 0 < value <= 100. fixed_amount: pesos off each eligible unit.
-  discountValue Decimal               @map("discount_value") @db.Decimal(10, 2)
-  isEnabled     Boolean               @default(true) @map("is_enabled")
-  startsOn      DateTime?             @map("starts_on") @db.Date
-  endsOn        DateTime?             @map("ends_on") @db.Date
+  discountValue   Decimal                  @map("discount_value") @db.Decimal(10, 2)
+  isEnabled       Boolean                  @default(true) @map("is_enabled")
+  applicationMode PromotionApplicationMode @default(automatic) @map("application_mode")
+  startsOn        DateTime?                @map("starts_on") @db.Date
+  endsOn          DateTime?                @map("ends_on") @db.Date
   // Optimistic-concurrency token, same contract as Product.version.
-  version       Int                   @default(1)
-  createdById   String                @map("created_by_id")
-  updatedById   String?               @map("updated_by_id")
+  version         Int                      @default(1)
+  createdById     String                   @map("created_by_id")
+  updatedById     String?                  @map("updated_by_id")
 
   createdBy        User               @relation("PromotionCreatedBy", fields: [createdById], references: [id])
   updatedBy        User?              @relation("PromotionUpdatedBy", fields: [updatedById], references: [id])

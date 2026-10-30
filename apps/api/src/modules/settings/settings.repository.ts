@@ -11,6 +11,11 @@ export const settingsRepository = {
     return prisma.systemSetting.findUnique({ where: { key } });
   },
 
+  /** POS-PERF-P50R — several keys in one round trip (checkout reads the organization and branch rows together). */
+  findSystemSettings(keys: string[]) {
+    return prisma.systemSetting.findMany({ where: { key: { in: keys } } });
+  },
+
   findSystemSettingsByPrefix(prefix: string) {
     return prisma.systemSetting.findMany({ where: { key: { startsWith: prefix } } });
   },

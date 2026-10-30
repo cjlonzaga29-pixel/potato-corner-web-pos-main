@@ -8,6 +8,10 @@ import type {
   UpdateNotificationPreferencesInput,
   UpdateDiscountPolicyInput,
   TaxConfigurationResponse,
+  BranchDiscountSettingsResponse,
+  UpdateBranchDiscountSettingsInput,
+  BranchTaxProfileResponse,
+  UpdateBranchTaxProfileInput,
   WorkHoursPolicyResponse,
   BranchWorkHoursResponse,
   UpdateBranchWorkHoursInput,
@@ -33,13 +37,17 @@ function errorMessage(response: ApiErrorShape, fallback: string): string {
  * role — cashier/staff/branch are READ ONLY, enforced server-side by the
  * PUT route's adminOrSupervisor gate, not by hiding this query).
  */
-export function useDiscountPolicy() {
+export function useDiscountPolicy(branchId?: string) {
   const { accessToken, isLoading } = useAuth();
 
   return useQuery({
-    queryKey: ['settings', 'discount-policy'],
+    // POS-PERF-P50R — with a branch: that branch's effective policy (the API
+    // always scopes staff/branch sessions to their own branch anyway).
+    queryKey: ['settings', 'discount-policy', branchId ?? 'organization'],
     queryFn: async () => {
-      const response = await apiClient<DiscountPolicyResponse>('/api/settings/discount-policy');
+      const response = await apiClient<DiscountPolicyResponse>(
+        branchId ? `/api/settings/discount-policy?branch_id=${encodeURIComponent(branchId)}` : '/api/settings/discount-policy',
+      );
       if (!response.data) throw new Error(errorMessage(response, 'Failed to load discount settings'));
       return response.data;
     },
@@ -104,6 +112,78 @@ export function useTaxConfiguration() {
       throw new Error(errorMessage(response, 'Failed to load tax settings'));
     },
     enabled: !!accessToken && !isLoading,
+  });
+}
+
+/**
+ * POS-PERF-P50R — one branch's discount settings (organization default,
+ * branch override, effective values, VAT registration and what the caller
+ * may change). Super Admin and the branch's supervisors.
+ */
+export function useBranchDiscountSettings(branchId: string | null) {
+  const { accessToken, isLoading } = useAuth();
+  return useQuery({
+    queryKey: ['settings', 'discounts', 'branch', branchId],
+    queryFn: async () => {
+      const response = await apiClient<BranchDiscountSettingsResponse>(`/api/settings/discounts/branches/${branchId}`);
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load branch discount settings'));
+      return response.data;
+    },
+    enabled: !!accessToken && !isLoading && !!branchId,
+  });
+}
+
+function invalidateDiscountQueries(queryClient: ReturnType<typeof useQueryClient>) {
+  void queryClient.invalidateQueries({ queryKey: ['settings', 'discounts'] });
+  void queryClient.invalidateQueries({ queryKey: ['settings', 'discount-policy'] });
+  void queryClient.invalidateQueries({ queryKey: ['settings', 'tax'] });
+}
+
+export function useUpdateBranchDiscountSettings(branchId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: UpdateBranchDiscountSettingsInput) => {
+      const response = await apiClient<BranchDiscountSettingsResponse>(`/api/settings/discounts/branches/${branchId}`, {
+        method: 'PUT',
+        body: JSON.stringify(input),
+      });
+      if (!response.data) {
+        const code = response.error && typeof response.error !== 'string' ? response.error.code : null;
+        throw new SettingsSaveError(errorMessage(response, 'Failed to update branch discount settings'), code);
+      }
+      return response.data;
+    },
+    onSuccess: (data) => {
+      invalidateDiscountQueries(queryClient);
+      toast.success(`Discount settings saved for ${data.branchName}`);
+    },
+    onError: (error: Error) => {
+      if (error instanceof SettingsSaveError && error.code === 'SETTINGS_CHANGED') invalidateDiscountQueries(queryClient);
+      toast.error(error.message);
+    },
+  });
+}
+
+/** POS-PERF-P50R — record a branch's VAT registration (Super Admin only; the server refuses everyone else). */
+export function useUpdateBranchTaxProfile(branchId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: UpdateBranchTaxProfileInput) => {
+      const response = await apiClient<BranchTaxProfileResponse>(`/api/settings/tax/branches/${branchId}`, { method: 'PUT', body: JSON.stringify(input) });
+      if (!response.data) {
+        const code = response.error && typeof response.error !== 'string' ? response.error.code : null;
+        throw new SettingsSaveError(errorMessage(response, 'Failed to update VAT registration'), code);
+      }
+      return response.data;
+    },
+    onSuccess: () => {
+      invalidateDiscountQueries(queryClient);
+      toast.success('VAT registration recorded');
+    },
+    onError: (error: Error) => {
+      if (error instanceof SettingsSaveError && error.code === 'SETTINGS_CHANGED') invalidateDiscountQueries(queryClient);
+      toast.error(error.message);
+    },
   });
 }
 

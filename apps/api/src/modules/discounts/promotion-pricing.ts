@@ -42,19 +42,25 @@ export const NON_PROMOTABLE_STATUSES: readonly string[] = ['archived', 'disconti
  * Why a product can't be selected by a promotion, or null when it can.
  * Order matters only for which single reason is shown.
  */
-export function productIneligibilityReason(product: {
-  classification: ProductClassification;
-  status: string;
-  variants: { vatableCapAmount: number | null }[];
-}): string | null {
-  if (!PROMOTABLE_CLASSIFICATIONS.includes(product.classification)) {
+export function productIneligibilityReason(
+  product: {
+    classification: ProductClassification;
+    status: string;
+    variants: { vatableCapAmount: number | null }[];
+  },
+  // POS-PERF-P50R — a cashier-selected discount is a customer discount the
+  // cashier applies to a sale (e.g. a loyalty card), not a product promotion,
+  // so it may name Regular products too. Automatic keeps the P49 rule.
+  applicationMode: 'automatic' | 'cashier_selected' = 'automatic',
+): string | null {
+  if (applicationMode === 'automatic' && !PROMOTABLE_CLASSIFICATIONS.includes(product.classification)) {
     return 'Only Promotional or Seasonal products can have a promotion. Change the classification in the product editor first.';
   }
   if (NON_PROMOTABLE_STATUSES.includes(product.status)) {
-    return 'Archived and discontinued products cannot have a promotion.';
+    return 'Archived and discontinued products cannot have a discount.';
   }
   if (product.variants.some((variant) => variant.vatableCapAmount !== null)) {
-    return 'This product has a size with a VATable price cap. How a discount splits across that cap is not defined, so promotions are not supported for it.';
+    return 'This product has a size with a VATable price cap. How a discount splits across that cap is not defined, so discounts are not supported for it.';
   }
   return null;
 }

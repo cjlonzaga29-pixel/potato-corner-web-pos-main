@@ -144,6 +144,7 @@ vi.mock('../stock-availability/stock-availability.service.js', () => ({
 vi.mock('../discounts/discounts.service.js', () => ({
   discountsService: {
     resolvePromotionsForBranch: vi.fn(async () => new Map()),
+    resolveSelectableDiscounts: vi.fn(async () => []),
   },
 }));
 

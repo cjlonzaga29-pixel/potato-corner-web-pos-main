@@ -5,7 +5,9 @@ import { AlertTriangle, Info, Loader2 } from 'lucide-react';
 import {
   createPromotionSchema,
   PRODUCT_CLASSIFICATION_LABELS,
+  VAT_RATE_PERCENT,
   type ProductClassification,
+  type PromotionApplicationMode,
   type PromotionDiscountKind,
   type PromotionResponse,
 } from '@potato-corner/shared';
@@ -40,6 +42,7 @@ interface FormState {
   discountKind: PromotionDiscountKind;
   discountValue: string;
   isEnabled: boolean;
+  applicationMode: PromotionApplicationMode;
   startsOn: string;
   endsOn: string;
   productIds: string[];
@@ -53,6 +56,7 @@ function initialState(promotion: PromotionResponse | null, branches: EditorBranc
       discountKind: 'percentage',
       discountValue: '',
       isEnabled: true,
+      applicationMode: 'automatic',
       startsOn: '',
       endsOn: '',
       productIds: [],
@@ -64,6 +68,8 @@ function initialState(promotion: PromotionResponse | null, branches: EditorBranc
     discountKind: promotion.discount_kind,
     discountValue: String(promotion.discount_value),
     isEnabled: promotion.is_enabled,
+    // An older API omits the field: every P49 promotion is automatic.
+    applicationMode: promotion.application_mode ?? 'automatic',
     startsOn: promotion.starts_on ?? '',
     endsOn: promotion.ends_on ?? '',
     productIds: promotion.products.map((p) => p.id),
@@ -81,10 +87,22 @@ function ineligibleLines(error: PromotionApiError): string[] {
   return (details?.products ?? []).map((p) => `${p.product_name ?? 'A product'}: ${p.reason}`);
 }
 
+/** Why this product can't be picked in this mode (Regular products are allowed for cashier-selected discounts). */
+function reasonFor(product: { ineligible_reason: string | null; cashier_selected_ineligible_reason?: string | null }, mode: PromotionApplicationMode): string | null {
+  if (mode === 'automatic') return product.ineligible_reason;
+  return product.cashier_selected_ineligible_reason === undefined ? product.ineligible_reason : product.cashier_selected_ineligible_reason;
+}
+
 /**
  * POS-PERF-P49 — create/edit one product promotion. Everything entered here is
  * re-validated by the API against the supervisor's live branch assignments
  * and each product's current classification; this form only explains.
+ *
+ * POS-PERF-P50R — the Create/Edit Discount popup: also chooses how the
+ * discount reaches a sale. Automatic (P49) applies to eligible items by
+ * itself; cashier-selected is offered in the POS discount picker and
+ * applies only when the cashier chooses it. Either way it is a taxable
+ * (VATable) discount — it never makes a sale VAT-exempt.
  */
 export function PromotionEditorDialog({ open, onOpenChange, promotion, allPromotions, branches }: PromotionEditorDialogProps) {
   const [state, setState] = useState<FormState>(() => initialState(promotion, branches));
@@ -112,8 +130,13 @@ export function PromotionEditorDialog({ open, onOpenChange, promotion, allPromot
     const needle = productSearch.trim().toLowerCase();
     return products
       .filter((p) => !needle || p.name.toLowerCase().includes(needle))
-      .sort((a, b) => Number(a.ineligible_reason !== null) - Number(b.ineligible_reason !== null) || a.name.localeCompare(b.name));
-  }, [products, productSearch]);
+      .sort(
+        (a, b) =>
+          Number(reasonFor(a, state.applicationMode) !== null) - Number(reasonFor(b, state.applicationMode) !== null) || a.name.localeCompare(b.name),
+      );
+  }, [products, productSearch, state.applicationMode]);
+  const isAutomatic = state.applicationMode === 'automatic';
+  const noun = isAutomatic ? 'promotion' : 'discount';
 
   const numericValue = Number(state.discountValue);
   const valueIsUsable = state.discountValue.trim() !== '' && Number.isFinite(numericValue) && numericValue > 0;
@@ -123,11 +146,12 @@ export function PromotionEditorDialog({ open, onOpenChange, promotion, allPromot
       allPromotions.filter(
         (other) =>
           other.id !== promotion?.id &&
+          (other.application_mode ?? 'automatic') === state.applicationMode &&
           (other.schedule_state === 'active' || other.schedule_state === 'scheduled') &&
           other.products.some((p) => state.productIds.includes(p.id)) &&
           other.branches.some((b) => state.branchIds.includes(b.id)),
       ),
-    [allPromotions, promotion?.id, state.productIds, state.branchIds],
+    [allPromotions, promotion?.id, state.productIds, state.branchIds, state.applicationMode],
   );
 
   const selectedNotSoldAtBranches = selectedProducts.filter((p) => state.branchIds.length > 0 && !p.branch_ids.some((id) => state.branchIds.includes(id)));
@@ -140,6 +164,7 @@ export function PromotionEditorDialog({ open, onOpenChange, promotion, allPromot
       discount_kind: state.discountKind,
       discount_value: numericValue,
       is_enabled: state.isEnabled,
+      application_mode: state.applicationMode,
       starts_on: state.startsOn || null,
       ends_on: state.endsOn || null,
       product_ids: state.productIds,
@@ -162,7 +187,7 @@ export function PromotionEditorDialog({ open, onOpenChange, promotion, allPromot
       else await createPromotion.mutateAsync(parsed.data);
       onOpenChange(false);
     } catch (error) {
-      setSubmitError(error instanceof Error ? error : new Error('Failed to save the promotion'));
+      setSubmitError(error instanceof Error ? error : new Error(`Failed to save the ${noun}`));
     } finally {
       submittingRef.current = false;
     }
@@ -178,9 +203,12 @@ export function PromotionEditorDialog({ open, onOpenChange, promotion, allPromot
     <Dialog open={open} onOpenChange={(next) => !isPending && onOpenChange(next)}>
       <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>{promotion ? 'Edit promotion' : 'New promotion'}</DialogTitle>
+          <DialogTitle>{promotion ? `Edit ${noun}` : `New ${noun}`}</DialogTitle>
           <DialogDescription>
-            Discounts the selected Promotional or Seasonal products at the selected branches. Product prices themselves are not changed.
+            {isAutomatic
+              ? 'Discounts the selected Promotional or Seasonal products at the selected branches automatically.'
+              : 'A discount the cashier can choose at checkout for the selected products at the selected branches.'}{' '}
+            Product prices and product setup are not changed.
           </DialogDescription>
         </DialogHeader>
 
@@ -207,6 +235,41 @@ export function PromotionEditorDialog({ open, onOpenChange, promotion, allPromot
               {fieldErrors.name && (
                 <p id="promotion-name-error" className="text-xs text-destructive">
                   {fieldErrors.name}
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label id="promotion-mode-label">How it applies</Label>
+              <RadioGroup
+                aria-labelledby="promotion-mode-label"
+                value={state.applicationMode}
+                onValueChange={(value) => {
+                  if (value === 'automatic' || value === 'cashier_selected') setState((s) => ({ ...s, applicationMode: value }));
+                }}
+                className="grid gap-2 sm:grid-cols-2"
+              >
+                <label className="flex cursor-pointer items-start gap-2 rounded-md border p-3 text-sm">
+                  <RadioGroupItem value="automatic" id="promotion-mode-automatic" className="mt-0.5" />
+                  <span>
+                    <span className="font-medium">Automatic promotion</span>
+                    <span className="block text-xs text-muted-foreground">Applied to eligible items without the cashier doing anything. Promotional or Seasonal products only.</span>
+                  </span>
+                </label>
+                <label className="flex cursor-pointer items-start gap-2 rounded-md border p-3 text-sm">
+                  <RadioGroupItem value="cashier_selected" id="promotion-mode-cashier" className="mt-0.5" />
+                  <span>
+                    <span className="font-medium">Cashier selects at checkout</span>
+                    <span className="block text-xs text-muted-foreground">
+                      Listed in the POS discount picker (e.g. a loyalty card). Applies only when the cashier chooses it. Any product, including Regular.
+                    </span>
+                  </span>
+                </label>
+              </RadioGroup>
+              {!isAutomatic && (
+                <p className="text-xs text-muted-foreground" data-testid="selection-requirement-note">
+                  Selection requirement: at a branch where &ldquo;Cashier must choose a discount&rdquo; is on (Settings), the cashier picks this discount
+                  if it applies, another one, or &ldquo;No applicable discount&rdquo;. Choosing it is never forced.
                 </p>
               )}
             </div>
@@ -280,8 +343,8 @@ export function PromotionEditorDialog({ open, onOpenChange, promotion, allPromot
             <fieldset className="space-y-2">
               <legend className="text-sm font-medium">Products</legend>
               <p className="text-xs text-muted-foreground">
-                Only products classified Promotional or Seasonal can be selected. Every size of a selected product is discounted from its own
-                price. Flavor premiums and add-ons are never discounted.
+                {isAutomatic ? 'Only products classified Promotional or Seasonal can be selected. ' : ''}Every size of a selected product is discounted
+                from its own price. Flavor premiums and add-ons are never discounted. Sizes with a VATable price cap cannot be discounted.
               </p>
               <Input
                 aria-label="Search products"
@@ -296,7 +359,8 @@ export function PromotionEditorDialog({ open, onOpenChange, promotion, allPromot
                 {!eligible.isLoading && visibleProducts.length === 0 && <p className="p-2 text-sm text-muted-foreground">No products found.</p>}
                 {visibleProducts.map((product) => {
                   const selected = state.productIds.includes(product.id);
-                  const blocked = product.ineligible_reason !== null && !selected;
+                  const reason = reasonFor(product, state.applicationMode);
+                  const blocked = reason !== null && !selected;
                   return (
                     <label
                       key={product.id}
@@ -308,16 +372,16 @@ export function PromotionEditorDialog({ open, onOpenChange, promotion, allPromot
                         disabled={blocked}
                         onCheckedChange={(checked) => setState((s) => ({ ...s, productIds: toggle(s.productIds, product.id, checked === true) }))}
                         aria-label={product.name}
-                        aria-describedby={product.ineligible_reason ? `promotion-product-${product.id}-reason` : undefined}
+                        aria-describedby={reason ? `promotion-product-${product.id}-reason` : undefined}
                       />
                       <span className="min-w-0">
                         <span className="font-medium">{product.name}</span>{' '}
                         <span className="text-xs text-muted-foreground">
                           ({PRODUCT_CLASSIFICATION_LABELS[product.classification as ProductClassification] ?? product.classification})
                         </span>
-                        {product.ineligible_reason && (
+                        {reason && (
                           <span id={`promotion-product-${product.id}-reason`} className="block text-xs text-muted-foreground">
-                            {product.ineligible_reason}
+                            {reason}
                           </span>
                         )}
                       </span>
@@ -374,23 +438,44 @@ export function PromotionEditorDialog({ open, onOpenChange, promotion, allPromot
               )}
             </section>
 
+            <Alert data-testid="promotion-vat-treatment">
+              <Info className="h-4 w-4" />
+              <AlertTitle>VAT treatment: taxable discount</AlertTitle>
+              <AlertDescription className="space-y-1 text-xs">
+                <p>
+                  The discount comes off the price with VAT; VAT ({VAT_RATE_PERCENT}%) is then charged on what remains. It never makes a sale VAT-exempt and
+                  never adds VAT to an exempt sale. Only the statutory PWD and Senior Citizen discounts are VAT-exempt, and they are set in Settings, not
+                  here.
+                </p>
+              </AlertDescription>
+            </Alert>
+
             <Alert>
               <Info className="h-4 w-4" />
               <AlertTitle>How this combines with other discounts</AlertTitle>
               <AlertDescription className="space-y-1 text-xs">
-                <p>An item gets at most one promotion. If several cover it, it gets the one with the bigger discount (on a tie, the older one).</p>
-                <p>Promotions are not combined with PWD, Senior Citizen or Employee discounts — when one of those is chosen, regular prices apply.</p>
-                <p>Offline sales are charged regular prices, because a promotion can&apos;t be confirmed without a connection.</p>
+                {isAutomatic ? (
+                  <>
+                    <p>An item gets at most one promotion. If several cover it, it gets the one with the bigger discount (on a tie, the older one).</p>
+                    <p>Promotions are not combined with PWD, Senior Citizen, Employee or a cashier-selected discount — when one of those is chosen, regular prices apply.</p>
+                  </>
+                ) : (
+                  <p>
+                    One discount per sale. When the cashier chooses this, automatic promotions are not applied to that sale, and it cannot be combined
+                    with PWD, Senior Citizen or Employee. The POS shows the new total before the cashier charges.
+                  </p>
+                )}
+                <p>Offline sales are charged regular prices, because a {noun} can&apos;t be confirmed without a connection.</p>
               </AlertDescription>
             </Alert>
 
             {overlapping.length > 0 && (
               <Alert data-testid="promotion-overlap">
                 <AlertTriangle className="h-4 w-4" />
-                <AlertTitle>Overlaps with {overlapping.length === 1 ? 'another promotion' : `${overlapping.length} other promotions`}</AlertTitle>
+                <AlertTitle>Overlaps with {overlapping.length === 1 ? `another ${noun}` : `${overlapping.length} other ${noun}s`}</AlertTitle>
                 <AlertDescription className="text-xs">
                   {overlapping.map((o) => o.name).join(', ')} also cover{overlapping.length === 1 ? 's' : ''} some of these products at a selected
-                  branch. Each item still gets only one discount — the bigger one.
+                  branch. {isAutomatic ? 'Each item still gets only one discount — the bigger one.' : 'The cashier chooses at most one of them per sale.'}
                 </AlertDescription>
               </Alert>
             )}
@@ -417,7 +502,7 @@ export function PromotionEditorDialog({ open, onOpenChange, promotion, allPromot
             </Button>
             <Button type="submit" disabled={isPending}>
               {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {promotion ? 'Save changes' : 'Create promotion'}
+              {promotion ? 'Save changes' : `Create ${noun}`}
             </Button>
           </DialogFooter>
         </form>

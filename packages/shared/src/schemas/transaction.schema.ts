@@ -9,7 +9,7 @@ import {
   IMAGE_PROOF_TYPE,
   type ImageProofType,
 } from '../constants/status.js';
-import { cartItemPromotionAckSchema } from './promotion.schema.js';
+import { cartItemPromotionAckSchema, selectedDiscountAckSchema } from './promotion.schema.js';
 
 const paymentMethodValues = Object.values(PAYMENT_METHOD) as [PaymentMethod, ...PaymentMethod[]];
 const discountTypeValues = Object.values(DISCOUNT_TYPE) as [DiscountType, ...DiscountType[]];
@@ -63,6 +63,15 @@ export const taxBasisSchema = z.object({
   discount_rate: z.number().finite().min(0).max(100).nullable(),
 });
 
+/**
+ * POS-PERF-P50R — the cashier's explicit discount decision, sent when the
+ * branch requires one: 'selected' (a discount is on the sale) or
+ * 'none_applicable' (the cashier confirmed no discount applies). Absent =
+ * older client or no requirement. Recorded in the sale's tax snapshot.
+ */
+export const DISCOUNT_CHOICES = ['selected', 'none_applicable'] as const;
+export type DiscountChoiceDecision = (typeof DISCOUNT_CHOICES)[number];
+
 /** GCash, Maya, and Other all carry identical proof requirements — a payment proof photo, no reference number/note (Task 139). */
 const PROOF_REQUIRED_METHODS: readonly PaymentMethod[] = [PAYMENT_METHOD.GCASH, PAYMENT_METHOD.MAYA, PAYMENT_METHOD.OTHER];
 
@@ -110,6 +119,10 @@ export const createTransactionSchema = z
     // protection, same as before this field existed.
     idempotency_key: z.uuid().optional(),
     tax_basis: taxBasisSchema.optional(),
+    // POS-PERF-P50R — the cashier-selected custom discount the screen showed
+    // (id + version); per-line amounts are acknowledged in items[].promotion.
+    selected_discount: selectedDiscountAckSchema,
+    discount_choice: z.enum(DISCOUNT_CHOICES).optional(),
     // POS-PERF-P25 — optional cashier-entered order note (e.g. "no straw").
     // Never required, never validated beyond a length cap; empty/whitespace
     // is normalized to undefined so a blank textarea never persists an
@@ -385,6 +398,8 @@ export const offlineTransactionItemSchema = z
     gcash_manually_verified: z.boolean().optional(),
     // POS-PERF-P50 — what the terminal showed when the sale was rung offline.
     tax_basis: taxBasisSchema.optional(),
+    // POS-PERF-P50R — recorded only; a paid offline sale is never refused for it.
+    discount_choice: z.enum(DISCOUNT_CHOICES).optional(),
     // Epoch ms from the client's Dexie queue (createdAt) — the server sorts
     // the batch by this before processing, per the architecture doc's "sync
     // queue processes transactions in chronological order" rule.

@@ -160,3 +160,23 @@ describe('SaleStatusModal', () => {
     }
   });
 });
+
+describe('SaleStatusModal — P50R discount decision refusals', () => {
+  it('DISCOUNT_CHOICE_REQUIRED offers review, not Retry (a retry would be refused the same way)', () => {
+    render(
+      <SaleStatusModal
+        phase="error"
+        snapshot={snapshot()}
+        errorMessage="This branch requires a discount decision for every sale."
+        errorCode="DISCOUNT_CHOICE_REQUIRED"
+        onRetry={vi.fn()}
+        onEditCart={vi.fn()}
+        onViewReceipt={vi.fn()}
+        onNewSale={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('Choose a discount or “No applicable discount” — not charged')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+    cleanup();
+  });
+});

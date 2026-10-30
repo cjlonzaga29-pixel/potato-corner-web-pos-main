@@ -310,7 +310,9 @@ export default function TerminalPage() {
   // independently re-resolves this at checkout time regardless of what's
   // rendered here (transactions.service.ts createTransaction) — this is
   // display/preview only, never trusted for the actual charge.
-  const { data: discountPolicy, refetch: refetchDiscountPolicy } = useDiscountPolicy();
+  // POS-PERF-P50R — this branch's effective rates (a staff/branch session is always scoped to its own branch by the API).
+  const { data: discountPolicy, refetch: refetchDiscountPolicy } = useDiscountPolicy(branchId);
+  const requireDiscountChoice = discountPolicy?.requireDiscountChoice === true;
   const discountRatesPreview: PreviewDiscountRates = useMemo(
     () => ({
       pwd: discountPolicy?.pwd.percentage ?? DEFAULT_PREVIEW_DISCOUNT_RATES.pwd,
@@ -688,6 +690,11 @@ export default function TerminalPage() {
   } | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'gcash' | 'maya' | 'other'>('cash');
   const [discountType, setDiscountType] = useState<DiscountChoice>('none');
+  // POS-PERF-P50R — a cashier-selected custom discount (P49 promotion with
+  // application_mode 'cashier_selected'), and whether the cashier has made
+  // an explicit discount decision (needed when the branch requires one).
+  const [selectedCustomDiscountId, setSelectedCustomDiscountId] = useState<string | null>(null);
+  const [discountChoiceMade, setDiscountChoiceMade] = useState(false);
   const [discountIdReference, setDiscountIdReference] = useState('');
   const [promoAmount, setPromoAmount] = useState('');
   const [cashTendered, setCashTendered] = useState('');
@@ -1259,6 +1266,22 @@ export default function TerminalPage() {
 
   const cachedProducts = cachedCatalog && cachedCatalog.branchId === branchId ? cachedCatalog.products : EMPTY_CATALOG;
   const catalog = liveCatalog?.products ?? cachedProducts;
+  // POS-PERF-P50R — cashier-selected discounts active at this branch now
+  // (server-resolved). Online only: like promotions, they cannot be
+  // confirmed offline, so none is offered or kept while offline.
+  const selectableDiscounts = useMemo(() => (isOnline ? (liveCatalog?.selectable_discounts ?? []) : []), [isOnline, liveCatalog]);
+  const selectedCustomDiscount = useMemo(
+    () => (selectedCustomDiscountId ? (selectableDiscounts.find((d) => d.promotion_id === selectedCustomDiscountId) ?? null) : null),
+    [selectableDiscounts, selectedCustomDiscountId],
+  );
+  // A chosen discount that is no longer offered (edited, disabled, offline)
+  // is dropped and the cashier decides again; never silently kept.
+  useEffect(() => {
+    if (selectedCustomDiscountId && !selectedCustomDiscount) {
+      setSelectedCustomDiscountId(null);
+      setDiscountChoiceMade(false);
+    }
+  }, [selectedCustomDiscountId, selectedCustomDiscount]);
   const categories = useMemo(
     () => [...new Set(catalog.map((p) => p.category).filter((c): c is string => Boolean(c)))].sort(),
     [catalog],
@@ -1763,10 +1786,16 @@ export default function TerminalPage() {
             : (info?.variant.price ?? 0) + (flavor?.price_premium ?? 0) + optionsAdjustment;
         // POS-PERF-P49 — the server-resolved promotion for this size at this
         // branch (catalog), applied only online with no transaction discount.
-        const promotion = resolveCartLinePromotion(info?.variant.promotion, {
-          isOnline,
-          transactionDiscountSelected: discountType !== 'none',
-        });
+        // POS-PERF-P50R — a chosen custom discount replaces automatic
+        // promotions for the whole sale (one discount per sale).
+        const customUnit = selectedCustomDiscount ? (selectedCustomDiscount.unit_discounts[item.product_variant_id] ?? 0) : 0;
+        const promotion =
+          selectedCustomDiscount && customUnit > 0
+            ? { promotionId: selectedCustomDiscount.promotion_id, name: selectedCustomDiscount.name, unitDiscount: customUnit, status: 'applied' as const }
+            : resolveCartLinePromotion(info?.variant.promotion, {
+                isOnline,
+                transactionDiscountSelected: discountType !== 'none' || selectedCustomDiscount !== null,
+              });
         return {
           index,
           item,
@@ -1785,7 +1814,16 @@ export default function TerminalPage() {
           promotionDiscount: cartLinePromotionDiscount(promotion, item.quantity),
         };
       }),
-    [items, variantIndex, optionIssuesByIndex, isOnline, discountType],
+    [items, variantIndex, optionIssuesByIndex, isOnline, discountType, selectedCustomDiscount],
+  );
+
+  // POS-PERF-P50R — only discounts that cover at least one cart line are offered.
+  const applicableCustomDiscounts = useMemo(
+    () =>
+      selectableDiscounts
+        .filter((d) => items.some((item) => (d.unit_discounts[item.product_variant_id] ?? 0) > 0) || d.promotion_id === selectedCustomDiscountId)
+        .map((d) => ({ id: d.promotion_id, label: d.discount_kind === 'percentage' ? `${d.name} (${d.discount_value}% off)` : `${d.name} (₱${d.discount_value.toFixed(2)} off each)` })),
+    [selectableDiscounts, items, selectedCustomDiscountId],
   );
 
   // P46R3 — the option check belongs to this cart; a sale or a cleared cart ends it.
@@ -1837,6 +1875,7 @@ export default function TerminalPage() {
     if (stockValidation.status === 'checking' || stockValidation.pendingKeys.size > 0) return 'Checking stock for the latest cart changes…';
     if (!isClockedIn) return 'Clock in before completing a sale.';
     if (cartLines.length === 0) return 'Add items to the cart to start a sale.';
+    if (requireDiscountChoice && !discountChoiceMade) return 'Choose the discount that applies, or “No applicable discount”.';
     if ((discountType === 'pwd' || discountType === 'senior_citizen') && discountIdReference.trim().length === 0) {
       return 'Enter the PWD/Senior Citizen ID number.';
     }
@@ -1926,6 +1965,8 @@ export default function TerminalPage() {
 
   function resetPaymentFields() {
     setDiscountType('none');
+    setSelectedCustomDiscountId(null);
+    setDiscountChoiceMade(false);
     setDiscountIdReference('');
     setPromoAmount('');
     setCashTendered('');
@@ -1985,6 +2026,15 @@ export default function TerminalPage() {
       payment_method: paymentMethod,
       discount_type: discountType === 'none' ? undefined : discountType,
       discount_id_reference: discountIdReference.trim() || undefined,
+      // POS-PERF-P50R — the custom discount this screen applied (id +
+      // version; per-line amounts are in items[].promotion), and the
+      // cashier's explicit decision when the branch requires one.
+      ...(selectedCustomDiscount && isOnline
+        ? { selected_discount: { promotion_id: selectedCustomDiscount.promotion_id, version: selectedCustomDiscount.version } }
+        : {}),
+      ...(requireDiscountChoice && discountChoiceMade
+        ? { discount_choice: discountType !== 'none' || selectedCustomDiscount ? ('selected' as const) : ('none_applicable' as const) }
+        : {}),
       // POS-PERF-P50 — the rates the total on screen was computed with. Never
       // an amount: the server refuses a mismatch instead of charging a
       // different total (TAX_SETTINGS_CHANGED).
@@ -2057,7 +2107,7 @@ export default function TerminalPage() {
     // since the last attempt (see lastChargeFingerprintRef's doc comment) —
     // otherwise a charge-after-Edit-Cart with a genuinely different cart
     // would keep colliding with the backend's reuse guard forever.
-    const chargeFingerprint = JSON.stringify(payload.items) + '|' + payload.payment_method + '|' + String(payload.discount_type ?? '') + '|' + String(payload.discount_amount ?? '') + '|' + String(payload.cash_tendered ?? '') + '|' + JSON.stringify(payload.tax_basis ?? null);
+    const chargeFingerprint = JSON.stringify(payload.items) + '|' + payload.payment_method + '|' + String(payload.discount_type ?? '') + '|' + String(payload.discount_amount ?? '') + '|' + String(payload.cash_tendered ?? '') + '|' + JSON.stringify(payload.tax_basis ?? null) + '|' + JSON.stringify(payload.selected_discount ?? null) + '|' + String(payload.discount_choice ?? '');
     const previousKey = idempotencyKeyRef.current;
     const isUnmodifiedRetry = previousKey !== null && lastChargeFingerprintRef.current === chargeFingerprint;
     // POS-PERF-P21 — same first-click-mints/retry-reuses lifecycle as
@@ -2276,6 +2326,12 @@ export default function TerminalPage() {
       // POS-PERF-P50 — nothing was charged. Re-read Discount Settings so the
       // preview uses the rates checkout will use now; the cashier confirms
       // the new total with the customer before charging again.
+      // POS-PERF-P50R — the branch now requires a discount decision: reload
+      // its settings so the picker asks for one; nothing was charged.
+      if (error instanceof TransactionApiError && error.code === 'DISCOUNT_CHOICE_REQUIRED') {
+        setDiscountChoiceMade(false);
+        void refetchDiscountPolicy();
+      }
       if (error instanceof TransactionApiError && error.code === 'TAX_SETTINGS_CHANGED') {
         const details = readTaxSettingsChange(error.details);
         const base = { previousTotal: totalAmount, serverTotal: details.serverTotal, buildMismatch: details.serverVatRate !== null && details.serverVatRate !== VAT_RATE_PERCENT };
@@ -3057,7 +3113,20 @@ export default function TerminalPage() {
       discountAmount={discountAmount}
       totalAmount={totalAmount}
       discountType={discountType}
-      onDiscountTypeChange={setDiscountType}
+      onDiscountTypeChange={(value) => {
+        setDiscountType(value);
+        setSelectedCustomDiscountId(null);
+        setDiscountChoiceMade(true);
+      }}
+      customDiscounts={applicableCustomDiscounts}
+      selectedCustomDiscountId={selectedCustomDiscount?.promotion_id ?? null}
+      onCustomDiscountChange={(id) => {
+        setDiscountType('none');
+        setSelectedCustomDiscountId(id);
+        setDiscountChoiceMade(true);
+      }}
+      requireDiscountChoice={requireDiscountChoice}
+      discountChoiceMade={discountChoiceMade}
       discountLabels={discountLabels}
       disabledDiscountTypes={disabledDiscountTypes}
       discountIdReference={discountIdReference}

@@ -60,6 +60,8 @@ const TITLES: Record<string, string> = {
   PROMOTION_NOT_COMBINABLE: 'Promotion not combinable — not charged',
   PROMOTION_OFFLINE_UNSUPPORTED: 'Promotion not allowed offline — not recorded',
   TAX_SETTINGS_CHANGED: 'Discount or VAT settings changed — not recorded',
+  DISCOUNT_CHOICE_REQUIRED: 'Choose a discount or “No applicable discount” — not charged',
+  DISCOUNT_CHOICE_CONFLICT: 'Two discount choices — not charged',
 };
 
 /** Real server codes that prove only that THIS request made no progress, not that anything failed or succeeded — the network/uncertain bucket, same as the synthetic codes above. */

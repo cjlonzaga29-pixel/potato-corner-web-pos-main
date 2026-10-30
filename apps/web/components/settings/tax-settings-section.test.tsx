@@ -22,21 +22,24 @@ afterEach(() => {
 });
 
 describe('TaxSettingsSection (P50)', () => {
-  it('is read-only and explains rate, inclusive pricing, exemption, scope and the basis of each value', () => {
+  it('has no inputs and explains rate, inclusive pricing, exemption, scope and the basis of each value', () => {
     mockUseTaxConfiguration.mockReturnValue({ data: CONFIG, isLoading: false, isError: false });
     render(<TaxSettingsSection />);
 
-    expect(screen.getByText('Read-only')).toBeInTheDocument();
+    expect(screen.getByText('Statutory values')).toBeInTheDocument();
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
     expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
     const rows = screen.getByTestId('tax-settings-rows');
     expect(within(rows).getByText('12%')).toBeInTheDocument();
     expect(within(rows).getByText('Include VAT')).toBeInTheDocument();
-    expect(within(rows).getByText('20% off, VAT-exempt')).toBeInTheDocument();
-    expect(within(rows).getAllByText(/Set by law/)).toHaveLength(2);
-    expect(within(rows).getByText(/Business choice\./)).toBeInTheDocument();
-    expect(screen.getByText(/Applies to every branch/)).toBeInTheDocument();
+    // POS-PERF-P50R — Senior and PWD are separate rows: Senior exactly 20%, PWD at least 20%.
+    expect(within(rows).getAllByText('20% off, VAT-exempt')).toHaveLength(2);
+    expect(within(rows).getByText(/Exactly 20%; not editable/)).toBeInTheDocument();
+    expect(within(rows).getByText(/At least 20%: it may be raised per branch/)).toBeInTheDocument();
+    expect(within(rows).getAllByText(/Set by law/)).toHaveLength(3);
+    expect(within(rows).getByText(/^Business choice\.$/)).toBeInTheDocument();
+    expect(screen.getByText(/shown per branch below/)).toBeInTheDocument();
   });
 
   it('works the ₱112 example with the same calculation checkout uses', () => {
@@ -65,7 +68,7 @@ describe('TaxSettingsSection (P50)', () => {
       isError: false,
     });
     render(<TaxSettingsSection />);
-    expect(screen.getByRole('alert')).toHaveTextContent('(10% / 20%) is not the 20% required by law');
+    expect(screen.getByRole('alert')).toHaveTextContent('(10% / 20%) is outside what the law requires');
   });
 
   it('an API without the endpoint: says so and shows this build’s values', () => {

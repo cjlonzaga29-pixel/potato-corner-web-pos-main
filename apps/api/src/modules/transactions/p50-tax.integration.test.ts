@@ -325,16 +325,16 @@ describe.skipIf(!canRunIntegrationTests)('P50 VAT settings and calculation integ
   });
 
   // ------------------------------------------------------------------ settings security
-  it('statutory PWD/Senior rows are locked for admin and supervisor alike, and nothing is written or audited', async () => {
+  // POS-PERF-P50R — PWD may be raised (RA 10754 "at least 20%"), never lowered
+  // or disabled; Senior stays exactly 20%; a supervisor cannot write the
+  // organization-wide row at all.
+  it('statutory PWD/Senior bounds hold and supervisors cannot write the organization row; nothing is written or audited', async () => {
     const before = await prisma.systemSetting.findUnique({ where: { key: 'discount_policy' } });
     const auditsBefore = await prisma.auditLog.count({ where: { entityId: 'discount_policy' } });
-    for (const [actor, data] of [
-      [admin(), { pwd: { percentage: 25 } }],
-      [sup(), { senior_citizen: { percentage: 10 } }],
-      [sup(), { pwd: { isEnabled: false } }],
-    ] as const) {
-      await expect(settingsService.updateDiscountPolicy(data, actor, null)).rejects.toMatchObject({ code: 'STATUTORY_DISCOUNT_LOCKED' });
+    for (const data of [{ pwd: { percentage: 15 } }, { senior_citizen: { percentage: 25 } }, { senior_citizen: { percentage: 10 } }, { pwd: { isEnabled: false } }] as const) {
+      await expect(settingsService.updateDiscountPolicy(data, admin(), null)).rejects.toMatchObject({ code: 'STATUTORY_DISCOUNT_LOCKED' });
     }
+    await expect(settingsService.updateDiscountPolicy({ employee: { percentage: 5 } }, sup(), null)).rejects.toMatchObject({ code: 'ORGANIZATION_DISCOUNTS_ADMIN_ONLY', statusCode: 403 });
     expect(await prisma.systemSetting.findUnique({ where: { key: 'discount_policy' } })).toEqual(before);
     expect(await prisma.auditLog.count({ where: { entityId: 'discount_policy' } })).toBe(auditsBefore);
   });
@@ -344,7 +344,7 @@ describe.skipIf(!canRunIntegrationTests)('P50 VAT settings and calculation integ
     const auditsBefore = await prisma.auditLog.count({ where: { entityId: 'discount_policy', action: 'DISCOUNT_POLICY_UPDATED' } });
     const results = await Promise.allSettled([
       settingsService.updateDiscountPolicy({ employee: { percentage: 11 }, expectedUpdatedAt: loaded.updatedAt }, admin(), null),
-      settingsService.updateDiscountPolicy({ employee: { percentage: 12 }, expectedUpdatedAt: loaded.updatedAt }, sup(), null),
+      settingsService.updateDiscountPolicy({ employee: { percentage: 12 }, expectedUpdatedAt: loaded.updatedAt }, admin(), null),
     ]);
     const fulfilled = results.filter((r) => r.status === 'fulfilled');
     const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');

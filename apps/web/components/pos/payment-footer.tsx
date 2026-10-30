@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -95,6 +95,13 @@ interface PaymentFooterProps {
   discountLabels?: Partial<Record<DiscountChoice, string>>;
   /** Task 209.xx — discount types a supervisor has turned off in Discount Settings; hidden from the dropdown so a cashier can never pick one the server would reject. */
   disabledDiscountTypes?: readonly DiscountChoice[];
+  /** POS-PERF-P50R — cashier-selected custom discounts that cover at least one cart line (online only). */
+  customDiscounts?: readonly { id: string; label: string }[];
+  selectedCustomDiscountId?: string | null;
+  onCustomDiscountChange?: (id: string) => void;
+  /** POS-PERF-P50R — the branch requires an explicit decision; until one is made the picker shows a prompt and Charge is blocked. */
+  requireDiscountChoice?: boolean;
+  discountChoiceMade?: boolean;
   discountIdReference: string;
   onDiscountIdReferenceChange: (value: string) => void;
   discountProofKey: string | null;
@@ -183,6 +190,11 @@ export const PaymentFooter = memo(function PaymentFooter({
   onDiscountTypeChange,
   discountLabels,
   disabledDiscountTypes,
+  customDiscounts,
+  selectedCustomDiscountId,
+  onCustomDiscountChange,
+  requireDiscountChoice = false,
+  discountChoiceMade = true,
   discountIdReference,
   onDiscountIdReferenceChange,
   discountProofKey,
@@ -220,6 +232,16 @@ export const PaymentFooter = memo(function PaymentFooter({
   const visibleDiscountChoices = (Object.keys(resolvedDiscountLabels) as DiscountChoice[]).filter(
     (value) => value === 'none' || !disabledSet.has(value),
   );
+  // POS-PERF-P50R — when the branch requires a decision, "none" is an explicit
+  // "No applicable discount" and nothing is pre-selected until the cashier picks.
+  const noneLabel = requireDiscountChoice ? 'No applicable discount' : resolvedDiscountLabels.none;
+  const pickerValue = selectedCustomDiscountId
+    ? `custom:${selectedCustomDiscountId}`
+    : requireDiscountChoice && !discountChoiceMade
+      ? ''
+      : discountType;
+  const statutoryChoices = visibleDiscountChoices.filter((value) => value === 'pwd' || value === 'senior_citizen');
+  const otherChoices = visibleDiscountChoices.filter((value) => value !== 'none' && value !== 'pwd' && value !== 'senior_citizen');
   return (
     // Task 209.20 — `.app-pos-footer` replaces the old fixed `p-3 lg:p-2.5` /
     // `space-y-2.5 lg:space-y-1.5` pair, which keyed density purely off the
@@ -255,18 +277,50 @@ export const PaymentFooter = memo(function PaymentFooter({
             <p className="text-xs text-muted-foreground">GCash, Maya, and Other are unavailable offline — payment proof can only be captured while connected.</p>
           )}
 
-          <Select value={discountType} onValueChange={(v) => onDiscountTypeChange(v as DiscountChoice)}>
-            <SelectTrigger className="app-control">
-              <SelectValue />
+          <Select
+            value={pickerValue}
+            onValueChange={(v) => {
+              if (v.startsWith('custom:')) onCustomDiscountChange?.(v.slice('custom:'.length));
+              else onDiscountTypeChange(v as DiscountChoice);
+            }}
+          >
+            <SelectTrigger className="app-control" aria-label="Discount" aria-invalid={requireDiscountChoice && !discountChoiceMade}>
+              <SelectValue placeholder="Choose a discount, or No applicable discount" />
             </SelectTrigger>
             <SelectContent>
-              {visibleDiscountChoices.map((value) => (
-                <SelectItem key={value} value={value}>
-                  {resolvedDiscountLabels[value]}
-                </SelectItem>
-              ))}
+              <SelectItem value="none">{noneLabel}</SelectItem>
+              {statutoryChoices.length > 0 && (
+                <SelectGroup aria-label="Statutory discounts (VAT-exempt)">
+                  <div className="px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Statutory · VAT-exempt</div>
+                  {statutoryChoices.map((value) => (
+                    <SelectItem key={value} value={value}>
+                      {resolvedDiscountLabels[value]}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              )}
+              {(otherChoices.length > 0 || (customDiscounts?.length ?? 0) > 0) && (
+                <SelectGroup aria-label="Other discounts">
+                  <div className="px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Other discounts</div>
+                  {otherChoices.map((value) => (
+                    <SelectItem key={value} value={value}>
+                      {resolvedDiscountLabels[value]}
+                    </SelectItem>
+                  ))}
+                  {customDiscounts?.map((discount) => (
+                    <SelectItem key={discount.id} value={`custom:${discount.id}`}>
+                      {discount.label}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              )}
             </SelectContent>
           </Select>
+          {requireDiscountChoice && !discountChoiceMade && (
+            <p className="text-xs text-amber-700 dark:text-amber-400" data-testid="discount-choice-prompt">
+              This branch asks for a discount decision on every sale. Pick the one the customer qualifies for, or &ldquo;No applicable discount&rdquo;.
+            </p>
+          )}
 
           {(discountType === 'pwd' || discountType === 'senior_citizen') && (
             <Input

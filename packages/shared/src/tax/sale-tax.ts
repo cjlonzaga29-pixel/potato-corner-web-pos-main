@@ -16,6 +16,20 @@ export const VAT_RATE_PERCENT = 12;
 /** PWD (RA 10754 §5, "at least 20%") and Senior Citizen (RA 9994 §4(a), "20%") discount, percent. */
 export const STATUTORY_DISCOUNT_PERCENT = 20;
 
+/**
+ * POS-PERF-P50R — statutory bounds. PWD: RA 10754 §1 grants "at least
+ * twenty percent (20%)", so a higher rate is a lawful enhancement. Senior
+ * Citizen: RA 9994 §4(a) grants "twenty percent (20%)" with no minimum
+ * wording, so it stays exactly 20%. Neither may be disabled.
+ */
+export function isLawfulPwdRate(percentage: number): boolean {
+  return Number.isFinite(percentage) && percentage >= STATUTORY_DISCOUNT_PERCENT && percentage <= 100;
+}
+
+export function isLawfulSeniorRate(percentage: number): boolean {
+  return percentage === STATUTORY_DISCOUNT_PERCENT;
+}
+
 /** Menu and catalog prices already include VAT (application behavior, not configurable). */
 export const PRICES_INCLUDE_VAT = true;
 
@@ -149,4 +163,32 @@ export function describeStoredSaleTax(sale: StoredSaleTax): SaleTaxBreakdown {
     nonVatableAmount: sale.vat_exempt_amount,
     isVatExemptSale: false,
   };
+}
+
+/**
+ * POS-PERF-P50R — how a recorded sale was taxed, frozen onto
+ * transactions.tax_snapshot when it is created. Receipts and reports keep
+ * reading the stored amounts; this records the basis behind them so a later
+ * settings change (branch rates, registration status, required choice) can
+ * never be mistaken for what applied to this sale. Null on sales recorded
+ * before P50R (they were all VAT-registered, 12%, VAT-inclusive).
+ */
+export interface SaleTaxSnapshot {
+  version: 1;
+  vat_rate_percent: number;
+  prices_include_vat: boolean;
+  /** The branch's recorded VAT registration at the time of sale. */
+  vat_registration: 'unconfirmed' | 'vat_registered';
+  /** How the sale was calculated. This release calculates every branch as VAT-registered. */
+  calculated_as: 'vat_registered';
+  /** 'vat_exempt' for PWD/Senior sales (RA 9994 / RA 10754); otherwise 'vatable'. */
+  treatment: 'vat_exempt' | 'vatable';
+  /** Where the discount came off: the VAT-exclusive price (PWD/Senior) or the VAT-inclusive price (others); null with no discount. */
+  discount_basis: 'vat_exclusive' | 'vat_inclusive' | null;
+  /** Where a rate-based discount's rate came from; null when none applied. */
+  discount_rate_source: 'statute' | 'organization' | 'branch' | null;
+  require_discount_choice: boolean;
+  discount_choice: 'selected' | 'none_applicable' | null;
+  /** The cashier-selected custom discount, if any (lines carry the full snapshot). */
+  selected_discount_id: string | null;
 }

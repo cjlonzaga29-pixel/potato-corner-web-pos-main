@@ -59,6 +59,7 @@ export type PosCatalogResponse = z.infer<typeof schemas.posCatalogResponseSchema
 export type PosCatalogProduct = z.infer<typeof schemas.posCatalogProductSchema>;
 export type PosCatalogVariant = z.infer<typeof schemas.posCatalogVariantSchema>;
 export type PosCatalogPromotion = NonNullable<PosCatalogVariant['promotion']>;
+export type PosSelectableDiscount = z.infer<typeof schemas.posSelectableDiscountSchema>;
 
 // POS-PERF-P49 — product-scoped promotions
 export type CreatePromotionInput = z.infer<typeof schemas.createPromotionSchema>;
@@ -257,6 +258,12 @@ export type DiscountPolicy = z.infer<typeof schemas.discountPolicySchema>;
 export type UpdateDiscountPolicyInput = z.infer<typeof schemas.updateDiscountPolicySchema>;
 export type DiscountPolicyResponse = z.infer<typeof schemas.discountPolicyResponseSchema>;
 export type TaxConfigurationResponse = z.infer<typeof schemas.taxConfigurationResponseSchema>;
+export type BranchDiscountOverride = z.infer<typeof schemas.branchDiscountOverrideSchema>;
+export type UpdateBranchDiscountSettingsInput = z.infer<typeof schemas.updateBranchDiscountSettingsSchema>;
+export type BranchDiscountSettingsResponse = z.infer<typeof schemas.branchDiscountSettingsResponseSchema>;
+export type BranchTaxProfile = z.infer<typeof schemas.branchTaxProfileSchema>;
+export type UpdateBranchTaxProfileInput = z.infer<typeof schemas.updateBranchTaxProfileSchema>;
+export type BranchTaxProfileResponse = z.infer<typeof schemas.branchTaxProfileResponseSchema>;
 export type WorkHoursPolicy = z.infer<typeof schemas.workHoursPolicySchema>;
 export type UpdateWorkHoursPolicyInput = z.infer<typeof schemas.updateWorkHoursPolicySchema>;
 export type WorkHoursPolicyResponse = z.infer<typeof schemas.workHoursPolicyResponseSchema>;

@@ -226,8 +226,13 @@ vi.mock('sharp', () => ({
 // survives vi.clearAllMocks() (see beforeEach below), so every test keeps
 // this default unless it explicitly overrides getDiscountPolicy itself (see
 // the "configurable discount rates" describe block).
-vi.mock('../settings/settings.service.js', () => ({
-  settingsService: {
+//
+// POS-PERF-P50R — checkout now reads getEffectiveDiscountPolicy(branchId).
+// This mock derives it from whatever getDiscountPolicy currently resolves
+// (no branch override), so every existing per-test rate override still
+// drives the charged rate; tests that need an override mock it directly.
+vi.mock('../settings/settings.service.js', () => {
+  const settingsService = {
     getDiscountPolicy: vi.fn().mockResolvedValue({
       pwd: { percentage: 20, isEnabled: true },
       senior_citizen: { percentage: 20, isEnabled: true },
@@ -236,8 +241,28 @@ vi.mock('../settings/settings.service.js', () => ({
       updatedAt: null,
       updatedBy: null,
     }),
-  },
-}));
+    getEffectiveDiscountPolicy: vi.fn(async (branchId: string) => {
+      const organization = (await settingsService.getDiscountPolicy()) as {
+        pwd: { percentage: number; isEnabled: boolean };
+        senior_citizen: { percentage: number; isEnabled: boolean };
+        employee: { percentage: number; isEnabled: boolean };
+        promotional: { percentage: number; isEnabled: boolean };
+      };
+      return {
+        branchId,
+        organization,
+        override: null,
+        overrideUpdatedAt: null,
+        overrideUpdatedBy: null,
+        policy: { pwd: organization.pwd, senior_citizen: organization.senior_citizen, employee: organization.employee, promotional: organization.promotional },
+        sources: { pwd: 'statute', senior_citizen: 'statute', employee: 'organization' },
+        requireDiscountChoice: false,
+        vatRegistration: 'unconfirmed',
+      };
+    }),
+  };
+  return { settingsService };
+});
 
 const { transactionsRepository } = await import('./transactions.repository.js');
 const { nextCounterValue } = await import('../../lib/id-counter.js');
@@ -986,10 +1011,19 @@ describe('transactionsService.createTransaction — configurable discount rates'
     );
   });
 
-  it('a no-discount sale never calls getDiscountPolicy and persists discountRateUsed: null', async () => {
+  // POS-PERF-P50R — the branch's effective policy is now read for every sale
+  // (it also carries the discount-choice requirement and VAT registration for
+  // the tax snapshot); a no-discount sale still persists no rate.
+  it('a no-discount sale persists discountRateUsed: null and snapshots no discount basis', async () => {
     await transactionsService.createTransaction(baseInput, null);
 
-    expect(settingsService.getDiscountPolicy).not.toHaveBeenCalled();
+    expect(settingsService.getEffectiveDiscountPolicy).toHaveBeenCalledWith(baseInput.branchId);
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taxSnapshot: expect.objectContaining({ vat_rate_percent: 12, treatment: 'vatable', discount_basis: null, discount_rate_source: null, vat_registration: 'unconfirmed' }),
+      }),
+      expect.anything(),
+    );
     expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
       expect.objectContaining({ discountRateUsed: null }),
       expect.anything(),

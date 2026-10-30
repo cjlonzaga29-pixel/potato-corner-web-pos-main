@@ -22,6 +22,7 @@ export interface PromotionWriteData {
   discountKind: 'percentage' | 'fixed_amount';
   discountValue: number;
   isEnabled: boolean;
+  applicationMode: 'automatic' | 'cashier_selected';
   startsOn: string | null;
   endsOn: string | null;
   productIds: string[];
@@ -38,6 +39,8 @@ export interface PromotionLineSnapshot {
   base_price: number;
   unit_discount: number;
   quantity: number;
+  /** POS-PERF-P50R — absent on P49 snapshots (all automatic). */
+  application_mode?: 'automatic' | 'cashier_selected';
 }
 
 /** One line to price: the server-resolved product/size at the sale's branch. */
@@ -56,4 +59,5 @@ export interface ResolvedLinePromotion {
   version: number;
   endsOn: string | null;
   unitDiscount: number;
+  applicationMode: 'automatic' | 'cashier_selected';
 }

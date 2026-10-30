@@ -2388,17 +2388,20 @@ export const productsService = {
     // POS-PERF-P49 — the same server resolver checkout uses (branch-bound,
     // overlap rule applied), so the price on the card is the price checkout
     // will accept. Display only: checkout recomputes and refuses a mismatch.
-    const promotionByVariantId = await discountsService.resolvePromotionsForBranch(
-      branchId,
-      products.flatMap((product) =>
-        product.variants.map((variant) => ({
-          productId: product.id,
-          productVariantId: variant.id,
-          basePrice: variant.basePrice.toNumber(),
-          vatableCapAmount: variant.vatableCapAmount?.toNumber() ?? null,
-        })),
-      ),
+    const pricingLines = products.flatMap((product) =>
+      product.variants.map((variant) => ({
+        productId: product.id,
+        productVariantId: variant.id,
+        basePrice: variant.basePrice.toNumber(),
+        vatableCapAmount: variant.vatableCapAmount?.toNumber() ?? null,
+      })),
     );
+    // POS-PERF-P50R — cashier-selected discounts are resolved by the same
+    // server rules, so the picker offers only what checkout will accept.
+    const [promotionByVariantId, selectableDiscounts] = await Promise.all([
+      discountsService.resolvePromotionsForBranch(branchId, pricingLines),
+      discountsService.resolveSelectableDiscounts(branchId, pricingLines),
+    ]);
 
     const catalogProducts = products.map((product) => {
       const variants = product.variants.map((variant) => ({
@@ -2507,7 +2510,21 @@ export const productsService = {
 
     const categories = [...new Set(catalogProducts.map((p) => p.category).filter((c): c is string => Boolean(c)))].sort();
 
-    return { categories, products: catalogProducts };
+    return {
+      categories,
+      products: catalogProducts,
+      selectable_discounts: selectableDiscounts
+        .filter((entry) => entry.unitDiscounts.size > 0)
+        .map(({ promotion, unitDiscounts }) => ({
+          promotion_id: promotion.id,
+          name: promotion.name,
+          discount_kind: promotion.discountKind,
+          discount_value: promotion.discountValue,
+          version: promotion.version,
+          ends_on: promotion.endsOn,
+          unit_discounts: Object.fromEntries(unitDiscounts),
+        })),
+    };
   },
 
   /**

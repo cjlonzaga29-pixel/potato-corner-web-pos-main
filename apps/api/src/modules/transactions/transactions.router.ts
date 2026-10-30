@@ -115,6 +115,8 @@ interface CreateTransactionBody {
   idempotency_key?: string;
   notes?: string;
   tax_basis?: TaxBasisInput;
+  selected_discount?: { promotion_id: string; version: number };
+  discount_choice?: 'selected' | 'none_applicable';
 }
 
 // authenticate -> authorize -> requirePasswordChange -> branchGuard -> shiftGuard -> validate -> handler.
@@ -212,6 +214,10 @@ router.post(
           idempotencyKey: body.idempotency_key ?? null,
           notes: body.notes,
           taxBasis: toTaxBasis(body.tax_basis),
+          selectedDiscount: body.selected_discount
+            ? { promotionId: body.selected_discount.promotion_id, version: body.selected_discount.version }
+            : undefined,
+          discountChoice: body.discount_choice,
         },
         req.ip ?? null,
         typeof res.locals?.diagMiddlewareStartedAt === 'number' ? performance.now() - res.locals.diagMiddlewareStartedAt : undefined,
@@ -281,6 +287,7 @@ router.post(
             gcashReferenceNumber: item.gcash_reference_number,
             gcashManuallyVerified: item.gcash_manually_verified,
             taxBasis: toTaxBasis(item.tax_basis),
+            discountChoice: item.discount_choice,
             clientCreatedAt: item.client_created_at,
           })),
         },

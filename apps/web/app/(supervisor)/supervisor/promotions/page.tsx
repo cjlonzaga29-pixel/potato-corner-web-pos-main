@@ -77,10 +77,10 @@ export default function SupervisorPromotionsPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold">Promotions</h1>
+          <h1 className="text-2xl font-semibold">Discounts &amp; Promotions</h1>
           <p className="text-sm text-muted-foreground">
-            Discounts for Promotional and Seasonal products at your branches. Checkout always applies the current setting; past sales keep the
-            discount they were charged.
+            Automatic promotions and cashier-selected discounts at your branches. Checkout always applies the current setting; past sales keep
+            the discount they were charged. PWD, Senior Citizen and Employee rates are in Settings.
           </p>
         </div>
         <Button
@@ -92,7 +92,7 @@ export default function SupervisorPromotionsPage() {
           disabled={isPromotionsUnsupported(error) || branchesLoading}
         >
           <Plus className="mr-2 h-4 w-4" />
-          New promotion
+          New discount
         </Button>
       </div>
 
@@ -108,8 +108,8 @@ export default function SupervisorPromotionsPage() {
       {data && data.length === 0 && (
         <EmptyState
           icon={TicketPercent}
-          title="No promotions yet"
-          description="Classify a product as Promotional or Seasonal in the product editor, then create a promotion for it here."
+          title="No discounts yet"
+          description="Create a cashier-selected discount for any product, or classify a product as Promotional or Seasonal for an automatic promotion."
         />
       )}
 
@@ -125,6 +125,9 @@ export default function SupervisorPromotionsPage() {
                       <div className="min-w-0">
                         <h2 className="truncate font-medium">{promotion.name}</h2>
                         <p className="text-sm">{describeDiscount(promotion)}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {promotion.application_mode === 'cashier_selected' ? 'Cashier selects at checkout' : 'Automatic promotion'}
+                        </p>
                       </div>
                       <Badge variant={state.variant}>{state.label}</Badge>
                     </div>

@@ -19,7 +19,18 @@ import {
   type UpdateWriteGateInput,
   type TaxConfigurationResponse,
   type ConfigurableDiscountType,
+  type BranchDiscountOverride,
+  type BranchDiscountSettingsResponse,
+  type BranchTaxProfileResponse,
+  type UpdateBranchDiscountSettingsInput,
+  type UpdateBranchTaxProfileInput,
+  type DiscountSettingSource,
+  type VatRegistrationStatus,
   CONFIGURABLE_DISCOUNT_TYPES,
+  ROLES,
+  SUPPORTED_VAT_REGISTRATION_STATUSES,
+  isLawfulPwdRate,
+  isLawfulSeniorRate,
   PRICES_INCLUDE_VAT,
   STATUTORY_DISCOUNT_PERCENT,
   VAT_EXEMPT_DISCOUNT_TYPES,
@@ -42,6 +53,8 @@ import {
   BRANCH_WORK_HOURS_KEY_PREFIX,
   branchWorkHoursKey,
   WRITE_GATE_KEY,
+  branchDiscountKey,
+  branchTaxProfileKey,
   resolveWriteGateState,
   type WriteGateStateValue,
   SettingsError,
@@ -88,10 +101,14 @@ function toPaymentMethodConfigResponse(row: BranchPaymentMethodConfigRow): Payme
 
 /**
  * POS-PERF-P50 — PWD (RA 10754) and Senior Citizen (RA 9994) discounts are
- * required by law at 20% with VAT exemption: no role may lower, raise or
- * disable them here. Re-sending the value already stored is accepted (the
+ * required by law with VAT exemption: no role may disable them or set them
+ * below the statute. Re-sending the value already stored is accepted (the
  * editor sends every row), so a policy saved before P50 can still be saved
- * around; the only change accepted is back to the statutory value.
+ * around.
+ *
+ * POS-PERF-P50R — RA 10754 §1 grants PWDs "at least twenty percent", so a
+ * PWD rate from 20% to 100% is accepted (a lawful enhancement). RA 9994
+ * §4(a) grants seniors "twenty percent (20%)", so Senior stays exactly 20%.
  */
 const STATUTORY_DISCOUNT_TYPES: readonly ConfigurableDiscountType[] = ['pwd', 'senior_citizen'];
 
@@ -99,18 +116,84 @@ function assertStatutoryRowsUnchanged(data: UpdateDiscountPolicyInput, before: D
   for (const type of STATUTORY_DISCOUNT_TYPES) {
     const incoming = data[type];
     if (!incoming) continue;
-    const percentageOk =
-      incoming.percentage === undefined || incoming.percentage === STATUTORY_DISCOUNT_PERCENT || incoming.percentage === before[type].percentage;
+    const lawful = type === 'pwd' ? isLawfulPwdRate : isLawfulSeniorRate;
+    const percentageOk = incoming.percentage === undefined || lawful(incoming.percentage) || incoming.percentage === before[type].percentage;
     const enabledOk = incoming.isEnabled === undefined || incoming.isEnabled || incoming.isEnabled === before[type].isEnabled;
     if (!percentageOk || !enabledOk) {
       throw new SettingsError(
         'STATUTORY_DISCOUNT_LOCKED',
-        `The ${type === 'pwd' ? 'PWD' : 'Senior Citizen'} discount is set by law (${STATUTORY_DISCOUNT_PERCENT}%, VAT-exempt) and cannot be changed or turned off here.`,
+        type === 'pwd'
+          ? `The PWD discount is required by law (RA 10754): at least ${STATUTORY_DISCOUNT_PERCENT}%, VAT-exempt. It can be raised up to 100% but not lowered below ${STATUTORY_DISCOUNT_PERCENT}% or turned off.`
+          : `The Senior Citizen discount is set by law (RA 9994): exactly ${STATUTORY_DISCOUNT_PERCENT}%, VAT-exempt. It cannot be changed or turned off.`,
         422,
       );
     }
   }
 }
+
+/** True when stored data (only possible before P50) puts a statutory row outside the law. */
+function statutoryRowsOffStatute(policy: Pick<DiscountPolicy, 'pwd' | 'senior_citizen'>): boolean {
+  return (
+    !isLawfulPwdRate(policy.pwd.percentage) ||
+    !policy.pwd.isEnabled ||
+    !isLawfulSeniorRate(policy.senior_citizen.percentage) ||
+    !policy.senior_citizen.isEnabled
+  );
+}
+
+/** POS-PERF-P50R — one branch's discount values as checkout applies them, with where each came from. */
+export interface EffectiveDiscountPolicy {
+  branchId: string;
+  organization: DiscountPolicyResponse;
+  override: BranchDiscountOverride | null;
+  overrideUpdatedAt: string | null;
+  overrideUpdatedBy: string | null;
+  policy: DiscountPolicy;
+  sources: Record<'pwd' | 'senior_citizen' | 'employee', DiscountSettingSource>;
+  requireDiscountChoice: boolean;
+  vatRegistration: 'unconfirmed' | 'vat_registered';
+}
+
+type SettingRow = { value: unknown; updatedAt: Date; updatedBy: string };
+
+function readOverride(value: unknown): BranchDiscountOverride | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const v = value as Partial<BranchDiscountOverride>;
+  const employee =
+    v.employee && typeof v.employee.percentage === 'number' && typeof v.employee.isEnabled === 'boolean'
+      ? { percentage: v.employee.percentage, isEnabled: v.employee.isEnabled }
+      : null;
+  // Defensive: a stored PWD rate below the statute is ignored, never applied.
+  const pwdPercentage = typeof v.pwdPercentage === 'number' && isLawfulPwdRate(v.pwdPercentage) ? v.pwdPercentage : null;
+  return { employee, pwdPercentage, requireDiscountChoice: v.requireDiscountChoice === true };
+}
+
+function readTaxProfile(branchId: string, row: SettingRow | undefined | null): BranchTaxProfileResponse {
+  const value = (row?.value ?? {}) as { vatRegistration?: unknown; note?: unknown };
+  const status: 'unconfirmed' | 'vat_registered' = value.vatRegistration === 'vat_registered' ? 'vat_registered' : 'unconfirmed';
+  return {
+    branchId,
+    vatRegistration: status,
+    note: typeof value.note === 'string' ? value.note : null,
+    calculatedAs: 'vat_registered',
+    updatedAt: row ? row.updatedAt.toISOString() : null,
+    updatedBy: row ? row.updatedBy : null,
+  };
+}
+
+function toOrganizationResponse(row: SettingRow | undefined | null): DiscountPolicyResponse {
+  if (!row) return { ...DEFAULT_DISCOUNT_POLICY, updatedAt: null, updatedBy: null, statutoryTypes: [...STATUTORY_DISCOUNT_TYPES] };
+  const value = row.value as unknown as DiscountPolicy;
+  return { ...value, updatedAt: row.updatedAt.toISOString(), updatedBy: row.updatedBy, statutoryTypes: [...STATUTORY_DISCOUNT_TYPES] };
+}
+
+/** Staff and Branch Accounts are bound to one branch; their reads are always scoped to it. */
+function branchBoundId(actor: ActorContext): string | null {
+  return actor.role === ROLES.STAFF || actor.role === ROLES.BRANCH ? (actor.branch_ids[0] ?? null) : null;
+}
+
+const ORGANIZATION_ADMIN_ONLY_MESSAGE =
+  'Organization-wide discount defaults are set by a Super Admin. Supervisors change discounts for their own branches in Settings → Discounts & VAT.';
 
 /** Default state assumed when no BranchPaymentMethodConfig row exists yet (both methods enabled). */
 const DEFAULT_PAYMENT_METHOD_CONFIG = { cashEnabled: true, gcashEnabled: true };
@@ -283,10 +366,66 @@ export const settingsService = {
    * existed) until a supervisor/admin saves a change for the first time.
    */
   async getDiscountPolicy(): Promise<DiscountPolicyResponse> {
-    const setting = await settingsRepository.findSystemSetting(DISCOUNT_POLICY_KEY);
-    if (!setting) return { ...DEFAULT_DISCOUNT_POLICY, updatedAt: null, updatedBy: null, statutoryTypes: [...STATUTORY_DISCOUNT_TYPES] };
-    const value = setting.value as unknown as DiscountPolicy;
-    return { ...value, updatedAt: setting.updatedAt.toISOString(), updatedBy: setting.updatedBy, statutoryTypes: [...STATUTORY_DISCOUNT_TYPES] };
+    return toOrganizationResponse(await settingsRepository.findSystemSetting(DISCOUNT_POLICY_KEY));
+  },
+
+  /**
+   * POS-PERF-P50R — the discount values checkout applies at one branch: the
+   * organization default with the branch's override (if any) on top, read
+   * in one round trip together with the branch's VAT registration. Senior
+   * Citizen is never overridable; PWD may only be raised.
+   */
+  async getEffectiveDiscountPolicy(branchId: string): Promise<EffectiveDiscountPolicy> {
+    const rows = await settingsRepository.findSystemSettings([DISCOUNT_POLICY_KEY, branchDiscountKey(branchId), branchTaxProfileKey(branchId)]);
+    const byKey = new Map(rows.map((row) => [row.key, row]));
+    const organization = toOrganizationResponse(byKey.get(DISCOUNT_POLICY_KEY));
+    const overrideRow = byKey.get(branchDiscountKey(branchId));
+    const override = overrideRow ? readOverride(overrideRow.value) : null;
+    const branchPwd = override?.pwdPercentage ?? null;
+    const branchEmployee = override?.employee ?? null;
+    const policy: DiscountPolicy = {
+      pwd: { percentage: branchPwd ?? organization.pwd.percentage, isEnabled: organization.pwd.isEnabled },
+      senior_citizen: { ...organization.senior_citizen },
+      employee: branchEmployee ? { ...branchEmployee } : { ...organization.employee },
+      promotional: { ...organization.promotional },
+    };
+    return {
+      branchId,
+      organization,
+      override,
+      overrideUpdatedAt: overrideRow ? overrideRow.updatedAt.toISOString() : null,
+      overrideUpdatedBy: overrideRow ? overrideRow.updatedBy : null,
+      policy,
+      sources: {
+        pwd: branchPwd !== null ? 'branch' : policy.pwd.percentage === STATUTORY_DISCOUNT_PERCENT ? 'statute' : 'organization',
+        senior_citizen: isLawfulSeniorRate(policy.senior_citizen.percentage) ? 'statute' : 'organization',
+        employee: branchEmployee ? 'branch' : 'organization',
+      },
+      requireDiscountChoice: override?.requireDiscountChoice ?? false,
+      vatRegistration: readTaxProfile(branchId, byKey.get(branchTaxProfileKey(branchId))).vatRegistration === 'vat_registered' ? 'vat_registered' : 'unconfirmed',
+    };
+  },
+
+  /**
+   * GET /discount-policy. A staff/branch caller always gets its own branch's
+   * effective policy — so a POS built before P50R, which reads this route,
+   * previews the rate its branch is actually charged. A supervisor/admin
+   * gets the organization default, or one branch's effective policy with
+   * ?branch_id= (access re-checked).
+   */
+  async getDiscountPolicyFor(actor: ActorContext, branchId: string | undefined): Promise<DiscountPolicyResponse> {
+    const scoped = branchBoundId(actor) ?? branchId ?? null;
+    if (!scoped) return settingsService.getDiscountPolicy();
+    await assertBranchAccess(scoped, actor);
+    const effective = await settingsService.getEffectiveDiscountPolicy(scoped);
+    return {
+      ...effective.policy,
+      updatedAt: effective.overrideUpdatedAt ?? effective.organization.updatedAt,
+      updatedBy: effective.overrideUpdatedBy ?? effective.organization.updatedBy,
+      statutoryTypes: [...STATUTORY_DISCOUNT_TYPES],
+      branchId: scoped,
+      requireDiscountChoice: effective.requireDiscountChoice,
+    };
   },
 
   async updateDiscountPolicy(
@@ -294,6 +433,9 @@ export const settingsService = {
     updatedBy: ActorContext,
     ipAddress: string | null,
   ): Promise<DiscountPolicyResponse> {
+    // POS-PERF-P50R — a supervisor's save here used to change every branch.
+    // Supervisors now change only their own branches (updateBranchDiscountSettings).
+    if (updatedBy.role !== ROLES.SUPER_ADMIN) throw new SettingsError('ORGANIZATION_DISCOUNTS_ADMIN_ONLY', ORGANIZATION_ADMIN_ONLY_MESSAGE, 403);
     const before = await settingsService.getDiscountPolicy();
     assertStatutoryRowsUnchanged(data, before);
 
@@ -346,21 +488,191 @@ export const settingsService = {
    * POS-PERF-P50 — the tax configuration checkout uses right now. Statutory
    * values and fixed application behavior come from @potato-corner/shared
    * (the same constants computeSaleTax uses); the discount rates come from
-   * Discount Settings. Nothing here is writable.
+   * Discount Settings. POS-PERF-P50R — scoped to one branch for a
+   * staff/branch caller or with ?branch_id=, adding its VAT registration.
    */
-  async getTaxConfiguration(): Promise<TaxConfigurationResponse> {
-    const policy = await settingsService.getDiscountPolicy();
-    return {
+  async getTaxConfiguration(actor?: ActorContext, branchId?: string): Promise<TaxConfigurationResponse> {
+    const base = {
       vatRatePercent: VAT_RATE_PERCENT,
       pricesIncludeVat: PRICES_INCLUDE_VAT,
       statutoryDiscountPercent: STATUTORY_DISCOUNT_PERCENT,
       vatExemptDiscountTypes: [...VAT_EXEMPT_DISCOUNT_TYPES],
-      scope: 'organization',
-      discountRates: { pwd: policy.pwd.percentage, senior_citizen: policy.senior_citizen.percentage, employee: policy.employee.percentage },
-      statutoryRateMismatch: STATUTORY_DISCOUNT_TYPES.some(
-        (type) => policy[type].percentage !== STATUTORY_DISCOUNT_PERCENT || !policy[type].isEnabled,
-      ),
     };
+    const scoped = (actor ? branchBoundId(actor) : null) ?? branchId ?? null;
+    if (!scoped) {
+      const policy = await settingsService.getDiscountPolicy();
+      return {
+        ...base,
+        scope: 'organization',
+        discountRates: { pwd: policy.pwd.percentage, senior_citizen: policy.senior_citizen.percentage, employee: policy.employee.percentage },
+        statutoryRateMismatch: statutoryRowsOffStatute(policy),
+      };
+    }
+    if (actor) await assertBranchAccess(scoped, actor);
+    const { policy, vatRegistration } = await settingsService.getEffectiveDiscountPolicy(scoped);
+    return {
+      ...base,
+      scope: 'branch',
+      discountRates: { pwd: policy.pwd.percentage, senior_citizen: policy.senior_citizen.percentage, employee: policy.employee.percentage },
+      statutoryRateMismatch: statutoryRowsOffStatute(policy),
+      branchId: scoped,
+      vatRegistration,
+    };
+  },
+
+  /** POS-PERF-P50R — Settings → Discounts & VAT for one branch: defaults, override, effective values and permissions. */
+  async getBranchDiscountSettings(branchId: string, actor: ActorContext): Promise<BranchDiscountSettingsResponse> {
+    await assertBranchAccess(branchId, actor);
+    const branch = await branchesRepository.findById(branchId);
+    if (!branch) throw new SettingsError('BRANCH_NOT_FOUND', 'Branch not found', 404);
+    return settingsService.describeBranchDiscountSettings(branchId, branch.name, actor);
+  },
+
+  async describeBranchDiscountSettings(branchId: string, branchName: string, actor: ActorContext): Promise<BranchDiscountSettingsResponse> {
+    const [effective, taxRow] = await Promise.all([
+      settingsService.getEffectiveDiscountPolicy(branchId),
+      settingsRepository.findSystemSetting(branchTaxProfileKey(branchId)),
+    ]);
+    const { organization, policy, sources } = effective;
+    return {
+      branchId,
+      branchName,
+      organization: { pwd: organization.pwd, senior_citizen: organization.senior_citizen, employee: organization.employee, updatedAt: organization.updatedAt },
+      override: effective.override,
+      effective: {
+        pwd: { ...policy.pwd, source: sources.pwd },
+        senior_citizen: { ...policy.senior_citizen, source: sources.senior_citizen },
+        employee: { ...policy.employee, source: sources.employee },
+        requireDiscountChoice: effective.requireDiscountChoice,
+      },
+      taxProfile: readTaxProfile(branchId, taxRow),
+      updatedAt: effective.overrideUpdatedAt,
+      updatedBy: effective.overrideUpdatedBy,
+      canEdit: actor.role === ROLES.SUPER_ADMIN || actor.role === ROLES.SUPERVISOR,
+      canEditTaxProfile: actor.role === ROLES.SUPER_ADMIN,
+    };
+  },
+
+  /**
+   * POS-PERF-P50R — saves one branch's override. Authority: Super Admin, or
+   * a supervisor with a live active assignment to this active branch
+   * (re-read from the database, never the JWT). The whole override is
+   * replaced (null = use the organization default). Stale saves are
+   * refused: the caller sends the override's updatedAt it loaded (null =
+   * none yet); there is no last-write-wins path.
+   */
+  async updateBranchDiscountSettings(
+    branchId: string,
+    data: UpdateBranchDiscountSettingsInput,
+    actor: ActorContext,
+    ipAddress: string | null,
+  ): Promise<BranchDiscountSettingsResponse> {
+    if (actor.role !== ROLES.SUPER_ADMIN && actor.role !== ROLES.SUPERVISOR) {
+      throw new SettingsError('BRANCH_ACCESS_DENIED', 'You cannot change discount settings.', 403);
+    }
+    await assertBranchAccess(branchId, actor);
+    const branch = await branchesRepository.findById(branchId);
+    if (!branch) throw new SettingsError('BRANCH_NOT_FOUND', 'Branch not found', 404);
+    if (branch.status !== 'active') throw new SettingsError('BRANCH_INACTIVE', 'Discounts can only be changed for an active branch.', 422);
+    if (data.pwdPercentage !== null && !isLawfulPwdRate(data.pwdPercentage)) {
+      throw new SettingsError('STATUTORY_DISCOUNT_LOCKED', `The PWD discount must be at least ${STATUTORY_DISCOUNT_PERCENT}% (RA 10754) and at most 100%.`, 422);
+    }
+
+    const before = await settingsService.describeBranchDiscountSettings(branchId, branch.name, actor);
+    const value: BranchDiscountOverride = { employee: data.employee, pwdPercentage: data.pwdPercentage, requireDiscountChoice: data.requireDiscountChoice };
+    const expected = data.expectedUpdatedAt === null ? null : new Date(data.expectedUpdatedAt);
+    const stale = (expected?.toISOString() ?? null) !== before.updatedAt;
+    const saved = stale
+      ? null
+      : await settingsRepository.writeSystemSettingIfUnchanged(
+          branchDiscountKey(branchId),
+          value as unknown as Prisma.InputJsonValue,
+          actor.user_id,
+          expected,
+          'Branch override of POS discount settings (POS-PERF-P50R)',
+        );
+    if (!saved) {
+      throw new SettingsError(
+        'SETTINGS_CHANGED',
+        `Discount settings for ${branch.name} were changed by someone else after you opened them. Reload to see the current values, then make your change again.`,
+        409,
+        { current: await settingsService.describeBranchDiscountSettings(branchId, branch.name, actor) },
+      );
+    }
+    const after = await settingsService.describeBranchDiscountSettings(branchId, branch.name, actor);
+    await recordAuditLog({
+      action: 'BRANCH_DISCOUNT_SETTINGS_UPDATED',
+      entityType: 'system_setting',
+      entityId: branchDiscountKey(branchId),
+      actorId: actor.user_id,
+      actorRole: actor.role,
+      branchId,
+      beforeState: { override: before.override, effective: before.effective },
+      afterState: { override: after.override, effective: after.effective },
+      ipAddress,
+    });
+    return after;
+  },
+
+  /**
+   * POS-PERF-P50R — records a branch's VAT registration: a legal fact the
+   * owner supplies, Super Admin only, audited, never changed implicitly.
+   * 'non_vat_registered' is refused: this release cannot calculate or
+   * receipt a non-VAT sale (runbook D1). The record does not change how
+   * checkout calculates — every branch is calculated as VAT-registered.
+   */
+  async updateBranchTaxProfile(
+    branchId: string,
+    data: UpdateBranchTaxProfileInput,
+    actor: ActorContext,
+    ipAddress: string | null,
+  ): Promise<BranchTaxProfileResponse> {
+    if (actor.role !== ROLES.SUPER_ADMIN) {
+      throw new SettingsError('TAX_PROFILE_ADMIN_ONLY', "Only a Super Admin can record a branch's VAT registration.", 403);
+    }
+    const branch = await branchesRepository.findById(branchId);
+    if (!branch) throw new SettingsError('BRANCH_NOT_FOUND', 'Branch not found', 404);
+    if (!SUPPORTED_VAT_REGISTRATION_STATUSES.includes(data.vatRegistration as VatRegistrationStatus)) {
+      throw new SettingsError(
+        'TAX_TREATMENT_NOT_SUPPORTED',
+        'Non-VAT registration is not supported yet: a non-VAT branch needs a different calculation and receipt that this version does not have. Leave the branch unconfirmed and contact the system owner.',
+        422,
+      );
+    }
+    const key = branchTaxProfileKey(branchId);
+    const before = readTaxProfile(branchId, await settingsRepository.findSystemSetting(key));
+    const expected = data.expectedUpdatedAt === null ? null : new Date(data.expectedUpdatedAt);
+    const stale = (expected?.toISOString() ?? null) !== before.updatedAt;
+    const saved = stale
+      ? null
+      : await settingsRepository.writeSystemSettingIfUnchanged(
+          key,
+          { vatRegistration: data.vatRegistration, note: data.note } as unknown as Prisma.InputJsonValue,
+          actor.user_id,
+          expected,
+          'Branch VAT registration as recorded by a Super Admin (POS-PERF-P50R)',
+        );
+    if (!saved) {
+      throw new SettingsError(
+        'SETTINGS_CHANGED',
+        `The VAT registration for ${branch.name} was changed by someone else after you opened it. Reload and check it again.`,
+        409,
+        { current: before },
+      );
+    }
+    const after = readTaxProfile(branchId, saved);
+    await recordAuditLog({
+      action: 'BRANCH_TAX_PROFILE_UPDATED',
+      entityType: 'system_setting',
+      entityId: key,
+      actorId: actor.user_id,
+      actorRole: actor.role,
+      branchId,
+      beforeState: before,
+      afterState: after,
+      ipAddress,
+    });
+    return after;
   },
 
   /**

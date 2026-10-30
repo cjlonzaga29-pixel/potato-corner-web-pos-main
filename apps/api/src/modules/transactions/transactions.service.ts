@@ -12,7 +12,10 @@ import {
   computeSaleTax,
   discountRateFor,
   VAT_RATE_PERCENT,
+  PRICES_INCLUDE_VAT,
+  isVatExemptDiscountType,
   type ImageProofType,
+  type SaleTaxSnapshot,
 } from '@potato-corner/shared';
 import { manilaDateKey } from '../../lib/manila-time.js';
 import { transactionsRepository, type SelectedOptionSnapshot, type TransactionExportFilters } from './transactions.repository.js';
@@ -64,7 +67,7 @@ import { createCheckoutLatencyRecorder, timeStage } from '../../lib/checkout-lat
 import { computeDeductionTotals, sortedDeductionTotalEntries } from '../../lib/deduction-totals.js';
 import { inventoryDeductionRepository } from '../inventory-deduction/inventory-deduction.repository.js';
 import { discountsService } from '../discounts/discounts.service.js';
-import type { PromotionLineSnapshot } from '../discounts/discounts.types.js';
+import type { PromotionLineSnapshot, ResolvedLinePromotion } from '../discounts/discounts.types.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -927,7 +930,7 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
  */
 async function applyLinePromotions(data: CreateTransactionData, items: ResolvedItem[]): Promise<ResolvedItem[]> {
   const acks = data.items.map((item) => item.promotionAck);
-  const claimsPromotion = acks.some((ack) => ack !== undefined && ack !== null);
+  const claimsPromotion = acks.some((ack) => ack !== undefined && ack !== null) || data.selectedDiscount !== undefined;
 
   if (data.isOfflineTransaction) {
     if (claimsPromotion) {
@@ -949,19 +952,25 @@ async function applyLinePromotions(data: CreateTransactionData, items: ResolvedI
     }
     return items;
   }
-  if (acks.every((ack) => ack === undefined)) return items;
+  const selected = data.selectedDiscount;
+  if (acks.every((ack) => ack === undefined) && !selected) return items;
 
-  const current = await discountsService.resolvePromotionsForBranch(
-    data.branchId,
-    items
-      .filter((_, index) => acks[index] !== undefined)
-      .map((item) => ({
-        productId: item.productId,
-        productVariantId: item.productVariantId,
-        basePrice: item.basePrice ?? 0,
-        vatableCapAmount: item.vatableCapAmount,
-      })),
-  );
+  // POS-PERF-P50R — a cashier-selected discount is the sale's one discount:
+  // only it is resolved (automatic promotions are not applied) and every
+  // line is compared, so a line the screen showed undiscounted that the
+  // discount now covers (or the reverse) is refused, never silently priced.
+  const lineAck = (index: number) => (selected ? (acks[index] ?? null) : acks[index]);
+  const pricingLines = items
+    .filter((_, index) => lineAck(index) !== undefined)
+    .map((item) => ({
+      productId: item.productId,
+      productVariantId: item.productVariantId,
+      basePrice: item.basePrice ?? 0,
+      vatableCapAmount: item.vatableCapAmount,
+    }));
+  const current = selected
+    ? await resolveSelectedDiscountLines(data.branchId, selected, pricingLines)
+    : await discountsService.resolvePromotionsForBranch(data.branchId, pricingLines);
 
   const changes: {
     line_index: number;
@@ -971,7 +980,7 @@ async function applyLinePromotions(data: CreateTransactionData, items: ResolvedI
     current: { promotion_id: string; name: string; unit_discount: number } | null;
   }[] = [];
   items.forEach((item, index) => {
-    const ack = acks[index];
+    const ack = lineAck(index);
     if (ack === undefined) return;
     const resolved = current.get(item.productVariantId) ?? null;
     const sameId = (ack?.promotionId ?? null) === (resolved?.promotionId ?? null);
@@ -996,7 +1005,7 @@ async function applyLinePromotions(data: CreateTransactionData, items: ResolvedI
   }
 
   return items.map((item, index) => {
-    const resolved = acks[index] === undefined ? undefined : current.get(item.productVariantId);
+    const resolved = lineAck(index) === undefined ? undefined : current.get(item.productVariantId);
     if (!resolved) return item;
     const promotionDiscount = round2(resolved.unitDiscount * item.quantity);
     return {
@@ -1011,9 +1020,50 @@ async function applyLinePromotions(data: CreateTransactionData, items: ResolvedI
         base_price: item.basePrice ?? 0,
         unit_discount: resolved.unitDiscount,
         quantity: item.quantity,
+        application_mode: resolved.applicationMode,
       },
     };
   });
+}
+
+/**
+ * POS-PERF-P50R — the claimed cashier-selected discount, re-resolved now for
+ * this sale's branch and lines. Disabled, expired, edited (version moved),
+ * removed from this branch, never cashier-selected, or covering none of
+ * these lines -> PROMOTION_CHANGED with nothing written, like any other
+ * promotion change.
+ */
+async function resolveSelectedDiscountLines(
+  branchId: string,
+  selected: { promotionId: string; version: number },
+  lines: { productId: string; productVariantId: string; basePrice: number; vatableCapAmount: number | null }[],
+): Promise<Map<string, ResolvedLinePromotion>> {
+  const [entry] = await discountsService.resolveSelectableDiscounts(branchId, lines, { promotionId: selected.promotionId });
+  if (!entry || entry.promotion.version !== selected.version || entry.unitDiscounts.size === 0) {
+    throw new TransactionError(
+      'PROMOTION_CHANGED',
+      'The discount chosen for this sale changed or is no longer available, so the sale was not charged. Review the updated prices, then charge again.',
+      409,
+      {
+        selected_discount: { promotion_id: selected.promotionId, shown_version: selected.version, current_version: entry?.promotion.version ?? null },
+        lines: [],
+      },
+    );
+  }
+  const result = new Map<string, ResolvedLinePromotion>();
+  for (const [variantId, unitDiscount] of entry.unitDiscounts) {
+    result.set(variantId, {
+      promotionId: entry.promotion.id,
+      name: entry.promotion.name,
+      discountKind: entry.promotion.discountKind,
+      discountValue: entry.promotion.discountValue,
+      version: entry.promotion.version,
+      endsOn: entry.promotion.endsOn,
+      unitDiscount,
+      applicationMode: 'cashier_selected',
+    });
+  }
+  return result;
 }
 
 /**
@@ -2301,20 +2351,41 @@ export const transactionsService = {
     // syncOfflineTransactions -> createTransaction (same call path) — so a
     // tampered/stale client-side percentage can never reach the database,
     // and an offline device can never invent its own rate.
-    let discountRates: DiscountRates = { pwd: 20, senior_citizen: 20, employee: 20 };
+    //
+    // POS-PERF-P50R — resolved for the sale's own branch: the organization
+    // default with that branch's override on top (one query), which also
+    // carries the branch's discount-choice requirement and VAT registration
+    // for the tax snapshot.
+    const discountCalcStartedAt = performance.now();
+    const effectivePolicy = await settingsService.getEffectiveDiscountPolicy(data.branchId);
+    discountCalcMs = performance.now() - discountCalcStartedAt;
+    const policy = effectivePolicy.policy;
+    const discountRates: DiscountRates = { pwd: policy.pwd.percentage, senior_citizen: policy.senior_citizen.percentage, employee: policy.employee.percentage };
     if (data.discountType === DISCOUNT_TYPE.PWD || data.discountType === DISCOUNT_TYPE.SENIOR_CITIZEN || data.discountType === DISCOUNT_TYPE.EMPLOYEE) {
-      const discountCalcStartedAt = performance.now();
-      const policy = await settingsService.getDiscountPolicy();
-      discountCalcMs = performance.now() - discountCalcStartedAt;
-      const entry = policy[data.discountType];
-      if (!entry.isEnabled) {
+      if (!policy[data.discountType].isEnabled) {
         throw new TransactionError(
           'DISCOUNT_TYPE_DISABLED',
           `${data.discountType} discount is currently disabled in Discount Settings`,
           422,
         );
       }
-      discountRates = { pwd: policy.pwd.percentage, senior_citizen: policy.senior_citizen.percentage, employee: policy.employee.percentage };
+    }
+    // POS-PERF-P50R — a branch that requires a discount decision: a live sale
+    // from a current POS (it sends tax_basis) must carry the cashier's choice.
+    // Older clients and offline sales (already paid) are never refused for it.
+    if (data.discountChoice === 'none_applicable' && (data.discountType || data.selectedDiscount)) {
+      throw new TransactionError(
+        'DISCOUNT_CHOICE_CONFLICT',
+        'The sale says "No applicable discount" but also lists a discount. Choose one, then charge again.',
+        422,
+      );
+    }
+    if (effectivePolicy.requireDiscountChoice && !data.isOfflineTransaction && data.taxBasis && !data.discountChoice) {
+      throw new TransactionError(
+        'DISCOUNT_CHOICE_REQUIRED',
+        'This branch requires a discount decision for every sale. Choose the discount that applies, or "No applicable discount", then charge again.',
+        422,
+      );
     }
 
     const catalogResolveStartedAt = performance.now();
@@ -2332,6 +2403,23 @@ export const transactionsService = {
     // POS-PERF-P49 — a sale whose only discount is product promotions is
     // recorded as 'promotional' so every report's discount breakdown sees it.
     const effectiveDiscountType = data.discountType ?? (discountAmount > 0 ? DISCOUNT_TYPE.PROMOTIONAL : null);
+    const rateType =
+      data.discountType === DISCOUNT_TYPE.PWD || data.discountType === DISCOUNT_TYPE.SENIOR_CITIZEN || data.discountType === DISCOUNT_TYPE.EMPLOYEE
+        ? data.discountType
+        : null;
+    const taxSnapshot: SaleTaxSnapshot = {
+      version: 1,
+      vat_rate_percent: VAT_RATE_PERCENT,
+      prices_include_vat: PRICES_INCLUDE_VAT,
+      vat_registration: effectivePolicy.vatRegistration,
+      calculated_as: 'vat_registered',
+      treatment: isVatExemptDiscountType(data.discountType) ? 'vat_exempt' : 'vatable',
+      discount_basis: discountAmount > 0 ? (isVatExemptDiscountType(data.discountType) ? 'vat_exclusive' : 'vat_inclusive') : null,
+      discount_rate_source: rateType ? effectivePolicy.sources[rateType] : null,
+      require_discount_choice: effectivePolicy.requireDiscountChoice,
+      discount_choice: data.discountChoice ?? null,
+      selected_discount_id: data.selectedDiscount?.promotionId ?? null,
+    };
 
     let changeGiven: number | null = null;
     if (data.paymentMethod === 'cash') {
@@ -2411,6 +2499,7 @@ export const transactionsService = {
             isOfflineTransaction: data.isOfflineTransaction,
             offlineProvisionalNumber: data.offlineProvisionalNumber ?? null,
             notes: data.notes ?? null,
+            taxSnapshot: taxSnapshot as unknown as Prisma.InputJsonValue,
             // Task 209.47 — only persisted for offline-synced sales (the
             // idempotency key this backs is offlineProvisionalNumber-scoped
             // and that field is itself only ever set for offline sales); a
@@ -2774,6 +2863,7 @@ export const transactionsService = {
               offlineProvisionalNumber: item.offlineProvisionalNumber,
               deviceId: data.deviceId,
               taxBasis: item.taxBasis,
+              discountChoice: item.discountChoice,
             },
             ipAddress,
           );

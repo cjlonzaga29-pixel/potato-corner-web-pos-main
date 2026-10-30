@@ -415,21 +415,28 @@ describe('settingsService.updateDiscountPolicy', () => {
     );
   });
 
-  it('a Supervisor may update the Employee rate (adminOrSupervisor is enforced at the router, not the service)', async () => {
+  // POS-PERF-P50R — a supervisor's save here used to change every branch.
+  it('P50R: a Supervisor can no longer change the organization-wide policy (403, nothing written or audited)', async () => {
     vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue(null);
-    vi.mocked(settingsRepository.upsertSystemSetting).mockResolvedValue({
-      id: 'setting-1',
-      key: 'discount_policy',
-      value: {},
-      description: null,
-      updatedBy: 'supervisor-1',
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    } as never);
+    vi.mocked(settingsRepository.upsertSystemSetting).mockClear();
+    const { recordAuditLog } = await import('../../middleware/audit-log.js');
+    vi.mocked(recordAuditLog).mockClear();
 
-    const result = await settingsService.updateDiscountPolicy({ employee: { percentage: 15 } }, SUPERVISOR_ACTOR, null);
+    await expect(settingsService.updateDiscountPolicy({ employee: { percentage: 15 } }, SUPERVISOR_ACTOR, null)).rejects.toMatchObject({
+      code: 'ORGANIZATION_DISCOUNTS_ADMIN_ONLY',
+      statusCode: 403,
+    });
+    expect(settingsRepository.upsertSystemSetting).not.toHaveBeenCalled();
+    expect(recordAuditLog).not.toHaveBeenCalled();
+  });
 
-    expect(result.employee.percentage).toBe(15);
+  it('P50R: a Super Admin may raise the PWD rate above 20% (RA 10754 "at least 20%") but Senior stays exactly 20%', async () => {
+    vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue(null);
+    vi.mocked(settingsRepository.upsertSystemSetting).mockResolvedValue({ updatedAt: new Date() } as never);
+
+    const raised = await settingsService.updateDiscountPolicy({ pwd: { percentage: 25 } }, ACTOR, null);
+    expect(raised.pwd.percentage).toBe(25);
+    await expect(settingsService.updateDiscountPolicy({ senior_citizen: { percentage: 25 } }, ACTOR, null)).rejects.toMatchObject({ code: 'STATUTORY_DISCOUNT_LOCKED' });
   });
 
   it('P50: refuses any change to the statutory PWD/Senior Citizen rate or enabled state, for every role, and writes nothing', async () => {
@@ -441,8 +448,9 @@ describe('settingsService.updateDiscountPolicy', () => {
     const attempts = [
       [ACTOR, { pwd: { percentage: 10 } }],
       [ACTOR, { senior_citizen: { percentage: 25 } }],
-      [SUPERVISOR_ACTOR, { senior_citizen: { percentage: 15 } }],
-      [SUPERVISOR_ACTOR, { pwd: { isEnabled: false } }],
+      [ACTOR, { senior_citizen: { percentage: 15 } }],
+      [ACTOR, { pwd: { isEnabled: false } }],
+      [ACTOR, { senior_citizen: { isEnabled: false } }],
     ] as const;
     for (const [actor, input] of attempts) {
       await expect(settingsService.updateDiscountPolicy(input, actor, null)).rejects.toMatchObject({ code: 'STATUTORY_DISCOUNT_LOCKED', statusCode: 422 });

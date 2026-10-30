@@ -7,6 +7,17 @@ import { z } from 'zod';
 export const PROMOTION_DISCOUNT_KINDS = ['percentage', 'fixed_amount'] as const;
 export type PromotionDiscountKind = (typeof PROMOTION_DISCOUNT_KINDS)[number];
 
+/**
+ * POS-PERF-P50R — how a discount reaches a sale. 'automatic' is the P49
+ * behavior (applied to eligible items without cashier action). A
+ * 'cashier_selected' discount is offered in the POS discount picker and
+ * applies only when the cashier chooses it for the sale; it is one sale-level
+ * discount, so it never combines with automatic promotions or with
+ * PWD/Senior/Employee.
+ */
+export const PROMOTION_APPLICATION_MODES = ['automatic', 'cashier_selected'] as const;
+export type PromotionApplicationMode = (typeof PROMOTION_APPLICATION_MODES)[number];
+
 /** Upper bound for a fixed per-unit amount; far above any menu price. */
 export const PROMOTION_MAX_FIXED_AMOUNT = 100_000;
 const MAX_PROMOTION_PRODUCTS = 200;
@@ -45,6 +56,9 @@ const promotionFields = {
   discount_kind: z.enum(PROMOTION_DISCOUNT_KINDS),
   discount_value: z.number().positive('Enter an amount greater than 0').refine(hasTwoDecimals, { message: 'Use at most 2 decimal places' }),
   is_enabled: z.boolean().default(true),
+  // POS-PERF-P50R — omitted by an older (P49) editor: 'automatic' on create,
+  // and on update the stored mode is kept (never silently flipped).
+  application_mode: z.enum(PROMOTION_APPLICATION_MODES).optional(),
   // Asia/Manila calendar dates, both inclusive. null/omitted = open-ended.
   starts_on: z.iso.date().nullable().optional(),
   ends_on: z.iso.date().nullable().optional(),
@@ -88,6 +102,7 @@ export const promotionResponseSchema = z.object({
   discount_kind: z.enum(PROMOTION_DISCOUNT_KINDS),
   discount_value: z.number(),
   is_enabled: z.boolean(),
+  application_mode: z.enum(PROMOTION_APPLICATION_MODES),
   starts_on: z.iso.date().nullable(),
   ends_on: z.iso.date().nullable(),
   /** 'active' | 'scheduled' | 'expired' | 'disabled' — evaluated now, Asia/Manila. */
@@ -111,6 +126,8 @@ export const promotionEligibleProductSchema = z.object({
   branch_ids: z.array(z.uuid()),
   /** null when selectable; otherwise why it can't be selected. */
   ineligible_reason: z.string().nullable(),
+  /** POS-PERF-P50R — the same for a cashier-selected discount (Regular products allowed). Absent from older APIs. */
+  cashier_selected_ineligible_reason: z.string().nullable().optional(),
   variants: z.array(z.object({ id: z.uuid(), name: z.string(), base_price: z.number(), is_active: z.boolean() })),
 });
 
@@ -125,4 +142,29 @@ export const cartItemPromotionAckSchema = z
     unit_discount: z.number().nonnegative(),
   })
   .nullable()
+  .optional();
+
+/**
+ * POS-PERF-P50R — a cashier-selected discount as the POS catalog offers it
+ * for one branch: active now, at this branch, with the products it applies
+ * to. The POS prices eligible lines with computePromotionUnitDiscount; the
+ * server re-resolves and refuses any difference (PROMOTION_CHANGED).
+ */
+export const posSelectableDiscountSchema = z.object({
+  promotion_id: z.uuid(),
+  name: z.string(),
+  discount_kind: z.enum(PROMOTION_DISCOUNT_KINDS),
+  discount_value: z.number(),
+  version: z.number().int(),
+  ends_on: z.iso.date().nullable(),
+  /** product_variant_id -> unit discount for every eligible size at this branch (server-computed). */
+  unit_discounts: z.record(z.string(), z.number()),
+});
+
+/** Checkout field naming the cashier-selected discount the screen showed (id + version). */
+export const selectedDiscountAckSchema = z
+  .object({
+    promotion_id: z.uuid(),
+    version: z.number().int().positive(),
+  })
   .optional();

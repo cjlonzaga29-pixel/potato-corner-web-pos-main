@@ -43,7 +43,7 @@ export function cartLinePromotionAck(promotion: CartLinePromotion | null | undef
 }
 
 export const PROMOTION_STATUS_NOTES: Record<Exclude<CartPromotionStatus, 'applied'>, string> = {
-  not_combinable: 'not combined with PWD/Senior/Employee — regular price',
+  not_combinable: 'not combined with the chosen discount — regular price',
   offline: 'unavailable offline — regular price',
 };
 

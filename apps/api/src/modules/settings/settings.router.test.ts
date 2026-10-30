@@ -13,6 +13,7 @@ import { randomUUID } from 'node:crypto';
 vi.mock('./settings.service.js', () => ({
   settingsService: {
     getDiscountPolicy: vi.fn(),
+    getDiscountPolicyFor: vi.fn(),
     updateDiscountPolicy: vi.fn(),
     getTaxConfiguration: vi.fn(),
     getWorkHoursPolicy: vi.fn(),
@@ -98,7 +99,7 @@ describe('GET /discount-policy — all roles may read (Cashier/Staff and Branch 
     ['staff', () => generateStaffToken(BRANCH_1)],
     ['branch account', () => generateBranchToken(BRANCH_1)],
   ])('%s can GET the discount policy — 200', async (_label, makeToken) => {
-    vi.mocked(settingsService.getDiscountPolicy).mockResolvedValue(DEFAULT_POLICY as never);
+    vi.mocked(settingsService.getDiscountPolicyFor).mockResolvedValue(DEFAULT_POLICY as never);
     const handlers = getRouteHandlers(settingsRouter, 'get', '/discount-policy');
     const req = mockReq(authHeader(makeToken()));
     const res = mockRes();
@@ -106,7 +107,19 @@ describe('GET /discount-policy — all roles may read (Cashier/Staff and Branch 
     await runHandlers(handlers, req, res);
 
     expect(res.status).toHaveBeenCalledWith(200);
-    expect(settingsService.getDiscountPolicy).toHaveBeenCalled();
+    // POS-PERF-P50R — the service scopes staff/branch callers to their own branch.
+    expect(settingsService.getDiscountPolicyFor).toHaveBeenCalledWith(expect.objectContaining({ user_id: expect.any(String) }), undefined);
+  });
+
+  it('POS-PERF-P50R: a malformed ?branch_id= is a 400 and never reaches the service', async () => {
+    const handlers = getRouteHandlers(settingsRouter, 'get', '/discount-policy');
+    const req = mockReq({ ...authHeader(generateSupervisorToken([BRANCH_1])), query: { branch_id: 'not-a-uuid' } as never });
+    const res = mockRes();
+
+    await runHandlers(handlers, req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(settingsService.getDiscountPolicyFor).not.toHaveBeenCalled();
   });
 
   it('an unauthenticated request (no Bearer token) gets 401, never reaches the service', async () => {
@@ -117,7 +130,7 @@ describe('GET /discount-policy — all roles may read (Cashier/Staff and Branch 
     await runHandlers(handlers, req, res);
 
     expect(res.status).toHaveBeenCalledWith(401);
-    expect(settingsService.getDiscountPolicy).not.toHaveBeenCalled();
+    expect(settingsService.getDiscountPolicyFor).not.toHaveBeenCalled();
   });
 });
 

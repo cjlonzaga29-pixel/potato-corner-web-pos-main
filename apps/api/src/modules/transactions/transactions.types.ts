@@ -64,6 +64,10 @@ export interface CreateTransactionData {
   notes?: string;
   /** POS-PERF-P50 — the VAT/discount rates the cashier's total was computed with; a mismatch is refused (TAX_SETTINGS_CHANGED). Absent = no check. */
   taxBasis?: TaxBasis;
+  /** POS-PERF-P50R — the cashier-selected custom discount the screen showed (id + version). */
+  selectedDiscount?: { promotionId: string; version: number };
+  /** POS-PERF-P50R — the cashier's explicit decision when the branch requires one. */
+  discountChoice?: 'selected' | 'none_applicable';
 }
 
 export interface TaxBasis {
@@ -125,6 +129,7 @@ export interface OfflineTransactionItemInput {
   gcashReferenceNumber?: string;
   gcashManuallyVerified?: boolean;
   taxBasis?: TaxBasis;
+  discountChoice?: 'selected' | 'none_applicable';
   clientCreatedAt: number;
 }
 

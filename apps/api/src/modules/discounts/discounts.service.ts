@@ -46,6 +46,7 @@ function toPromotionResponse(row: PromotionRow, todayKey: string, liveBranchIds:
     discount_kind: row.discountKind,
     discount_value: row.discountValue.toNumber(),
     is_enabled: row.isEnabled,
+    application_mode: row.applicationMode,
     starts_on: startsOn,
     ends_on: endsOn,
     schedule_state: promotionScheduleState({ isEnabled: row.isEnabled, startsOn, endsOn }, todayKey),
@@ -62,17 +63,23 @@ function toPromotionResponse(row: PromotionRow, todayKey: string, liveBranchIds:
 }
 
 function toEligibleProduct(row: ProductForPromotionRow, visibleBranchIds: Set<string>): PromotionEligibleProduct {
+  const reasonFor = (mode: 'automatic' | 'cashier_selected') =>
+    productIneligibilityReason(
+      {
+        classification: row.classification,
+        status: row.status,
+        variants: row.variants.map((v) => ({ vatableCapAmount: v.vatableCapAmount?.toNumber() ?? null })),
+      },
+      mode,
+    );
   return {
     id: row.id,
     name: row.name,
     classification: row.classification,
     status: row.status,
     branch_ids: row.branchAvailability.map((a) => a.branchId).filter((id) => visibleBranchIds.has(id)),
-    ineligible_reason: productIneligibilityReason({
-      classification: row.classification,
-      status: row.status,
-      variants: row.variants.map((v) => ({ vatableCapAmount: v.vatableCapAmount?.toNumber() ?? null })),
-    }),
+    ineligible_reason: reasonFor('automatic'),
+    cashier_selected_ineligible_reason: reasonFor('cashier_selected'),
     variants: row.variants.map((v) => ({ id: v.id, name: v.name, base_price: v.basePrice.toNumber(), is_active: v.isActive })),
   };
 }
@@ -102,7 +109,7 @@ async function assertBranchesWritable(branchIds: string[], live: string[]): Prom
 }
 
 /** Re-validates every selected product server-side; never trusts the editor's list. */
-async function assertProductsEligible(productIds: string[], branchIds: string[]): Promise<void> {
+async function assertProductsEligible(productIds: string[], branchIds: string[], mode: 'automatic' | 'cashier_selected'): Promise<void> {
   const rows = await discountsRepository.findProductsByIds(productIds);
   const byId = new Map(rows.map((row) => [row.id, row]));
   const problems: { product_id: string; product_name: string | null; reason: string }[] = [];
@@ -112,7 +119,8 @@ async function assertProductsEligible(productIds: string[], branchIds: string[])
       problems.push({ product_id: productId, product_name: null, reason: 'Product not found.' });
       continue;
     }
-    const reason = toEligibleProduct(row, new Set(branchIds)).ineligible_reason;
+    const eligible = toEligibleProduct(row, new Set(branchIds));
+    const reason = mode === 'automatic' ? eligible.ineligible_reason : eligible.cashier_selected_ineligible_reason;
     if (reason) {
       problems.push({ product_id: productId, product_name: row.name, reason });
       continue;
@@ -136,6 +144,7 @@ function toWriteData(input: {
   discount_kind: 'percentage' | 'fixed_amount';
   discount_value: number;
   is_enabled: boolean;
+  application_mode?: 'automatic' | 'cashier_selected';
   starts_on?: string | null;
   ends_on?: string | null;
   product_ids: string[];
@@ -146,6 +155,7 @@ function toWriteData(input: {
     discountKind: input.discount_kind,
     discountValue: input.discount_value,
     isEnabled: input.is_enabled,
+    applicationMode: input.application_mode ?? 'automatic',
     startsOn: input.starts_on ?? null,
     endsOn: input.ends_on ?? null,
     productIds: input.product_ids,
@@ -199,7 +209,7 @@ export const discountsService = {
     const live = await requireSupervisorLiveBranches(actorRef);
     const data = toWriteData(input);
     await assertBranchesWritable(data.branchIds, live);
-    await assertProductsEligible(data.productIds, data.branchIds);
+    await assertProductsEligible(data.productIds, data.branchIds, data.applicationMode);
 
     const row = await discountsRepository.createPromotion(data, actor.user_id);
     const response = toPromotionResponse(row, manilaDateKey(now), live, actorRef);
@@ -227,9 +237,10 @@ export const discountsService = {
     const before = await discountsRepository.findPromotionById(promotionId);
     if (!before) throw new DiscountError('PROMOTION_NOT_FOUND', 'Promotion not found', 404);
     assertCanEditExisting(before, live);
-    const data = toWriteData(input);
+    // POS-PERF-P50R — an older (P49) editor sends no mode: keep the stored one.
+    const data = { ...toWriteData(input), applicationMode: input.application_mode ?? before.applicationMode };
     await assertBranchesWritable(data.branchIds, live);
-    await assertProductsEligible(data.productIds, data.branchIds);
+    await assertProductsEligible(data.productIds, data.branchIds, data.applicationMode);
 
     const row = await discountsRepository.updatePromotion(promotionId, input.expected_version, data, actor.user_id);
     if (!row) throw new DiscountError('PROMOTION_CONFLICT', CONFLICT_MESSAGE, 409);
@@ -265,6 +276,7 @@ export const discountsService = {
       await assertProductsEligible(
         before.products.map((p) => p.productId),
         before.branches.map((b) => b.branchId),
+        before.applicationMode,
       );
     }
     const row = await discountsRepository.setPromotionEnabled(promotionId, input.expected_version, input.is_enabled, actor.user_id);
@@ -344,7 +356,54 @@ export const discountsService = {
         version: selected.promotion.version,
         endsOn: selected.promotion.endsOn,
         unitDiscount: selected.unitDiscount,
+        applicationMode: 'automatic',
       });
+    }
+    return result;
+  },
+
+  /**
+   * POS-PERF-P50R — cashier-selected discounts active now at this branch,
+   * each with the unit discount it gives every eligible line (keyed by
+   * productVariantId). Same branch binding, schedule, eligibility and
+   * pricing rules as automatic promotions, except that Regular products may
+   * be named. A line with a VATable cap, or an archived/discontinued
+   * product, is never discounted. Used by the POS catalog (display) and by
+   * checkout (authoritative, narrowed to the claimed id).
+   */
+  async resolveSelectableDiscounts(
+    branchId: string,
+    lines: readonly PromotionPricingLine[],
+    options: { promotionId?: string; now?: Date } = {},
+  ): Promise<{ promotion: PromotionCandidate; unitDiscounts: Map<string, number> }[]> {
+    const promotions = await discountsRepository.findEnabledSelectableDiscounts(branchId, options.promotionId);
+    if (promotions.length === 0) return [];
+    const productIds = [...new Set(lines.map((line) => line.productId))];
+    const products = productIds.length > 0 ? await discountsRepository.findProductClassifications(productIds) : [];
+    const sellable = new Set(products.filter((p) => !NON_PROMOTABLE_STATUSES.includes(p.status)).map((p) => p.id));
+    const todayKey = manilaDateKey(options.now ?? new Date());
+    const result: { promotion: PromotionCandidate; unitDiscounts: Map<string, number> }[] = [];
+    for (const row of promotions) {
+      const candidate: PromotionCandidate = {
+        id: row.id,
+        name: row.name,
+        discountKind: row.discountKind,
+        discountValue: row.discountValue.toNumber(),
+        isEnabled: row.isEnabled,
+        startsOn: fromDateColumn(row.startsOn),
+        endsOn: fromDateColumn(row.endsOn),
+        version: row.version,
+        createdAt: row.createdAt,
+      };
+      if (promotionScheduleState(candidate, todayKey) !== 'active') continue;
+      const named = new Set(row.products.map((p) => p.productId));
+      const unitDiscounts = new Map<string, number>();
+      for (const line of lines) {
+        if (line.vatableCapAmount !== null || !named.has(line.productId) || !sellable.has(line.productId)) continue;
+        const unitDiscount = selectPromotionForUnit([candidate], line.basePrice, todayKey)?.unitDiscount ?? 0;
+        if (unitDiscount > 0) unitDiscounts.set(line.productVariantId, unitDiscount);
+      }
+      result.push({ promotion: candidate, unitDiscounts });
     }
     return result;
   },

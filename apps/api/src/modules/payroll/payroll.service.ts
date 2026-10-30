@@ -154,7 +154,19 @@ async function loadRunInBranch(branchId: string, runId: string, client: Prisma.T
 }
 
 /** Live calculation for a draft from current attendance, rates, policy, adjustments and resolutions. */
-async function computeRun(run: PayrollRun, client: Prisma.TransactionClient | typeof prisma = prisma): Promise<{ calc: CalcResult; policy: PayrollPolicy | null }> {
+/**
+ * POS-PERF-P54 — `regularShiftMinutes` is resolved by the caller. The locked
+ * write paths (finalize, adjustments, resolutions) read it BEFORE opening
+ * their transaction: settingsService has no tx client, and a second pooled
+ * connection taken while holding the branch lock starves the pool when
+ * several reviewers act at once (the waiters each hold a connection), so the
+ * lock holder timed out (P2024) instead of the others getting 409.
+ */
+async function computeRun(
+  run: PayrollRun,
+  regularShiftMinutes: number,
+  client: Prisma.TransactionClient | typeof prisma = prisma,
+): Promise<{ calc: CalcResult; policy: PayrollPolicy | null }> {
   const policy = await repo.findCurrentPolicy(run.branchId, client);
   const periodStart = dateKeyOf(run.periodStart);
   const periodEnd = dateKeyOf(run.periodEnd);
@@ -162,14 +174,13 @@ async function computeRun(run: PayrollRun, client: Prisma.TransactionClient | ty
   const adjustmentRows = await repo.listAdjustments(run.id, client);
   const employeeIds = [...new Set([...records.map((r) => r.employeeId), ...adjustmentRows.map((a) => a.employeeId)])];
   const window = policy ? periodWindow(periodStart, periodEnd, policy.timezone) : null;
-  const [employees, others, rates, resolutions, regularShiftMinutes, previousLines] = await Promise.all([
+  const [employees, others, rates, resolutions, previousLines] = await Promise.all([
     repo.findEmployeesForCalc(employeeIds, run.branchId, client),
     window
       ? repo.findEmployeeRecordsNear(employeeIds, new Date(window.from.getTime() - OVERLAP_MARGIN_MS), new Date(window.to.getTime() + OVERLAP_MARGIN_MS), client)
       : Promise.resolve([]),
     repo.listLiveRates(run.branchId, employeeIds, client),
     repo.listResolutions(run.id, client),
-    settingsService.getRegularShiftMinutes(run.branchId),
     run.revisionOfId ? repo.listLines(run.revisionOfId, client) : Promise.resolve(null),
   ]);
 
@@ -427,7 +438,7 @@ export const payrollService = {
   async buildDetail(run: PayrollRun, branchName: string, employeeFilter: string | null): Promise<PayrollRunDetail> {
     const summary = toRunSummary(run);
     if (run.status === 'draft' || run.status === 'discarded') {
-      const { calc, policy } = await computeRun(run);
+      const { calc, policy } = await computeRun(run, await settingsService.getRegularShiftMinutes(run.branchId));
       const employees = employeeFilter ? calc.employees.filter((e) => e.employee_id === employeeFilter) : calc.employees;
       return {
         ...summary,
@@ -512,11 +523,12 @@ export const payrollService = {
   async addAdjustment(actor: JwtPayload, branchId: string, runId: string, input: PayrollAdjustmentCreateInput): Promise<PayrollAdjustmentView> {
     await assertPayrollScope(actor, branchId);
     const name = await actorName(actor);
+    const regularShiftMinutes = await settingsService.getRegularShiftMinutes(branchId);
     return prisma.$transaction(async (tx) => {
       await repo.lock(tx, payrollBranchLockId(branchId));
       const run = await loadRunInBranch(branchId, runId, tx);
       if (run.status !== 'draft') throw new PayrollError('RUN_NOT_DRAFT', 'Adjustments can only be added to a draft', 409);
-      const { calc } = await computeRun(run, tx);
+      const { calc } = await computeRun(run, regularShiftMinutes, tx);
       if (!calc.employees.some((e) => e.employee_id === input.employee_id)) {
         throw new PayrollError('EMPLOYEE_NOT_IN_RUN', 'This employee has no attendance at this branch in this period', 404);
       }
@@ -582,12 +594,13 @@ export const payrollService = {
   async addResolution(actor: JwtPayload, branchId: string, runId: string, input: PayrollResolutionCreateInput): Promise<{ issue_key: string }> {
     await assertPayrollScope(actor, branchId);
     const name = await actorName(actor);
+    const regularShiftMinutes = await settingsService.getRegularShiftMinutes(branchId);
     try {
       return await prisma.$transaction(async (tx) => {
         await repo.lock(tx, payrollBranchLockId(branchId));
         const run = await loadRunInBranch(branchId, runId, tx);
         if (run.status !== 'draft') throw new PayrollError('RUN_NOT_DRAFT', 'Issues can only be resolved on a draft', 409);
-        const { calc } = await computeRun(run, tx);
+        const { calc } = await computeRun(run, regularShiftMinutes, tx);
         const issue = calc.issues.find((i) => i.key === input.issue_key);
         if (!issue || issue.severity !== 'special_pay') {
           throw new PayrollError('ISSUE_NOT_RESOLVABLE', 'Only an open special-pay issue on this draft can be resolved with a note', 422);
@@ -616,13 +629,14 @@ export const payrollService = {
   async finalize(actor: JwtPayload, branchId: string, runId: string, input: PayrollFinalizeInput): Promise<PayrollRunSummary> {
     await assertPayrollScope(actor, branchId);
     const name = await actorName(actor);
+    const regularShiftMinutes = await settingsService.getRegularShiftMinutes(branchId);
     try {
       return await prisma.$transaction(async (tx) => {
         await repo.lock(tx, payrollBranchLockId(branchId));
         const run = await loadRunInBranch(branchId, runId, tx);
         if (run.status !== 'draft') throw new PayrollError('RUN_NOT_DRAFT', `This payroll is already ${run.status}`, 409, { status: run.status });
 
-        const { calc, policy } = await computeRun(run, tx);
+        const { calc, policy } = await computeRun(run, regularShiftMinutes, tx);
         if (calc.fingerprint !== input.expected_fingerprint) {
           throw new PayrollError('STALE_PREVIEW', 'Attendance, rates, settings or adjustments changed since you reviewed this draft. Review the updated figures, then finalize again.', 409, {
             current_fingerprint: calc.fingerprint,

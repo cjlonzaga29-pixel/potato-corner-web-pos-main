@@ -328,6 +328,46 @@ describe('attendanceService.manualOverride with an open break', () => {
   });
 });
 
+// POS-PERF-P54 — the correction row has no intervals, so payroll falls back to
+// its break_minutes; it must carry the recorded break time, not the 0 an
+// open record holds before clock-out.
+describe('attendanceService.manualOverride carries recorded break time', () => {
+  const SUPERVISOR = { id: 'sup', role: 'supervisor' };
+  beforeEach(() => {
+    vi.mocked(attendanceRepository.findBranchAssignment).mockResolvedValue({ id: 'assignment' } as never);
+    // Only the arguments are asserted; the returned row just has to be a valid record.
+    vi.mocked(attendanceRepository.createOverride).mockResolvedValue(record({ originalRecordId: RECORD }) as never);
+  });
+
+  it('a forgotten clock-out with resumed breaks keeps their total (open record stores 0 until clock-out)', async () => {
+    const breaks = [interval(BREAK_1, '2026-10-30T03:00:00.000Z', '2026-10-30T03:45:00.000Z'), interval(BREAK_2, '2026-10-30T06:00:00.000Z', '2026-10-30T06:15:00.000Z')];
+    vi.mocked(attendanceRepository.findById).mockResolvedValue(record({ breaks }) as never);
+
+    await attendanceService.manualOverride(RECORD, { correctionReason: 'forgot to clock out', clockOutServerTime: at('2026-10-30T09:00:00.000Z') }, SUPERVISOR);
+
+    expect(vi.mocked(attendanceRepository.createOverride).mock.calls[0]?.[0]).toMatchObject({ breakMinutes: 60, actualWorkMinutes: 480 });
+  });
+
+  it('only the part of a break inside the corrected shift counts; an explicit break_minutes still wins', async () => {
+    const breaks = [interval(BREAK_1, '2026-10-30T07:30:00.000Z', '2026-10-30T08:30:00.000Z')];
+    vi.mocked(attendanceRepository.findById).mockResolvedValue(record({ clockOutServerTime: at('2026-10-30T09:00:00.000Z'), breakMinutes: 60, breaks }) as never);
+
+    await attendanceService.manualOverride(RECORD, { correctionReason: 'left at 16:00', clockOutServerTime: at('2026-10-30T08:00:00.000Z') }, SUPERVISOR);
+    expect(vi.mocked(attendanceRepository.createOverride).mock.calls[0]?.[0]).toMatchObject({ breakMinutes: 30 });
+
+    await attendanceService.manualOverride(RECORD, { correctionReason: 'break was 10 min', breakMinutes: 10 }, SUPERVISOR);
+    expect(vi.mocked(attendanceRepository.createOverride).mock.calls[1]?.[0]).toMatchObject({ breakMinutes: 10 });
+  });
+
+  it('a record without intervals keeps its stored legacy break_minutes', async () => {
+    vi.mocked(attendanceRepository.findById).mockResolvedValue(record({ clockOutServerTime: at('2026-10-30T09:00:00.000Z'), breakMinutes: 45 }) as never);
+
+    await attendanceService.manualOverride(RECORD, { correctionReason: 'fix clock-in', clockInServerTime: at('2026-10-30T00:30:00.000Z') }, SUPERVISOR);
+
+    expect(vi.mocked(attendanceRepository.createOverride).mock.calls[0]?.[0]).toMatchObject({ breakMinutes: 45 });
+  });
+});
+
 describe('attendanceService.getBranchSummary — On Break shown separately', () => {
   it('keeps on-break staff in clocked_in (KPI reconciliation) but marks them and counts them', async () => {
     const employee = { firstName: 'Ana', lastName: 'Reyes', isActive: true, status: 'active', branchAssignments: [{ id: 'a' }] };

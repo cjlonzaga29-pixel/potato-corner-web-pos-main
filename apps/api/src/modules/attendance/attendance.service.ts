@@ -133,6 +133,24 @@ export function computeAttendanceTimes(
   return { state, openBreakStartedAt: openBreak?.startedAt ?? null, breakMs, workMs: Math.max(0, totalMs - breakMs) };
 }
 
+/**
+ * POS-PERF-P54 — break minutes a correction carries over: the record's closed
+ * intervals clipped to the corrected shift when it has any (an open record's
+ * intervals are only reachable here once every break has ended — see
+ * manualOverride), otherwise its stored break_minutes.
+ */
+function recordedBreakMinutes(record: Pick<AttendanceRow, 'breakMinutes' | 'breaks'>, clockIn: Date, clockOut: Date | null): number {
+  const breaks = record.breaks ?? [];
+  if (breaks.length === 0) return record.breakMinutes;
+  const breakMs = breaks.reduce((sum, b) => {
+    if (b.endedAt === null) return sum;
+    const start = Math.max(b.startedAt.getTime(), clockIn.getTime());
+    const end = Math.min(b.endedAt.getTime(), clockOut?.getTime() ?? b.endedAt.getTime());
+    return sum + Math.max(0, end - start);
+  }, 0);
+  return Math.round(breakMs / 60000);
+}
+
 /** Whichever is later — keeps a new timestamp from ever landing before one already recorded for this record (guards against clock differences between API instances). */
 function notBefore(candidate: Date, floor: Date | null | undefined): Date {
   return floor && floor.getTime() > candidate.getTime() ? floor : candidate;
@@ -530,7 +548,12 @@ export const attendanceService = {
     const clockInServerTime = overrideData.clockInServerTime ?? original.clockInServerTime;
     const clockOutServerTime =
       overrideData.clockOutServerTime !== undefined ? overrideData.clockOutServerTime : original.clockOutServerTime;
-    const breakMinutes = overrideData.breakMinutes ?? original.breakMinutes;
+    // POS-PERF-P54 — break_minutes is only written at clock-out, so a record
+    // corrected while still open ("forgot to clock out") holds 0 there even
+    // when it has recorded, resumed breaks. The correction has no intervals of
+    // its own, so carry the recorded intervals' total (within the corrected
+    // shift) — otherwise payroll would pay that break time as work.
+    const breakMinutes = overrideData.breakMinutes ?? recordedBreakMinutes(original, clockInServerTime, clockOutServerTime);
     const actualWorkMinutes = clockOutServerTime
       ? Math.max(0, Math.round((clockOutServerTime.getTime() - clockInServerTime.getTime()) / 60000) - breakMinutes)
       : null;

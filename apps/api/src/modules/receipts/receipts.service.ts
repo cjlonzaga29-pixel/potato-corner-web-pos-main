@@ -2,6 +2,13 @@ import { receiptsRepository } from './receipts.repository.js';
 import { ReceiptError, type PublicReceiptResponse } from './receipts.types.js';
 import type { SelectedOptionSnapshot } from '../transactions/transactions.repository.js';
 
+/** POS-PERF-P49 — the frozen promotion name from TransactionItem.promotionSnapshot, never the live promotion row. */
+function promotionName(snapshot: unknown): string | null {
+  if (!snapshot || typeof snapshot !== 'object') return null;
+  const name = (snapshot as { name?: unknown }).name;
+  return typeof name === 'string' ? name : null;
+}
+
 /**
  * Receipts business logic. Called by the router after Zod validation;
  * never calls Prisma directly — always goes through receiptsRepository.
@@ -27,6 +34,8 @@ export const receiptsService = {
           option_name: option.optionName,
           price_adjustment: option.priceAdjustment,
         })),
+        discount_amount: item.discountAmount.toNumber(),
+        promotion_name: promotionName(item.promotionSnapshot),
       })),
       subtotal: transaction.subtotal.toNumber(),
       discount_amount: transaction.discountAmount.toNumber(),

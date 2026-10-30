@@ -235,10 +235,12 @@ vi.mock('@/hooks/queries/use-transactions', () => ({
   // against the actual constructor.
   TransactionApiError: class TransactionApiError extends Error {
     code?: string;
-    constructor(message: string, code?: string) {
+    details?: unknown;
+    constructor(message: string, code?: string, details?: unknown) {
       super(message);
       this.name = 'TransactionApiError';
       this.code = code;
+      this.details = details;
     }
   },
 }));
@@ -3812,5 +3814,114 @@ describe('TerminalPage — P46R3 option recovery and offline queue', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(mockRetryOfflineSale).toHaveBeenCalledWith('PC-branch-1-20260101-OFFLINE-0001');
     mockUseOffline.mockReturnValue(base);
+  });
+});
+
+// POS-PERF-P49 — product promotions on the terminal. The catalog carries the
+// server-resolved promotion per size; the terminal shows it, applies it only
+// online with no PWD/Senior/Employee discount, and sends what it showed as an
+// acknowledgement (never a price). A PROMOTION_CHANGED refusal keeps the cart,
+// re-reads prices from the network and offers only "Review updated prices".
+describe('TerminalPage — P49 product promotions', () => {
+  const PROMO = { promotion_id: '11111111-1111-4111-8111-111111111111', name: 'Ten Off', discount_kind: 'fixed_amount' as const, discount_value: 10, unit_discount: 10, ends_on: null };
+  const promoCatalog = (promotion: typeof PROMO | null = PROMO) => catalogWith([slotVariant({ flavors: [], flavor_slots: [], promotion })]);
+
+  beforeEach(() => {
+    mockUseAuth.mockReturnValue({ user: STAFF_USER, selectEmployee: mockSelectEmployee, refreshEmployeeSession: mockRefreshEmployeeSession });
+    useAuthStore.setState({ user: STAFF_USER, accessToken: 'staff-token', isAuthenticated: true, isLoading: false });
+    mockUseCatalog.mockReturnValue({ data: promoCatalog(), isLoading: false });
+    mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isLoading: false });
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' }, isLoading: false });
+    mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 2 }]);
+    mockCreateTransactionMutateAsync.mockReset().mockResolvedValue({});
+    mockClearCart.mockClear();
+    mockConfirmCatalog.mockReset();
+  });
+
+  afterEach(() => cleanup());
+
+  function charge(cash = '500') {
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: cash } });
+    fireEvent.click(screen.getByRole('button', { name: /^Charge/ }));
+  }
+
+  it('shows the promotion, totals the discounted price and acknowledges exactly what was shown', async () => {
+    render(<TerminalPage />);
+    expect(screen.getAllByTestId('cart-line-promotion')[0]).toHaveTextContent('Promo: Ten Off −₱10.00 each');
+    openCheckout();
+    // 2 × ₱100 = ₱200 gross, ₱20 promotion → ₱180.
+    expect(screen.getByRole('button', { name: /^Charge/ })).toHaveTextContent('180.00');
+    charge();
+
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalled());
+    const payload = mockCreateTransactionMutateAsync.mock.calls[0]?.[0] as CreateTransactionInput;
+    expect(payload.items[0]?.promotion).toEqual({ promotion_id: PROMO.promotion_id, unit_discount: 10 });
+    expect(payload.discount_type).toBeUndefined();
+    expect(payload.discount_amount).toBeUndefined();
+  });
+
+  it('never offers the old typed-amount "Promotional" discount', () => {
+    render(<TerminalPage />);
+    openCheckout();
+    expect(screen.queryByRole('button', { name: 'Promotional' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'PWD (20%)' })).toBeInTheDocument();
+  });
+
+  it('does not combine with PWD/Senior: regular price, explained on the line, and no acknowledgement sent', async () => {
+    render(<TerminalPage />);
+    openCheckout();
+    fireEvent.click(screen.getByRole('button', { name: 'PWD (20%)' }));
+    fireEvent.change(screen.getByPlaceholderText('PWD / Senior Citizen ID number'), { target: { value: 'PWD-1' } });
+    expect(screen.getAllByTestId('cart-line-promotion')[0]).toHaveTextContent('not combined with PWD/Senior/Employee — regular price');
+    charge();
+
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalled());
+    const payload = mockCreateTransactionMutateAsync.mock.calls[0]?.[0] as CreateTransactionInput;
+    expect(payload.discount_type).toBe('pwd');
+    expect(payload.items[0]?.promotion).toBeNull();
+  });
+
+  it('queues an offline sale at the regular price with no promotion', async () => {
+    const { enqueueOfflineTransaction } = await import('@/lib/offline/sync-queue');
+    vi.mocked(enqueueOfflineTransaction).mockClear().mockResolvedValueOnce('PC-branch-1-20260101-OFFLINE-0002');
+    const base = mockUseOffline();
+    mockUseOffline.mockReturnValue({ ...base, isOnline: false });
+    render(<TerminalPage />);
+    expect(screen.getAllByTestId('cart-line-promotion')[0]).toHaveTextContent('unavailable offline — regular price');
+    expect(screen.queryByTestId('product-card-promotion')).not.toBeInTheDocument();
+    openCheckout();
+    charge();
+
+    await waitFor(() => expect(enqueueOfflineTransaction).toHaveBeenCalled());
+    const queued = vi.mocked(enqueueOfflineTransaction).mock.calls[0]?.[1] as CreateTransactionInput;
+    expect(queued.items[0]?.promotion).toBeNull();
+    expect(vi.mocked(enqueueOfflineTransaction).mock.calls[0]?.[2]).toMatchObject({ totalAmount: 200 });
+    mockUseOffline.mockReturnValue(base);
+  });
+
+  it('a changed promotion keeps the cart, re-reads prices and requires a review before charging again', async () => {
+    const { TransactionApiError } = await import('@/hooks/queries/use-transactions');
+    mockCreateTransactionMutateAsync.mockRejectedValueOnce(
+      new TransactionApiError('A promotion on this order changed since it was added, so the sale was not charged.', 'PROMOTION_CHANGED', {
+        lines: [{ product_name: 'Mega Mix Fries', variant_name: 'Mega Mix', shown: { unit_discount: 10 }, current: null }],
+      }),
+    );
+    mockConfirmCatalog.mockImplementation(async () => {
+      mockUseCatalog.mockReturnValue({ data: promoCatalog(null), isLoading: false });
+      return promoCatalog(null);
+    });
+    render(<TerminalPage />);
+    openCheckout();
+    charge();
+
+    await waitFor(() => expect(screen.getByText('Promotion changed — not charged')).toBeInTheDocument());
+    expect(screen.getAllByText(/Mega Mix Fries \(Mega Mix\): was ₱10\.00 off, now no promotion/).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+    expect(mockConfirmCatalog).toHaveBeenCalledWith('branch-1');
+    expect(mockClearCart).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Review updated prices' }));
+    await waitFor(() => expect(screen.getByTestId('promotion-change-notice')).toHaveTextContent('Total is now ₱200.00 (was ₱180.00)'));
+    expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(1);
   });
 });

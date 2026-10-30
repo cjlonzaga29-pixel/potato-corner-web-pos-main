@@ -139,6 +139,14 @@ vi.mock('../stock-availability/stock-availability.service.js', () => ({
   },
 }));
 
+// POS-PERF-P49 — getPosCatalog asks the promotion resolver once per catalog;
+// these catalog tests cover everything else, so it answers "no promotions".
+vi.mock('../discounts/discounts.service.js', () => ({
+  discountsService: {
+    resolvePromotionsForBranch: vi.fn(async () => new Map()),
+  },
+}));
+
 function readyResult(branchId: string, productVariantId: string): ProductVariantReadinessResult {
   return {
     branchId,
@@ -413,16 +421,35 @@ describe('productsService.createProduct', () => {
     expect(productsRepository.createWithCascade).not.toHaveBeenCalled();
   });
 
-  it('rejects a seasonal product missing both dates', async () => {
-    await expect(
-      productsService.createProduct(
-        { name: 'Halo-Halo Fries', status: 'draft', is_seasonal: true, branch_exclusive: false },
-        SUPER_ADMIN,
-        null,
-      ),
-    ).rejects.toMatchObject({ code: 'SEASONAL_DATES_REQUIRED', statusCode: 422 });
+  // POS-PERF-P49 — the seasonal window is optional; classification is derived from legacy is_seasonal.
+  it('accepts a seasonal product without dates and records classification seasonal', async () => {
+    vi.mocked(productsRepository.createWithCascade).mockResolvedValue(buildCreateResult({ status: 'draft' }) as never);
 
-    expect(productsRepository.createWithCascade).not.toHaveBeenCalled();
+    await productsService.createProduct(
+      { name: 'Halo-Halo Fries', status: 'draft', is_seasonal: true, branch_exclusive: false },
+      SUPER_ADMIN,
+      null,
+    );
+
+    expect(productsRepository.createWithCascade).toHaveBeenCalledWith(
+      expect.objectContaining({ isSeasonal: true, classification: 'seasonal' }),
+      expect.anything(),
+    );
+  });
+
+  it('creates a promotional product as not seasonal, without touching the requested status', async () => {
+    vi.mocked(productsRepository.createWithCascade).mockResolvedValue(buildCreateResult({ status: 'draft' }) as never);
+
+    await productsService.createProduct(
+      { name: 'Promo Fries', status: 'draft', classification: 'promotional', branch_exclusive: false },
+      SUPER_ADMIN,
+      null,
+    );
+
+    expect(productsRepository.createWithCascade).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'draft', isSeasonal: false, classification: 'promotional' }),
+      expect.anything(),
+    );
   });
 
   it('rejects a seasonal product whose end date precedes its start date', async () => {

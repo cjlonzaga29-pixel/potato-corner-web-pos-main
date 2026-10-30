@@ -86,6 +86,7 @@ import {
 import { OrderTabContent } from '@/components/pos/order-tabs-content';
 import { OfflineSalesList } from '@/components/pos/offline-sales-list';
 import { isOptionConfigErrorCode, refreshCartLineOptionDetails, reviewCartLineOptions } from '@/lib/pos/option-recovery';
+import { cartLinePromotionAck, cartLinePromotionDiscount, describePromotionChanges, resolveCartLinePromotion } from '@/lib/pos/cart-promotions';
 import { VoidRefundSaleDialog } from '@/components/pos/void-refund-sale-dialog';
 import { toast } from 'sonner';
 
@@ -281,9 +282,8 @@ const DEFAULT_PREVIEW_DISCOUNT_RATES: PreviewDiscountRates = { pwd: 20, senior_c
  * supervisor changes a rate mid-shift.
  */
 function previewAmounts(
-  cartLines: { lineTotal: number; quantity: number; vatableCapAmount: number | null }[],
+  cartLines: { lineTotal: number; quantity: number; vatableCapAmount: number | null; promotionDiscount?: number }[],
   discountType: DiscountChoice,
-  promoAmount: number,
   discountRates: PreviewDiscountRates = DEFAULT_PREVIEW_DISCOUNT_RATES,
 ) {
   const subtotal = round2(cartLines.reduce((sum, l) => sum + l.lineTotal, 0));
@@ -305,7 +305,8 @@ function previewAmounts(
   }
   let discountAmount = 0;
   if (discountType === 'employee') discountAmount = round2(vatableSubtotal * (discountRates.employee / 100));
-  else if (discountType === 'promotional') discountAmount = round2(promoAmount || 0);
+  // POS-PERF-P49 — product promotions (only ever applied with no transaction discount; see resolveCartLinePromotion).
+  else if (discountType === 'none') discountAmount = round2(cartLines.reduce((sum, l) => sum + (l.promotionDiscount ?? 0), 0));
   const vatableAfterDiscount = round2(vatableSubtotal - discountAmount);
   const vatAmount = round2(vatableAfterDiscount * (12 / 112));
   return { discountAmount, vatAmount, totalAmount: round2(vatableAfterDiscount + nonVatableSubtotal) };
@@ -342,8 +343,10 @@ export default function TerminalPage() {
     [discountRatesPreview],
   );
   const disabledDiscountTypes = useMemo<DiscountChoice[]>(() => {
-    if (!discountPolicy) return [];
-    return (['pwd', 'senior_citizen', 'employee'] as const).filter((type) => !discountPolicy[type].isEnabled);
+    // POS-PERF-P49 — the old typed whole-cart "Promotional" amount is always
+    // refused by the API; product promotions apply automatically instead.
+    if (!discountPolicy) return ['promotional'];
+    return [...(['pwd', 'senior_citizen', 'employee'] as const).filter((type) => !discountPolicy[type].isEnabled), 'promotional'];
   }, [discountPolicy]);
 
   // STATE 1 — "Who is working?" (Branch Employee Authorization). Only a
@@ -794,6 +797,12 @@ export default function TerminalPage() {
   // 'confirmed' read drives the per-line checks and the editor; 'failed'
   // keeps the cart and offers another try.
   const [optionRecovery, setOptionRecovery] = useState<OptionRecovery | null>(null);
+  // POS-PERF-P49 — set after a PROMOTION_CHANGED refusal (see handleCharge's catch).
+  const [promotionNotice, setPromotionNotice] = useState<
+    | { status: 'checking' | 'confirmed'; changes: string[]; previousTotal: number }
+    | { status: 'failed'; changes: string[]; previousTotal: number; message: string }
+    | null
+  >(null);
   const autoEditAfterRecoveryRef = useRef(false);
   // POS-PERF-P19 — bounded-backlog message when the cashier tries to detach
   // a 6th concurrent unresolved sale (MAX_DETACHED_SALES). Transient,
@@ -1761,6 +1770,12 @@ export default function TerminalPage() {
           slotSelections.length > 0
             ? (info?.variant.price ?? 0) + slotSelections.reduce((sum, s) => sum + s.pricePremium, 0) + optionsAdjustment
             : (info?.variant.price ?? 0) + (flavor?.price_premium ?? 0) + optionsAdjustment;
+        // POS-PERF-P49 — the server-resolved promotion for this size at this
+        // branch (catalog), applied only online with no transaction discount.
+        const promotion = resolveCartLinePromotion(info?.variant.promotion, {
+          isOnline,
+          transactionDiscountSelected: discountType !== 'none',
+        });
         return {
           index,
           item,
@@ -1775,15 +1790,22 @@ export default function TerminalPage() {
           vatableCapAmount: info?.variant.vatable_cap_amount ?? null,
           hasOptionGroups: info ? activeOptionGroups(info.variant).length > 0 : false,
           ...(optionIssuesByIndex?.[index]?.length ? { optionIssues: optionIssuesByIndex[index] } : {}),
+          promotion,
+          promotionDiscount: cartLinePromotionDiscount(promotion, item.quantity),
         };
       }),
-    [items, variantIndex, optionIssuesByIndex],
+    [items, variantIndex, optionIssuesByIndex, isOnline, discountType],
   );
 
   // P46R3 — the option check belongs to this cart; a sale or a cleared cart ends it.
   useEffect(() => {
     if (items.length === 0 && optionRecovery) setOptionRecovery(null);
   }, [items.length, optionRecovery]);
+
+  // POS-PERF-P49 — the promotion notice also belongs to this cart.
+  useEffect(() => {
+    if (items.length === 0 && promotionNotice) setPromotionNotice(null);
+  }, [items.length, promotionNotice]);
 
   // P46R3 — once confirmed, Edit Cart opens the editor on the first line that
   // still needs a change (the others stay marked in the review list).
@@ -1799,8 +1821,8 @@ export default function TerminalPage() {
   // even though its only real inputs are cartLines, which are already memoized.
   const subtotal = useMemo(() => round2(cartLines.reduce((sum, line) => sum + line.lineTotal, 0)), [cartLines]);
   const { discountAmount, vatAmount, totalAmount } = useMemo(
-    () => previewAmounts(cartLines, discountType, Number(promoAmount), discountRatesPreview),
-    [cartLines, discountType, promoAmount, discountRatesPreview],
+    () => previewAmounts(cartLines, discountType, discountRatesPreview),
+    [cartLines, discountType, discountRatesPreview],
   );
   const tenderedNumber = Number(cashTendered);
   const change = paymentMethod === 'cash' && tenderedNumber >= totalAmount ? round2(tenderedNumber - totalAmount) : 0;
@@ -1948,7 +1970,7 @@ export default function TerminalPage() {
       // selected_options display metadata (names, price_adjustment) is
       // frontend-only and never sent as trusted backend fields (Task 21) —
       // only option_id is forwarded, as selected_option_ids (Task 26).
-      items: items.map((item) => ({
+      items: items.map((item, index) => ({
         product_id: item.product_id,
         product_variant_id: item.product_variant_id,
         flavor_id: item.flavor_id,
@@ -1957,11 +1979,14 @@ export default function TerminalPage() {
           ? { selected_option_ids: item.selected_options.map((option) => option.option_id) }
           : {}),
         quantity: item.quantity,
+        // POS-PERF-P49 — what this screen showed for the line (never a
+        // price): the server recomputes and refuses a mismatch. Always null
+        // offline or with a PWD/Senior/Employee discount.
+        promotion: cartLinePromotionAck(cartLines[index]?.promotion),
       })),
       payment_method: paymentMethod,
       discount_type: discountType === 'none' ? undefined : discountType,
       discount_id_reference: discountIdReference.trim() || undefined,
-      discount_amount: discountType === 'promotional' ? Number(promoAmount) : undefined,
       cash_tendered: paymentMethod === 'cash' ? tenderedNumber : undefined,
       // POS-PERF-P25R — optional payment reference, re-added at the owner's
       // request. gcash_reference_number backs both GCash and Maya (the
@@ -2064,7 +2089,7 @@ export default function TerminalPage() {
       })),
       subtotal,
       discountAmount,
-      discountType: discountType === 'none' ? null : discountType,
+      discountType: discountType === 'none' ? (discountAmount > 0 ? 'promotional' : null) : discountType,
       vatAmount,
       totalAmount,
       paymentMethod,
@@ -2221,6 +2246,27 @@ export default function TerminalPage() {
         lastChargeFingerprintRef.current = null;
         orderRefRef.current = null;
         clearPendingCheckoutAttempt(branchId);
+      }
+      // POS-PERF-P49 — nothing was charged. Re-read the catalog from the
+      // network so the cart shows the promotion the server will accept now;
+      // the cashier reviews it ("Review updated prices") before charging again.
+      if (error instanceof TransactionApiError && error.code === 'PROMOTION_CHANGED') {
+        const changes = describePromotionChanges(error.details);
+        setPromotionNotice({ status: 'checking', changes, previousTotal: totalAmount });
+        void confirmCatalog(branchId)
+          .then(() => setPromotionNotice({ status: 'confirmed', changes, previousTotal: totalAmount }))
+          .catch((refreshError: unknown) =>
+            setPromotionNotice({
+              status: 'failed',
+              changes,
+              previousTotal: totalAmount,
+              message: refreshError instanceof Error ? refreshError.message : 'Could not load the current prices',
+            }),
+          );
+        setSaleErrorMessage([error.message, ...changes].join(' '));
+        setSaleErrorCode(error.code);
+        setSalePhase('error');
+        return;
       }
       setSaleErrorMessage(error instanceof Error ? error.message : 'Failed to record transaction');
       setSaleErrorCode(error instanceof TransactionApiError ? error.code ?? null : null);
@@ -2906,6 +2952,32 @@ export default function TerminalPage() {
     </div>
   ) : null;
 
+  // POS-PERF-P49 — after a PROMOTION_CHANGED refusal: what changed, and the
+  // refreshed total the cashier is now looking at. Cleared by the next sale.
+  const promotionRecoveryNotice = promotionNotice ? (
+    <div role="status" data-testid="promotion-change-notice" className="mb-3 space-y-1.5 rounded-lg border border-amber-500/40 bg-amber-50 p-3 text-xs dark:bg-amber-950/20">
+      <p className="font-semibold">A promotion changed — the sale was not charged. Your cart is kept.</p>
+      {promotionNotice.changes.map((change) => (
+        <p key={change}>{change}</p>
+      ))}
+      {promotionNotice.status === 'checking' && (
+        <p className="flex items-center gap-2">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+          Loading the current prices…
+        </p>
+      )}
+      {promotionNotice.status === 'failed' && (
+        <p className="font-semibold text-destructive">Couldn&apos;t load the current prices ({promotionNotice.message}). Check the connection before charging.</p>
+      )}
+      {promotionNotice.status === 'confirmed' && (
+        <p className="font-semibold">
+          Prices updated. Total is now {formatPeso(totalAmount)}
+          {promotionNotice.previousTotal !== totalAmount ? ` (was ${formatPeso(promotionNotice.previousTotal)})` : ''}. Confirm with the customer, then charge.
+        </p>
+      )}
+    </div>
+  ) : null;
+
   const checkoutWorkspaceElement = (
     <CheckoutWorkspace
       open={isCheckoutOpen}
@@ -2915,7 +2987,14 @@ export default function TerminalPage() {
       onEditLine={handleEditLine}
       onRemoveLine={handleRemoveLine}
       onQuantityChange={handleQuantityChange}
-      reviewNotice={optionRecoveryNotice}
+      reviewNotice={
+        promotionRecoveryNotice || optionRecoveryNotice ? (
+          <>
+            {promotionRecoveryNotice}
+            {optionRecoveryNotice}
+          </>
+        ) : null
+      }
       subtotal={subtotal}
       vatAmount={vatAmount}
       discountAmount={discountAmount}
@@ -3159,7 +3238,7 @@ export default function TerminalPage() {
             <div className={productGridClasses(densityMode)} data-testid="pos-product-grid">
               {visibleProducts.map((product) =>
                 product.variants.map((variant) => (
-                  <ProductCard key={variant.id} product={product} variant={variant} message={readinessMessage(variant)} onTap={handleProductTap} />
+                  <ProductCard key={variant.id} product={product} variant={variant} message={readinessMessage(variant)} onTap={handleProductTap} promotionsAvailable={isOnline} />
                 )),
               )}
             </div>

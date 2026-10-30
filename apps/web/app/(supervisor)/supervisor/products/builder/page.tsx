@@ -7,7 +7,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { AlertTriangle, ArrowLeft, Check, Loader2 } from 'lucide-react';
-import type { ProductDetailResponse, PublicationCheckResponse, PublicationIssue } from '@potato-corner/shared';
+import { PRODUCT_CLASSIFICATIONS, type ProductDetailResponse, type PublicationCheckResponse, type PublicationIssue } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Form } from '@/components/ui/form';
@@ -44,6 +44,7 @@ import { RecipeBomPanel } from '@/components/products/recipe-bom-panel';
 import { ProductWriteError } from '@/components/products/product-write-error';
 import { ProductSizesPanel } from '@/components/products/product-sizes-panel';
 import { VariantChoicesCard } from '@/components/products/variant-choices-card';
+import { ProductClassificationSelect } from '@/components/supervisor/products/product-classification-select';
 import {
   BUILDER_STEPS,
   useProductBuilderStore,
@@ -197,6 +198,8 @@ const detailsFormSchema = z.object({
   name: z.string().min(2, 'Minimum 2 characters').max(100),
   description: z.string().max(500).optional(),
   category_id: z.string().optional(),
+  // POS-PERF-P49 — Regular/Promotional/Seasonal; never changes a price on its own.
+  classification: z.enum(PRODUCT_CLASSIFICATIONS),
   branch_ids: z.array(z.string()).min(1, 'Select at least one branch'),
 });
 type DetailsFormValues = z.input<typeof detailsFormSchema>;
@@ -294,6 +297,7 @@ function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) =
       name: '',
       description: '',
       category_id: '',
+      classification: 'regular',
       branch_ids: [],
     },
   });
@@ -354,7 +358,7 @@ function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) =
         description: values.description || undefined,
         category_id: values.category_id || undefined,
         status: 'active',
-        is_seasonal: false,
+        classification: values.classification,
         branch_exclusive: false,
         branch_ids: values.branch_ids,
       });
@@ -410,6 +414,12 @@ function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) =
                 </SelectContent>
               </Select>
             </div>
+
+            <ProductClassificationSelect
+              id="builder-classification"
+              value={form.watch('classification')}
+              onChange={(value) => form.setValue('classification', value)}
+            />
 
             <fieldset className="space-y-2" aria-describedby="builder-branches-summary">
               <legend className="text-sm font-medium leading-none">Available at branches</legend>

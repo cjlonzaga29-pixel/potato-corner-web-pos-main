@@ -59,6 +59,8 @@ import { nextCounterValue } from '../../lib/id-counter.js';
 import { createCheckoutLatencyRecorder, timeStage } from '../../lib/checkout-latency-diagnostics.js';
 import { computeDeductionTotals, sortedDeductionTotalEntries } from '../../lib/deduction-totals.js';
 import { inventoryDeductionRepository } from '../inventory-deduction/inventory-deduction.repository.js';
+import { discountsService } from '../discounts/discounts.service.js';
+import type { PromotionLineSnapshot } from '../discounts/discounts.types.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -193,6 +195,23 @@ interface TransactionItemRow {
   lineTotal: { toNumber(): number };
   recipeVersion: number;
   selectedOptions?: SelectedOptionSnapshot[] | null;
+  // POS-PERF-P49 — optional for pre-P49 fixtures; always present on a real row.
+  discountAmount?: { toNumber(): number };
+  promotionSnapshot?: unknown;
+}
+
+/** POS-PERF-P49 — the frozen line snapshot as returned to clients (receipt, sale popup). */
+function toItemPromotionResponse(snapshot: unknown) {
+  if (!snapshot || typeof snapshot !== 'object') return null;
+  const value = snapshot as Partial<PromotionLineSnapshot>;
+  if (typeof value.promotion_id !== 'string' || typeof value.unit_discount !== 'number') return null;
+  return {
+    promotion_id: value.promotion_id,
+    name: value.name ?? 'Promotion',
+    discount_kind: value.discount_kind === 'fixed_amount' ? ('fixed_amount' as const) : ('percentage' as const),
+    discount_value: value.discount_value ?? 0,
+    unit_discount: value.unit_discount,
+  };
 }
 
 interface TransactionRow {
@@ -305,6 +324,8 @@ function toTransactionResponse(row: TransactionRow) {
         option_group_name: option.optionGroupName,
         price_adjustment: option.priceAdjustment,
       })),
+      discount_amount: item.discountAmount?.toNumber() ?? 0,
+      promotion: toItemPromotionResponse(item.promotionSnapshot),
     })),
   };
 }
@@ -381,6 +402,13 @@ interface ResolvedItem {
   recipeVersion: number;
   selectedFlavors?: { slotIndex: number; snackProductVariantId: string; flavorId: string }[] | null;
   selectedOptions?: SelectedOptionSnapshot[] | null;
+  // POS-PERF-P49 — the size's own base price (the only part a promotion
+  // discounts; flavor premiums and add-ons never are), and the promotion
+  // applied by applyLinePromotions. Optional so existing computeAmounts
+  // fixtures (no promotion) stay valid.
+  basePrice?: number;
+  promotionDiscount?: number;
+  promotionSnapshot?: PromotionLineSnapshot | null;
 }
 
 /**
@@ -854,6 +882,7 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
       id: randomUUID(),
       productId: variant.productId,
       productVariantId: variant.id,
+      basePrice,
       flavorId: flavorSlots.length > 0 ? null : (item.flavorId ?? null),
       productName: variant.product.name,
       variantName: variant.name,
@@ -870,6 +899,117 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
     }),
   );
   return resolved;
+}
+
+/**
+ * POS-PERF-P49 — authoritative product-promotion pricing for one sale.
+ *
+ * Every cart line's acknowledgement (what the cashier's screen showed) is
+ * compared with what the server resolves *now* from current configuration,
+ * bound to this sale's branch and the line's actual product/size. Any
+ * difference — expired/disabled/edited/new promotion, changed overlap
+ * winner, forged amount, unselected branch, reclassified product — refuses
+ * the whole sale with PROMOTION_CHANGED before anything is written, so the
+ * customer is never silently charged an amount the cashier did not see.
+ *
+ * - Offline sales never carry promotions (they cannot be validated at the
+ *   time of sale); one that claims one is refused, never repriced.
+ * - PWD/Senior/Employee (one discount per transaction, statutory first):
+ *   promotions are not applied; a sale claiming both is refused.
+ * - A line without the field (older client) gets no promotion and is
+ *   charged exactly what that client displayed.
+ *
+ * Lines are in the same order as data.items (resolveCartItems maps 1:1).
+ */
+async function applyLinePromotions(data: CreateTransactionData, items: ResolvedItem[]): Promise<ResolvedItem[]> {
+  const acks = data.items.map((item) => item.promotionAck);
+  const claimsPromotion = acks.some((ack) => ack !== undefined && ack !== null);
+
+  if (data.isOfflineTransaction) {
+    if (claimsPromotion) {
+      throw new TransactionError(
+        'PROMOTION_OFFLINE_UNSUPPORTED',
+        'This offline sale lists a promotion, but promotions cannot be confirmed offline. It was not recorded; ring it again at the regular price.',
+        422,
+      );
+    }
+    return items;
+  }
+  if (data.discountType) {
+    if (claimsPromotion) {
+      throw new TransactionError(
+        'PROMOTION_NOT_COMBINABLE',
+        'Product promotions cannot be combined with a PWD, Senior Citizen or Employee discount. Only one discount applies per sale.',
+        422,
+      );
+    }
+    return items;
+  }
+  if (acks.every((ack) => ack === undefined)) return items;
+
+  const current = await discountsService.resolvePromotionsForBranch(
+    data.branchId,
+    items
+      .filter((_, index) => acks[index] !== undefined)
+      .map((item) => ({
+        productId: item.productId,
+        productVariantId: item.productVariantId,
+        basePrice: item.basePrice ?? 0,
+        vatableCapAmount: item.vatableCapAmount,
+      })),
+  );
+
+  const changes: {
+    line_index: number;
+    product_name: string;
+    variant_name: string;
+    shown: { promotion_id: string; unit_discount: number } | null;
+    current: { promotion_id: string; name: string; unit_discount: number } | null;
+  }[] = [];
+  items.forEach((item, index) => {
+    const ack = acks[index];
+    if (ack === undefined) return;
+    const resolved = current.get(item.productVariantId) ?? null;
+    const sameId = (ack?.promotionId ?? null) === (resolved?.promotionId ?? null);
+    const sameAmount = toCents(ack?.unitDiscount ?? 0) === toCents(resolved?.unitDiscount ?? 0);
+    if (!sameId || !sameAmount) {
+      changes.push({
+        line_index: index,
+        product_name: item.productName,
+        variant_name: item.variantName,
+        shown: ack ? { promotion_id: ack.promotionId, unit_discount: ack.unitDiscount } : null,
+        current: resolved ? { promotion_id: resolved.promotionId, name: resolved.name, unit_discount: resolved.unitDiscount } : null,
+      });
+    }
+  });
+  if (changes.length > 0) {
+    throw new TransactionError(
+      'PROMOTION_CHANGED',
+      'A promotion on this order changed since it was added, so the sale was not charged. Review the updated prices, then charge again.',
+      409,
+      { lines: changes },
+    );
+  }
+
+  return items.map((item, index) => {
+    const resolved = acks[index] === undefined ? undefined : current.get(item.productVariantId);
+    if (!resolved) return item;
+    const promotionDiscount = round2(resolved.unitDiscount * item.quantity);
+    return {
+      ...item,
+      promotionDiscount,
+      promotionSnapshot: {
+        promotion_id: resolved.promotionId,
+        name: resolved.name,
+        discount_kind: resolved.discountKind,
+        discount_value: resolved.discountValue,
+        version: resolved.version,
+        base_price: item.basePrice ?? 0,
+        unit_discount: resolved.unitDiscount,
+        quantity: item.quantity,
+      },
+    };
+  });
 }
 
 /**
@@ -975,6 +1115,15 @@ export function computeAmounts(
   if (discountType === DISCOUNT_TYPE.EMPLOYEE) {
     discountRateUsed = discountRates.employee;
     discountAmount = round2(vatableSubtotal * (discountRateUsed / 100));
+  } else if (!discountType) {
+    // POS-PERF-P49 — product promotions (applyLinePromotions only ever sets
+    // promotionDiscount when no transaction-level discount is selected).
+    // Same non-statutory path as Employee: the discount comes off the
+    // VAT-inclusive VATable amount and VAT is extracted at 12/112 below. A
+    // promoted line never has a vatableCapAmount (refused at configuration
+    // and skipped at resolution), so its whole discount is VATable. Per-line
+    // rates differ, so discountRateUsed stays null; the line snapshots hold them.
+    discountAmount = round2(items.reduce((sum, item) => sum + (item.promotionDiscount ?? 0), 0));
   }
   const vatableAfterDiscount = round2(vatableSubtotal - discountAmount);
   const vatAmount = round2(vatableAfterDiscount * (12 / 112));
@@ -2108,9 +2257,12 @@ export const transactionsService = {
       );
     }
     if (data.discountType === DISCOUNT_TYPE.PROMOTIONAL) {
+      // POS-PERF-P49 — a cashier-typed whole-cart amount is still never
+      // trusted. Product promotions are applied automatically from what a
+      // supervisor configured (applyLinePromotions), not via this type.
       throw new TransactionError(
         'DISCOUNT_TYPE_NOT_SUPPORTED',
-        'Promotional discounts are not yet implemented. Contact admin.',
+        'A typed promotional amount is not accepted. Product promotions apply automatically to eligible items.',
         400,
       );
     }
@@ -2152,6 +2304,7 @@ export const transactionsService = {
 
     const catalogResolveStartedAt = performance.now();
     resolvedItems = await resolveCartItems(data.branchId, data.items);
+    resolvedItems = await applyLinePromotions(data, resolvedItems);
     catalogResolveMs = performance.now() - catalogResolveStartedAt;
     const subtotal = round2(resolvedItems.reduce((sum, item) => sum + item.lineTotal, 0));
     const { discountAmount, vatAmount, vatExemptAmount, totalAmount, discountRateUsed } = computeAmounts(
@@ -2160,6 +2313,9 @@ export const transactionsService = {
       data.discountType,
       discountRates,
     );
+    // POS-PERF-P49 — a sale whose only discount is product promotions is
+    // recorded as 'promotional' so every report's discount breakdown sees it.
+    const effectiveDiscountType = data.discountType ?? (discountAmount > 0 ? DISCOUNT_TYPE.PROMOTIONAL : null);
 
     let changeGiven: number | null = null;
     if (data.paymentMethod === 'cash') {
@@ -2219,7 +2375,7 @@ export const transactionsService = {
             paymentMethod: data.paymentMethod,
             subtotal,
             discountAmount,
-            discountType: data.discountType ?? null,
+            discountType: effectiveDiscountType,
             discountRateUsed,
             discountCustomerIdEncrypted,
             discountCustomerIdHash,
@@ -2272,6 +2428,9 @@ export const transactionsService = {
               })),
               selectedFlavors: item.selectedFlavors,
               selectedOptions: item.selectedOptions,
+              discountAmount: item.promotionDiscount ?? 0,
+              promotionId: item.promotionSnapshot?.promotion_id ?? null,
+              promotionSnapshot: item.promotionSnapshot ?? null,
             })),
           },
           tx,

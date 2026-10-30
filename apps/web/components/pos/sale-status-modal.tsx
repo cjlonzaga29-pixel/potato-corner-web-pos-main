@@ -103,6 +103,9 @@ interface SaleStatusModalProps {
  */
 export function SaleStatusModal({ phase, snapshot, errorMessage, errorCode, onRetry, onEditCart, onViewReceipt, onNewSale }: SaleStatusModalProps) {
   const errorDisplay = phase === 'error' ? describeCashierFailure(errorCode, errorMessage ?? 'Something went wrong. Your cart is still here — retry or edit it below.') : null;
+  // POS-PERF-P49 — a promotion refusal means the price on screen was wrong; the
+  // cashier reviews the updated cart instead of retrying straight into a new amount.
+  const reviewOnly = phase === 'error' && typeof errorCode === 'string' && errorCode.startsWith('PROMOTION_');
   return (
     <Dialog
       open
@@ -178,7 +181,7 @@ export function SaleStatusModal({ phase, snapshot, errorMessage, errorCode, onRe
           </div>
           {snapshot.discountAmount > 0 && (
             <div className="flex justify-between">
-              <span>Discount</span>
+              <span>{snapshot.discountType === 'promotional' ? 'Promotions' : 'Discount'}</span>
               <span className="tabular-nums">-{formatPeso(snapshot.discountAmount)}</span>
             </div>
           )}
@@ -212,7 +215,12 @@ export function SaleStatusModal({ phase, snapshot, errorMessage, errorCode, onRe
               </Button>
             </>
           )}
-          {phase === 'error' && (
+          {phase === 'error' && reviewOnly && (
+            <Button className="touch-target flex-1" onClick={onEditCart}>
+              Review updated prices
+            </Button>
+          )}
+          {phase === 'error' && !reviewOnly && (
             <>
               <Button variant="outline" className="touch-target flex-1" onClick={onEditCart}>
                 Edit Cart

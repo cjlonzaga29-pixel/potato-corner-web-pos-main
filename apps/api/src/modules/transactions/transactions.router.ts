@@ -18,7 +18,7 @@ import {
   type PaymentMethod,
 } from '@potato-corner/shared';
 import { transactionsService } from './transactions.service.js';
-import { TransactionError } from './transactions.types.js';
+import { TransactionError, type CartItemInput } from './transactions.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminOrSupervisor, adminSupervisorOrBranch, allRoles } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
@@ -68,6 +68,16 @@ function requireUser(req: Request, res: Response): req is Request & { user: NonN
     return false;
   }
   return true;
+}
+
+/**
+ * POS-PERF-P49 — keeps the absent/null distinction createTransaction relies
+ * on: absent (older client) -> undefined, null -> null ("no promotion shown").
+ */
+function toPromotionAck(promotion: CartItem['promotion']): CartItemInput['promotionAck'] {
+  if (promotion === undefined) return undefined;
+  if (promotion === null) return null;
+  return { promotionId: promotion.promotion_id, unitDiscount: promotion.unit_discount };
 }
 
 function handleModuleError(error: unknown, res: Response, next: NextFunction): void {
@@ -175,6 +185,7 @@ router.post(
             selectedFlavors: item.selected_flavors?.map((sf) => ({ slotIndex: sf.slot_index, snackProductVariantId: sf.snack_product_variant_id, flavorId: sf.flavor_id })),
             selectedOptionIds: item.selected_option_ids,
             quantity: item.quantity,
+            promotionAck: toPromotionAck(item.promotion),
           })),
           paymentMethod: body.payment_method,
           discountType: body.discount_type,
@@ -250,6 +261,9 @@ router.post(
               // undeducted before P46R2, PRODUCT_OPTION_REQUIRED after it.
               selectedOptionIds: cartItem.selected_option_ids,
               quantity: cartItem.quantity,
+              // P49 — forwarded only so createTransaction can refuse a queued
+              // sale that claims a promotion (offline sales never apply one).
+              promotionAck: toPromotionAck(cartItem.promotion),
             })),
             paymentMethod: item.payment_method,
             discountType: item.discount_type,

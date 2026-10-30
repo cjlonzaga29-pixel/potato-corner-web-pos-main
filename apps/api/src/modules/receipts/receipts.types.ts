@@ -11,6 +11,10 @@ export interface PublicReceiptItem {
   unit_price: number;
   line_total: number;
   selected_options: PublicReceiptSelectedOption[];
+  /** POS-PERF-P49 — this line's promotion discount (0 when none); line_total stays gross. */
+  discount_amount: number;
+  /** POS-PERF-P49 — frozen promotion name, or null. */
+  promotion_name: string | null;
 }
 
 /**

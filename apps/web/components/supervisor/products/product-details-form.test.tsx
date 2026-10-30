@@ -121,6 +121,22 @@ describe('ProductDetailsForm (POS-PERF-P39)', () => {
     expect(screen.getByText('Unsaved changes')).toBeInTheDocument();
   });
 
+  // POS-PERF-P49 — classification is saved with the other details and never touches status.
+  it('shows the saved classification and saves it without any status or legacy is_seasonal field', async () => {
+    mockUpdate.mockResolvedValue(product({ classification: 'promotional', version: 5 }));
+    render(<ProductDetailsForm product={product({ classification: 'promotional' })} disabled={false} onDirtyChange={vi.fn()} />);
+    expect(screen.getByRole('combobox', { name: 'Classification' })).toHaveTextContent('Promotional');
+    expect(screen.getByText(/Classification alone never changes the price/)).toBeInTheDocument();
+
+    fireEvent.change(nameInput(), { target: { value: 'Promo Fries' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    const sent = mockUpdate.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(sent).toMatchObject({ classification: 'promotional', seasonal_start_date: null, seasonal_end_date: null, expected_version: 4 });
+    expect(sent).not.toHaveProperty('status');
+    expect(sent).not.toHaveProperty('is_seasonal');
+  });
+
   it('keeps typed values and shows the reason inline when a save fails for another reason', async () => {
     mockUpdate.mockImplementation(async () => {
       throw new MockProductApiError('Network error — please try again', 'NETWORK_ERROR');

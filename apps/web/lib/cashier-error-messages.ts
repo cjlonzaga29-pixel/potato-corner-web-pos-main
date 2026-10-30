@@ -56,6 +56,9 @@ const TITLES: Record<string, string> = {
   IDEMPOTENCY_KEY_REUSE: 'Duplicate order blocked',
   CHECKOUT_ATTEMPT_CONTENTION: 'Order already being processed',
   CHECKOUT_TIMEOUT: 'Request timed out — not saved',
+  PROMOTION_CHANGED: 'Promotion changed — not charged',
+  PROMOTION_NOT_COMBINABLE: 'Promotion not combinable — not charged',
+  PROMOTION_OFFLINE_UNSUPPORTED: 'Promotion not allowed offline — not recorded',
 };
 
 /** Real server codes that prove only that THIS request made no progress, not that anything failed or succeeded — the network/uncertain bucket, same as the synthetic codes above. */

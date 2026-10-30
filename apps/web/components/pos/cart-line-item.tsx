@@ -5,6 +5,7 @@ import { Loader2, Pencil, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import type { PosCartItem, PosCartSelectedOption } from '@/stores/cart.store';
+import { PROMOTION_STATUS_NOTES, type CartLinePromotion } from '@/lib/pos/cart-promotions';
 
 function formatPeso(amount: number): string {
   return `₱${amount.toFixed(2)}`;
@@ -37,6 +38,10 @@ export interface CartLine {
   hasOptionGroups: boolean;
   /** P46R3 — what this line still needs under the freshly confirmed options (Edit Cart after an option refusal); absent otherwise. */
   optionIssues?: string[];
+  /** POS-PERF-P49 — the catalog's promotion for this size and whether it applies to this sale; absent when none. lineTotal stays gross. */
+  promotion?: CartLinePromotion | null;
+  /** POS-PERF-P49 — this line's applied promotion discount (unit discount × quantity); 0/absent when not applied. */
+  promotionDiscount?: number;
 }
 
 interface CartLineItemProps {
@@ -76,6 +81,8 @@ export const CartLineItem = memo(function CartLineItem({ line, showDivider, onEd
   renderCountRef.current += 1;
 
   const hasOptionDetails = line.slotSelections.length > 0 || line.optionSelections.length > 0;
+  const promotionDiscount = line.promotionDiscount ?? 0;
+  const netLineTotal = Math.round((line.lineTotal - promotionDiscount) * 100) / 100;
 
   return (
     <div data-render-count={renderCountRef.current}>
@@ -95,7 +102,14 @@ export const CartLineItem = memo(function CartLineItem({ line, showDivider, onEd
             {line.productName}
             {line.flavorName ? ` — ${line.flavorName}` : ''}
           </p>
-          <p className="shrink-0 text-right text-sm font-bold tabular-nums text-foreground">{formatPeso(line.lineTotal)}</p>
+          <p className="shrink-0 text-right text-sm font-bold tabular-nums text-foreground">
+            {promotionDiscount > 0 && (
+              <span className="mr-1 text-xs font-normal text-muted-foreground line-through" data-testid="cart-line-gross">
+                {formatPeso(line.lineTotal)}
+              </span>
+            )}
+            {formatPeso(netLineTotal)}
+          </p>
         </div>
         <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
           <span>
@@ -108,6 +122,21 @@ export const CartLineItem = memo(function CartLineItem({ line, showDivider, onEd
             </span>
           )}
         </p>
+
+        {line.promotion && (
+          <p
+            className={
+              line.promotion.status === 'applied'
+                ? 'text-xs font-medium leading-tight text-emerald-700 dark:text-emerald-400'
+                : 'text-xs leading-tight text-amber-700 dark:text-amber-400'
+            }
+            data-testid="cart-line-promotion"
+          >
+            {line.promotion.status === 'applied'
+              ? `Promo: ${line.promotion.name} −${formatPeso(line.promotion.unitDiscount)} each (size price only)`
+              : `Promo ${line.promotion.name} ${PROMOTION_STATUS_NOTES[line.promotion.status]}`}
+          </p>
+        )}
 
         {hasOptionDetails && (
           // Plain text nodes (no nested elements) inside each <p> — Testing

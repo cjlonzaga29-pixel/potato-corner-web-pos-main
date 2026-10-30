@@ -4,6 +4,7 @@ import { prisma } from '../../lib/prisma.js';
 import { resolveDateRangeBoundary } from '../../lib/manila-time.js';
 import type { TransactionListFilters } from './transactions.types.js';
 import type { DiscountAuditFilters } from './transactions.types.js';
+import type { PromotionLineSnapshot } from '../discounts/discounts.types.js';
 
 const transactionInclude = {
   items: true,
@@ -114,6 +115,10 @@ interface CreateTransactionRow {
     deductionSnapshot?: { inventoryItemId: string; quantity: number; baseUnitId: string }[];
     selectedFlavors?: { slotIndex: number; snackProductVariantId: string; flavorId: string }[] | null;
     selectedOptions?: SelectedOptionSnapshot[] | null;
+    /** POS-PERF-P49 — this line's promotion discount (0/omitted when none) and its frozen snapshot. */
+    discountAmount?: number;
+    promotionId?: string | null;
+    promotionSnapshot?: PromotionLineSnapshot | null;
   }[];
 }
 
@@ -372,6 +377,10 @@ export const transactionsRepository = {
               // inline object-literal types used by selectedFlavors/deductionSnapshot
               // above) -- the values are plain JSON-serializable objects either way.
               selectedOptions: (item.selectedOptions ?? undefined) as Prisma.InputJsonValue | undefined,
+              // POS-PERF-P49 — written once here; TransactionItem is immutable after creation.
+              discountAmount: item.discountAmount ?? 0,
+              promotionId: item.promotionId ?? null,
+              promotionSnapshot: (item.promotionSnapshot ?? undefined) as Prisma.InputJsonValue | undefined,
             })),
           },
         },

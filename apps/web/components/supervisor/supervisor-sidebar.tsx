@@ -24,6 +24,7 @@ import {
   Tags,
   Ruler,
   History,
+  TicketPercent,
 } from 'lucide-react';
 import { ROLE_LABELS } from '@potato-corner/shared';
 import { cn, generateInitials } from '@/lib/utils';
@@ -53,6 +54,7 @@ export const SUPERVISOR_NAV_ITEMS: ReadonlyArray<NavItem> = [
   { label: 'Dashboard', href: '/supervisor/dashboard', icon: LayoutDashboard },
   { label: 'Inventory', href: '/supervisor/inventory', icon: Package },
   { label: 'Products', href: '/supervisor/products', icon: ShoppingBag },
+  { label: 'Promotions', href: '/supervisor/promotions', icon: TicketPercent },
   {
     label: 'Catalog Setup',
     icon: ListTree,

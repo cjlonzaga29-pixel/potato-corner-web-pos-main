@@ -109,6 +109,11 @@ const DEFINITE_NO_COMMIT_CODES = new Set([
   'FLAVOR_NOT_AVAILABLE_FOR_VARIANT',
   'RECIPE_MISSING',
   'MIX_MAX_SLOT_INCOMPLETE',
+  // POS-PERF-P49 — promotion checks run after cart resolution and before the
+  // sale's $transaction opens (applyLinePromotions), so nothing was written.
+  'PROMOTION_CHANGED',
+  'PROMOTION_NOT_COMBINABLE',
+  'PROMOTION_OFFLINE_UNSUPPORTED',
   // Thrown inside the $transaction callback itself (stock reservation) —
   // still safe, since throwing there rolls back the whole interactive
   // transaction, including the sale insert.

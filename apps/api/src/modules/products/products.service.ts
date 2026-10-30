@@ -1,6 +1,6 @@
 import sharp from 'sharp';
 import { Prisma, type ProductFlavorSlot, type VariantLifecycleStatus } from '@prisma/client';
-import { ROLES, SOCKET_EVENTS, type JwtPayload, type PosReadinessCode, type ProductStatus } from '@potato-corner/shared';
+import { ROLES, SOCKET_EVENTS, type JwtPayload, type PosReadinessCode, type ProductClassification, type ProductStatus } from '@potato-corner/shared';
 import { productsRepository } from './products.repository.js';
 import {
   ProductError,
@@ -25,6 +25,7 @@ import type { VariantStockResult } from '../stock-availability/stock-availabilit
 import { getAccessibleBranchIds, hasBranchAccess } from '../../lib/branch-access.js';
 import { hasActiveCatalogAuthorityForProduct } from '../../lib/catalog-authority.js';
 import { productCatalogLockId } from '../../lib/pg-lock.js';
+import { discountsService } from '../discounts/discounts.service.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -714,6 +715,8 @@ function toProductBase(product: {
   status: ProductStatus;
   displayOrder: number | null;
   isSeasonal: boolean;
+  // POS-PERF-P49 — optional for the same partial-shape reason as version.
+  classification?: ProductClassification;
   seasonalStartDate: Date | null;
   seasonalEndDate: Date | null;
   branchExclusive: boolean;
@@ -745,6 +748,7 @@ function toProductBase(product: {
     status_label: STATUS_LABELS[product.status],
     display_order: product.displayOrder,
     is_seasonal: product.isSeasonal,
+    classification: product.classification ?? (product.isSeasonal ? 'seasonal' : 'regular'),
     seasonal_start_date: product.seasonalStartDate ? isoDate(product.seasonalStartDate) : null,
     seasonal_end_date: product.seasonalEndDate ? isoDate(product.seasonalEndDate) : null,
     branch_exclusive: product.branchExclusive,
@@ -812,18 +816,18 @@ function toProductDetailResponse(product: DetailRow) {
   };
 }
 
-/** Applies to both create (isSeasonal always present) and update (merged against the existing record by the caller). */
+/**
+ * Applies to both create and update (merged against the existing record by
+ * the caller). POS-PERF-P49 — the seasonal window is optional informational
+ * metadata; a Seasonal product no longer has to carry dates.
+ */
 function validateSeasonalRules(input: {
-  isSeasonal: boolean;
   seasonalStartDate?: string;
   seasonalEndDate?: string;
 }): void {
   const hasStart = input.seasonalStartDate !== undefined;
   const hasEnd = input.seasonalEndDate !== undefined;
 
-  if (input.isSeasonal && (!hasStart || !hasEnd)) {
-    throw new ProductError('SEASONAL_DATES_REQUIRED', 'Seasonal products require both a start date and an end date', 422);
-  }
   if (hasStart !== hasEnd) {
     throw new ProductError('SEASONAL_DATES_INCOMPLETE', 'seasonal_start_date and seasonal_end_date must be provided together', 422);
   }
@@ -834,6 +838,26 @@ function validateSeasonalRules(input: {
   }
 }
 
+/**
+ * POS-PERF-P49 — classification is authoritative; legacy is_seasonal is
+ * derived from it on every write (and still accepted as input: true ->
+ * seasonal, false on a seasonal product -> regular). On update (current
+ * given) returns undefined when the request changes neither, so both columns
+ * are left alone; on create (no current) defaults to regular.
+ */
+export function resolveClassificationWrite(
+  input: { classification?: ProductClassification; is_seasonal?: boolean },
+  current?: ProductClassification,
+): { classification: ProductClassification; isSeasonal: boolean } | undefined {
+  let classification: ProductClassification | undefined = input.classification;
+  if (classification === undefined && input.is_seasonal !== undefined) {
+    if (input.is_seasonal) classification = 'seasonal';
+    else classification = current === undefined || current === 'seasonal' ? 'regular' : current;
+  }
+  if (classification === undefined) return current === undefined ? { classification: 'regular', isSeasonal: false } : undefined;
+  return { classification, isSeasonal: classification === 'seasonal' };
+}
+
 interface CreateProductInput {
   name: string;
   description?: string;
@@ -841,7 +865,8 @@ interface CreateProductInput {
   category_id?: string;
   status: ProductStatus;
   display_order?: number;
-  is_seasonal: boolean;
+  is_seasonal?: boolean;
+  classification?: ProductClassification;
   seasonal_start_date?: string;
   seasonal_end_date?: string;
   branch_exclusive: boolean;
@@ -856,6 +881,7 @@ interface UpdateProductInput {
   category_id?: string | null;
   display_order?: number;
   is_seasonal?: boolean;
+  classification?: ProductClassification;
   seasonal_start_date?: string | null;
   seasonal_end_date?: string | null;
   expected_version?: number;
@@ -1322,10 +1348,10 @@ export const productsService = {
       throw new ProductError('INVALID_CREATE_STATUS', 'A product can only be created with draft or active status', 422);
     }
     validateSeasonalRules({
-      isSeasonal: data.is_seasonal,
       seasonalStartDate: data.seasonal_start_date,
       seasonalEndDate: data.seasonal_end_date,
     });
+    const classificationWrite = resolveClassificationWrite(data) ?? { classification: 'regular' as const, isSeasonal: false };
 
     // POS-PERF-P34R — a supervisor may only ever create a branch-exclusive
     // product scoped to one of their own branches: a non-exclusive product
@@ -1399,7 +1425,8 @@ export const productsService = {
         categoryId: data.category_id,
         status: data.status,
         displayOrder: data.display_order,
-        isSeasonal: data.is_seasonal,
+        isSeasonal: classificationWrite.isSeasonal,
+        classification: classificationWrite.classification,
         seasonalStartDate: data.seasonal_start_date,
         seasonalEndDate: data.seasonal_end_date,
         branchExclusive,
@@ -1454,7 +1481,7 @@ export const productsService = {
     if (updatedBy.role === ROLES.SUPERVISOR && !(await hasActiveCatalogAuthorityForProduct(before, updatedBy.id))) {
       throw new ProductError('PRODUCT_UPDATE_FORBIDDEN', 'You may only edit a product an active branch assignment gives you authority over', 403);
     }
-    const mergedIsSeasonal = data.is_seasonal ?? before.isSeasonal;
+    const classificationWrite = resolveClassificationWrite(data, before.classification);
     const mergedStart =
       data.seasonal_start_date !== undefined
         ? (data.seasonal_start_date ?? undefined)
@@ -1467,7 +1494,7 @@ export const productsService = {
         : before.seasonalEndDate
           ? isoDate(before.seasonalEndDate)
           : undefined;
-    validateSeasonalRules({ isSeasonal: mergedIsSeasonal, seasonalStartDate: mergedStart, seasonalEndDate: mergedEnd });
+    validateSeasonalRules({ seasonalStartDate: mergedStart, seasonalEndDate: mergedEnd });
 
     if (data.category_id) {
       const category = await productCategoriesRepository.findById(data.category_id);
@@ -1488,7 +1515,8 @@ export const productsService = {
         category: data.category,
         categoryId: data.category_id,
         displayOrder: data.display_order,
-        isSeasonal: data.is_seasonal,
+        isSeasonal: classificationWrite?.isSeasonal,
+        classification: classificationWrite?.classification,
         seasonalStartDate: data.seasonal_start_date,
         seasonalEndDate: data.seasonal_end_date,
       },
@@ -2357,6 +2385,21 @@ export const productsService = {
     const imagePaths = products.map((product) => product.imagePath).filter((path): path is string => Boolean(path));
     const signedImageUrlByPath = await getSignedProductImageUrls(imagePaths);
 
+    // POS-PERF-P49 — the same server resolver checkout uses (branch-bound,
+    // overlap rule applied), so the price on the card is the price checkout
+    // will accept. Display only: checkout recomputes and refuses a mismatch.
+    const promotionByVariantId = await discountsService.resolvePromotionsForBranch(
+      branchId,
+      products.flatMap((product) =>
+        product.variants.map((variant) => ({
+          productId: product.id,
+          productVariantId: variant.id,
+          basePrice: variant.basePrice.toNumber(),
+          vatableCapAmount: variant.vatableCapAmount?.toNumber() ?? null,
+        })),
+      ),
+    );
+
     const catalogProducts = products.map((product) => {
       const variants = product.variants.map((variant) => ({
         id: variant.id,
@@ -2364,6 +2407,19 @@ export const productsService = {
         size_label: variant.sizeLabel,
         price: variant.basePrice.toNumber(),
         vatable_cap_amount: variant.vatableCapAmount?.toNumber() ?? null,
+        promotion: (() => {
+          const promotion = promotionByVariantId.get(variant.id);
+          return promotion
+            ? {
+                promotion_id: promotion.promotionId,
+                name: promotion.name,
+                discount_kind: promotion.discountKind,
+                discount_value: promotion.discountValue,
+                unit_discount: promotion.unitDiscount,
+                ends_on: promotion.endsOn,
+              }
+            : null;
+        })(),
         ...(() => {
           const readiness = readinessByVariantId.get(variant.id);
           return readiness ? toLegacyReadiness(readiness) : notReadyLegacyReadiness();

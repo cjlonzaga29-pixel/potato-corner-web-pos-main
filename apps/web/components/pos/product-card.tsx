@@ -16,6 +16,8 @@ interface ProductCardProps {
   /** Cashier-facing reason this variant can't be sold right now, or null when it's live_ready. */
   message: string | null;
   onTap: (product: PosCatalogProduct, variant: PosCatalogProduct['variants'][number]) => void;
+  /** POS-PERF-P49 — false while offline: a cached promotion is not applied, so it isn't advertised. */
+  promotionsAvailable?: boolean;
 }
 
 /**
@@ -43,7 +45,7 @@ interface ProductCardProps {
  * rows. Text that doesn't fit is truncated visually only — the full name,
  * size and reason stay in the accessible label and the hover title.
  */
-export const ProductCard = memo(function ProductCard({ product, variant, message, onTap }: ProductCardProps) {
+export const ProductCard = memo(function ProductCard({ product, variant, message, onTap, promotionsAvailable = true }: ProductCardProps) {
   // Test-only visibility into actual re-render count (React.memo bails out
   // before this body runs at all, so this ref only advances on a real
   // render) — a plain data attribute, not read or relied on by any
@@ -66,7 +68,8 @@ export const ProductCard = memo(function ProductCard({ product, variant, message
   const stockOut = variant.stock_status === 'out_of_stock';
   const isAvailable = variant.live_ready && !stockOut;
   const stockBadgeLabel = variant.stock_status === 'out_of_stock' ? 'Out of Stock' : variant.stock_status === 'low_stock' ? 'Low Stock' : null;
-  const ariaLabel = `${product.name}, ${variant.name}, ${formatPeso(variant.price)}${stockBadgeLabel ? `, ${stockBadgeLabel}` : ''}${message ? `, ${message}` : ''}`;
+  const promotionLabel = promotionsAvailable && variant.promotion ? `, promotion ${formatPeso(variant.promotion.unit_discount)} off` : '';
+  const ariaLabel = `${product.name}, ${variant.name}, ${formatPeso(variant.price)}${promotionLabel}${stockBadgeLabel ? `, ${stockBadgeLabel}` : ''}${message ? `, ${message}` : ''}`;
 
   return (
     <Card
@@ -142,6 +145,15 @@ export const ProductCard = memo(function ProductCard({ product, variant, message
         </p>
         <div className={`${POS_CARD_CLASSES.price} flex items-center justify-between gap-1`}>
           <p className="text-sm font-bold leading-5 tabular-nums text-foreground">{formatPeso(variant.price)}</p>
+          {promotionsAvailable && variant.promotion && (
+            <span
+              className="truncate rounded bg-emerald-100 px-1 text-[10px] font-semibold leading-4 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+              title={`${variant.promotion.name}: ${formatPeso(variant.promotion.unit_discount)} off each`}
+              data-testid="product-card-promotion"
+            >
+              Promo −{formatPeso(variant.promotion.unit_discount)}
+            </span>
+          )}
         </div>
         <div className={POS_CARD_CLASSES.message}>
           {message && (

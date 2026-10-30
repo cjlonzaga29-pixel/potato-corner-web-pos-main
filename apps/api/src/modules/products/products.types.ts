@@ -1,5 +1,5 @@
 import type { Prisma, VariantLifecycleStatus } from '@prisma/client';
-import type { ProductBranchView, ProductStatus } from '@potato-corner/shared';
+import type { ProductBranchView, ProductClassification, ProductStatus } from '@potato-corner/shared';
 
 export interface ProductListFilters {
   status?: ProductStatus;
@@ -24,6 +24,8 @@ export interface CreateProductData {
   status: ProductStatus;
   displayOrder?: number;
   isSeasonal: boolean;
+  /** POS-PERF-P49 — always written together with isSeasonal (isSeasonal === (classification === 'seasonal')). */
+  classification: ProductClassification;
   seasonalStartDate?: string;
   seasonalEndDate?: string;
   branchExclusive: boolean;
@@ -39,6 +41,8 @@ export interface UpdateProductData {
   categoryId?: string | null;
   displayOrder?: number;
   isSeasonal?: boolean;
+  /** POS-PERF-P49 — set together with isSeasonal, never alone. */
+  classification?: ProductClassification;
   seasonalStartDate?: string | null;
   seasonalEndDate?: string | null;
 }

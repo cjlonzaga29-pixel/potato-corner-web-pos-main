@@ -22,6 +22,14 @@ export interface CartItemInput {
   /** CR-008 Product Options (Task 27) — IDs only, resolved via ProductOptionInventoryMapping (dedicated per-option deductions), not forwarded to computeBomDeduction. */
   selectedOptionIds?: string[];
   quantity: number;
+  /**
+   * POS-PERF-P49 — the promotion the cashier's screen showed for this line.
+   * undefined = an older client that knows nothing about promotions (no
+   * promotion is applied, it is charged what it displayed); null = "no
+   * promotion shown". Never a price: createTransaction recomputes it and
+   * refuses a mismatch with PROMOTION_CHANGED.
+   */
+  promotionAck?: { promotionId: string; unitDiscount: number } | null;
 }
 
 export interface CreateTransactionData {

@@ -5,15 +5,15 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { ImageIcon, Loader2, Trash2 } from 'lucide-react';
-import type { ProductResponse } from '@potato-corner/shared';
+import { PRODUCT_CLASSIFICATIONS, type ProductResponse } from '@potato-corner/shared';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Form } from '@/components/ui/form';
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
 import { ImageUpload } from '@/components/shared/forms/image-upload';
+import { ProductClassificationSelect } from '@/components/supervisor/products/product-classification-select';
 import { useUpdateProduct, useProductImage, useUploadProductImage, useDeleteProductImage } from '@/hooks/queries/use-products';
 
 function optionalCoercedNumber(min: number) {
@@ -29,17 +29,18 @@ const formSchema = z
     description: z.string().max(500).optional(),
     category: z.string().max(50).optional(),
     display_order: optionalCoercedNumber(0),
-    is_seasonal: z.boolean(),
+    // POS-PERF-P49 — Regular/Promotional/Seasonal; the season window is optional information.
+    classification: z.enum(PRODUCT_CLASSIFICATIONS),
     seasonal_start_date: z.string().optional(),
     seasonal_end_date: z.string().optional(),
   })
   .superRefine((data, ctx) => {
-    if (!data.is_seasonal) return;
-    if (!data.seasonal_start_date || !data.seasonal_end_date) {
-      ctx.addIssue({ code: 'custom', path: ['seasonal_start_date'], message: 'Seasonal products require both a start and end date' });
+    if (data.classification !== 'seasonal') return;
+    if (Boolean(data.seasonal_start_date) !== Boolean(data.seasonal_end_date)) {
+      ctx.addIssue({ code: 'custom', path: ['seasonal_start_date'], message: 'Enter both dates, or leave both empty' });
       return;
     }
-    if (data.seasonal_end_date < data.seasonal_start_date) {
+    if (data.seasonal_start_date && data.seasonal_end_date && data.seasonal_end_date < data.seasonal_start_date) {
       ctx.addIssue({ code: 'custom', path: ['seasonal_end_date'], message: 'End date must not be before the start date' });
     }
   });
@@ -52,7 +53,7 @@ function valuesFromProduct(product: ProductResponse): FormValues {
     description: product.description ?? '',
     category: product.category ?? '',
     display_order: product.display_order ?? '',
-    is_seasonal: product.is_seasonal,
+    classification: product.classification ?? (product.is_seasonal ? 'seasonal' : 'regular'),
     seasonal_start_date: product.seasonal_start_date ?? '',
     seasonal_end_date: product.seasonal_end_date ?? '',
   };
@@ -67,7 +68,8 @@ interface EditProductDialogProps {
 export function EditProductDialog({ open, onOpenChange, product }: EditProductDialogProps) {
   const updateProduct = useUpdateProduct(product.id);
   const form = useForm<FormValues>({ resolver: zodResolver(formSchema), defaultValues: valuesFromProduct(product) });
-  const isSeasonal = form.watch('is_seasonal');
+  const classification = form.watch('classification');
+  const isSeasonal = classification === 'seasonal';
 
   // Task 209.6 — image management is deliberately independent of the
   // name/description/etc. form above: its own queries, its own mutations,
@@ -101,9 +103,9 @@ export function EditProductDialog({ open, onOpenChange, product }: EditProductDi
       description: parsed.description || undefined,
       category: parsed.category || undefined,
       display_order: parsed.display_order,
-      is_seasonal: parsed.is_seasonal,
-      seasonal_start_date: parsed.is_seasonal ? parsed.seasonal_start_date : null,
-      seasonal_end_date: parsed.is_seasonal ? parsed.seasonal_end_date : null,
+      classification: parsed.classification,
+      seasonal_start_date: parsed.classification === 'seasonal' && parsed.seasonal_start_date ? parsed.seasonal_start_date : null,
+      seasonal_end_date: parsed.classification === 'seasonal' && parsed.seasonal_end_date ? parsed.seasonal_end_date : null,
       expected_version: product.version,
     });
     handleOpenChange(false);
@@ -181,22 +183,23 @@ export function EditProductDialog({ open, onOpenChange, product }: EditProductDi
               </FormFieldWrapper>
             </div>
 
-            <div className="flex items-center justify-between rounded-md border p-3">
-              <div>
-                <p className="text-sm font-medium">Seasonal Product</p>
-                <p className="text-xs text-muted-foreground">Only available within a date range.</p>
-              </div>
-              <Switch checked={isSeasonal} onCheckedChange={(checked) => form.setValue('is_seasonal', checked)} />
-            </div>
+            <ProductClassificationSelect
+              id="edit-product-classification"
+              value={classification}
+              onChange={(value) => form.setValue('classification', value, { shouldDirty: true })}
+            />
 
             {isSeasonal && (
               <div className="grid grid-cols-2 gap-3">
-                <FormFieldWrapper<FormValues> name="seasonal_start_date" label="Start Date" required>
+                <FormFieldWrapper<FormValues> name="seasonal_start_date" label="Season Start (optional)">
                   <Input type="date" />
                 </FormFieldWrapper>
-                <FormFieldWrapper<FormValues> name="seasonal_end_date" label="End Date" required>
+                <FormFieldWrapper<FormValues> name="seasonal_end_date" label="Season End (optional)">
                   <Input type="date" />
                 </FormFieldWrapper>
+                <p className="col-span-2 text-xs text-muted-foreground">
+                  For your reference only — the product is not hidden outside these dates.
+                </p>
               </div>
             )}
 

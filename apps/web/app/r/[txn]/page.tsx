@@ -80,6 +80,13 @@ export default function PublicReceiptPage() {
                       {option.price_adjustment !== 0 && <span className="tabular-nums">{formatPeso(option.price_adjustment)}</span>}
                     </div>
                   ))}
+                  {/* POS-PERF-P49 — the promotion frozen on this line at sale time. */}
+                  {item.promotion_name && (item.discount_amount ?? 0) > 0 && (
+                    <div className="flex justify-between gap-2 pl-4 text-xs text-muted-foreground">
+                      <span>Promo: {item.promotion_name}</span>
+                      <span className="tabular-nums">-{formatPeso(item.discount_amount ?? 0)}</span>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

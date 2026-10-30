@@ -16,9 +16,40 @@ const moneySchema = (message: string) =>
   z.number().positive().refine(hasMaxDecimals(2), { message });
 
 /**
+ * POS-PERF-P49 — promotional classification, independent of publication
+ * status. Classification alone never changes a price or applies a discount;
+ * only Promotional/Seasonal products may be selected by a promotion. See
+ * docs/runbooks/pos-perf-p49-promotional-seasonal-products-and-discounts.md.
+ */
+export const PRODUCT_CLASSIFICATIONS = ['regular', 'promotional', 'seasonal'] as const;
+export type ProductClassification = (typeof PRODUCT_CLASSIFICATIONS)[number];
+export const PRODUCT_CLASSIFICATION_LABELS: Record<ProductClassification, string> = {
+  regular: 'Regular',
+  promotional: 'Promotional',
+  seasonal: 'Seasonal',
+};
+
+/** P49 — legacy is_seasonal and classification must not contradict each other when both are sent. */
+function validateClassificationFields(
+  data: { is_seasonal?: boolean; classification?: ProductClassification },
+  ctx: z.RefinementCtx,
+): void {
+  if (data.classification === undefined || data.is_seasonal === undefined) return;
+  if (data.is_seasonal !== (data.classification === 'seasonal')) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['classification'],
+      message: 'is_seasonal contradicts classification — send classification only',
+    });
+  }
+}
+
+/**
  * Shared cross-field seasonal validation, used by both createProductSchema
- * and updateProductSchema. is_seasonal true requires both dates; providing
- * one date requires the other; end must not precede start.
+ * and updateProductSchema. Providing one date requires the other; end must
+ * not precede start. POS-PERF-P49 — the window is optional informational
+ * metadata: a Seasonal product no longer has to carry dates (it was never
+ * read by POS/checkout), so classification can be set without inventing them.
  */
 function validateSeasonalFields(
   data: { is_seasonal?: boolean; seasonal_start_date?: string; seasonal_end_date?: string },
@@ -26,15 +57,6 @@ function validateSeasonalFields(
 ): void {
   const hasStart = data.seasonal_start_date !== undefined;
   const hasEnd = data.seasonal_end_date !== undefined;
-
-  if (data.is_seasonal && (!hasStart || !hasEnd)) {
-    ctx.addIssue({
-      code: 'custom',
-      path: ['seasonal_start_date'],
-      message: 'Seasonal products require both a start date and an end date',
-    });
-    return;
-  }
 
   if (hasStart !== hasEnd) {
     ctx.addIssue({
@@ -71,7 +93,10 @@ export const createProductSchema = z
     category_id: z.uuid().optional(),
     status: z.enum(productStatusValues).default(PRODUCT_STATUS.DRAFT),
     display_order: z.number().int().nonnegative().optional(),
-    is_seasonal: z.boolean().default(false),
+    is_seasonal: z.boolean().optional(),
+    // POS-PERF-P49 — optional; omitted = derived from is_seasonal (seasonal
+    // when true, otherwise regular), so older clients keep their behavior.
+    classification: z.enum(PRODUCT_CLASSIFICATIONS).optional(),
     seasonal_start_date: z.iso.date().optional(),
     seasonal_end_date: z.iso.date().optional(),
     // CR-001: cascade default is "all active branches"; branch_exclusive flips
@@ -115,6 +140,7 @@ export const createProductSchema = z
       });
     }
     validateSeasonalFields(data, ctx);
+    validateClassificationFields(data, ctx);
   });
 
 /** status is deliberately absent — lifecycle transitions go through changeProductStatusSchema, not this generic update. */
@@ -126,6 +152,9 @@ export const updateProductSchema = z
     category_id: z.uuid().nullable().optional(),
     display_order: z.number().int().nonnegative().optional(),
     is_seasonal: z.boolean().optional(),
+    // POS-PERF-P49 — Regular/Promotional/Seasonal. Same authority as every
+    // other product field (full coverage, P36R4); never touches status.
+    classification: z.enum(PRODUCT_CLASSIFICATIONS).optional(),
     seasonal_start_date: z.iso.date().nullable().optional(),
     seasonal_end_date: z.iso.date().nullable().optional(),
     // POS-PERF-P36R — optional optimistic-concurrency token (the product's
@@ -142,6 +171,7 @@ export const updateProductSchema = z
       },
       ctx,
     );
+    validateClassificationFields(data, ctx);
   });
 
 export const changeProductStatusSchema = z.object({
@@ -304,6 +334,9 @@ export const productResponseSchema = z.object({
   status_label: z.string(),
   display_order: z.number().int().nullable(),
   is_seasonal: z.boolean(),
+  // POS-PERF-P49 — optional for the same pre-existing-fixture reason as
+  // forked_from_product_id below; always present from the API.
+  classification: z.enum(PRODUCT_CLASSIFICATIONS).optional(),
   seasonal_start_date: z.iso.date().nullable(),
   seasonal_end_date: z.iso.date().nullable(),
   branch_exclusive: z.boolean(),
@@ -470,6 +503,22 @@ export const posCatalogVariantSchema = z.object({
   // Only populated (non-null) when status is 'in_stock' or 'low_stock' and the
   // figure is reliably calculable — never shown to the cashier otherwise.
   max_sellable_units: z.number().int().nullable(),
+  // POS-PERF-P49 — the one promotion currently applicable to this size at
+  // this branch (server-resolved, overlap rule applied), or null. Display and
+  // checkout acknowledgement only: checkout recomputes it from current
+  // configuration and refuses a mismatch. Optional so an older API (no field)
+  // simply means "no promotions".
+  promotion: z
+    .object({
+      promotion_id: z.uuid(),
+      name: z.string(),
+      discount_kind: z.enum(['percentage', 'fixed_amount']),
+      discount_value: z.number(),
+      unit_discount: z.number(),
+      ends_on: z.iso.date().nullable(),
+    })
+    .nullable()
+    .optional(),
 });
 
 export const posCatalogProductSchema = z.object({

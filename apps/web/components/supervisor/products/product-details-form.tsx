@@ -5,17 +5,17 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { AlertTriangle, CheckCircle2, ImageIcon, Loader2, Trash2 } from 'lucide-react';
-import type { ProductDetailResponse } from '@potato-corner/shared';
+import { PRODUCT_CLASSIFICATIONS, type ProductClassification, type ProductDetailResponse } from '@potato-corner/shared';
 import { Form } from '@/components/ui/form';
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
-import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ImageUpload } from '@/components/shared/forms/image-upload';
+import { ProductClassificationSelect } from './product-classification-select';
 import { useProductCategories } from '@/hooks/queries/use-product-categories';
 import { ProductApiError, useDeleteProductImage, useProductImage, useUpdateProduct, useUploadProductImage } from '@/hooks/queries/use-products';
 
@@ -27,17 +27,18 @@ const formSchema = z
     description: z.string().max(500),
     category_id: z.string(),
     display_order: z.string().regex(/^\d*$/, 'Use a whole number'),
-    is_seasonal: z.boolean(),
+    // POS-PERF-P49 — Regular/Promotional/Seasonal; the season window is optional information.
+    classification: z.enum(PRODUCT_CLASSIFICATIONS),
     seasonal_start_date: z.string(),
     seasonal_end_date: z.string(),
   })
   .superRefine((data, ctx) => {
-    if (!data.is_seasonal) return;
-    if (!data.seasonal_start_date || !data.seasonal_end_date) {
-      ctx.addIssue({ code: 'custom', path: ['seasonal_start_date'], message: 'Seasonal products require both a start and end date' });
+    if (data.classification !== 'seasonal') return;
+    if (Boolean(data.seasonal_start_date) !== Boolean(data.seasonal_end_date)) {
+      ctx.addIssue({ code: 'custom', path: ['seasonal_start_date'], message: 'Enter both dates, or leave both empty' });
       return;
     }
-    if (data.seasonal_end_date < data.seasonal_start_date) {
+    if (data.seasonal_start_date && data.seasonal_end_date < data.seasonal_start_date) {
       ctx.addIssue({ code: 'custom', path: ['seasonal_end_date'], message: 'End date must not be before the start date' });
     }
   });
@@ -50,7 +51,7 @@ function valuesFromProduct(product: ProductDetailResponse): FormValues {
     description: product.description ?? '',
     category_id: product.category_id ?? NO_CATEGORY,
     display_order: product.display_order === null ? '' : String(product.display_order),
-    is_seasonal: product.is_seasonal,
+    classification: product.classification ?? (product.is_seasonal ? 'seasonal' : 'regular'),
     seasonal_start_date: product.seasonal_start_date ?? '',
     seasonal_end_date: product.seasonal_end_date ?? '',
   };
@@ -79,7 +80,8 @@ export function ProductDetailsForm({ product, disabled, onDirtyChange }: Product
   const { data: categoryData, isLoading: categoriesLoading } = useProductCategories({ isActive: true, limit: 100 });
   const form = useForm<FormValues>({ resolver: zodResolver(formSchema), defaultValues: valuesFromProduct(product) });
   const isDirty = form.formState.isDirty;
-  const isSeasonal = form.watch('is_seasonal');
+  const classification = form.watch('classification');
+  const isSeasonal = classification === 'seasonal';
   // The version these fields were loaded from — what Save details claims to be editing.
   const baseVersion = useRef(product.version);
   const [conflict, setConflict] = useState(false);
@@ -121,9 +123,9 @@ export function ProductDetailsForm({ product, disabled, onDirtyChange }: Product
         description: values.description || undefined,
         category_id: values.category_id === NO_CATEGORY ? null : values.category_id,
         ...(values.display_order !== '' && { display_order: Number(values.display_order) }),
-        is_seasonal: values.is_seasonal,
-        seasonal_start_date: values.is_seasonal ? values.seasonal_start_date : null,
-        seasonal_end_date: values.is_seasonal ? values.seasonal_end_date : null,
+        classification: values.classification,
+        seasonal_start_date: values.classification === 'seasonal' && values.seasonal_start_date ? values.seasonal_start_date : null,
+        seasonal_end_date: values.classification === 'seasonal' && values.seasonal_end_date ? values.seasonal_end_date : null,
         expected_version: baseVersion.current,
       });
       baseVersion.current = saved.version;
@@ -188,28 +190,24 @@ export function ProductDetailsForm({ product, disabled, onDirtyChange }: Product
               </FormFieldWrapper>
             </div>
 
-            <div className="flex items-center justify-between gap-3 rounded-md border p-3">
-              <div>
-                <p className="text-sm font-medium" id="product-editor-seasonal-label">
-                  Seasonal Product
-                </p>
-                <p className="text-xs text-muted-foreground">Only available within a date range.</p>
-              </div>
-              <Switch
-                aria-labelledby="product-editor-seasonal-label"
-                checked={isSeasonal}
-                onCheckedChange={(checked) => form.setValue('is_seasonal', checked, { shouldDirty: true })}
-              />
-            </div>
+            <ProductClassificationSelect
+              id="product-editor-classification"
+              value={classification}
+              onChange={(value: ProductClassification) => form.setValue('classification', value, { shouldDirty: true })}
+              disabled={disabled}
+            />
 
             {isSeasonal && (
               <div className="grid gap-4 sm:grid-cols-2">
-                <FormFieldWrapper<FormValues> name="seasonal_start_date" label="Start Date" required>
+                <FormFieldWrapper<FormValues> name="seasonal_start_date" label="Season Start (optional)">
                   <Input type="date" />
                 </FormFieldWrapper>
-                <FormFieldWrapper<FormValues> name="seasonal_end_date" label="End Date" required>
+                <FormFieldWrapper<FormValues> name="seasonal_end_date" label="Season End (optional)">
                   <Input type="date" />
                 </FormFieldWrapper>
+                <p className="text-xs text-muted-foreground sm:col-span-2">
+                  For your reference only — the product is not hidden outside these dates. A promotion&apos;s own dates control its discount.
+                </p>
               </div>
             )}
           </fieldset>

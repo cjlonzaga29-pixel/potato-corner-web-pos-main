@@ -9,6 +9,7 @@ import {
   IMAGE_PROOF_TYPE,
   type ImageProofType,
 } from '../constants/status.js';
+import { cartItemPromotionAckSchema } from './promotion.schema.js';
 
 const paymentMethodValues = Object.values(PAYMENT_METHOD) as [PaymentMethod, ...PaymentMethod[]];
 const discountTypeValues = Object.values(DISCOUNT_TYPE) as [DiscountType, ...DiscountType[]];
@@ -42,6 +43,11 @@ export const cartItemSchema = z.object({
   // for server-side validation, pricing, and inventory deduction.
   selected_option_ids: z.array(z.uuid()).optional(),
   quantity: z.number().int().positive(),
+  // POS-PERF-P49 — the promotion the cashier's screen showed for this line
+  // ({ promotion_id, unit_discount } or null). An acknowledgement, never a
+  // price: checkout recomputes from current configuration and refuses a
+  // mismatch with PROMOTION_CHANGED. Absent (older client) = no promotion.
+  promotion: cartItemPromotionAckSchema,
 });
 
 /** GCash, Maya, and Other all carry identical proof requirements — a payment proof photo, no reference number/note (Task 139). */
@@ -249,6 +255,20 @@ export const transactionItemResponseSchema = z.object({
   // Product Options actually charged/deducted for this line. Empty array
   // when none were selected, never omitted.
   selected_options: z.array(transactionItemSelectedOptionSchema),
+  // POS-PERF-P49 — frozen at checkout. line_total above stays gross;
+  // discount_amount is this line's promotion discount (0 when none) and is
+  // part of the transaction's discount_amount. Optional for pre-P49 fixtures.
+  discount_amount: z.number().optional(),
+  promotion: z
+    .object({
+      promotion_id: z.uuid(),
+      name: z.string(),
+      discount_kind: z.enum(['percentage', 'fixed_amount']),
+      discount_value: z.number(),
+      unit_discount: z.number(),
+    })
+    .nullable()
+    .optional(),
 });
 
 export const transactionResponseSchema = z.object({

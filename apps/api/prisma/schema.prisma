@@ -55,6 +55,22 @@ enum ProductStatus {
   archived
 }
 
+// POS-PERF-P49 — promotional classification, independent of ProductStatus
+// (publication). Classification alone never changes a price; see
+// docs/runbooks/pos-perf-p49-promotional-seasonal-products-and-discounts.md.
+enum ProductClassification {
+  regular
+  promotional
+  seasonal
+}
+
+// POS-PERF-P49 — fixed_amount is per eligible unit, capped at that unit's
+// base price; never a whole-cart amount.
+enum PromotionDiscountKind {
+  percentage
+  fixed_amount
+}
+
 enum TransactionStatus {
   completed
   voided
@@ -384,6 +400,8 @@ model User {
   managedInventoryItems      InventoryItem[]                 @relation("InventoryItemManagedBy")
   catalogAssignmentsMade     CatalogManagementAssignment[]   @relation("CatalogAssignmentAssignedBy")
   catalogAssignmentsReceived CatalogManagementAssignment[]   @relation("CatalogAssignmentNewManager")
+  promotionsCreated          Promotion[]                     @relation("PromotionCreatedBy")
+  promotionsUpdated          Promotion[]                     @relation("PromotionUpdatedBy")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -425,6 +443,7 @@ model Branch {
 
   // CR-001
   exclusiveProducts Product[]          @relation("ProductExclusiveBranch")
+  promotionBranches PromotionBranch[]
   productInventory  ProductInventory[]
 
   expenses Expense[]
@@ -788,6 +807,11 @@ model Product {
   // from a product taken off POS; see docs/runbooks/pos-perf-p39-product-ui-consistency.md §8.
   everPublished Boolean @default(false) @map("ever_published")
 
+  // POS-PERF-P49 — Regular/Promotional/Seasonal. isSeasonal above is kept
+  // equal to (classification == seasonal) on every write for older readers.
+  // Only promotional/seasonal products may be selected by a Promotion.
+  classification ProductClassification @default(regular)
+
   creator            User?                       @relation(fields: [createdBy], references: [id])
   manager            User?                       @relation("ProductManagedBy", fields: [managedBy], references: [id])
   exclusiveBranch    Branch?                     @relation("ProductExclusiveBranch", fields: [exclusiveBranchId], references: [id])
@@ -798,6 +822,7 @@ model Product {
   branchAvailability BranchProductAvailability[]
   transactionItems   TransactionItem[]
   holdOrderItems     HoldOrderItem[]
+  promotionProducts  PromotionProduct[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -2125,6 +2150,66 @@ model Transaction {
   @@map("transactions")
 }
 
+// ---------------------------------------------------------------------------
+// POS-PERF-P49 — product-scoped promotional discounts. A Promotion targets
+// explicitly selected products (classification promotional/seasonal only) at
+// explicitly selected branches; it never edits a product's or variant's
+// stored price. Resolved server-side at checkout (discounts/promotion-pricing.ts)
+// and frozen onto TransactionItem.promotionSnapshot. startsOn/endsOn are
+// Asia/Manila calendar dates, both inclusive; NULL = open-ended.
+// ---------------------------------------------------------------------------
+
+model Promotion {
+  id            String                @id @default(uuid())
+  name          String
+  discountKind  PromotionDiscountKind @map("discount_kind")
+  // percentage: 0 < value <= 100. fixed_amount: pesos off each eligible unit.
+  discountValue Decimal               @map("discount_value") @db.Decimal(10, 2)
+  isEnabled     Boolean               @default(true) @map("is_enabled")
+  startsOn      DateTime?             @map("starts_on") @db.Date
+  endsOn        DateTime?             @map("ends_on") @db.Date
+  // Optimistic-concurrency token, same contract as Product.version.
+  version       Int                   @default(1)
+  createdById   String                @map("created_by_id")
+  updatedById   String?               @map("updated_by_id")
+
+  createdBy        User               @relation("PromotionCreatedBy", fields: [createdById], references: [id])
+  updatedBy        User?              @relation("PromotionUpdatedBy", fields: [updatedById], references: [id])
+  products         PromotionProduct[]
+  branches         PromotionBranch[]
+  transactionItems TransactionItem[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([isEnabled])
+  @@map("promotions")
+}
+
+model PromotionProduct {
+  promotionId String @map("promotion_id")
+  productId   String @map("product_id")
+
+  promotion Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+  product   Product   @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@id([promotionId, productId])
+  @@index([productId])
+  @@map("promotion_products")
+}
+
+model PromotionBranch {
+  promotionId String @map("promotion_id")
+  branchId    String @map("branch_id")
+
+  promotion Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+  branch    Branch    @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@id([promotionId, branchId])
+  @@index([branchId])
+  @@map("promotion_branches")
+}
+
 /// Snapshot fields freeze the product/variant/flavor name and price at the
 /// exact moment of sale — they never change even if the product catalog
 /// or pricing changes later.
@@ -2163,11 +2248,22 @@ model TransactionItem {
   // never the frontend-submitted display price. Null for rows with no
   // selected options (or written before this column existed).
   selectedOptions     Json?   @map("selected_options")
+  // POS-PERF-P49 — product promotion applied to this line, frozen at sale
+  // time. lineTotal above stays GROSS (unitPrice x quantity, before any
+  // discount) exactly as reports already read it; discountAmount is this
+  // line's promotion discount (unit discount x quantity) and is included in
+  // Transaction.discountAmount. promotionSnapshot freezes the promotion's
+  // name/kind/value/version and the base price it was computed from, so a
+  // later edit or disable of the promotion can never rewrite this sale.
+  discountAmount      Decimal @default(0) @map("discount_amount") @db.Decimal(10, 2)
+  promotionId         String? @map("promotion_id")
+  promotionSnapshot   Json?   @map("promotion_snapshot")
 
   transaction    Transaction    @relation(fields: [transactionId], references: [id], onDelete: Cascade)
   product        Product        @relation(fields: [productId], references: [id], onDelete: Restrict)
   productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
   flavor         Flavor?        @relation(fields: [flavorId], references: [id])
+  promotion      Promotion?     @relation(fields: [promotionId], references: [id], onDelete: Restrict)
 
   @@index([transactionId])
   @@index([productVariantId])

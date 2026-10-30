@@ -39,6 +39,8 @@ export class TransactionApiError extends Error {
   constructor(
     message: string,
     public readonly code: string | undefined,
+    /** POS-PERF-P49 — the server's error.details (e.g. PROMOTION_CHANGED's per-line changes); undefined when absent. */
+    public readonly details?: unknown,
   ) {
     super(message);
     this.name = 'TransactionApiError';
@@ -135,7 +137,10 @@ export function useCreateTransaction(accessTokenOverride?: string, refreshOverri
         accessTokenOverride,
         refreshOverrideToken,
       );
-      if (!response.data) throw new TransactionApiError(errorMessage(response, 'Failed to record transaction'), errorCode(response));
+      if (!response.data) {
+        const details = response.error && typeof response.error !== 'string' ? response.error.details : undefined;
+        throw new TransactionApiError(errorMessage(response, 'Failed to record transaction'), errorCode(response), details);
+      }
       return response.data;
     },
     onSuccess: (transaction) => {

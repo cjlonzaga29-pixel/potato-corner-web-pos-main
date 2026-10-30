@@ -194,6 +194,7 @@ export const productsRepository = {
           status: data.status,
           displayOrder: data.displayOrder,
           isSeasonal: data.isSeasonal,
+          classification: data.classification,
           seasonalStartDate: data.seasonalStartDate ? new Date(data.seasonalStartDate) : undefined,
           seasonalEndDate: data.seasonalEndDate ? new Date(data.seasonalEndDate) : undefined,
           branchExclusive: data.branchExclusive,
@@ -298,6 +299,8 @@ export const productsRepository = {
           status: 'draft',
           displayOrder: source.displayOrder,
           isSeasonal: source.isSeasonal,
+          // POS-PERF-P49 — the branch copy keeps the source's classification.
+          classification: source.classification,
           seasonalStartDate: source.seasonalStartDate,
           seasonalEndDate: source.seasonalEndDate,
           branchExclusive: true,
@@ -426,6 +429,7 @@ export const productsRepository = {
         ...(data.categoryId !== undefined && { categoryId: data.categoryId }),
         displayOrder: data.displayOrder,
         isSeasonal: data.isSeasonal,
+        classification: data.classification,
         ...(data.seasonalStartDate !== undefined && {
           seasonalStartDate: data.seasonalStartDate ? new Date(data.seasonalStartDate) : null,
         }),

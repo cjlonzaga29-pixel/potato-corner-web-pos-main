@@ -101,4 +101,18 @@ describe('InventoryList status filter (POS-PERF-P47)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Show all items' }));
     expect(mockReplace).toHaveBeenCalledWith('/supervisor/inventory');
   });
+
+  it('offers Prepare transfer only on rows that need stock, with this branch as destination (POS-PERF-P48)', () => {
+    render(<InventoryList basePath="/supervisor" />);
+    const buttons = screen.getAllByRole('button', { name: 'Prepare transfer' });
+    expect(buttons).toHaveLength(2);
+    fireEvent.click(buttons[0] as HTMLElement);
+    expect(mockPush).toHaveBeenCalledWith(`/supervisor/inventory/transfer?to_branch_id=branch-1&inventory_item_id=${ROWS[1]?.inventory_item_id}`);
+  });
+
+  it('the header Transfer button starts a transfer from this branch (POS-PERF-P48)', () => {
+    render(<InventoryList basePath="/supervisor" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Transfer' }));
+    expect(mockPush).toHaveBeenCalledWith('/supervisor/inventory/transfer?from_branch_id=branch-1');
+  });
 });

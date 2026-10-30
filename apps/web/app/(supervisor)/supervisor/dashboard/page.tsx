@@ -6,6 +6,7 @@ import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { DashboardInventoryAlerts } from '@/components/supervisor/dashboard-inventory-alerts';
+import { transferPrepareHref } from '@/lib/transfer-links';
 import { DashboardAttendanceOverview } from '@/components/supervisor/dashboard-attendance-overview';
 import { DashboardTransactionsFeed } from '@/components/supervisor/dashboard-transactions-feed';
 import { SalesAnalyticsSection } from '@/components/shared/dashboard/sales-analytics-section';
@@ -224,7 +225,16 @@ export default function SupervisorDashboardPage() {
       </div>
 
       <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-2">
-        <DashboardInventoryAlerts alerts={alerts} isLoading={isAlertsLoading} href={INVENTORY_ALERTS_HREF} />
+        <DashboardInventoryAlerts
+          alerts={alerts}
+          isLoading={isAlertsLoading}
+          href={INVENTORY_ALERTS_HREF}
+          prepareTransferHref={
+            (branchesData?.branches.length ?? 0) > 1
+              ? (alert) => transferPrepareHref('/supervisor', { toBranchId: activeBranchId, inventoryItemId: alert.inventory_item_id })
+              : undefined
+          }
+        />
         <DashboardAttendanceOverview
           summary={attendanceSummary}
           isLoading={isAttendanceLoading}

@@ -570,7 +570,28 @@ export function useTransferDestinationBranches(branchId: string | null | undefin
   });
 }
 
-/** Branch-to-branch transfer — posts both the source's transfer_out and the destination's transfer_in atomically. `branchId` is the source (from) branch, taken from the URL, not the request body. */
+/**
+ * POS-PERF-P48 — carries the API error code so the transfer page can tell a
+ * definite refusal (validation, permission, stock, maintenance) apart from a
+ * response that never arrived, where the transfer may or may not have been
+ * recorded. The transfer route has no idempotency key.
+ */
+export class TransferStockError extends Error {
+  constructor(
+    message: string,
+    readonly code: string,
+  ) {
+    super(message);
+    this.name = 'TransferStockError';
+  }
+
+  /** The request may have reached the server — the outcome is unknown. */
+  get outcomeUnknown(): boolean {
+    return this.code === 'NETWORK_ERROR' || this.code === 'UNREADABLE_RESPONSE';
+  }
+}
+
+/** Branch-to-branch transfer — posts both the source's transfer_out and the destination's transfer_in atomically. `branchId` is the source (from) branch, sent as the URL path segment the API's branchGuard authorizes. Errors are shown inline by the caller, not toasted. */
 export function useTransferInventoryStock(branchId: string | null | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -579,14 +600,21 @@ export function useTransferInventoryStock(branchId: string | null | undefined) {
         method: 'POST',
         body: JSON.stringify(input),
       });
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to transfer stock'));
+      if (!response.data) {
+        const code = response.error && typeof response.error === 'object' ? response.error.code : 'UNKNOWN';
+        throw new TransferStockError(errorMessage(response, 'Failed to transfer stock'), code);
+      }
       return response.data;
     },
-    onSuccess: () => {
+    // Both legs change stock, so both branches' lists/alerts/movements are
+    // refreshed — on failure too, so a refused transfer shows current balances.
+    onSettled: (_data, _error, input) => {
       invalidateInventoryStock(queryClient, branchId);
+      invalidateInventoryStock(queryClient, input.to_branch_id);
+    },
+    onSuccess: () => {
       toast.success('Stock transferred');
     },
-    onError: (error: Error) => toast.error(error.message),
   });
 }
 

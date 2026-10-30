@@ -14,10 +14,12 @@ interface DashboardInventoryAlertsProps {
   isLoading: boolean;
   /** POS-PERF-P47 — the filtered inventory list behind these alerts (same branch, same rule). */
   href?: string;
+  /** POS-PERF-P48 — per-alert link into the transfer page with this branch as destination; omitted when there is no other branch to send from. */
+  prepareTransferHref?: (alert: InventoryStockAlert) => string;
 }
 
 /** Panel 3 of the supervisor dashboard — low/critical stock alerts for the active branch, sourced from InventoryStock (branch inventory cutover). Pure display, no data fetching. */
-export function DashboardInventoryAlerts({ alerts, isLoading, href }: DashboardInventoryAlertsProps) {
+export function DashboardInventoryAlerts({ alerts, isLoading, href, prepareTransferHref }: DashboardInventoryAlertsProps) {
   const header = (
     <CardHeader className="app-card-padding flex flex-row items-center justify-between space-y-0 pb-2">
       <CardTitle className="text-sm font-medium">Inventory Alerts</CardTitle>
@@ -61,13 +63,22 @@ export function DashboardInventoryAlerts({ alerts, isLoading, href }: DashboardI
             {visible.map((alert) => (
               <div
                 key={alert.inventory_item_id}
-                className="-mx-2 flex items-center justify-between gap-3 rounded-md px-2 py-2.5 text-sm transition-colors hover:bg-muted/40"
+                className="-mx-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md px-2 py-2.5 text-sm transition-colors hover:bg-muted/40"
               >
-                <span className="min-w-0 truncate font-medium">{alert.name}</span>
+                <span className="min-w-0 flex-1 truncate font-medium">{alert.name}</span>
                 <span className="shrink-0 tabular-nums text-muted-foreground" title={`${alert.quantity_on_hand} on hand, ${alert.quantity_reserved} reserved`}>
                   {alert.quantity_available} avail.
                 </span>
                 <StatusBadge status={alert.severity} type="inventory" />
+                {prepareTransferHref && (
+                  <Link
+                    href={prepareTransferHref(alert)}
+                    aria-label={`Prepare transfer for ${alert.name}`}
+                    className="shrink-0 rounded text-xs font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    Prepare transfer
+                  </Link>
+                )}
               </div>
             ))}
             {remaining > 0 && <p className="pt-2 text-xs text-muted-foreground">and {remaining} more</p>}

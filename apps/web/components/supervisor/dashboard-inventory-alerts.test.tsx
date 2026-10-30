@@ -51,4 +51,12 @@ describe('DashboardInventoryAlerts', () => {
     render(<DashboardInventoryAlerts alerts={[alert({ severity: 'critical' })]} isLoading={false} />);
     expect(screen.getByText('Critical').className).toContain('bg-destructive/15');
   });
+
+  it('links each alert to a prepared transfer only when a link builder is given (POS-PERF-P48)', () => {
+    const { rerender } = render(<DashboardInventoryAlerts alerts={[alert()]} isLoading={false} />);
+    expect(screen.queryByRole('link', { name: /Prepare transfer/ })).not.toBeInTheDocument();
+    rerender(<DashboardInventoryAlerts alerts={[alert()]} isLoading={false} prepareTransferHref={(a) => `/t?item=${a.inventory_item_id}`} />);
+    expect(screen.getByRole('link', { name: 'Prepare transfer for Cheddar Powder' })).toHaveAttribute('href', '/t?item=item-1');
+  });
 });
+

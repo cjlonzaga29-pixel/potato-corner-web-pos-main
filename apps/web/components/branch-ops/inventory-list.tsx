@@ -15,29 +15,8 @@ import {
   useBranchInventoryStockAlerts,
   useInventoryStockRealtimeSync,
 } from '@/hooks/queries/use-universal-inventory';
-
-/**
- * POS-PERF-P47 — `?status=` filter the Supervisor dashboard cards link to.
- * Uses the row's own server-computed `status` (the same classification the
- * alerts endpoint uses), so a card's count always equals the rows shown.
- */
-const STATUS_FILTERS = [
-  { value: 'all', label: 'All items' },
-  { value: 'alerts', label: 'Needs attention' },
-  { value: 'low', label: 'Low stock' },
-  { value: 'critical', label: 'Critical' },
-] as const;
-type StatusFilter = (typeof STATUS_FILTERS)[number]['value'];
-
-function parseStatusFilter(raw: string | null): StatusFilter {
-  return STATUS_FILTERS.some((f) => f.value === raw) ? (raw as StatusFilter) : 'all';
-}
-
-function matchesStatusFilter(row: BranchInventoryStockRow, filter: StatusFilter): boolean {
-  if (filter === 'all') return true;
-  if (filter === 'alerts') return row.status !== 'healthy';
-  return row.status === filter;
-}
+import { STOCK_STATUS_FILTERS, matchesStockStatusFilter, parseStockStatusFilter } from '@/lib/inventory-stock-status';
+import { transferPrepareHref } from '@/lib/transfer-links';
 
 /**
  * Shared body behind both `/supervisor/inventory` and `/branch/inventory` —
@@ -52,7 +31,7 @@ function matchesStatusFilter(row: BranchInventoryStockRow, filter: StatusFilter)
 export function InventoryList({ basePath }: { basePath: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const statusFilter = parseStatusFilter(searchParams.get('status'));
+  const statusFilter = parseStockStatusFilter(searchParams.get('status'));
   const activeBranchId = useBranchStore((s) => s.activeBranchId);
   useInventoryStockRealtimeSync(activeBranchId);
   const { data, isLoading, isError, refetch } = useBranchInventoryStock(activeBranchId);
@@ -61,7 +40,7 @@ export function InventoryList({ basePath }: { basePath: string }) {
   // Same stale-branch guard as the dashboard: rows/alerts answered for a
   // previously selected branch are never shown under the current one.
   const items = data?.branch_id === activeBranchId ? data.items : undefined;
-  const filteredItems = (items ?? []).filter((row) => matchesStatusFilter(row, statusFilter));
+  const filteredItems = (items ?? []).filter((row) => matchesStockStatusFilter(row, statusFilter));
   const isItemsLoading = isLoading || (data !== undefined && items === undefined);
   const alertCount = alertsData?.alerts.length ?? 0;
   const criticalCount = alertsData?.alerts.filter((a) => a.severity === 'critical').length ?? 0;
@@ -124,6 +103,17 @@ export function InventoryList({ basePath }: { basePath: string }) {
       header: '',
       cell: ({ row }) => (
         <div className="flex justify-end gap-1">
+          {/* POS-PERF-P48 — this branch as the destination; the transfer page re-checks access and the server re-authorizes. */}
+          {row.original.status !== 'healthy' && activeBranchId && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => router.push(transferPrepareHref(basePath, { toBranchId: activeBranchId, inventoryItemId: row.original.inventory_item_id }))}
+            >
+              <ArrowRightLeft className="mr-1 h-4 w-4" />
+              Prepare transfer
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="sm"
@@ -164,7 +154,7 @@ export function InventoryList({ basePath }: { basePath: string }) {
           <p className="text-sm text-muted-foreground">Current stock levels, derived from every recorded movement.</p>
         </div>
         <div className="grid grid-cols-1 gap-2 sm:flex sm:shrink-0">
-          <Button variant="outline" onClick={() => router.push(`${basePath}/inventory/transfer`)} className="w-full sm:w-auto">
+          <Button variant="outline" onClick={() => router.push(transferPrepareHref(basePath, { fromBranchId: activeBranchId }))} className="w-full sm:w-auto">
             <ArrowRightLeft className="mr-2 h-4 w-4" />
             Transfer
           </Button>
@@ -199,7 +189,7 @@ export function InventoryList({ basePath }: { basePath: string }) {
       )}
 
       <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Filter by stock status">
-        {STATUS_FILTERS.map((filter) => (
+        {STOCK_STATUS_FILTERS.map((filter) => (
           <Button
             key={filter.value}
             type="button"

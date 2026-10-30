@@ -105,7 +105,8 @@ export function SaleStatusModal({ phase, snapshot, errorMessage, errorCode, onRe
   const errorDisplay = phase === 'error' ? describeCashierFailure(errorCode, errorMessage ?? 'Something went wrong. Your cart is still here — retry or edit it below.') : null;
   // POS-PERF-P49 — a promotion refusal means the price on screen was wrong; the
   // cashier reviews the updated cart instead of retrying straight into a new amount.
-  const reviewOnly = phase === 'error' && typeof errorCode === 'string' && errorCode.startsWith('PROMOTION_');
+  // POS-PERF-P50 — same for a tax-settings refusal: Retry would resend the old rates.
+  const reviewOnly = phase === 'error' && typeof errorCode === 'string' && (errorCode.startsWith('PROMOTION_') || errorCode === 'TAX_SETTINGS_CHANGED');
   return (
     <Dialog
       open

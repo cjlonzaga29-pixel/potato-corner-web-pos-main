@@ -57,6 +57,9 @@ vi.mock('@/components/ui/tabs', () => {
 vi.mock('@/components/settings/notification-preferences-section', () => ({
   NotificationPreferencesSection: () => <div>Notifications Section Content</div>,
 }));
+vi.mock('@/components/settings/tax-settings-section', () => ({
+  TaxSettingsSection: () => <div>Tax Section Content</div>,
+}));
 vi.mock('@/components/settings/discount-settings-section', () => ({
   DiscountSettingsSection: () => <div>Discounts Section Content</div>,
 }));
@@ -72,7 +75,7 @@ describe('SettingsPage', () => {
     render(<SettingsPage />);
 
     expect(screen.getByRole('tab', { name: 'Notifications' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Discount Settings' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'VAT & Discounts' })).toBeInTheDocument();
   });
 
   it('default tab is Notifications', () => {
@@ -84,7 +87,7 @@ describe('SettingsPage', () => {
   it('tab change updates URL search param', () => {
     render(<SettingsPage />);
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Discount Settings' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'VAT & Discounts' }));
 
     expect(mockPush).toHaveBeenCalledWith('/admin/settings?tab=discounts', { scroll: false });
   });

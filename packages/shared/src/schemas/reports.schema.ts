@@ -148,7 +148,14 @@ export const DiscountComplianceReportRowSchema = z.object({
   discount_type: z.string(),
   transaction_count: z.number().int(),
   total_discount_amount: z.number(),
+  /** Non-VATable portion (VAT-cap overflow) — Transaction.vatExemptAmount summed. Not the VAT-exempt sales of PWD/Senior sales. */
   total_vat_exempt_amount: z.number(),
+  /**
+   * POS-PERF-P50 — VAT-exempt sales: the stored total of each PWD/Senior
+   * Citizen sale (the whole sale is VAT-exempt by statute), 0 for other
+   * discount types. Optional only because an older API omits it.
+   */
+  total_vat_exempt_sales: z.number().optional(),
 });
 export type DiscountComplianceReportRow = z.infer<typeof DiscountComplianceReportRowSchema>;
 

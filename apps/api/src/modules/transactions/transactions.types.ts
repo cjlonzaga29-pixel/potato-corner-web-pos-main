@@ -62,6 +62,13 @@ export interface CreateTransactionData {
   idempotencyKey?: string | null;
   /** POS-PERF-P25 — optional cashier-entered order note, already trimmed/normalized by createTransactionSchema. */
   notes?: string;
+  /** POS-PERF-P50 — the VAT/discount rates the cashier's total was computed with; a mismatch is refused (TAX_SETTINGS_CHANGED). Absent = no check. */
+  taxBasis?: TaxBasis;
+}
+
+export interface TaxBasis {
+  vatRate: number;
+  discountRate: number | null;
 }
 
 export interface UploadPaymentProofData {
@@ -117,6 +124,7 @@ export interface OfflineTransactionItemInput {
   cashTendered?: number;
   gcashReferenceNumber?: string;
   gcashManuallyVerified?: boolean;
+  taxBasis?: TaxBasis;
   clientCreatedAt: number;
 }
 

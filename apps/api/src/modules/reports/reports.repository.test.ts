@@ -215,13 +215,18 @@ describe('reportsRepository.getVoidRefund', () => {
 describe('reportsRepository.getDiscountCompliance', () => {
   it('groups by branch and discount type, excluding null discount_type', async () => {
     vi.mocked(prisma.transaction.groupBy).mockResolvedValue([
-      { branchId: 'b1', discountType: 'pwd', _count: { _all: 3 }, _sum: { discountAmount: decimal(60), vatExemptAmount: decimal(30) } },
+      { branchId: 'b1', discountType: 'pwd', _count: { _all: 3 }, _sum: { discountAmount: decimal(60), vatExemptAmount: decimal(30), totalAmount: decimal(270) } },
+      { branchId: 'b1', discountType: 'employee', _count: { _all: 1 }, _sum: { discountAmount: decimal(10), vatExemptAmount: decimal(5), totalAmount: decimal(45) } },
     ] as never);
     vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
 
     const rows = await reportsRepository.getDiscountCompliance(baseFilters);
 
-    expect(rows).toEqual([{ branch_id: 'b1', branch_name: 'SM North', discount_type: 'pwd', transaction_count: 3, total_discount_amount: 60, total_vat_exempt_amount: 30 }]);
+    // P50 — a PWD/Senior sale is VAT-exempt in full (stored total); other types have no exempt sales.
+    expect(rows).toEqual([
+      { branch_id: 'b1', branch_name: 'SM North', discount_type: 'pwd', transaction_count: 3, total_discount_amount: 60, total_vat_exempt_amount: 30, total_vat_exempt_sales: 270 },
+      { branch_id: 'b1', branch_name: 'SM North', discount_type: 'employee', transaction_count: 1, total_discount_amount: 10, total_vat_exempt_amount: 5, total_vat_exempt_sales: 0 },
+    ]);
     expect(prisma.transaction.groupBy).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ discountType: { not: null } }) }),
     );

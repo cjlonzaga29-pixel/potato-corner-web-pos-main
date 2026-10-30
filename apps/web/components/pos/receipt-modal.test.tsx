@@ -123,7 +123,8 @@ describe('ReceiptModal', () => {
     // this transaction (discount_rate_used), never a raw "senior_citizen" string.
     expect(screen.getByText('Senior Citizen Discount (20%)')).toBeInTheDocument();
     expect(screen.getByText('-₱20.00')).toBeInTheDocument();
-    expect(screen.getByText('VAT (12%)')).toBeInTheDocument();
+    // P50 — a Senior Citizen sale is labelled VAT-exempt (from the stored amounts).
+    expect(screen.getByText('VAT-exempt sale (PWD/Senior)')).toBeInTheDocument();
     expect(screen.getByText('₱18.75')).toBeInTheDocument();
     expect(screen.getByText('Total')).toBeInTheDocument();
     expect(screen.getAllByText('₱175.00').length).toBeGreaterThan(0);

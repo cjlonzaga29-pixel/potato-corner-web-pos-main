@@ -97,4 +97,20 @@ describe('OfflineSalesList', () => {
     const { container } = render(<OfflineSalesList {...props} status="pending" sales={[]} />);
     expect(container).toBeEmptyDOMElement();
   });
+
+  // POS-PERF-P50 — rung at a rate checkout no longer uses: visible, never repriced, supervisor guidance instead of "check options".
+  it('a tax-settings refusal stays visible with reconciliation guidance', () => {
+    render(
+      <OfflineSalesList
+        {...props}
+        status="pending"
+        sales={[sale({ rejection: { code: 'TAX_SETTINGS_CHANGED', message: 'This offline sale was rung with 20% (VAT 12%), but checkout now uses 10% (VAT 12%).', at: 1 } })]}
+      />,
+    );
+    expect(screen.getByText('Not accepted')).toBeInTheDocument();
+    expect(screen.getByText('Discount or VAT settings changed — not recorded')).toBeInTheDocument();
+    expect(screen.getByText(/rung with 20% \(VAT 12%\), but checkout now uses 10%/)).toBeInTheDocument();
+    expect(screen.getByText(/did not change the amount/)).toBeInTheDocument();
+    expect(screen.queryByText(/check this product/)).not.toBeInTheDocument();
+  });
 });

@@ -14,6 +14,7 @@ vi.mock('./settings.service.js', () => ({
   settingsService: {
     getDiscountPolicy: vi.fn(),
     updateDiscountPolicy: vi.fn(),
+    getTaxConfiguration: vi.fn(),
     getWorkHoursPolicy: vi.fn(),
     updateWorkHoursPolicy: vi.fn(),
     getWriteGate: vi.fn(),
@@ -409,5 +410,60 @@ describe('PUT /write-gate — only Super Admin may write, no public/unauthentica
 
     expect(res.status).toHaveBeenCalledWith(200);
     expect(settingsService.setWriteGate).toHaveBeenCalled();
+  });
+});
+
+// POS-PERF-P50 — read-only tax configuration and the two new settings refusals.
+describe('GET /tax — every role may read; there is no write route', () => {
+  it.each([
+    ['super_admin', () => generateSuperAdminToken()],
+    ['supervisor', () => generateSupervisorToken([BRANCH_1])],
+    ['staff', () => generateStaffToken(BRANCH_1)],
+    ['branch account', () => generateBranchToken(BRANCH_1)],
+  ])('%s can GET the tax configuration — 200', async (_label, makeToken) => {
+    vi.mocked(settingsService.getTaxConfiguration).mockResolvedValue({ vatRatePercent: 12 } as never);
+    const res = mockRes();
+    await runHandlers(getRouteHandlers(settingsRouter, 'get', '/tax'), mockReq(authHeader(makeToken())), res);
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+
+  it('unauthenticated — 401, service never reached', async () => {
+    const res = mockRes();
+    await runHandlers(getRouteHandlers(settingsRouter, 'get', '/tax'), mockReq(), res);
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(settingsService.getTaxConfiguration).not.toHaveBeenCalled();
+  });
+
+  it.each(['put', 'post', 'patch', 'delete'])('no %s route exists for /tax', (method) => {
+    expect(() => getRouteHandlers(settingsRouter, method, '/tax')).toThrow(/No route registered/);
+  });
+});
+
+describe('PUT /discount-policy — P50 refusals reach the client with their status and details', () => {
+  it.each([
+    ['STATUTORY_DISCOUNT_LOCKED', 422, undefined],
+    ['SETTINGS_CHANGED', 409, { current: { employee: { percentage: 30, isEnabled: true } } }],
+  ])('%s -> %i', async (code, status, details) => {
+    const { SettingsError } = await import('./settings.types.js');
+    vi.mocked(settingsService.updateDiscountPolicy).mockRejectedValue(new SettingsError(code, 'refused', status, details));
+    const res = mockRes() as Response & { jsonBody?: unknown };
+    await runHandlers(
+      getRouteHandlers(settingsRouter, 'put', '/discount-policy'),
+      mockReq({ ...authHeader(generateSupervisorToken([BRANCH_1])), body: { employee: { percentage: 10 }, expectedUpdatedAt: '2026-10-01T00:00:00.000Z' } }),
+      res,
+    );
+    expect(res.status).toHaveBeenCalledWith(status);
+    expect(res.jsonBody).toMatchObject({ error: { code, ...(details ? { details } : {}) } });
+  });
+
+  it('an expectedUpdatedAt that is not an ISO datetime is rejected by validate() — 422', async () => {
+    const res = mockRes();
+    await runHandlers(
+      getRouteHandlers(settingsRouter, 'put', '/discount-policy'),
+      mockReq({ ...authHeader(generateSuperAdminToken()), body: { employee: { percentage: 10 }, expectedUpdatedAt: 'yesterday' } }),
+      res,
+    );
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(settingsService.updateDiscountPolicy).not.toHaveBeenCalled();
   });
 });

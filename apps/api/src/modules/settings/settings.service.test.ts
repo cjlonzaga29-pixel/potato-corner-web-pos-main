@@ -5,6 +5,7 @@ vi.mock('./settings.repository.js', () => ({
   settingsRepository: {
     findSystemSetting: vi.fn(),
     upsertSystemSetting: vi.fn(),
+    writeSystemSettingIfUnchanged: vi.fn(),
     findNotificationPreference: vi.fn(),
     createDefaultNotificationPreference: vi.fn(),
     updateNotificationPreference: vi.fn(),
@@ -377,7 +378,7 @@ describe('settingsService.getDiscountPolicy', () => {
 });
 
 describe('settingsService.updateDiscountPolicy', () => {
-  it('merges a partial update (only PWD provided) over the existing/default policy and records an audit log', async () => {
+  it('merges a partial update (only Employee provided) over the existing/default policy and records an audit log', async () => {
     vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue(null);
     vi.mocked(settingsRepository.upsertSystemSetting).mockResolvedValue({
       id: 'setting-1',
@@ -390,14 +391,15 @@ describe('settingsService.updateDiscountPolicy', () => {
     } as never);
     const { recordAuditLog } = await import('../../middleware/audit-log.js');
 
-    const result = await settingsService.updateDiscountPolicy({ pwd: { percentage: 10 } }, ACTOR, null);
+    const result = await settingsService.updateDiscountPolicy({ employee: { percentage: 10 } }, ACTOR, null);
 
-    expect(result.pwd).toEqual({ percentage: 10, isEnabled: true });
+    expect(result.employee).toEqual({ percentage: 10, isEnabled: true });
     // Untouched types keep their (default, since nothing was persisted yet) values — a partial PUT never resets what it didn't mention.
     expect(result.senior_citizen).toEqual({ percentage: 20, isEnabled: true });
+    expect(result.statutoryTypes).toEqual(['pwd', 'senior_citizen']);
     expect(settingsRepository.upsertSystemSetting).toHaveBeenCalledWith(
       'discount_policy',
-      expect.objectContaining({ pwd: { percentage: 10, isEnabled: true } }),
+      expect.objectContaining({ employee: { percentage: 10, isEnabled: true } }),
       'admin-1',
       expect.any(String),
     );
@@ -407,13 +409,13 @@ describe('settingsService.updateDiscountPolicy', () => {
         entityType: 'system_setting',
         entityId: 'discount_policy',
         actorId: 'admin-1',
-        beforeState: expect.objectContaining({ pwd: { percentage: 20, isEnabled: true } }),
-        afterState: expect.objectContaining({ pwd: { percentage: 10, isEnabled: true } }),
+        beforeState: expect.objectContaining({ employee: { percentage: 20, isEnabled: true } }),
+        afterState: expect.objectContaining({ employee: { percentage: 10, isEnabled: true } }),
       }),
     );
   });
 
-  it('a Supervisor may update the policy (adminOrSupervisor is enforced at the router, not the service, but the service must not itself reject a supervisor actor)', async () => {
+  it('a Supervisor may update the Employee rate (adminOrSupervisor is enforced at the router, not the service)', async () => {
     vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue(null);
     vi.mocked(settingsRepository.upsertSystemSetting).mockResolvedValue({
       id: 'setting-1',
@@ -425,9 +427,103 @@ describe('settingsService.updateDiscountPolicy', () => {
       updatedAt: new Date(),
     } as never);
 
-    const result = await settingsService.updateDiscountPolicy({ senior_citizen: { percentage: 15 } }, SUPERVISOR_ACTOR, null);
+    const result = await settingsService.updateDiscountPolicy({ employee: { percentage: 15 } }, SUPERVISOR_ACTOR, null);
 
-    expect(result.senior_citizen.percentage).toBe(15);
+    expect(result.employee.percentage).toBe(15);
+  });
+
+  it('P50: refuses any change to the statutory PWD/Senior Citizen rate or enabled state, for every role, and writes nothing', async () => {
+    vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue(null);
+    const { recordAuditLog } = await import('../../middleware/audit-log.js');
+    vi.mocked(recordAuditLog).mockClear();
+    vi.mocked(settingsRepository.upsertSystemSetting).mockClear();
+
+    const attempts = [
+      [ACTOR, { pwd: { percentage: 10 } }],
+      [ACTOR, { senior_citizen: { percentage: 25 } }],
+      [SUPERVISOR_ACTOR, { senior_citizen: { percentage: 15 } }],
+      [SUPERVISOR_ACTOR, { pwd: { isEnabled: false } }],
+    ] as const;
+    for (const [actor, input] of attempts) {
+      await expect(settingsService.updateDiscountPolicy(input, actor, null)).rejects.toMatchObject({ code: 'STATUTORY_DISCOUNT_LOCKED', statusCode: 422 });
+    }
+    expect(settingsRepository.upsertSystemSetting).not.toHaveBeenCalled();
+    expect(recordAuditLog).not.toHaveBeenCalled();
+  });
+
+  it('P50: re-sending the stored statutory rows (the editor sends every row) is accepted; a legacy non-statutory value may be kept or restored to 20%', async () => {
+    const savedAt = new Date('2026-08-01T00:00:00.000Z');
+    vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue({
+      id: 'setting-1', key: 'discount_policy', description: null, updatedBy: 'admin-1', createdAt: savedAt, updatedAt: savedAt,
+      value: { pwd: { percentage: 10, isEnabled: true }, senior_citizen: { percentage: 20, isEnabled: true }, employee: { percentage: 20, isEnabled: true }, promotional: { percentage: 20, isEnabled: true } },
+    } as never);
+    vi.mocked(settingsRepository.upsertSystemSetting).mockResolvedValue({ updatedAt: new Date() } as never);
+
+    await expect(
+      settingsService.updateDiscountPolicy({ pwd: { percentage: 10, isEnabled: true }, senior_citizen: { percentage: 20, isEnabled: true }, employee: { percentage: 5 } }, ACTOR, null),
+    ).resolves.toBeDefined();
+    const restored = await settingsService.updateDiscountPolicy({ pwd: { percentage: 20 } }, ACTOR, null);
+    expect(restored.pwd.percentage).toBe(20);
+    await expect(settingsService.updateDiscountPolicy({ pwd: { percentage: 12 } }, ACTOR, null)).rejects.toMatchObject({ code: 'STATUTORY_DISCOUNT_LOCKED' });
+  });
+
+  it('P50: a save carrying a stale expectedUpdatedAt is refused with SETTINGS_CHANGED and writes nothing', async () => {
+    const savedAt = new Date('2026-08-01T00:00:00.000Z');
+    vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue({
+      id: 'setting-1', key: 'discount_policy', description: null, updatedBy: 'admin-2', createdAt: savedAt, updatedAt: savedAt,
+      value: { pwd: { percentage: 20, isEnabled: true }, senior_citizen: { percentage: 20, isEnabled: true }, employee: { percentage: 30, isEnabled: true }, promotional: { percentage: 20, isEnabled: true } },
+    } as never);
+    vi.mocked(settingsRepository.writeSystemSettingIfUnchanged).mockClear();
+
+    await expect(
+      settingsService.updateDiscountPolicy({ employee: { percentage: 10 }, expectedUpdatedAt: '2026-07-01T00:00:00.000Z' }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'SETTINGS_CHANGED', statusCode: 409 });
+    // The editor loaded a never-saved policy (null), but it has been saved since.
+    await expect(settingsService.updateDiscountPolicy({ employee: { percentage: 10 }, expectedUpdatedAt: null }, ACTOR, null)).rejects.toMatchObject({ code: 'SETTINGS_CHANGED' });
+    expect(settingsRepository.writeSystemSettingIfUnchanged).not.toHaveBeenCalled();
+  });
+
+  it('P50: a current expectedUpdatedAt goes through the compare-and-set write; losing that race is refused', async () => {
+    const savedAt = new Date('2026-08-01T00:00:00.000Z');
+    vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue({
+      id: 'setting-1', key: 'discount_policy', description: null, updatedBy: 'admin-2', createdAt: savedAt, updatedAt: savedAt,
+      value: { pwd: { percentage: 20, isEnabled: true }, senior_citizen: { percentage: 20, isEnabled: true }, employee: { percentage: 30, isEnabled: true }, promotional: { percentage: 20, isEnabled: true } },
+    } as never);
+    const next = new Date('2026-08-02T00:00:00.000Z');
+    vi.mocked(settingsRepository.writeSystemSettingIfUnchanged).mockResolvedValueOnce({ updatedAt: next } as never);
+
+    const result = await settingsService.updateDiscountPolicy({ employee: { percentage: 10 }, expectedUpdatedAt: savedAt.toISOString() }, ACTOR, null);
+    expect(result.updatedAt).toBe(next.toISOString());
+    expect(settingsRepository.writeSystemSettingIfUnchanged).toHaveBeenCalledWith(
+      'discount_policy',
+      expect.objectContaining({ employee: { percentage: 10, isEnabled: true } }),
+      'admin-1',
+      savedAt,
+      expect.any(String),
+    );
+
+    vi.mocked(settingsRepository.writeSystemSettingIfUnchanged).mockResolvedValueOnce(null);
+    await expect(
+      settingsService.updateDiscountPolicy({ employee: { percentage: 11 }, expectedUpdatedAt: savedAt.toISOString() }, ACTOR, null),
+    ).rejects.toMatchObject({ code: 'SETTINGS_CHANGED' });
+  });
+
+  it('P50: getTaxConfiguration reports the statutory constants and current rates, and flags a legacy non-statutory PWD/Senior value', async () => {
+    vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue(null);
+    expect(await settingsService.getTaxConfiguration()).toEqual({
+      vatRatePercent: 12,
+      pricesIncludeVat: true,
+      statutoryDiscountPercent: 20,
+      vatExemptDiscountTypes: ['pwd', 'senior_citizen'],
+      scope: 'organization',
+      discountRates: { pwd: 20, senior_citizen: 20, employee: 20 },
+      statutoryRateMismatch: false,
+    });
+    vi.mocked(settingsRepository.findSystemSetting).mockResolvedValue({
+      id: 's', key: 'discount_policy', description: null, updatedBy: 'a', createdAt: new Date(), updatedAt: new Date(),
+      value: { pwd: { percentage: 10, isEnabled: true }, senior_citizen: { percentage: 20, isEnabled: true }, employee: { percentage: 20, isEnabled: true }, promotional: { percentage: 20, isEnabled: true } },
+    } as never);
+    expect((await settingsService.getTaxConfiguration()).statutoryRateMismatch).toBe(true);
   });
 
   it('does not silently accept an out-of-range percentage — validation is the zod schema layer, exercised here directly', async () => {

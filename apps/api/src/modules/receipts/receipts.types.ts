@@ -37,6 +37,8 @@ export interface PublicReceiptResponse {
   // frozen on the transaction row; never today's Discount Settings value.
   discount_rate_used?: number | null;
   vat_amount: number;
+  /** POS-PERF-P50 — stored non-VATable portion (VAT-cap overflow), for the receipt's tax breakdown. */
+  vat_exempt_amount: number;
   total_amount: number;
   payment_method: string;
   cash_tendered: number | null;

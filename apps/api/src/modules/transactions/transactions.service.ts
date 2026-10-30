@@ -9,6 +9,9 @@ import {
   ROLES,
   TRANSACTION_PDF_MAX_ROWS,
   isAddOnsOptionGroup,
+  computeSaleTax,
+  discountRateFor,
+  VAT_RATE_PERCENT,
   type ImageProofType,
 } from '@potato-corner/shared';
 import { manilaDateKey } from '../../lib/manila-time.js';
@@ -26,6 +29,7 @@ import {
   type DiscountAuditFilters,
   type UploadPaymentProofData,
   type UploadDiscountProofData,
+  type TaxBasis,
 } from './transactions.types.js';
 import { settingsService } from '../settings/settings.service.js';
 import { cashRepository } from '../cash/cash.repository.js';
@@ -1092,43 +1096,54 @@ export function computeAmounts(
   discountType: CreateTransactionData['discountType'],
   discountRates: DiscountRates = DEFAULT_DISCOUNT_RATES,
 ): ComputedAmounts {
-  const vatableSubtotal = round2(
-    items.reduce((sum, item) => {
-      const cap = item.vatableCapAmount;
-      const vatableLine = cap != null ? Math.min(item.lineTotal, round2(cap * item.quantity)) : item.lineTotal;
-      return sum + vatableLine;
-    }, 0),
+  // POS-PERF-P50 — the formula lives in @potato-corner/shared (computeSaleTax)
+  // so the POS preview and this authoritative calculation cannot drift.
+  // P49 note kept: a promoted line never has a vatableCapAmount (refused at
+  // configuration and skipped at resolution), so its whole discount is VATable.
+  return computeSaleTax(subtotal, items, discountType, discountRates);
+}
+
+/**
+ * POS-PERF-P50 — refuses a sale whose screen total was computed with tax
+ * settings other than the ones checkout is about to use (a discount rate
+ * changed while the cart was open, or before a queued offline sale synced).
+ * Runs after the amounts are computed and before anything is written, so the
+ * refusal carries the amount that would be charged now for the cashier to
+ * confirm. Never repriced silently; absent basis (older client) = no check.
+ */
+function assertTaxBasisUnchanged(
+  taxBasis: TaxBasis | undefined,
+  isOffline: boolean,
+  discountType: CreateTransactionData['discountType'],
+  discountRates: DiscountRates,
+  amounts: { subtotal: number; discountAmount: number; vatAmount: number; totalAmount: number },
+): void {
+  if (!taxBasis) return;
+  const currentDiscountRate = discountRateFor(discountType, discountRates);
+  const sameVat = toCents(taxBasis.vatRate) === toCents(VAT_RATE_PERCENT);
+  const sameDiscount =
+    taxBasis.discountRate === null || currentDiscountRate === null
+      ? taxBasis.discountRate === currentDiscountRate
+      : toCents(taxBasis.discountRate) === toCents(currentDiscountRate);
+  if (sameVat && sameDiscount) return;
+  const percent = (rate: number | null) => (rate === null ? 'no discount' : `${rate}%`);
+  throw new TransactionError(
+    'TAX_SETTINGS_CHANGED',
+    isOffline
+      ? `This offline sale was rung with ${percent(taxBasis.discountRate)} (VAT ${taxBasis.vatRate}%), but checkout now uses ${percent(currentDiscountRate)} (VAT ${VAT_RATE_PERCENT}%). It was not recorded, so the amount collected was not changed.`
+      : 'VAT or discount settings changed since this total was shown, so the sale was not charged. Confirm the new total, then charge again.',
+    409,
+    {
+      shown: { vat_rate: taxBasis.vatRate, discount_rate: taxBasis.discountRate },
+      current: { vat_rate: VAT_RATE_PERCENT, discount_rate: currentDiscountRate },
+      amounts: {
+        subtotal: amounts.subtotal,
+        discount_amount: amounts.discountAmount,
+        vat_amount: amounts.vatAmount,
+        total_amount: amounts.totalAmount,
+      },
+    },
   );
-  const nonVatableSubtotal = round2(subtotal - vatableSubtotal);
-
-  if (discountType === DISCOUNT_TYPE.PWD || discountType === DISCOUNT_TYPE.SENIOR_CITIZEN) {
-    const ratePercent = discountType === DISCOUNT_TYPE.PWD ? discountRates.pwd : discountRates.senior_citizen;
-    const vatableBase = vatableSubtotal / 1.12;
-    const discountAmount = round2(vatableBase * (ratePercent / 100));
-    const discountedBase = round2(vatableBase - discountAmount);
-    const totalAmount = round2(discountedBase + nonVatableSubtotal);
-    return { discountAmount, vatAmount: 0, vatExemptAmount: nonVatableSubtotal, totalAmount, discountRateUsed: ratePercent };
-  }
-
-  let discountAmount = 0;
-  let discountRateUsed: number | null = null;
-  if (discountType === DISCOUNT_TYPE.EMPLOYEE) {
-    discountRateUsed = discountRates.employee;
-    discountAmount = round2(vatableSubtotal * (discountRateUsed / 100));
-  } else if (!discountType) {
-    // POS-PERF-P49 — product promotions (applyLinePromotions only ever sets
-    // promotionDiscount when no transaction-level discount is selected).
-    // Same non-statutory path as Employee: the discount comes off the
-    // VAT-inclusive VATable amount and VAT is extracted at 12/112 below. A
-    // promoted line never has a vatableCapAmount (refused at configuration
-    // and skipped at resolution), so its whole discount is VATable. Per-line
-    // rates differ, so discountRateUsed stays null; the line snapshots hold them.
-    discountAmount = round2(items.reduce((sum, item) => sum + (item.promotionDiscount ?? 0), 0));
-  }
-  const vatableAfterDiscount = round2(vatableSubtotal - discountAmount);
-  const vatAmount = round2(vatableAfterDiscount * (12 / 112));
-  const totalAfterDiscount = round2(vatableAfterDiscount + nonVatableSubtotal);
-  return { discountAmount, vatAmount, vatExemptAmount: nonVatableSubtotal, totalAmount: totalAfterDiscount, discountRateUsed };
 }
 
 /**
@@ -2313,6 +2328,7 @@ export const transactionsService = {
       data.discountType,
       discountRates,
     );
+    assertTaxBasisUnchanged(data.taxBasis, data.isOfflineTransaction, data.discountType, discountRates, { subtotal, discountAmount, vatAmount, totalAmount });
     // POS-PERF-P49 — a sale whose only discount is product promotions is
     // recorded as 'promotional' so every report's discount breakdown sees it.
     const effectiveDiscountType = data.discountType ?? (discountAmount > 0 ? DISCOUNT_TYPE.PROMOTIONAL : null);
@@ -2757,6 +2773,7 @@ export const transactionsService = {
               isOfflineTransaction: true,
               offlineProvisionalNumber: item.offlineProvisionalNumber,
               deviceId: data.deviceId,
+              taxBasis: item.taxBasis,
             },
             ipAddress,
           );

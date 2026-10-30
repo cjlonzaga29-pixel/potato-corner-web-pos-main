@@ -16,9 +16,10 @@ import {
   type OfflineTransactionItem,
   type ImageProofType,
   type PaymentMethod,
+  type TaxBasisInput,
 } from '@potato-corner/shared';
 import { transactionsService } from './transactions.service.js';
-import { TransactionError, type CartItemInput } from './transactions.types.js';
+import { TransactionError, type CartItemInput, type TaxBasis } from './transactions.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminOrSupervisor, adminSupervisorOrBranch, allRoles } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
@@ -80,6 +81,11 @@ function toPromotionAck(promotion: CartItem['promotion']): CartItemInput['promot
   return { promotionId: promotion.promotion_id, unitDiscount: promotion.unit_discount };
 }
 
+/** POS-PERF-P50 — absent (older client / pre-P50 queued sale) stays undefined: no tax-basis check. */
+function toTaxBasis(basis: TaxBasisInput | undefined): TaxBasis | undefined {
+  return basis ? { vatRate: basis.vat_rate, discountRate: basis.discount_rate } : undefined;
+}
+
 function handleModuleError(error: unknown, res: Response, next: NextFunction): void {
   if (error instanceof TransactionError) {
     res.status(error.statusCode).json({ data: null, error: { code: error.code, message: error.message, details: error.details }, meta: null });
@@ -108,6 +114,7 @@ interface CreateTransactionBody {
   offline_provisional_number?: string;
   idempotency_key?: string;
   notes?: string;
+  tax_basis?: TaxBasisInput;
 }
 
 // authenticate -> authorize -> requirePasswordChange -> branchGuard -> shiftGuard -> validate -> handler.
@@ -204,6 +211,7 @@ router.post(
           deviceId: getDeviceIdHeader(req),
           idempotencyKey: body.idempotency_key ?? null,
           notes: body.notes,
+          taxBasis: toTaxBasis(body.tax_basis),
         },
         req.ip ?? null,
         typeof res.locals?.diagMiddlewareStartedAt === 'number' ? performance.now() - res.locals.diagMiddlewareStartedAt : undefined,
@@ -272,6 +280,7 @@ router.post(
             cashTendered: item.cash_tendered,
             gcashReferenceNumber: item.gcash_reference_number,
             gcashManuallyVerified: item.gcash_manually_verified,
+            taxBasis: toTaxBasis(item.tax_basis),
             clientCreatedAt: item.client_created_at,
           })),
         },

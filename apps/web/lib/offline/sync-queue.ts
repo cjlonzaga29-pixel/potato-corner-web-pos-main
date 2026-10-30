@@ -61,7 +61,11 @@ export async function enqueueOfflineTransaction(branchCode: string, payload: Cre
  * reconnect. Every other failure (no response, server error, stock, shift,
  * unknown code) stays retryable.
  */
-const DEFINITIVE_QUEUE_REJECTION_CODES = new Set(['PRODUCT_OPTION_REQUIRED', 'PRODUCT_OPTION_LIMIT_EXCEEDED', 'PRODUCT_OPTION_NOT_AVAILABLE']);
+// POS-PERF-P50 — TAX_SETTINGS_CHANGED: the sale was rung (and paid) at a
+// discount/VAT rate checkout no longer uses. Resending gets the same answer,
+// and charging the new total would record something other than what the
+// customer paid, so it waits visibly for a supervisor (runbook §Offline).
+const DEFINITIVE_QUEUE_REJECTION_CODES = new Set(['PRODUCT_OPTION_REQUIRED', 'PRODUCT_OPTION_LIMIT_EXCEEDED', 'PRODUCT_OPTION_NOT_AVAILABLE', 'TAX_SETTINGS_CHANGED']);
 
 export function isDefinitiveQueueRejection(code: string | null | undefined): boolean {
   return code !== null && code !== undefined && DEFINITIVE_QUEUE_REJECTION_CODES.has(code);
@@ -177,6 +181,8 @@ async function runSync(options: SyncOfflineOptions): Promise<SyncOfflineOutcome>
             cash_tendered: t.payload.cash_tendered,
             gcash_reference_number: t.payload.gcash_reference_number,
             gcash_manually_verified: t.payload.gcash_manually_verified,
+            // POS-PERF-P50 — absent on sales queued before P50 (no check, as before).
+            tax_basis: t.payload.tax_basis,
             client_created_at: t.createdAt,
           })),
         }),

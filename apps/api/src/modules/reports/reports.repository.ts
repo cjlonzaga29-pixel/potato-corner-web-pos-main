@@ -1,4 +1,5 @@
 import { Prisma, type $Enums } from '@prisma/client';
+import { isVatExemptDiscountType } from '@potato-corner/shared';
 import { prisma } from '../../lib/prisma.js';
 import { manilaDateKey, dayBounds, monthBounds } from '../../lib/manila-time.js';
 import { classifyStockStatus } from '../universal-inventory/universal-inventory.service.js';
@@ -548,7 +549,7 @@ export const reportsRepository = {
         by: ['branchId', 'discountType'],
         where: { discountType: { not: null }, status: 'completed', ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) },
         _count: { _all: true },
-        _sum: { discountAmount: true, vatExemptAmount: true },
+        _sum: { discountAmount: true, vatExemptAmount: true, totalAmount: true },
       }),
       prisma.branch.findMany({ select: { id: true, name: true } }),
     ]);
@@ -562,6 +563,11 @@ export const reportsRepository = {
         transaction_count: row._count._all,
         total_discount_amount: row._sum.discountAmount?.toNumber() ?? 0,
         total_vat_exempt_amount: row._sum.vatExemptAmount?.toNumber() ?? 0,
+        // POS-PERF-P50 — a PWD/Senior sale is VAT-exempt in full, but its
+        // vatExemptAmount only holds the VAT-cap overflow (usually 0), so the
+        // exempt-sales figure comes from the stored totals instead. Stored
+        // amounts only — never recomputed from current settings.
+        total_vat_exempt_sales: isVatExemptDiscountType(row.discountType) ? round2(row._sum.totalAmount?.toNumber() ?? 0) : 0,
       }));
   },
 

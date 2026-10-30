@@ -42,6 +42,7 @@ export const receiptsService = {
       discount_type: transaction.discountType,
       discount_rate_used: transaction.discountRateUsed?.toNumber() ?? null,
       vat_amount: transaction.vatAmount.toNumber(),
+      vat_exempt_amount: transaction.vatExemptAmount.toNumber(),
       total_amount: transaction.totalAmount.toNumber(),
       payment_method: transaction.paymentMethod,
       cash_tendered: transaction.amountTendered?.toNumber() ?? null,

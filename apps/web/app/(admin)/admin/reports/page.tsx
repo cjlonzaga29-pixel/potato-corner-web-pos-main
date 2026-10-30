@@ -143,8 +143,14 @@ function getDiscountComplianceColumns(onViewTransactions: (row: DiscountComplian
       cell: ({ row }) => formatCurrency(row.original.total_discount_amount),
     },
     {
+      // POS-PERF-P50 — the stored total of each PWD/Senior sale (VAT-exempt in full); older API: not reported.
+      id: 'total_vat_exempt_sales',
+      header: 'VAT-Exempt Sales',
+      cell: ({ row }) => (row.original.total_vat_exempt_sales === undefined ? '—' : formatCurrency(row.original.total_vat_exempt_sales)),
+    },
+    {
       accessorKey: 'total_vat_exempt_amount',
-      header: 'VAT Exempt Amount',
+      header: 'Non-VATable (VAT cap)',
       cell: ({ row }) => formatCurrency(row.original.total_vat_exempt_amount),
     },
     {
@@ -688,8 +694,8 @@ function AdminReportsPageContent() {
                   tone="warning"
                 />
                 <KpiCard
-                  title="Total VAT Exempt Amount"
-                  value={(discountCompliance.data?.data ?? []).reduce((sum, r) => sum + r.total_vat_exempt_amount, 0)}
+                  title="VAT-Exempt Sales (PWD/Senior)"
+                  value={(discountCompliance.data?.data ?? []).reduce((sum, r) => sum + (r.total_vat_exempt_sales ?? 0), 0)}
                   isLoading={discountCompliance.isLoading}
                 />
               </div>

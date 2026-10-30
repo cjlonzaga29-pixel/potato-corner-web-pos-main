@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { cartItemSchema, createTransactionSchema } from './transaction.schema.js';
+import { cartItemSchema, createTransactionSchema, offlineTransactionItemSchema } from './transaction.schema.js';
 
 const PRODUCT_ID = '11111111-1111-4111-8111-111111111111';
 const VARIANT_ID = '22222222-2222-4222-8222-222222222222';
@@ -144,5 +144,33 @@ describe('createTransactionSchema — discount_id_reference', () => {
     });
 
     expect(result.success).toBe(true);
+  });
+});
+
+// POS-PERF-P50 — tax_basis is an optional acknowledgement of the rates the
+// screen used; older clients and pre-P50 queued sales omit it.
+describe('tax_basis (P50)', () => {
+  const base = {
+    branch_id: '11111111-1111-4111-8111-111111111111',
+    items: [{ product_id: '22222222-2222-4222-8222-222222222222', product_variant_id: '33333333-3333-4333-8333-333333333333', quantity: 1 }],
+    payment_method: 'cash',
+    cash_tendered: 100,
+  };
+
+  it('is optional, and passes through when present', () => {
+    expect(createTransactionSchema.safeParse(base).success).toBe(true);
+    const parsed = createTransactionSchema.parse({ ...base, tax_basis: { vat_rate: 12, discount_rate: null } });
+    expect(parsed.tax_basis).toEqual({ vat_rate: 12, discount_rate: null });
+  });
+
+  it('rejects out-of-range or non-numeric rates', () => {
+    for (const tax_basis of [{ vat_rate: -1, discount_rate: null }, { vat_rate: 12, discount_rate: 101 }, { vat_rate: '12', discount_rate: null }, { vat_rate: 12 }]) {
+      expect(createTransactionSchema.safeParse({ ...base, tax_basis }).success).toBe(false);
+    }
+  });
+
+  it('offline items accept it too', () => {
+    const item = { offline_provisional_number: 'PC-X-20261030-OFFLINE-0001', items: base.items, payment_method: 'cash', cash_tendered: 100, client_created_at: 1, tax_basis: { vat_rate: 12, discount_rate: 20 } };
+    expect(offlineTransactionItemSchema.parse(item).tax_basis).toEqual({ vat_rate: 12, discount_rate: 20 });
   });
 });

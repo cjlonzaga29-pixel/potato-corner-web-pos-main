@@ -33,6 +33,8 @@ export interface PublicReceipt {
   discount_type: string | null;
   discount_rate_used?: number | null;
   vat_amount: number;
+  /** POS-PERF-P50 — absent from an older API. */
+  vat_exempt_amount?: number;
   total_amount: number;
   payment_method: string;
   cash_tendered: number | null;

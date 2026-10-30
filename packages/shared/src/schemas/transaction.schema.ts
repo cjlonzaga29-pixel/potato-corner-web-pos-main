@@ -50,6 +50,19 @@ export const cartItemSchema = z.object({
   promotion: cartItemPromotionAckSchema,
 });
 
+/**
+ * POS-PERF-P50 — the tax configuration the cashier's screen used for the
+ * total it showed: the VAT rate and the rate of the selected discount type
+ * (null when none). An acknowledgement, never an amount — checkout recomputes
+ * everything and refuses a mismatch with TAX_SETTINGS_CHANGED instead of
+ * charging a total the cashier did not see. Absent (older client or a sale
+ * queued before P50) = no check, the pre-P50 behavior.
+ */
+export const taxBasisSchema = z.object({
+  vat_rate: z.number().finite().min(0).max(100),
+  discount_rate: z.number().finite().min(0).max(100).nullable(),
+});
+
 /** GCash, Maya, and Other all carry identical proof requirements — a payment proof photo, no reference number/note (Task 139). */
 const PROOF_REQUIRED_METHODS: readonly PaymentMethod[] = [PAYMENT_METHOD.GCASH, PAYMENT_METHOD.MAYA, PAYMENT_METHOD.OTHER];
 
@@ -96,6 +109,7 @@ export const createTransactionSchema = z
     // cart). Optional: a client that omits it gets no idempotency
     // protection, same as before this field existed.
     idempotency_key: z.uuid().optional(),
+    tax_basis: taxBasisSchema.optional(),
     // POS-PERF-P25 — optional cashier-entered order note (e.g. "no straw").
     // Never required, never validated beyond a length cap; empty/whitespace
     // is normalized to undefined so a blank textarea never persists an
@@ -369,6 +383,8 @@ export const offlineTransactionItemSchema = z
       .regex(/^\d{10,20}$/)
       .optional(),
     gcash_manually_verified: z.boolean().optional(),
+    // POS-PERF-P50 — what the terminal showed when the sale was rung offline.
+    tax_basis: taxBasisSchema.optional(),
     // Epoch ms from the client's Dexie queue (createdAt) — the server sorts
     // the batch by this before processing, per the architecture doc's "sync
     // queue processes transactions in chronological order" rule.

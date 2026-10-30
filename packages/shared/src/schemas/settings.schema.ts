@@ -89,19 +89,49 @@ export const discountPolicySchema = z.object({
   promotional: discountRateEntrySchema,
 });
 
-/** Partial per-type PUT — only the provided discount type(s) are changed, same precedent as updatePaymentMethodConfigSchema. */
+/**
+ * Partial per-type PUT — only the provided discount type(s) are changed, same precedent as updatePaymentMethodConfigSchema.
+ *
+ * POS-PERF-P50 — expectedUpdatedAt is the `updatedAt` the editor loaded
+ * (null when the policy had never been saved). When present, the server
+ * refuses the save with 409 SETTINGS_CHANGED if someone else saved in
+ * between, instead of silently overwriting their change. Optional only so
+ * an older web build can still save during a rollout.
+ */
 export const updateDiscountPolicySchema = z
   .object({
     pwd: discountRateEntrySchema.partial().optional(),
     senior_citizen: discountRateEntrySchema.partial().optional(),
     employee: discountRateEntrySchema.partial().optional(),
     promotional: discountRateEntrySchema.partial().optional(),
+    expectedUpdatedAt: z.iso.datetime().nullable().optional(),
   })
-  .refine((data) => Object.keys(data).length > 0, { message: 'At least one discount type must be provided' });
+  .refine((data) => CONFIGURABLE_DISCOUNT_TYPES.some((type) => data[type] !== undefined), {
+    message: 'At least one discount type must be provided',
+  });
 
 export const discountPolicyResponseSchema = discountPolicySchema.extend({
   updatedAt: z.iso.datetime().nullable(),
   updatedBy: z.string().nullable(),
+  /** POS-PERF-P50 — types whose rate/enabled state is fixed by law and refused on update (absent from older APIs). */
+  statutoryTypes: z.array(z.enum(CONFIGURABLE_DISCOUNT_TYPES)).optional(),
+});
+
+/**
+ * POS-PERF-P50 — GET /api/settings/tax: the tax configuration checkout is
+ * using right now. Read-only for every role: these are statutory values or
+ * fixed application behavior, not settings anyone can save.
+ */
+export const taxConfigurationResponseSchema = z.object({
+  vatRatePercent: z.number(),
+  pricesIncludeVat: z.boolean(),
+  statutoryDiscountPercent: z.number(),
+  vatExemptDiscountTypes: z.array(z.string()),
+  scope: z.literal('organization'),
+  /** The discount rates checkout applies now (from Discount Settings). */
+  discountRates: z.object({ pwd: z.number(), senior_citizen: z.number(), employee: z.number() }),
+  /** True when a stored PWD/Senior rate is not the statutory value (only possible for data saved before P50). */
+  statutoryRateMismatch: z.boolean(),
 });
 
 /**

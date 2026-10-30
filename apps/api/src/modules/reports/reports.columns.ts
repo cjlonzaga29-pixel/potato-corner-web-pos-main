@@ -107,7 +107,8 @@ export const REPORT_COLUMNS: Record<ReportType, ReportColumn<Record<string, unkn
     { key: 'discount_type', header: 'Discount Type' },
     { key: 'transaction_count', header: 'Transactions' },
     { key: 'total_discount_amount', header: 'Total Discount' },
-    { key: 'total_vat_exempt_amount', header: 'VAT Exempt Total' },
+    { key: 'total_vat_exempt_sales', header: 'VAT-Exempt Sales (PWD/Senior)' },
+    { key: 'total_vat_exempt_amount', header: 'Non-VATable Amount (VAT cap)' },
   ],
   INVENTORY_MOVEMENT: [
     { key: 'movement_id', header: 'Movement ID', isAudit: true },

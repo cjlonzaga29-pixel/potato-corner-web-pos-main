@@ -257,17 +257,24 @@ vi.mock('@/hooks/queries/use-branches', () => ({
   useBranch: () => ({ data: { id: 'branch-1', name: 'Main Branch' }, isLoading: false }),
 }));
 
+// POS-PERF-P50 — mutable so a test can change the configured rate mid-cart
+// (refetch returns the new value, as a real refetch would).
+const { discountPolicyState, mockRefetchDiscountPolicy } = vi.hoisted(() => {
+  const state = { employee: 20 };
+  return { discountPolicyState: state, mockRefetchDiscountPolicy: vi.fn(async () => ({ isError: false, error: null })) };
+});
 vi.mock('@/hooks/queries/use-settings', () => ({
   useDiscountPolicy: () => ({
     data: {
       pwd: { percentage: 20, isEnabled: true },
       senior_citizen: { percentage: 20, isEnabled: true },
-      employee: { percentage: 20, isEnabled: true },
+      employee: { percentage: discountPolicyState.employee, isEnabled: true },
       promotional: { percentage: 20, isEnabled: true },
       updatedAt: null,
       updatedBy: null,
     },
     isLoading: false,
+    refetch: mockRefetchDiscountPolicy,
   }),
 }));
 
@@ -3923,5 +3930,103 @@ describe('TerminalPage — P49 product promotions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Review updated prices' }));
     await waitFor(() => expect(screen.getByTestId('promotion-change-notice')).toHaveTextContent('Total is now ₱200.00 (was ₱180.00)'));
     expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(1);
+  });
+});
+
+// POS-PERF-P50 — the terminal sends the rates its total was computed with
+// (tax_basis, never an amount). A TAX_SETTINGS_CHANGED refusal keeps the
+// cart, re-reads Discount Settings and shows the new total for confirmation;
+// it never retries into the new amount by itself.
+describe('TerminalPage — P50 tax basis', () => {
+  beforeEach(() => {
+    discountPolicyState.employee = 20;
+    mockRefetchDiscountPolicy.mockClear();
+    mockUseAuth.mockReturnValue({ user: STAFF_USER, selectEmployee: mockSelectEmployee, refreshEmployeeSession: mockRefreshEmployeeSession });
+    useAuthStore.setState({ user: STAFF_USER, accessToken: 'staff-token', isAuthenticated: true, isLoading: false });
+    mockUseCatalog.mockReturnValue({ data: catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), isLoading: false });
+    mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isLoading: false });
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' }, isLoading: false });
+    mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 2 }]);
+    mockCreateTransactionMutateAsync.mockReset().mockResolvedValue({});
+    mockClearCart.mockClear();
+  });
+
+  afterEach(() => cleanup());
+
+  function charge(cash = '500') {
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: cash } });
+    fireEvent.click(screen.getByRole('button', { name: /^Charge/ }));
+  }
+
+  it('sends the VAT rate and the selected discount rate, and no amounts', async () => {
+    render(<TerminalPage />);
+    openCheckout();
+    fireEvent.click(screen.getByRole('button', { name: 'Employee (20%)' }));
+    charge();
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalled());
+    const payload = mockCreateTransactionMutateAsync.mock.calls[0]?.[0] as CreateTransactionInput & Record<string, unknown>;
+    expect(payload.tax_basis).toEqual({ vat_rate: 12, discount_rate: 20 });
+    for (const key of ['total_amount', 'vat_amount', 'subtotal']) expect(payload).not.toHaveProperty(key);
+    expect(payload.discount_amount).toBeUndefined();
+  });
+
+  it('no discount: discount_rate is null', async () => {
+    render(<TerminalPage />);
+    openCheckout();
+    charge();
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalled());
+    expect((mockCreateTransactionMutateAsync.mock.calls[0]?.[0] as CreateTransactionInput).tax_basis).toEqual({ vat_rate: 12, discount_rate: null });
+  });
+
+  it('a changed rate keeps the cart, re-reads settings, shows the new total and offers no Retry', async () => {
+    const { TransactionApiError } = await import('@/hooks/queries/use-transactions');
+    mockCreateTransactionMutateAsync.mockRejectedValueOnce(
+      new TransactionApiError('VAT or discount settings changed since this total was shown, so the sale was not charged.', 'TAX_SETTINGS_CHANGED', {
+        shown: { vat_rate: 12, discount_rate: 20 },
+        current: { vat_rate: 12, discount_rate: 10 },
+        amounts: { subtotal: 200, discount_amount: 20, vat_amount: 19.29, total_amount: 180 },
+      }),
+    );
+    mockRefetchDiscountPolicy.mockImplementationOnce(async () => {
+      discountPolicyState.employee = 10;
+      return { isError: false, error: null };
+    });
+    render(<TerminalPage />);
+    openCheckout();
+    fireEvent.click(screen.getByRole('button', { name: 'Employee (20%)' }));
+    // 2 × ₱100, 20% employee → ₱160.
+    expect(screen.getByRole('button', { name: /^Charge/ })).toHaveTextContent('160.00');
+    charge();
+
+    await waitFor(() => expect(screen.getByText('Discount or VAT settings changed — not recorded')).toBeInTheDocument());
+    expect(mockRefetchDiscountPolicy).toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+    expect(mockClearCart).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Review updated prices' }));
+    await waitFor(() => expect(screen.getByTestId('tax-settings-change-notice')).toHaveTextContent('Total is now ₱180.00 (was ₱160.00)'));
+    expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(1);
+
+    // Charging again sends the new basis (this harness stubs the no-commit
+    // allowlist to false, so the prior attempt is resolved first).
+    mockResolveAndFenceCheckoutAttempt.mockResolvedValueOnce({ status: 'not-found' });
+    mockCreateTransactionMutateAsync.mockResolvedValueOnce({});
+    charge();
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(2));
+    expect((mockCreateTransactionMutateAsync.mock.calls[1]?.[0] as CreateTransactionInput).tax_basis).toEqual({ vat_rate: 12, discount_rate: 10 });
+  });
+
+  it('an offline sale is queued with the basis it was rung at', async () => {
+    const { enqueueOfflineTransaction } = await import('@/lib/offline/sync-queue');
+    vi.mocked(enqueueOfflineTransaction).mockClear().mockResolvedValueOnce('PC-branch-1-20260101-OFFLINE-0003');
+    const base = mockUseOffline();
+    mockUseOffline.mockReturnValue({ ...base, isOnline: false });
+    render(<TerminalPage />);
+    openCheckout();
+    fireEvent.click(screen.getByRole('button', { name: 'Employee (20%)' }));
+    charge();
+    await waitFor(() => expect(enqueueOfflineTransaction).toHaveBeenCalled());
+    expect((vi.mocked(enqueueOfflineTransaction).mock.calls[0]?.[1] as CreateTransactionInput).tax_basis).toEqual({ vat_rate: 12, discount_rate: 20 });
+    mockUseOffline.mockReturnValue(base);
   });
 });

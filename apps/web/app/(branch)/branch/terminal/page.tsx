@@ -5,7 +5,7 @@ import { useDensityMode, type DensityMode } from '@/hooks/use-density-mode';
 import { DENSITY_POS_GRID_COLUMNS } from '@/lib/density-tokens';
 import { shouldShowInlineCart } from '@/lib/pos/cart-layout';
 import { KeyRound, Loader2, Lock, LockKeyhole, LogOut, ShoppingCart, WifiOff } from 'lucide-react';
-import { ROLES, STAFF_PIN_MAX_LENGTH, STAFF_PIN_MIN_LENGTH } from '@potato-corner/shared';
+import { ROLES, STAFF_PIN_MAX_LENGTH, STAFF_PIN_MIN_LENGTH, VAT_RATE_PERCENT, computeSaleTax, discountRateFor, type SaleDiscountRates } from '@potato-corner/shared';
 import type { CreateTransactionInput, ImageProofType, PosCatalogProduct, TransactionResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -266,20 +266,15 @@ function readinessMessage(variant: PosCatalogProduct['variants'][number]): strin
 }
 
 /** Live-configured percentages (Discount Settings), or the same 20/20/20 defaults the server falls back to before any supervisor has saved a change — see settings.types.ts DEFAULT_DISCOUNT_POLICY. */
-interface PreviewDiscountRates {
-  pwd: number;
-  senior_citizen: number;
-  employee: number;
-}
+type PreviewDiscountRates = SaleDiscountRates;
 const DEFAULT_PREVIEW_DISCOUNT_RATES: PreviewDiscountRates = { pwd: 20, senior_citizen: 20, employee: 20 };
 
 /**
- * Client-side preview only — mirrors transactions.service's computeAmounts
- * closely enough to show the cashier a live total, but the server always
- * recomputes and persists the authoritative figures. Never trust this for
- * the actual charge. discountRates comes from useDiscountPolicy() so this
- * preview matches whatever the server will actually charge, even after a
- * supervisor changes a rate mid-shift.
+ * Client-side preview — POS-PERF-P50: the same computeSaleTax the server's
+ * computeAmounts runs, so the total shown is computed exactly as it will be
+ * charged. The server still recomputes and persists the authoritative
+ * figures, and refuses (TAX_SETTINGS_CHANGED) if its rates differ from the
+ * ones this preview used (sent as tax_basis).
  */
 function previewAmounts(
   cartLines: { lineTotal: number; quantity: number; vatableCapAmount: number | null; promotionDiscount?: number }[],
@@ -287,29 +282,19 @@ function previewAmounts(
   discountRates: PreviewDiscountRates = DEFAULT_PREVIEW_DISCOUNT_RATES,
 ) {
   const subtotal = round2(cartLines.reduce((sum, l) => sum + l.lineTotal, 0));
-  const vatableSubtotal = round2(
-    cartLines.reduce((sum, l) => {
-      const cap = l.vatableCapAmount;
-      const vatableLine = cap != null ? Math.min(l.lineTotal, round2(cap * l.quantity)) : l.lineTotal;
-      return sum + vatableLine;
-    }, 0),
-  );
-  const nonVatableSubtotal = round2(subtotal - vatableSubtotal);
+  const { discountAmount, vatAmount, totalAmount } = computeSaleTax(subtotal, cartLines, discountType === 'none' ? null : discountType, discountRates);
+  return { discountAmount, vatAmount, totalAmount };
+}
 
-  if (discountType === 'pwd' || discountType === 'senior_citizen') {
-    const ratePercent = discountType === 'pwd' ? discountRates.pwd : discountRates.senior_citizen;
-    const vatableBase = vatableSubtotal / 1.12;
-    const discountAmount = round2(vatableBase * (ratePercent / 100));
-    const discountedBase = round2(vatableBase - discountAmount);
-    return { discountAmount, vatAmount: 0, totalAmount: round2(discountedBase + nonVatableSubtotal) };
-  }
-  let discountAmount = 0;
-  if (discountType === 'employee') discountAmount = round2(vatableSubtotal * (discountRates.employee / 100));
-  // POS-PERF-P49 — product promotions (only ever applied with no transaction discount; see resolveCartLinePromotion).
-  else if (discountType === 'none') discountAmount = round2(cartLines.reduce((sum, l) => sum + (l.promotionDiscount ?? 0), 0));
-  const vatableAfterDiscount = round2(vatableSubtotal - discountAmount);
-  const vatAmount = round2(vatableAfterDiscount * (12 / 112));
-  return { discountAmount, vatAmount, totalAmount: round2(vatableAfterDiscount + nonVatableSubtotal) };
+/** POS-PERF-P50 — the parts of a TAX_SETTINGS_CHANGED refusal's details the notice uses; tolerant of a missing/odd shape. */
+function readTaxSettingsChange(details: unknown): { serverTotal: number | null; serverVatRate: number | null } {
+  const record = typeof details === 'object' && details !== null ? (details as Record<string, unknown>) : {};
+  const amounts = typeof record.amounts === 'object' && record.amounts !== null ? (record.amounts as Record<string, unknown>) : {};
+  const current = typeof record.current === 'object' && record.current !== null ? (record.current as Record<string, unknown>) : {};
+  return {
+    serverTotal: typeof amounts.total_amount === 'number' ? amounts.total_amount : null,
+    serverVatRate: typeof current.vat_rate === 'number' ? current.vat_rate : null,
+  };
 }
 
 export default function TerminalPage() {
@@ -325,7 +310,7 @@ export default function TerminalPage() {
   // independently re-resolves this at checkout time regardless of what's
   // rendered here (transactions.service.ts createTransaction) — this is
   // display/preview only, never trusted for the actual charge.
-  const { data: discountPolicy } = useDiscountPolicy();
+  const { data: discountPolicy, refetch: refetchDiscountPolicy } = useDiscountPolicy();
   const discountRatesPreview: PreviewDiscountRates = useMemo(
     () => ({
       pwd: discountPolicy?.pwd.percentage ?? DEFAULT_PREVIEW_DISCOUNT_RATES.pwd,
@@ -801,6 +786,12 @@ export default function TerminalPage() {
   const [promotionNotice, setPromotionNotice] = useState<
     | { status: 'checking' | 'confirmed'; changes: string[]; previousTotal: number }
     | { status: 'failed'; changes: string[]; previousTotal: number; message: string }
+    | null
+  >(null);
+  // POS-PERF-P50 — set after a TAX_SETTINGS_CHANGED refusal (see handleCharge's catch).
+  const [taxNotice, setTaxNotice] = useState<
+    | { status: 'checking' | 'confirmed'; previousTotal: number; serverTotal: number | null; buildMismatch: boolean }
+    | { status: 'failed'; previousTotal: number; serverTotal: number | null; buildMismatch: boolean; message: string }
     | null
   >(null);
   const autoEditAfterRecoveryRef = useRef(false);
@@ -1807,6 +1798,11 @@ export default function TerminalPage() {
     if (items.length === 0 && promotionNotice) setPromotionNotice(null);
   }, [items.length, promotionNotice]);
 
+  // POS-PERF-P50 — so does the tax-settings notice.
+  useEffect(() => {
+    if (items.length === 0 && taxNotice) setTaxNotice(null);
+  }, [items.length, taxNotice]);
+
   // P46R3 — once confirmed, Edit Cart opens the editor on the first line that
   // still needs a change (the others stay marked in the review list).
   useEffect(() => {
@@ -1835,6 +1831,8 @@ export default function TerminalPage() {
   const chargeDisabledReason: string | null = (() => {
     if (isChargeInFlight) return 'Checkout is already processing.';
     if (optionRecovery?.status === 'checking') return 'Checking the current product options…';
+    if (taxNotice?.status === 'checking') return 'Loading the current discount settings…';
+    if (taxNotice?.buildMismatch) return 'This terminal uses an outdated VAT rate. Reload the page before charging.';
     if (cartOptionIssueCount > 0) return 'Update the items marked in the order before charging.';
     if (stockValidation.status === 'checking' || stockValidation.pendingKeys.size > 0) return 'Checking stock for the latest cart changes…';
     if (!isClockedIn) return 'Clock in before completing a sale.';
@@ -1987,6 +1985,13 @@ export default function TerminalPage() {
       payment_method: paymentMethod,
       discount_type: discountType === 'none' ? undefined : discountType,
       discount_id_reference: discountIdReference.trim() || undefined,
+      // POS-PERF-P50 — the rates the total on screen was computed with. Never
+      // an amount: the server refuses a mismatch instead of charging a
+      // different total (TAX_SETTINGS_CHANGED).
+      tax_basis: {
+        vat_rate: VAT_RATE_PERCENT,
+        discount_rate: discountRateFor(discountType === 'none' ? null : discountType, discountRatesPreview),
+      },
       cash_tendered: paymentMethod === 'cash' ? tenderedNumber : undefined,
       // POS-PERF-P25R — optional payment reference, re-added at the owner's
       // request. gcash_reference_number backs both GCash and Maya (the
@@ -2052,7 +2057,7 @@ export default function TerminalPage() {
     // since the last attempt (see lastChargeFingerprintRef's doc comment) —
     // otherwise a charge-after-Edit-Cart with a genuinely different cart
     // would keep colliding with the backend's reuse guard forever.
-    const chargeFingerprint = JSON.stringify(payload.items) + '|' + payload.payment_method + '|' + String(payload.discount_type ?? '') + '|' + String(payload.discount_amount ?? '') + '|' + String(payload.cash_tendered ?? '');
+    const chargeFingerprint = JSON.stringify(payload.items) + '|' + payload.payment_method + '|' + String(payload.discount_type ?? '') + '|' + String(payload.discount_amount ?? '') + '|' + String(payload.cash_tendered ?? '') + '|' + JSON.stringify(payload.tax_basis ?? null);
     const previousKey = idempotencyKeyRef.current;
     const isUnmodifiedRetry = previousKey !== null && lastChargeFingerprintRef.current === chargeFingerprint;
     // POS-PERF-P21 — same first-click-mints/retry-reuses lifecycle as
@@ -2264,6 +2269,26 @@ export default function TerminalPage() {
             }),
           );
         setSaleErrorMessage([error.message, ...changes].join(' '));
+        setSaleErrorCode(error.code);
+        setSalePhase('error');
+        return;
+      }
+      // POS-PERF-P50 — nothing was charged. Re-read Discount Settings so the
+      // preview uses the rates checkout will use now; the cashier confirms
+      // the new total with the customer before charging again.
+      if (error instanceof TransactionApiError && error.code === 'TAX_SETTINGS_CHANGED') {
+        const details = readTaxSettingsChange(error.details);
+        const base = { previousTotal: totalAmount, serverTotal: details.serverTotal, buildMismatch: details.serverVatRate !== null && details.serverVatRate !== VAT_RATE_PERCENT };
+        setTaxNotice({ status: 'checking', ...base });
+        void refetchDiscountPolicy()
+          .then((result) => {
+            if (result.isError) throw result.error;
+            setTaxNotice({ status: 'confirmed', ...base });
+          })
+          .catch((refreshError: unknown) =>
+            setTaxNotice({ status: 'failed', ...base, message: refreshError instanceof Error ? refreshError.message : 'Could not load the current discount settings' }),
+          );
+        setSaleErrorMessage(error.message);
         setSaleErrorCode(error.code);
         setSalePhase('error');
         return;
@@ -2978,6 +3003,37 @@ export default function TerminalPage() {
     </div>
   ) : null;
 
+  // POS-PERF-P50 — after a TAX_SETTINGS_CHANGED refusal: the total the
+  // cashier is now looking at, recomputed with the current rates.
+  const taxRecoveryNotice = taxNotice ? (
+    <div role="status" data-testid="tax-settings-change-notice" className="mb-3 space-y-1.5 rounded-lg border border-amber-500/40 bg-amber-50 p-3 text-xs dark:bg-amber-950/20">
+      <p className="font-semibold">VAT or discount settings changed — the sale was not charged. Your cart is kept.</p>
+      {taxNotice.buildMismatch && (
+        <p className="font-semibold text-destructive">This terminal&apos;s VAT rate is out of date. Reload the page, then ring the sale again.</p>
+      )}
+      {taxNotice.status === 'checking' && (
+        <p className="flex items-center gap-2">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+          Loading the current discount settings…
+        </p>
+      )}
+      {taxNotice.status === 'failed' && (
+        <p className="font-semibold text-destructive">Couldn&apos;t load the current discount settings ({taxNotice.message}). Check the connection before charging.</p>
+      )}
+      {taxNotice.status === 'confirmed' && !taxNotice.buildMismatch && (
+        <p className="font-semibold" data-testid="tax-settings-new-total">
+          Total is now {formatPeso(totalAmount)}
+          {taxNotice.previousTotal !== totalAmount ? ` (was ${formatPeso(taxNotice.previousTotal)})` : ''}. Confirm with the customer, then charge.
+        </p>
+      )}
+      {taxNotice.status === 'confirmed' && taxNotice.serverTotal !== null && Math.round(taxNotice.serverTotal * 100) !== Math.round(totalAmount * 100) && (
+        <p className="font-semibold text-destructive" data-testid="tax-settings-server-total">
+          The server calculated {formatPeso(taxNotice.serverTotal)} for this order. Reload the page to refresh prices before charging.
+        </p>
+      )}
+    </div>
+  ) : null;
+
   const checkoutWorkspaceElement = (
     <CheckoutWorkspace
       open={isCheckoutOpen}
@@ -2988,8 +3044,9 @@ export default function TerminalPage() {
       onRemoveLine={handleRemoveLine}
       onQuantityChange={handleQuantityChange}
       reviewNotice={
-        promotionRecoveryNotice || optionRecoveryNotice ? (
+        taxRecoveryNotice || promotionRecoveryNotice || optionRecoveryNotice ? (
           <>
+            {taxRecoveryNotice}
             {promotionRecoveryNotice}
             {optionRecoveryNotice}
           </>

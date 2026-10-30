@@ -191,6 +191,7 @@ export type SimulateDeductionResponse = z.infer<typeof schemas.simulateDeduction
 
 export type CartItem = z.infer<typeof schemas.cartItemSchema>;
 export type CreateTransactionInput = z.infer<typeof schemas.createTransactionSchema>;
+export type TaxBasisInput = z.infer<typeof schemas.taxBasisSchema>;
 export type VoidTransactionRequest = z.infer<typeof schemas.voidTransactionRequestSchema>;
 export type RefundTransactionRequest = z.infer<typeof schemas.refundTransactionRequestSchema>;
 export type RetryInventoryDeductionResponse = z.infer<typeof schemas.retryInventoryDeductionResponseSchema>;
@@ -255,6 +256,7 @@ export type PaymentMethodConfigResponse = z.infer<typeof schemas.paymentMethodCo
 export type DiscountPolicy = z.infer<typeof schemas.discountPolicySchema>;
 export type UpdateDiscountPolicyInput = z.infer<typeof schemas.updateDiscountPolicySchema>;
 export type DiscountPolicyResponse = z.infer<typeof schemas.discountPolicyResponseSchema>;
+export type TaxConfigurationResponse = z.infer<typeof schemas.taxConfigurationResponseSchema>;
 export type WorkHoursPolicy = z.infer<typeof schemas.workHoursPolicySchema>;
 export type UpdateWorkHoursPolicyInput = z.infer<typeof schemas.updateWorkHoursPolicySchema>;
 export type WorkHoursPolicyResponse = z.infer<typeof schemas.workHoursPolicyResponseSchema>;

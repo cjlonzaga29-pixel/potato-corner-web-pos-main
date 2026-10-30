@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { useMarkReceiptPrinted } from '@/hooks/queries/use-transactions';
 import { useEmployee } from '@/hooks/queries/use-employees';
+import { ReceiptTaxLines } from './receipt-tax-lines';
 
 function formatPeso(amount: number): string {
   return `₱${amount.toFixed(2)}`;
@@ -150,10 +151,7 @@ export function ReceiptModal({ transaction, onClose }: ReceiptModalProps) {
                 <span className="tabular-nums">-{formatPeso(transaction.discount_amount)}</span>
               </div>
             )}
-            <div className="flex justify-between text-xs text-muted-foreground">
-              <span>VAT (12%)</span>
-              <span className="tabular-nums">{formatPeso(transaction.vat_amount)}</span>
-            </div>
+            <ReceiptTaxLines sale={transaction} />
             <div className="flex justify-between border-t pt-1 font-semibold">
               <span>Total</span>
               <span className="tabular-nums">{formatPeso(transaction.total_amount)}</span>

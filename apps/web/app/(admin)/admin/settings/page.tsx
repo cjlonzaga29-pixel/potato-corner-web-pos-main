@@ -5,6 +5,7 @@ import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { NotificationPreferencesSection } from '@/components/settings/notification-preferences-section';
 import { DiscountSettingsSection } from '@/components/settings/discount-settings-section';
+import { TaxSettingsSection } from '@/components/settings/tax-settings-section';
 import { WorkHoursOverviewSection } from '@/components/settings/work-hours-overview-section';
 import { WriteGateSettingsSection } from '@/components/settings/write-gate-settings-section';
 
@@ -40,7 +41,7 @@ function SettingsPageContent() {
       <Tabs value={activeTab} onValueChange={handleTabChange}>
         <TabsList>
           <TabsTrigger value="notifications">Notifications</TabsTrigger>
-          <TabsTrigger value="discounts">Discount Settings</TabsTrigger>
+          <TabsTrigger value="discounts">VAT &amp; Discounts</TabsTrigger>
           <TabsTrigger value="work-hours">Work Hours</TabsTrigger>
           <TabsTrigger value="write-gate">Write Gate</TabsTrigger>
         </TabsList>
@@ -49,7 +50,8 @@ function SettingsPageContent() {
           <NotificationPreferencesSection />
         </TabsContent>
 
-        <TabsContent value="discounts">
+        <TabsContent value="discounts" className="space-y-4">
+          <TaxSettingsSection />
           <DiscountSettingsSection />
         </TabsContent>
 

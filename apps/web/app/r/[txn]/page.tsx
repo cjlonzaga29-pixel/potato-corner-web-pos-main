@@ -7,6 +7,7 @@ import { StatusBadge } from '@/components/shared/status-badge';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { ErrorState } from '@/components/shared/feedback/error-state';
 import { usePublicReceipt, type PublicReceipt } from '@/hooks/queries/use-receipts';
+import { ReceiptTaxLines } from '@/components/pos/receipt-tax-lines';
 
 function formatPeso(amount: number): string {
   return `₱${amount.toFixed(2)}`;
@@ -102,10 +103,7 @@ export default function PublicReceiptPage() {
                   <span className="tabular-nums">-{formatPeso(receipt.discount_amount)}</span>
                 </div>
               )}
-              <div className="flex justify-between text-xs text-muted-foreground">
-                <span>VAT (12%)</span>
-                <span className="tabular-nums">{formatPeso(receipt.vat_amount)}</span>
-              </div>
+              <ReceiptTaxLines sale={receipt} />
               <div className="flex justify-between border-t pt-1 font-semibold">
                 <span>Total</span>
                 <span className="tabular-nums">{formatPeso(receipt.total_amount)}</span>

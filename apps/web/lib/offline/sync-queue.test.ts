@@ -119,6 +119,7 @@ describe('syncOfflineTransactions', () => {
               cash_tendered: 40,
               gcash_reference_number: undefined,
               gcash_manually_verified: undefined,
+              tax_basis: undefined,
               client_created_at: 1_000,
             },
           ],
@@ -291,8 +292,10 @@ describe('syncOfflineTransactions', () => {
 });
 
 describe('isDefinitiveQueueRejection', () => {
-  it('is true only for option-validation refusals', () => {
+  it('is true only for option-validation and tax-settings refusals', () => {
     expect(isDefinitiveQueueRejection('PRODUCT_OPTION_REQUIRED')).toBe(true);
+    // P50 — a sale rung at a rate checkout no longer uses waits visibly; it is never resent or repriced.
+    expect(isDefinitiveQueueRejection('TAX_SETTINGS_CHANGED')).toBe(true);
     for (const code of ['INSUFFICIENT_STOCK', 'SHIFT_CLOSED', 'NETWORK_ERROR', 'SYNC_FAILED', 'PRODUCT_UNAVAILABLE', undefined, null]) {
       expect(isDefinitiveQueueRejection(code)).toBe(false);
     }

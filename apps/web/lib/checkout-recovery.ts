@@ -114,6 +114,9 @@ const DEFINITE_NO_COMMIT_CODES = new Set([
   'PROMOTION_CHANGED',
   'PROMOTION_NOT_COMBINABLE',
   'PROMOTION_OFFLINE_UNSUPPORTED',
+  // POS-PERF-P50 — compared after the amounts are computed, before the
+  // sale's $transaction opens (assertTaxBasisUnchanged), so nothing was written.
+  'TAX_SETTINGS_CHANGED',
   // Thrown inside the $transaction callback itself (stock reservation) —
   // still safe, since throwing there rolls back the whole interactive
   // transaction, including the sale insert.

@@ -17,7 +17,13 @@ import {
   type UpdateDiscountPolicyInput,
   type UpdateWorkHoursPolicyInput,
   type UpdateWriteGateInput,
+  type TaxConfigurationResponse,
+  type ConfigurableDiscountType,
   CONFIGURABLE_DISCOUNT_TYPES,
+  PRICES_INCLUDE_VAT,
+  STATUTORY_DISCOUNT_PERCENT,
+  VAT_EXEMPT_DISCOUNT_TYPES,
+  VAT_RATE_PERCENT,
 } from '@potato-corner/shared';
 import type {
   NotificationPreference as NotificationPreferenceRow,
@@ -78,6 +84,32 @@ function toPaymentMethodConfigResponse(row: BranchPaymentMethodConfigRow): Payme
     gcashEnabled: row.gcashEnabled,
     updatedAt: row.updatedAt.toISOString(),
   };
+}
+
+/**
+ * POS-PERF-P50 — PWD (RA 10754) and Senior Citizen (RA 9994) discounts are
+ * required by law at 20% with VAT exemption: no role may lower, raise or
+ * disable them here. Re-sending the value already stored is accepted (the
+ * editor sends every row), so a policy saved before P50 can still be saved
+ * around; the only change accepted is back to the statutory value.
+ */
+const STATUTORY_DISCOUNT_TYPES: readonly ConfigurableDiscountType[] = ['pwd', 'senior_citizen'];
+
+function assertStatutoryRowsUnchanged(data: UpdateDiscountPolicyInput, before: DiscountPolicy): void {
+  for (const type of STATUTORY_DISCOUNT_TYPES) {
+    const incoming = data[type];
+    if (!incoming) continue;
+    const percentageOk =
+      incoming.percentage === undefined || incoming.percentage === STATUTORY_DISCOUNT_PERCENT || incoming.percentage === before[type].percentage;
+    const enabledOk = incoming.isEnabled === undefined || incoming.isEnabled || incoming.isEnabled === before[type].isEnabled;
+    if (!percentageOk || !enabledOk) {
+      throw new SettingsError(
+        'STATUTORY_DISCOUNT_LOCKED',
+        `The ${type === 'pwd' ? 'PWD' : 'Senior Citizen'} discount is set by law (${STATUTORY_DISCOUNT_PERCENT}%, VAT-exempt) and cannot be changed or turned off here.`,
+        422,
+      );
+    }
+  }
 }
 
 /** Default state assumed when no BranchPaymentMethodConfig row exists yet (both methods enabled). */
@@ -252,9 +284,9 @@ export const settingsService = {
    */
   async getDiscountPolicy(): Promise<DiscountPolicyResponse> {
     const setting = await settingsRepository.findSystemSetting(DISCOUNT_POLICY_KEY);
-    if (!setting) return { ...DEFAULT_DISCOUNT_POLICY, updatedAt: null, updatedBy: null };
+    if (!setting) return { ...DEFAULT_DISCOUNT_POLICY, updatedAt: null, updatedBy: null, statutoryTypes: [...STATUTORY_DISCOUNT_TYPES] };
     const value = setting.value as unknown as DiscountPolicy;
-    return { ...value, updatedAt: setting.updatedAt.toISOString(), updatedBy: setting.updatedBy };
+    return { ...value, updatedAt: setting.updatedAt.toISOString(), updatedBy: setting.updatedBy, statutoryTypes: [...STATUTORY_DISCOUNT_TYPES] };
   },
 
   async updateDiscountPolicy(
@@ -263,6 +295,7 @@ export const settingsService = {
     ipAddress: string | null,
   ): Promise<DiscountPolicyResponse> {
     const before = await settingsService.getDiscountPolicy();
+    assertStatutoryRowsUnchanged(data, before);
 
     // Partial per-type PUT — merge the incoming partial entries over the
     // currently persisted (or default) policy, same precedent as
@@ -272,12 +305,28 @@ export const settingsService = {
       merged[type] = { ...before[type], ...data[type] };
     }
 
-    await settingsRepository.upsertSystemSetting(
-      DISCOUNT_POLICY_KEY,
-      merged as unknown as Prisma.InputJsonValue,
-      updatedBy.user_id,
-      'Configurable POS discount percentages (PWD, Senior Citizen, Employee, Promotional)',
-    );
+    const description = 'Configurable POS discount percentages (PWD, Senior Citizen, Employee, Promotional)';
+    let saved: { updatedAt: Date } | null;
+    if (data.expectedUpdatedAt === undefined) {
+      // Older web build (no stale token): last write wins, the pre-P50 behavior.
+      saved = await settingsRepository.upsertSystemSetting(DISCOUNT_POLICY_KEY, merged as unknown as Prisma.InputJsonValue, updatedBy.user_id, description);
+    } else {
+      // POS-PERF-P50 — refuse instead of overwriting a newer save. The merge
+      // above read `before`; the conditional write proves nothing changed since.
+      const expected = data.expectedUpdatedAt === null ? null : new Date(data.expectedUpdatedAt);
+      const stale = (expected?.toISOString() ?? null) !== before.updatedAt;
+      saved = stale
+        ? null
+        : await settingsRepository.writeSystemSettingIfUnchanged(DISCOUNT_POLICY_KEY, merged as unknown as Prisma.InputJsonValue, updatedBy.user_id, expected, description);
+      if (!saved) {
+        throw new SettingsError(
+          'SETTINGS_CHANGED',
+          'Discount settings were changed by someone else after you opened them. Reload to see the current values, then make your change again.',
+          409,
+          { current: await settingsService.getDiscountPolicy() },
+        );
+      }
+    }
 
     await recordAuditLog({
       action: 'DISCOUNT_POLICY_UPDATED',
@@ -290,8 +339,28 @@ export const settingsService = {
       ipAddress,
     });
 
-    const updated = await settingsRepository.findSystemSetting(DISCOUNT_POLICY_KEY);
-    return { ...merged, updatedAt: updated?.updatedAt.toISOString() ?? new Date().toISOString(), updatedBy: updatedBy.user_id };
+    return { ...merged, updatedAt: saved.updatedAt.toISOString(), updatedBy: updatedBy.user_id, statutoryTypes: [...STATUTORY_DISCOUNT_TYPES] };
+  },
+
+  /**
+   * POS-PERF-P50 — the tax configuration checkout uses right now. Statutory
+   * values and fixed application behavior come from @potato-corner/shared
+   * (the same constants computeSaleTax uses); the discount rates come from
+   * Discount Settings. Nothing here is writable.
+   */
+  async getTaxConfiguration(): Promise<TaxConfigurationResponse> {
+    const policy = await settingsService.getDiscountPolicy();
+    return {
+      vatRatePercent: VAT_RATE_PERCENT,
+      pricesIncludeVat: PRICES_INCLUDE_VAT,
+      statutoryDiscountPercent: STATUTORY_DISCOUNT_PERCENT,
+      vatExemptDiscountTypes: [...VAT_EXEMPT_DISCOUNT_TYPES],
+      scope: 'organization',
+      discountRates: { pwd: policy.pwd.percentage, senior_citizen: policy.senior_citizen.percentage, employee: policy.employee.percentage },
+      statutoryRateMismatch: STATUTORY_DISCOUNT_TYPES.some(
+        (type) => policy[type].percentage !== STATUTORY_DISCOUNT_PERCENT || !policy[type].isEnabled,
+      ),
+    };
   },
 
   /**

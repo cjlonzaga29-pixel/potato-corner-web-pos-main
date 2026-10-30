@@ -7,6 +7,7 @@ import type {
   DiscountPolicyResponse,
   UpdateNotificationPreferencesInput,
   UpdateDiscountPolicyInput,
+  TaxConfigurationResponse,
   WorkHoursPolicyResponse,
   BranchWorkHoursResponse,
   UpdateBranchWorkHoursInput,
@@ -46,19 +47,63 @@ export function useDiscountPolicy() {
   });
 }
 
+/** POS-PERF-P50 — the error a refused settings save throws; `code` is the server's (e.g. SETTINGS_CHANGED, STATUTORY_DISCOUNT_LOCKED). */
+export class SettingsSaveError extends Error {
+  constructor(
+    message: string,
+    public readonly code: string | null,
+  ) {
+    super(message);
+    this.name = 'SettingsSaveError';
+  }
+}
+
 export function useUpdateDiscountPolicy() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: UpdateDiscountPolicyInput) => {
       const response = await apiClient<DiscountPolicyResponse>('/api/settings/discount-policy', { method: 'PUT', body: JSON.stringify(input) });
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to update discount settings'));
+      if (!response.data) {
+        const code = response.error && typeof response.error !== 'string' ? response.error.code : null;
+        throw new SettingsSaveError(errorMessage(response, 'Failed to update discount settings'), code);
+      }
       return response.data;
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['settings', 'discount-policy'] });
+      void queryClient.invalidateQueries({ queryKey: ['settings', 'tax'] });
       toast.success('Discount settings updated');
     },
-    onError: (error: Error) => toast.error(error.message),
+    onError: (error: Error) => {
+      // POS-PERF-P50 — someone else saved first: reload their values so the
+      // editor shows what is actually in effect before anything is retried.
+      if (error instanceof SettingsSaveError && error.code === 'SETTINGS_CHANGED') {
+        void queryClient.invalidateQueries({ queryKey: ['settings', 'discount-policy'] });
+        void queryClient.invalidateQueries({ queryKey: ['settings', 'tax'] });
+      }
+      toast.error(error.message);
+    },
+  });
+}
+
+/**
+ * POS-PERF-P50 — the tax configuration checkout uses (GET /api/settings/tax,
+ * read-only for every role). `null` when the API predates P50 (404): the UI
+ * then explains it is showing this build's values.
+ */
+export function useTaxConfiguration() {
+  const { accessToken, isLoading } = useAuth();
+
+  return useQuery({
+    queryKey: ['settings', 'tax'],
+    queryFn: async (): Promise<TaxConfigurationResponse | null> => {
+      const response = await apiClient<TaxConfigurationResponse>('/api/settings/tax');
+      if (response.data) return response.data;
+      // An API without the route answers its catch-all 404 (app.ts).
+      if (response.error && typeof response.error !== 'string' && response.error.code === 'NOT_FOUND') return null;
+      throw new Error(errorMessage(response, 'Failed to load tax settings'));
+    },
+    enabled: !!accessToken && !isLoading,
   });
 }
 

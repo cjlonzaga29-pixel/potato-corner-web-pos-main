@@ -2,6 +2,7 @@
 
 import { Suspense } from 'react';
 import { DiscountSettingsSection } from '@/components/settings/discount-settings-section';
+import { TaxSettingsSection } from '@/components/settings/tax-settings-section';
 import { BranchWorkHoursSection } from '@/components/settings/branch-work-hours-section';
 
 /**
@@ -15,9 +16,10 @@ export default function SupervisorSettingsPage() {
     <div className="app-section app-section-gap">
       <div>
         <h1 className="text-xl font-semibold">Settings</h1>
-        <p className="text-muted-foreground text-sm">POS discount percentages and your branches&apos; work hours.</p>
+        <p className="text-muted-foreground text-sm">VAT, POS discount percentages and your branches&apos; work hours.</p>
       </div>
 
+      <TaxSettingsSection />
       <DiscountSettingsSection />
       {/* useSelectedBranch reads search params, which needs a Suspense boundary. */}
       <Suspense fallback={null}>

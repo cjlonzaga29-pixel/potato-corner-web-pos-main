@@ -114,8 +114,19 @@ function OfflineSaleRow({ sale, state, isOwnSale, isOnline, isSyncing, onRetry }
           <p className="text-xs font-semibold text-destructive">{rejection.title}</p>
           <p className="text-xs text-destructive">{rejection.detail}</p>
           <p className="text-xs text-muted-foreground">
-            This sale was paid offline but the server did not record it. It will not be sent again on its own. Ask a supervisor to check this product&apos;s
-            options, then tap Retry. It stays saved on this device.
+            {sale.rejection?.code === 'TAX_SETTINGS_CHANGED' ? (
+              // POS-PERF-P50 — Retry gets the same answer unless the rate is put back; the supervisor reconciles it (runbook §Offline).
+              <>
+                This sale was paid offline at the rate shown above, but the discount settings changed before it synced, so the server did not record it
+                and did not change the amount. It will not be sent again on its own. Give a supervisor this ID, the time and the amount collected. It
+                stays saved on this device.
+              </>
+            ) : (
+              <>
+                This sale was paid offline but the server did not record it. It will not be sent again on its own. Ask a supervisor to check this
+                product&apos;s options, then tap Retry. It stays saved on this device.
+              </>
+            )}
           </p>
         </div>
       )}

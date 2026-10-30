@@ -132,6 +132,21 @@ router.put(
 );
 
 /**
+ * POS-PERF-P50 — read-only VAT/tax configuration, `allRoles` like
+ * discount-policy: the POS and every settings page show it. There is no PUT:
+ * the VAT rate, VAT-inclusive pricing and the PWD/Senior treatment are
+ * statutory or fixed application behavior, changed only by a code release.
+ */
+router.get('/tax', authenticate, allRoles, requirePasswordChange, async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const configuration = await settingsService.getTaxConfiguration();
+    res.status(200).json({ data: configuration, error: null, meta: null });
+  } catch (error) {
+    handleSettingsError(error, res, next);
+  }
+});
+
+/**
  * P3D-P4 — GET is `allRoles` (mirrors discount-policy's precedent above):
  * the attendance UI needs the configured threshold to label Regular/OT
  * consistently for every role that can view attendance. PUT is `adminOnly`

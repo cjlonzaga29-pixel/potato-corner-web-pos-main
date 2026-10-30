@@ -259,5 +259,7 @@ describe('isDefiniteNoCommitErrorCode', () => {
     expect(isDefiniteNoCommitErrorCode('PRODUCT_OPTION_REQUIRED')).toBe(true);
     expect(isDefiniteNoCommitErrorCode('PRODUCT_OPTION_LIMIT_EXCEEDED')).toBe(true);
     expect(isDefiniteNoCommitErrorCode('PRODUCT_OPTION_NOT_AVAILABLE')).toBe(true);
+    // POS-PERF-P50 — refused before the sale's $transaction opens.
+    expect(isDefiniteNoCommitErrorCode('TAX_SETTINGS_CHANGED')).toBe(true);
   });
 });

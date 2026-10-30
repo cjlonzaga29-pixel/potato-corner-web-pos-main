@@ -25,6 +25,7 @@ import { Badge, type BadgeProps } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { ReportFilterBar } from '@/components/reports/report-filter-bar';
+import { ReportsSectionTabs } from '@/components/reports/reports-section-tabs';
 import { ReportLastUpdated } from '@/components/reports/report-last-updated';
 import { DailySalesDrilldown } from '@/components/reports/daily-sales-drilldown';
 import { DiscountComplianceDrilldown } from '@/components/reports/discount-compliance-drilldown';
@@ -550,6 +551,7 @@ function AdminReportsPageContent() {
         </div>
         <DashboardConnectionBadge isConnected={isSocketConnected} isReconnecting={isSocketReconnecting} />
       </div>
+      <ReportsSectionTabs basePath="/admin/reports" />
 
       <ReportFilterBar
         branchId={selectedBranchId}

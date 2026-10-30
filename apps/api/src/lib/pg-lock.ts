@@ -105,3 +105,19 @@ export function productCatalogLockId(productId: string): bigint {
 export function auditChainLockId(): bigint {
   return hashToLockId(sha256Hex('audit-log-chain'));
 }
+
+/**
+ * POS-PERF-P52 — serializes every payroll run state change for one branch
+ * (create draft, finalize, revise, discard, mark paid, policy save), so two
+ * concurrent finalizations of the same or overlapping periods can never both
+ * commit: the second waits, then re-reads the run and the branch's finalized
+ * periods and refuses.
+ */
+export function payrollBranchLockId(branchId: string): bigint {
+  return hashToLockId(sha256Hex(`payroll-branch:${branchId}`));
+}
+
+/** POS-PERF-P52 — serializes rate writes for one employee at one branch (stale-write check + insert/void). */
+export function payrollRateLockId(employeeId: string, branchId: string): bigint {
+  return hashToLockId(sha256Hex(`payroll-rate:${employeeId}:${branchId}`));
+}

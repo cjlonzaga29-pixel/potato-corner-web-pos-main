@@ -197,12 +197,52 @@ describe('CheckoutWorkspace — stepped layout (Task 209.25, mobile/tablet portr
   // regions (this was the real cause of "can't scroll" / "bottom action
   // unreachable" on real touch devices).
   it('the dialog element itself never scrolls (overflow-hidden) in either layout — only its inner regions do', () => {
-    const { rerender } = render(<CheckoutWorkspace {...baseProps()} layout="two-pane" />);
+    render(<CheckoutWorkspace {...baseProps()} layout="two-pane" />);
     expect(screen.getByRole('dialog')).toHaveClass('overflow-hidden');
     expect(screen.getByRole('dialog')).not.toHaveClass('overflow-y-auto');
 
-    rerender(<CheckoutWorkspace {...baseProps()} layout="stepped" />);
+    // A fresh mount: an already-open two-pane checkout deliberately stays two-pane (POS-PERF-P53 block below).
+    cleanup();
+    render(<CheckoutWorkspace {...baseProps()} layout="stepped" />);
     expect(screen.getByRole('dialog')).toHaveClass('overflow-hidden');
     expect(screen.getByRole('dialog')).not.toHaveClass('overflow-y-auto');
+  });
+});
+
+describe('CheckoutWorkspace — layout stays put while open (POS-PERF-P53)', () => {
+  // A 1024x768 tablet whose on-screen keyboard resizes the layout viewport
+  // drops under the terminal's 640px two-pane height threshold mid-payment.
+  it('an open two-pane checkout stays two-pane when the terminal switches to stepped — Cash tendered stays mounted', () => {
+    const props = baseProps();
+    const { rerender } = render(<CheckoutWorkspace {...props} layout="two-pane" />);
+    const cash = screen.getByPlaceholderText('Cash tendered');
+
+    rerender(<CheckoutWorkspace {...props} layout="stepped" />);
+
+    expect(screen.queryByRole('button', { name: 'Continue to Payment' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Payment' })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Cash tendered')).toBe(cash);
+    expect(screen.getByRole('button', { name: /Charge/ })).toBeInTheDocument();
+  });
+
+  it('the next open uses the current layout again', () => {
+    const props = baseProps();
+    const { rerender } = render(<CheckoutWorkspace {...props} layout="two-pane" />);
+    rerender(<CheckoutWorkspace {...props} layout="stepped" />);
+    rerender(<CheckoutWorkspace {...props} layout="stepped" open={false} />);
+    rerender(<CheckoutWorkspace {...props} layout="stepped" open={true} />);
+
+    expect(screen.getByRole('button', { name: 'Continue to Payment' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Payment' })).not.toBeInTheDocument();
+  });
+
+  it('a stepped checkout that gains room switches to two-pane (every field visible)', () => {
+    const props = baseProps();
+    const { rerender } = render(<CheckoutWorkspace {...props} layout="stepped" />);
+    rerender(<CheckoutWorkspace {...props} layout="two-pane" />);
+
+    expect(screen.getByRole('heading', { name: 'Order Review' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Payment' })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Cash tendered')).toBeInTheDocument();
   });
 });

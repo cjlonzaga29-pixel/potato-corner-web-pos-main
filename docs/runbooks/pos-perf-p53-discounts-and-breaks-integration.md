@@ -13,7 +13,7 @@ migration or reconciliation SQL was run.
 | Merged in (P51) | `ac0f1b07f8418d8121e1ed0c691c441da5046dc2` (`feat/pos-perf-p51-break-time-tracking`, forked from `cd0004b`) |
 | `origin/main` (deployed baseline) | `7084291f25c301c5e9b4f28ed529eda88838f550` (an ancestor of `main`) |
 | Merge commit | `089a164` — parents `ea9f0f4` + `ac0f1b0` |
-| Integration fixes | `43b59ee` (discount decision reset on operator change), `0ea1b19` (re-read discounts on operator change) |
+| Integration fixes | `43b59ee` (discount decision reset on operator change), `0ea1b19` (re-read discounts on operator change); tablet/phone pass: checkout keeps two-pane while open (§3.3, the commit after `9dab82d`) |
 | Final SHA | the commit that adds this runbook (see `git log -1` on the branch; reported in the P53 handoff) |
 
 The P51 branch, the P52 branch and both of their worktrees were not modified, rebased or merged.
@@ -55,6 +55,15 @@ Server interaction reviewed (no change needed):
    until checkout refused the total. Fix: refetch when the operator changes (not on mount, which already fetches).
    Found in the real-browser run (Ben saw Employee 10% after the supervisor set 15% during Ana's break); after the fix
    the picker showed 15%.
+3. **Tablet-landscape checkout lost the Cash field when the keyboard opened** (tablet/phone pass, §5.4). The terminal
+   chooses two-pane checkout only at ≥1024 × ≥640 px (Task 209.29). On a 1024×768 tablet, a keyboard that shrinks the
+   layout viewport (resizes-content browsers, split screen) drops the height to ~418 px mid-payment. The open dialog then
+   flipped to stepped and, since `step` is never advanced in two-pane, put the cashier back on Order Review, unmounting
+   the focused Cash tendered field. Closing the keyboard flipped it back. Pre-existing (not introduced by P50R/P51), but it
+   blocks checkout on that viewport. Fix (`components/pos/checkout-workspace.tsx`): an open two-pane checkout stays
+   two-pane until it closes; the next open uses the current layout; stepped → two-pane still switches (all fields
+   visible there). Regression tests in `checkout-workspace.test.tsx` (the keep-two-pane test was verified to fail
+   without the fix); one existing test that re-rendered an open two-pane dialog as stepped now mounts stepped fresh.
 
 ## 4. Combined migrations
 
@@ -159,10 +168,59 @@ rejected offline sales recorded, all 3 breaks on Ana's single open record (`resu
 P50R + 13 `no-console` in the new rehearsal script, same convention as the other scripts; web 1 pre-existing). Final
 run after `0ea1b19`: 7/7 tasks, 0 errors, same warning counts.
 
+### 5.4 Tablet and phone pass (emulated touch)
+
+**Emulation, not real devices.** Chromium (Playwright 1.61.1) device emulation: `hasTouch`, `isMobile`, DPR 2, every
+interaction a touch `tap()` (PIN via the on-screen keypad). No physical tablet or phone, iOS Safari, Android Chrome or
+installed PWA was used. Stack: production `next build` of this branch (rebuilt after fix 3) + built API on a new
+disposable embedded Postgres (`127.0.0.1:46561`, `p51_53<digits>`, same guard as §5), with fresh throwaway secrets. Seeded
+with `prisma/seed.ts`, `scripts/p51-break-fixtures.ts` and `scripts/seed-pos-demo-inventory.ts` (Water at MAIN01).
+`prisma/seed-catalog.ts`, re-run standalone, fails on `prisma.flavor.create()` validation. That is pre-existing and not
+needed here, so it was left alone. The scenario script was a session scratch file, like the desktop one, and is not committed.
+
+The API was restarted before each viewport. The staff-PIN verify limiter (30 / 5 min / terminal, in-memory) refused PIN
+entry ("Too many requests") after back-to-back scripted runs. That is expected limiter behaviour, not a defect.
+
+Final run, rebuilt web, one viewport after another on the same DB: **tablet landscape 1024×768 30/30, tablet portrait
+768×1024 30/30, phone portrait 390×844 30/30.** Before fix 3, tablet landscape failed the keyboard check (29/30); the
+other two passed it unchanged.
+
+Per viewport (Ana and Ben, Branch Account terminal, North branch; supervisor sets Employee 20% + required decision):
+
+| # | Checked | Result (all three) |
+| --- | --- | --- |
+| 1 | Prompt shown, Charge disabled until a choice; picker lists "No applicable discount", PWD, Senior, Employee (20%); "No applicable discount" sells; cashier-selected Employee 20% sale recorded `employee` for Ana | pass |
+| 2 | Start Break → "Locked for a break — shift still open"; Switch Cashier; Resume Work (same shift); Clock Out for Ben and Ana → PIN screen, no open attendance record | pass |
+| 3 | Ben after Ana's break, and Ana after Resume, are asked again; nothing carried over | pass |
+| 4 | Supervisor sets Employee 15% during the break → Ben's picker shows Employee (15%) (not 20%), sale at 15% | pass |
+| 5 | Ana's pre-break employee token replayed against the real API with a new key → 403 `ON_BREAK`, row count unchanged; on-break Ana's PIN shows Resume Work / Clock Out, no selling screen | pass |
+| 6 | Checkout response dropped after the server committed it (request forwarded, response aborted) → Next Customer → Start Break → Ben, while Ana is still on break, taps **Retry** on the uncertain Pending entry → resolved out of Pending; exactly one row for that key, cashier Ana | pass |
+| 7 | Ana rings a sale offline (queued, "Sale queued for sync") → Switch Cashier → reconnect → Ben operates, sells and clocks out: no offline row is ever sent as Ben → Ana's PIN → synced under Ana, offline count +1 exactly; duplicate offline numbers in DB: 0 | pass |
+| 8 | No horizontal page scroll (selling, checkout, break lock, Pending/Done); checkout dialog within the viewport; Switch Cashier / Start Break / Clock Out / Resume Work 48 px; keyboard approximation (below) | pass |
+
+Sales recorded per viewport: 6 (expected 6).
+
+**On-screen keyboard: approximation only.** Emulation shows no keyboard. With Cash tendered focused, the viewport height
+was reduced by a typical keyboard (landscape −350, tablet portrait −320, phone −336 px), the way a resizes-content
+browser behaves. Then the script checked that Cash tendered and Charge could still be brought into view inside the dialog.
+Android Chrome (≥108) and iOS Safari resize only the visual viewport by default and would not trigger fix 3's flip; a
+real-device check is still needed for scroll-into-view behaviour under a real keyboard.
+
+Observed, pre-existing, not changed (below the 48 px POS rule in `globals.css`; usable in the run):
+
+- Payment method tabs (Cash/GCash/Maya/Other) 36 px tall; Pending-tab **Retry** 32 px tall (full-width).
+- Checkout dialog close (×) is a 16×16 px icon button. Cashiers normally leave via Charge / Back, but it is a small
+  target on touch.
+
 ### Limitations
 
-- Browser coverage is desktop Chromium only (no tablet/phone/keyboard-only pass this time; P50R and P51 each ran those
-  separately on their own code).
+- Desktop coverage (§5) is Chromium at 1440×900. Tablet/phone coverage (§5.4) is **Chromium emulation**, not real devices.
+  No iOS Safari / Android Chrome / installed-PWA / service-worker-restart run, and the keyboard check is an approximation.
+- PWD/Senior sales were not run in the tablet/phone pass: their ID-proof step uploads to Supabase storage, which is
+  stubbed in this local stack. The discount picker itself was checked.
+- Uncertain checkouts that end as `error` (network failure) are resolved only by a cashier tap (Retry / Check status).
+  The background poll covers `saving` entries only (P21 design). Recovery works while the ringing cashier is on break
+  (row 6), but someone has to tap it.
 - The supervisor attendance UI was checked on the dashboard overview; the full attendance page was not re-walked.
 - Offline sales were exercised via Playwright's offline mode, not a real device / service worker restart.
 - No tax/BIR compliance is claimed beyond what the tests assert (VAT-inclusive pricing at 12%, PWD/Senior exempt
@@ -192,4 +250,6 @@ payroll module and migration `20261030190000_pos_perf_p52_payroll`). Not integra
 3. Who may enable cashier-selected discounts and the required discount decision per branch at pilot, and the policy for
    reconciling refused offline sales (P50 §6).
 4. Break policy expectations (paid/unpaid, maximum length) — P51 records intervals only; payroll (P52) decides use.
-5. Whether a tablet/phone browser pass is required on this combined build before pilot.
+5. Emulated tablet/phone pass done (§5.4). Still open: whether a **real-device** pass (pilot tablet model, real
+   on-screen keyboard, installed PWA, offline with a service-worker restart) is required before pilot, and whether the
+   sub-48 px controls in §5.4 must meet the 48 px POS rule before release.

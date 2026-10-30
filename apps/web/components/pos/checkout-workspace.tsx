@@ -181,6 +181,19 @@ export function CheckoutWorkspace({
 }: CheckoutWorkspaceProps) {
   const { totalAmount, isChargePending, discountType, paymentMethod } = paymentFooterProps;
   const [step, setStep] = useState<'review' | 'payment' | 'proof'>('review');
+
+  // POS-PERF-P53 — once Checkout opens two-pane it stays two-pane until it
+  // closes. On a 1024x768 tablet an on-screen keyboard that resizes the
+  // layout viewport (or a split-screen resize) drops the height under the
+  // terminal's 640px two-pane threshold mid-payment; flipping to stepped
+  // then landed the cashier back on Order Review (`step` is never advanced
+  // in two-pane), unmounting the focused Cash tendered field and closing the
+  // keyboard — which flipped it back. A switch the other way (stepped →
+  // two-pane) is harmless: every field is visible there.
+  const [keepTwoPane, setKeepTwoPane] = useState(false);
+  const shouldKeepTwoPane = open && (keepTwoPane || layout === 'two-pane');
+  if (shouldKeepTwoPane !== keepTwoPane) setKeepTwoPane(shouldKeepTwoPane);
+  const activeLayout = shouldKeepTwoPane ? 'two-pane' : layout;
   const requiresProofStep = needsProofStep(discountType, paymentMethod);
 
   // Task 209.25 — every reopen starts back on Order Review, same as a fresh
@@ -242,7 +255,7 @@ export function CheckoutWorkspace({
         // only things that ever scroll, in both layouts.
         style={{ padding: 0 }}
         className={
-          layout === 'two-pane'
+          activeLayout === 'two-pane'
             ? 'flex h-[min(88dvh,800px)] max-h-[min(88dvh,800px)] w-[min(96vw,1200px)] max-w-[min(96vw,1200px)] flex-col gap-0 overflow-hidden'
             : 'flex h-[100dvh] max-h-[100dvh] w-screen max-w-none flex-col gap-0 overflow-hidden rounded-none sm:h-[90dvh] sm:max-h-[90dvh] sm:w-[95vw] sm:max-w-[95vw] sm:rounded-xl'
         }
@@ -252,7 +265,7 @@ export function CheckoutWorkspace({
           <DialogDescription>Review the order, then complete payment. Nothing is charged until you confirm.</DialogDescription>
         </DialogHeader>
 
-        {layout === 'two-pane' ? (
+        {activeLayout === 'two-pane' ? (
           <div className="flex min-h-0 flex-1 flex-row overflow-hidden">
             <div className="app-checkout-review-pane flex min-h-0 flex-col border-r">
               <h3 className="app-pos-section-padding shrink-0 pb-0 text-sm font-semibold">Order Review</h3>

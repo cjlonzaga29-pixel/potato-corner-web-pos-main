@@ -4375,7 +4375,7 @@ describe('TerminalPage — break time (POS-PERF-P51)', () => {
   // decision belongs to the cashier who made it. A cart cleared by hand does
   // not reset payment fields, so without a reset on lock the next cashier
   // would inherit "No applicable discount" and never be asked.
-  it('a discount decision made before Start Break does not carry over to the next cashier', async () => {
+  it('a discount decision made before Start Break does not carry over; the next cashier gets re-read rates', async () => {
     discountPolicyState.requireChoice = true;
     try {
       const line = { product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 };
@@ -4399,11 +4399,14 @@ describe('TerminalPage — break time (POS-PERF-P51)', () => {
       fireEvent.click(screen.getByRole('button', { name: /Start Break/ }));
       expect(await screen.findByText('Locked for a break — shift still open')).toBeInTheDocument();
 
-      // Ben takes over and rings a new sale: he is asked for his own decision.
+      // Ben takes over and rings a new sale: he is asked for his own decision,
+      // and the branch's discounts are re-read for him (they may have changed during the break).
+      mockRefetchDiscountPolicy.mockClear();
       await unlockAs({ id: 'employee-b', name: 'Ben Cruz', state: 'working', token: 'verify-ben' });
       mockSelectEmployee.mockResolvedValueOnce(selectionFor('employee-b', 'Ben', 'Cruz', 'ben-token'));
       fireEvent.click(screen.getByRole('button', { name: /Continue as Ben/ }));
       await screen.findByRole('button', { name: /Start Break/ });
+      expect(mockRefetchDiscountPolicy).toHaveBeenCalled();
       mockCartItems.mockReturnValue([line]);
       rerender(<TerminalPage />);
       openCheckout();

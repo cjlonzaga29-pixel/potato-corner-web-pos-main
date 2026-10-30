@@ -422,6 +422,17 @@ export default function TerminalPage() {
     setActiveEmployee,
     setActiveEmployeeToken,
   });
+
+  // POS-PERF-P53 — a supervisor may change this branch's discounts while the
+  // terminal is locked (a break, a handoff). Re-read them when a cashier
+  // takes over so their picker shows the current rates instead of waiting
+  // for checkout to refuse a stale total (TAX_SETTINGS_CHANGED). Only on a
+  // change of operator (Resume after a lock counts): mounting already fetched.
+  const lastOperatorIdRef = useRef(operatorId);
+  useEffect(() => {
+    if (operatorId && operatorId !== lastOperatorIdRef.current) void refetchDiscountPolicy();
+    lastOperatorIdRef.current = operatorId;
+  }, [operatorId, refetchDiscountPolicy]);
   const operatorToken = isBranchAccount ? (activeEmployeeToken ?? undefined) : undefined;
   const operatorName = isBranchAccount && activeEmployee ? `${activeEmployee.firstName} ${activeEmployee.lastName}`.trim() : `${user?.firstName ?? ''} ${user?.lastName ?? ''}`.trim() || user?.email;
 

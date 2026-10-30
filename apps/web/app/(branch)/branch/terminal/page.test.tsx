@@ -4370,4 +4370,48 @@ describe('TerminalPage — break time (POS-PERF-P51)', () => {
     await openPosAs('employee-a', 'Ana', 'Reyes', 'ana-token');
     expect(screen.getByText('Working')).toBeInTheDocument();
   });
+
+  // POS-PERF-P53 — P50R's required discount decision x P51's break: the
+  // decision belongs to the cashier who made it. A cart cleared by hand does
+  // not reset payment fields, so without a reset on lock the next cashier
+  // would inherit "No applicable discount" and never be asked.
+  it('a discount decision made before Start Break does not carry over to the next cashier', async () => {
+    discountPolicyState.requireChoice = true;
+    try {
+      const line = { product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 };
+      mockUseCatalog.mockReturnValue({ data: catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), isLoading: false });
+      mockCartItems.mockReturnValue([line]);
+      mockSelectEmployee.mockResolvedValueOnce(selectionFor('employee-a', 'Ana', 'Reyes', 'ana-token'));
+      const { rerender } = render(<TerminalPage />);
+      await unlockAs({ id: 'employee-a', name: 'Ana Reyes', state: 'working', token: 'verify-employee-a' });
+      fireEvent.click(screen.getByRole('button', { name: /Continue as Ana/ }));
+      await screen.findByRole('button', { name: /Start Break/ });
+      openCheckout();
+      fireEvent.click(screen.getByRole('button', { name: 'No applicable discount' }));
+      expect(screen.queryByTestId('discount-choice-prompt')).not.toBeInTheDocument();
+
+      // Ana closes checkout, clears the cart by hand, then starts her break.
+      fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      mockCartItems.mockReturnValue([]);
+      rerender(<TerminalPage />);
+      mockStartBreakConfirmed.mockResolvedValueOnce({ status: 'confirmed', record: null });
+      fireEvent.click(screen.getByRole('button', { name: /Start Break/ }));
+      expect(await screen.findByText('Locked for a break — shift still open')).toBeInTheDocument();
+
+      // Ben takes over and rings a new sale: he is asked for his own decision.
+      await unlockAs({ id: 'employee-b', name: 'Ben Cruz', state: 'working', token: 'verify-ben' });
+      mockSelectEmployee.mockResolvedValueOnce(selectionFor('employee-b', 'Ben', 'Cruz', 'ben-token'));
+      fireEvent.click(screen.getByRole('button', { name: /Continue as Ben/ }));
+      await screen.findByRole('button', { name: /Start Break/ });
+      mockCartItems.mockReturnValue([line]);
+      rerender(<TerminalPage />);
+      openCheckout();
+      expect(screen.getByTestId('discount-choice-prompt')).toBeInTheDocument();
+      fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '500' } });
+      expect(screen.getByRole('button', { name: /^Charge/ })).toBeDisabled();
+    } finally {
+      discountPolicyState.requireChoice = false;
+    }
+  });
 });

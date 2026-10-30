@@ -1307,6 +1307,9 @@ export default function TerminalPage() {
     setActiveEmployee(null);
     setActiveEmployeeToken(null);
     clearTerminalOperator();
+    // POS-PERF-P53 — a discount decision belongs to the cashier who made it;
+    // the next operator decides again (the cart is already empty here).
+    resetPaymentFields();
   }
 
   /**
@@ -1358,6 +1361,8 @@ export default function TerminalPage() {
       setActiveEmployee(null);
       setActiveEmployeeToken(null);
       clearTerminalOperator();
+      // POS-PERF-P53 — same as Switch Cashier: no discount decision carries over to whoever unlocks next.
+      resetPaymentFields();
     }
     toast.success(`${employee.firstName} is on break`, { description: 'Shift is still open. Enter your own PIN to resume work.' });
   }
@@ -1385,6 +1390,8 @@ export default function TerminalPage() {
       // employee must resolve to "Clock In & Open POS" again, never a
       // stale "Unlock POS" left over from before the clock-out.
       setLockContext(null);
+      // POS-PERF-P53 — the next cashier makes their own discount decision.
+      resetPaymentFields();
     }
   }
 

@@ -403,6 +403,11 @@ model User {
   promotionsCreated          Promotion[]                     @relation("PromotionCreatedBy")
   promotionsUpdated          Promotion[]                     @relation("PromotionUpdatedBy")
 
+  // POS-PERF-P52 — payroll (employee side only; actor columns are plain ids)
+  payRates           EmployeePayRate[]
+  payrollRunLines    PayrollRunLine[]
+  payrollAdjustments PayrollAdjustment[]
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -451,6 +456,11 @@ model Branch {
   // Step 12a (System Settings)
   receiptConfig       BranchReceiptConfig?
   paymentMethodConfig BranchPaymentMethodConfig?
+
+  // POS-PERF-P52
+  payrollPolicies PayrollPolicy[]
+  payRates        EmployeePayRate[]
+  payrollRuns     PayrollRun[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -2554,6 +2564,7 @@ model AttendanceRecord {
   originalRecord AttendanceRecord?  @relation("AttendanceCorrection", fields: [originalRecordId], references: [id])
   corrections    AttendanceRecord[] @relation("AttendanceCorrection")
   breaks         AttendanceBreak[]
+  payrollClaims  PayrollAttendanceClaim[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -3008,4 +3019,226 @@ model InitializationRecord {
   @@index([entityType, entityId])
   @@index([rollbackEligibility])
   @@map("initialization_records")
+}
+
+// ---------------------------------------------------------------------------
+// POS-PERF-P52 — attendance-based payroll (basic time-based pay only; no
+// statutory contributions, withholding tax, overtime/holiday/night premiums).
+// Append-only at the application layer: rows are never deleted, money and
+// snapshot columns are never updated, and corrections are new rows (voids,
+// revisions). Actor columns (*_by) are plain user ids, like
+// attendance_breaks.started_by. Rules:
+// docs/runbooks/pos-perf-p52-payroll-settings-and-reports.md
+// ---------------------------------------------------------------------------
+
+enum PayrollPeriodType {
+  semi_monthly
+  monthly
+}
+
+enum PayrollBreakTreatment {
+  paid
+  unpaid
+  paid_up_to_limit
+}
+
+enum PayrollRunStatus {
+  draft
+  finalized
+  superseded
+  discarded
+}
+
+enum PayrollAdjustmentKind {
+  earning
+  deduction
+}
+
+/// One version of a branch's payroll policy. The current policy is the row
+/// with the highest version; older versions stay as history. No row = the
+/// branch is unconfigured (there is no default policy).
+model PayrollPolicy {
+  id                     String                @id @default(uuid())
+  branchId               String                @map("branch_id")
+  version                Int
+  timezone               String                @db.VarChar(64)
+  periodType             PayrollPeriodType     @map("period_type")
+  semiMonthlyFirstEndDay Int?                  @map("semi_monthly_first_end_day")
+  breakTreatment         PayrollBreakTreatment @map("break_treatment")
+  paidBreakLimitMinutes  Int?                  @map("paid_break_limit_minutes")
+  changeReason           String?               @map("change_reason")
+  createdBy              String                @map("created_by")
+  createdByName          String                @map("created_by_name")
+  createdAt              DateTime              @default(now()) @map("created_at")
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  @@unique([branchId, version])
+  @@map("payroll_policies")
+}
+
+/// Effective-dated hourly rate for one employee at one branch. Voided rows
+/// stay; at most one non-voided row per (employee, branch, effective_from) —
+/// partial unique index `employee_pay_rates_one_active_per_date`.
+model EmployeePayRate {
+  id            String    @id @default(uuid())
+  employeeId    String    @map("employee_id")
+  branchId      String    @map("branch_id")
+  effectiveFrom DateTime  @map("effective_from") @db.Date
+  hourlyRate    Decimal   @map("hourly_rate") @db.Decimal(12, 2)
+  reason        String
+  createdBy     String    @map("created_by")
+  createdByName String    @map("created_by_name")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  voidedAt      DateTime? @map("voided_at")
+  voidedBy      String?   @map("voided_by")
+  voidReason    String?   @map("void_reason")
+
+  employee User   @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  branch   Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  @@index([employeeId, branchId, effectiveFrom])
+  @@index([branchId])
+  @@map("employee_pay_rates")
+}
+
+/// A payroll run for one branch and one pay period (inclusive business
+/// dates). draft → finalized (immutable snapshot) → superseded by a revision.
+/// One open draft and one finalized run per branch+period (partial unique
+/// indexes); overlapping periods are refused under the per-branch lock.
+model PayrollRun {
+  id             String           @id @default(uuid())
+  branchId       String           @map("branch_id")
+  periodStart    DateTime         @map("period_start") @db.Date
+  periodEnd      DateTime         @map("period_end") @db.Date
+  status         PayrollRunStatus @default(draft)
+  revisionOfId   String?          @map("revision_of_id")
+  revisionNumber Int              @default(1) @map("revision_number")
+  revisionReason String?          @map("revision_reason")
+  createdBy      String           @map("created_by")
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt @map("updated_at")
+
+  finalizedAt         DateTime? @map("finalized_at")
+  finalizedBy         String?   @map("finalized_by")
+  finalizedByName     String?   @map("finalized_by_name")
+  fingerprint         String?   @db.VarChar(64)
+  policySnapshot      Json?     @map("policy_snapshot")
+  rateSnapshot        Json?     @map("rate_snapshot")
+  issueSnapshot       Json?     @map("issue_snapshot")
+  scopeAcknowledgedAt DateTime? @map("scope_acknowledged_at")
+  basicPayTotal       Decimal?  @map("basic_pay_total") @db.Decimal(14, 2)
+  earningsTotal       Decimal?  @map("earnings_total") @db.Decimal(14, 2)
+  deductionsTotal     Decimal?  @map("deductions_total") @db.Decimal(14, 2)
+  calculatedTotal     Decimal?  @map("calculated_total") @db.Decimal(14, 2)
+
+  supersededAt   DateTime? @map("superseded_at")
+  supersededById String?   @map("superseded_by_id")
+  discardedAt    DateTime? @map("discarded_at")
+  discardedBy    String?   @map("discarded_by")
+  discardReason  String?   @map("discard_reason")
+  paidAt         DateTime? @map("paid_at")
+  paidBy         String?   @map("paid_by")
+  paidByName     String?   @map("paid_by_name")
+  paidReference  String?   @map("paid_reference")
+
+  branch      Branch                   @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  revisionOf  PayrollRun?              @relation("PayrollRunRevision", fields: [revisionOfId], references: [id], onDelete: Restrict)
+  revisions   PayrollRun[]             @relation("PayrollRunRevision")
+  lines       PayrollRunLine[]
+  adjustments PayrollAdjustment[]
+  resolutions PayrollIssueResolution[]
+  claims      PayrollAttendanceClaim[]
+
+  @@index([branchId, periodStart, periodEnd])
+  @@index([revisionOfId])
+  @@map("payroll_runs")
+}
+
+/// Immutable per-employee result, written once at finalization.
+model PayrollRunLine {
+  id                  String   @id @default(uuid())
+  runId               String   @map("run_id")
+  employeeId          String   @map("employee_id")
+  employeeName        String   @map("employee_name")
+  employeeCode        String?  @map("employee_code")
+  payableMs           BigInt   @map("payable_ms")
+  basicPay            Decimal  @map("basic_pay") @db.Decimal(14, 2)
+  earningsAdjustments Decimal  @map("earnings_adjustments") @db.Decimal(14, 2)
+  deductions          Decimal  @db.Decimal(14, 2)
+  calculatedTotal     Decimal  @map("calculated_total") @db.Decimal(14, 2)
+  details             Json
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  run      PayrollRun @relation(fields: [runId], references: [id], onDelete: Restrict)
+  employee User       @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+
+  @@unique([runId, employeeId])
+  @@index([employeeId])
+  @@map("payroll_run_lines")
+}
+
+/// Explicitly labelled earning (allowance/bonus) or documented deduction on
+/// a draft run. Voided, never edited or deleted.
+model PayrollAdjustment {
+  id               String                @id @default(uuid())
+  runId            String                @map("run_id")
+  employeeId       String                @map("employee_id")
+  kind             PayrollAdjustmentKind
+  category         String                @db.VarChar(40)
+  amount           Decimal               @db.Decimal(12, 2)
+  reason           String
+  documentationRef String?               @map("documentation_ref")
+  copiedFromId     String?               @map("copied_from_id")
+  createdBy        String                @map("created_by")
+  createdByName    String                @map("created_by_name")
+  createdAt        DateTime              @default(now()) @map("created_at")
+  voidedAt         DateTime?             @map("voided_at")
+  voidedBy         String?               @map("voided_by")
+  voidReason       String?               @map("void_reason")
+
+  run      PayrollRun @relation(fields: [runId], references: [id], onDelete: Restrict)
+  employee User       @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+
+  @@index([runId, employeeId])
+  @@map("payroll_adjustments")
+}
+
+/// A reviewer's resolution note for one special-pay issue (possible
+/// overtime, night hours) on a draft run. Records a decision only — never
+/// changes attendance and never computes a premium.
+model PayrollIssueResolution {
+  id            String   @id @default(uuid())
+  runId         String   @map("run_id")
+  issueKey      String   @map("issue_key") @db.VarChar(200)
+  note          String
+  createdBy     String   @map("created_by")
+  createdByName String   @map("created_by_name")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  run PayrollRun @relation(fields: [runId], references: [id], onDelete: Restrict)
+
+  @@unique([runId, issueKey])
+  @@map("payroll_issue_resolutions")
+}
+
+/// Which finalized run paid an attendance record. At most one unreleased
+/// claim per record (partial unique index
+/// `payroll_attendance_claims_one_active_per_record`) — the database
+/// backstop against paying one shift twice. Released (never deleted) when a
+/// revision supersedes the run.
+model PayrollAttendanceClaim {
+  id                 String    @id @default(uuid())
+  attendanceRecordId String    @map("attendance_record_id")
+  runId              String    @map("run_id")
+  employeeId         String    @map("employee_id")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  releasedAt         DateTime? @map("released_at")
+
+  attendanceRecord AttendanceRecord @relation(fields: [attendanceRecordId], references: [id], onDelete: Restrict)
+  run              PayrollRun       @relation(fields: [runId], references: [id], onDelete: Restrict)
+
+  @@index([runId])
+  @@index([attendanceRecordId])
+  @@map("payroll_attendance_claims")
 }

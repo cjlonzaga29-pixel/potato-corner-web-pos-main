@@ -117,16 +117,31 @@ describe.skipIf(!canRunIntegrationTests)('flavors integration — CR-005 Sub-pha
     await prisma.$disconnect();
   });
 
+  // Provisioning fans out to every branch in the database, and other suites
+  // sharing it create branches of their own, so assertions are scoped to this
+  // suite's fixture branches: exactly one live row each (sorted branch ids
+  // catch both a missing and a duplicate row), with the flavor's identity.
+  async function fixtureRows(name: string) {
+    return prisma.ingredient.findMany({ where: { name, branchId: { in: branchIds }, deletedAt: null } });
+  }
+
+  async function expectOneRowPerFixtureBranch(name: string) {
+    const flavor = await prisma.flavor.findFirstOrThrow({ where: { name } });
+    const rows = await fixtureRows(flavor.ingredientName);
+    expect(rows.map((row) => row.branchId).sort()).toEqual([...branchIds].sort());
+    for (const row of rows) {
+      expect(row.category).toBe('FLAVOR');
+      expect(row.unit).toBe(flavor.ingredientUnit);
+    }
+  }
+
   it('createFlavor provisions one category=FLAVOR ingredient row per existing branch', async () => {
     const name = `CR005-3a-Truffle-${randomUUID().slice(0, 8)}`;
     createdFlavorNames.push(name);
 
     await flavorsService.createFlavor({ name, color_hex: '#000000', is_active: true }, { id: adminId, role: 'super_admin' }, null);
 
-    const provisioned = await prisma.ingredient.findMany({ where: { name, deletedAt: null } });
-    expect(provisioned).toHaveLength(branchIds.length);
-    expect(provisioned.every((row) => row.category === 'FLAVOR')).toBe(true);
-    expect(new Set(provisioned.map((row) => row.branchId))).toEqual(new Set(branchIds));
+    await expectOneRowPerFixtureBranch(name);
   });
 
   it('a second createFlavor call for a differently-named flavor does not duplicate existing ingredient rows', async () => {
@@ -141,8 +156,7 @@ describe.skipIf(!canRunIntegrationTests)('flavors integration — CR-005 Sub-pha
     const allBranchIds = await branchesRepository.listAllBranchIds();
     await inventoryService.provisionIdentityAcrossBranches({ name: nameA, unit: 'grams' }, allBranchIds);
 
-    const count = await prisma.ingredient.count({ where: { name: nameA, deletedAt: null } });
-    expect(count).toBe(branchIds.length);
+    await expectOneRowPerFixtureBranch(nameA);
   });
 
   it('updateFlavor reactivation (false→true) provisions any missing ingredient rows', async () => {
@@ -159,11 +173,10 @@ describe.skipIf(!canRunIntegrationTests)('flavors integration — CR-005 Sub-pha
     // unconditionally on create) — delete one branch's row to simulate a
     // gap left by a partial failure, then prove reactivation re-fills it.
     await prisma.ingredient.deleteMany({ where: { name, branchId: branchIds[0] } });
-    expect(await prisma.ingredient.count({ where: { name, deletedAt: null } })).toBe(branchIds.length - 1);
+    expect((await fixtureRows(name)).map((row) => row.branchId).sort()).toEqual(branchIds.slice(1).sort());
 
     await flavorsService.updateFlavor(created.id, { is_active: true }, { id: adminId, role: 'super_admin' }, null);
 
-    const provisioned = await prisma.ingredient.findMany({ where: { name, deletedAt: null } });
-    expect(provisioned).toHaveLength(branchIds.length);
+    await expectOneRowPerFixtureBranch(name);
   });
 });

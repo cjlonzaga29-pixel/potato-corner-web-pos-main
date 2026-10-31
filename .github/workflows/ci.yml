@@ -87,10 +87,35 @@ jobs:
         # to the current shell's value (this job's real service container
         # URL, already correct in env: above) makes every possible source
         # agree, regardless of which one actually wins.
+        #
+        # ENCRYPTION_KEY / HASH_KEY: .env.example's placeholders pass the zod
+        # `.min(1)` check but are not 32-byte keys, so AES-256-GCM
+        # (lib/encryption.ts) throws "Invalid key length" in any integration
+        # test that stores a PWD/Senior ID. Each job generates two independent
+        # throwaway 32-byte keys (base64, the encoding getKey()/getHashKey()
+        # decode). Never production secrets; masked and never echoed. Base64
+        # never contains `#`, so it is a safe sed delimiter.
         run: |
           cp .env.example apps/api/.env
           sed -i "s#^DATABASE_URL=.*#DATABASE_URL=$DATABASE_URL#" apps/api/.env
           sed -i "s#^DIRECT_URL=.*#DIRECT_URL=$DIRECT_URL#" apps/api/.env
+          set +x
+          test_encryption_key=$(openssl rand -base64 32)
+          test_hash_key=$(openssl rand -base64 32)
+          echo "::add-mask::$test_encryption_key"
+          echo "::add-mask::$test_hash_key"
+          sed -i "s#^ENCRYPTION_KEY=.*#ENCRYPTION_KEY=$test_encryption_key#" apps/api/.env
+          sed -i "s#^HASH_KEY=.*#HASH_KEY=$test_hash_key#" apps/api/.env
+          unset test_encryption_key test_hash_key
+          node -e '
+            const env = require("node:fs").readFileSync("apps/api/.env", "utf8");
+            for (const name of ["ENCRYPTION_KEY", "HASH_KEY"]) {
+              const lines = env.split("\n").filter((line) => line.startsWith(name + "="));
+              if (lines.length !== 1 || Buffer.from(lines[0].slice(name.length + 1), "base64").length !== 32) {
+                console.error(name + " is not exactly one 32-byte base64 key in apps/api/.env");
+                process.exit(1);
+              }
+            }'
 
       - name: Generate Prisma client
         run: pnpm --filter @potato-corner/api exec prisma generate

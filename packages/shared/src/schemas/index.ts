@@ -26,3 +26,4 @@ export * from './staff-pin.schema.js';
 export * from './catalog-assignment.schema.js';
 export * from './promotion.schema.js';
 export * from './payroll.schema.js';
+export * from './manual-discount.schema.js';

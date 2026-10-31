@@ -1,5 +1,21 @@
-import { ROLES, type JwtPayload, type PromotionEligibleProduct, type PromotionResponse } from '@potato-corner/shared';
-import { discountsRepository, fromDateColumn, type ProductForPromotionRow, type PromotionRow } from './discounts.repository.js';
+import {
+  ROLES,
+  STATUTORY_DISCOUNT_NAME_MESSAGE,
+  isStatutoryDiscountName,
+  type JwtPayload,
+  type ManualDiscountTypeResponse,
+  type PosManualDiscountType,
+  type PromotionEligibleProduct,
+  type PromotionResponse,
+} from '@potato-corner/shared';
+import {
+  discountsRepository,
+  manualDiscountTypesRepository,
+  fromDateColumn,
+  type ManualDiscountTypeRow,
+  type ProductForPromotionRow,
+  type PromotionRow,
+} from './discounts.repository.js';
 import { DiscountError, type PromotionPricingLine, type PromotionWriteData, type ResolvedLinePromotion } from './discounts.types.js';
 import {
   PROMOTABLE_CLASSIFICATIONS,
@@ -406,5 +422,183 @@ export const discountsService = {
       result.push({ promotion: candidate, unitDiscounts });
     }
     return result;
+  },
+};
+
+/**
+ * POS-PERF-P55 — manual peso discount types (docs/runbooks/pos-perf-p55-manual-discounts-and-proof.md).
+ *
+ * Branch-scoped: each type belongs to exactly one branch. Supervisors write
+ * only for branches in their LIVE assignments (re-read on every request,
+ * never the JWT claim); a super_admin reads everything but does not write,
+ * same split as promotions. A type that sales reference is never deleted —
+ * it is deactivated, and every sale keeps its own frozen snapshot.
+ */
+const MANUAL_TYPE_CONFLICT_MESSAGE =
+  'This discount type was changed by someone else since you opened it. The latest version is shown now — check it, then make your change again.';
+
+function toManualDiscountTypeResponse(row: ManualDiscountTypeRow, canEdit: boolean): ManualDiscountTypeResponse {
+  return {
+    id: row.id,
+    branch_id: row.branchId,
+    name: row.name,
+    apply_to_pos: row.applyToPos,
+    require_proof: row.requireProof,
+    is_active: row.isActive,
+    version: row.version,
+    created_at: row.createdAt.toISOString(),
+    updated_at: row.updatedAt.toISOString(),
+    deactivated_at: row.deactivatedAt?.toISOString() ?? null,
+    sale_count: row._count.transactions,
+    can_edit: canEdit && row.isActive,
+  };
+}
+
+/** The audited view of a type: settings only, no counts or timestamps. */
+function manualTypeAuditState(row: ManualDiscountTypeRow) {
+  return {
+    branch_id: row.branchId,
+    name: row.name,
+    apply_to_pos: row.applyToPos,
+    require_proof: row.requireProof,
+    is_active: row.isActive,
+    version: row.version,
+  };
+}
+
+async function requireSupervisorBranch(actor: JwtPayload, branchId: string): Promise<void> {
+  if (actor.role !== ROLES.SUPERVISOR) {
+    throw new DiscountError('MANUAL_DISCOUNT_TYPE_WRITE_FORBIDDEN', 'Discount types are managed by the supervisors of each branch.', 403);
+  }
+  const live = await branchesRepository.findAllActiveBranchIds(actor.user_id);
+  if (!live.includes(branchId)) {
+    throw new DiscountError('BRANCH_ACCESS_DENIED', 'You can only manage discount types for branches you currently supervise.', 403);
+  }
+  const branch = await manualDiscountTypesRepository.findBranchIsActive(branchId);
+  if (!branch || branch.status !== 'active') {
+    throw new DiscountError('BRANCH_INACTIVE', 'Discount types can only be managed for an active branch.', 422);
+  }
+}
+
+async function assertManualTypeNameAllowed(branchId: string, name: string, excludeId?: string): Promise<void> {
+  if (isStatutoryDiscountName(name)) {
+    throw new DiscountError('STATUTORY_DISCOUNT_NAME_RESERVED', STATUTORY_DISCOUNT_NAME_MESSAGE, 422);
+  }
+  if (await manualDiscountTypesRepository.findActiveByName(branchId, name, excludeId)) {
+    throw new DiscountError('MANUAL_DISCOUNT_TYPE_NAME_TAKEN', `This branch already has an active discount type named "${name}".`, 409);
+  }
+}
+
+async function loadManualTypeForWrite(actor: JwtPayload, typeId: string): Promise<ManualDiscountTypeRow> {
+  const before = await manualDiscountTypesRepository.findById(typeId);
+  if (!before) throw new DiscountError('MANUAL_DISCOUNT_TYPE_NOT_FOUND', 'Discount type not found', 404);
+  // Authority is checked against the type's own stored branch, never a client-sent one.
+  await requireSupervisorBranch(actor, before.branchId);
+  return before;
+}
+
+async function manualTypeConflict(typeId: string): Promise<DiscountError> {
+  const current = await manualDiscountTypesRepository.findById(typeId);
+  return new DiscountError(
+    'MANUAL_DISCOUNT_TYPE_CONFLICT',
+    MANUAL_TYPE_CONFLICT_MESSAGE,
+    409,
+    current ? { current: toManualDiscountTypeResponse(current, true) } : undefined,
+  );
+}
+
+export const manualDiscountTypesService = {
+  async list(actor: JwtPayload, branchId: string | undefined, includeInactive: boolean): Promise<ManualDiscountTypeResponse[]> {
+    if (actor.role === ROLES.SUPER_ADMIN) {
+      const rows = await manualDiscountTypesRepository.list(branchId ? [branchId] : 'all', includeInactive);
+      return rows.map((row) => toManualDiscountTypeResponse(row, false));
+    }
+    const live = await branchesRepository.findAllActiveBranchIds(actor.user_id);
+    if (branchId && !live.includes(branchId)) throw new DiscountError('BRANCH_ACCESS_DENIED', 'You do not have access to this branch', 403);
+    const scope = branchId ? [branchId] : live;
+    if (scope.length === 0) return [];
+    const rows = await manualDiscountTypesRepository.list(scope, includeInactive);
+    return rows.map((row) => toManualDiscountTypeResponse(row, actor.role === ROLES.SUPERVISOR));
+  },
+
+  /** The terminal's offer list — only the caller's resolved branch (the router never trusts a staff/branch-sent id). */
+  async listForPos(branchId: string): Promise<PosManualDiscountType[]> {
+    const rows = await manualDiscountTypesRepository.findForPos(branchId);
+    return rows.map((row) => ({ id: row.id, name: row.name, require_proof: row.requireProof, version: row.version }));
+  },
+
+  async create(
+    actor: JwtPayload,
+    input: { branch_id: string; name: string; apply_to_pos: boolean; require_proof: boolean },
+    ipAddress: string | null,
+  ): Promise<ManualDiscountTypeResponse> {
+    await requireSupervisorBranch(actor, input.branch_id);
+    await assertManualTypeNameAllowed(input.branch_id, input.name);
+    const row = await manualDiscountTypesRepository.create(
+      { branchId: input.branch_id, name: input.name, applyToPos: input.apply_to_pos, requireProof: input.require_proof },
+      actor.user_id,
+    );
+    await recordAuditLog({
+      action: 'MANUAL_DISCOUNT_TYPE_CREATED',
+      entityType: 'manual_discount_type',
+      entityId: row.id,
+      actorId: actor.user_id,
+      actorRole: actor.role,
+      branchId: row.branchId,
+      afterState: manualTypeAuditState(row),
+      ipAddress,
+    });
+    return toManualDiscountTypeResponse(row, true);
+  },
+
+  async update(
+    actor: JwtPayload,
+    typeId: string,
+    input: { name?: string; apply_to_pos?: boolean; require_proof?: boolean; expected_version: number },
+    ipAddress: string | null,
+  ): Promise<ManualDiscountTypeResponse> {
+    const before = await loadManualTypeForWrite(actor, typeId);
+    if (!before.isActive) throw new DiscountError('MANUAL_DISCOUNT_TYPE_INACTIVE', 'This discount type has been deactivated and can no longer be edited.', 409);
+    if (before.version !== input.expected_version) throw await manualTypeConflict(typeId);
+    if (input.name !== undefined) await assertManualTypeNameAllowed(before.branchId, input.name, typeId);
+    const row = await manualDiscountTypesRepository.update(
+      typeId,
+      input.expected_version,
+      { name: input.name, applyToPos: input.apply_to_pos, requireProof: input.require_proof },
+      actor.user_id,
+    );
+    if (!row) throw await manualTypeConflict(typeId);
+    await recordAuditLog({
+      action: 'MANUAL_DISCOUNT_TYPE_UPDATED',
+      entityType: 'manual_discount_type',
+      entityId: row.id,
+      actorId: actor.user_id,
+      actorRole: actor.role,
+      branchId: row.branchId,
+      beforeState: manualTypeAuditState(before),
+      afterState: manualTypeAuditState(row),
+      ipAddress,
+    });
+    return toManualDiscountTypeResponse(row, true);
+  },
+
+  async deactivate(actor: JwtPayload, typeId: string, input: { expected_version: number }, ipAddress: string | null): Promise<ManualDiscountTypeResponse> {
+    const before = await loadManualTypeForWrite(actor, typeId);
+    if (!before.isActive) throw new DiscountError('MANUAL_DISCOUNT_TYPE_INACTIVE', 'This discount type is already deactivated.', 409);
+    if (before.version !== input.expected_version) throw await manualTypeConflict(typeId);
+    const row = await manualDiscountTypesRepository.deactivate(typeId, input.expected_version, actor.user_id);
+    if (!row) throw await manualTypeConflict(typeId);
+    await recordAuditLog({
+      action: 'MANUAL_DISCOUNT_TYPE_DEACTIVATED',
+      entityType: 'manual_discount_type',
+      entityId: row.id,
+      actorId: actor.user_id,
+      actorRole: actor.role,
+      branchId: row.branchId,
+      beforeState: manualTypeAuditState(before),
+      afterState: manualTypeAuditState(row),
+      ipAddress,
+    });
+    return toManualDiscountTypeResponse(row, false);
   },
 };

@@ -69,7 +69,8 @@ export interface SaleTaxAmounts {
   discountRateUsed: number | null;
 }
 
-export type SaleDiscountType = 'pwd' | 'senior_citizen' | 'employee' | 'manager_override' | 'promotional' | null | undefined;
+/** POS-PERF-P55 — 'manual' carries no rate and no line promotions here (computeManualDiscountSaleTax prices it). */
+export type SaleDiscountType = 'pwd' | 'senior_citizen' | 'employee' | 'manager_override' | 'promotional' | 'manual' | null | undefined;
 
 export function isVatExemptDiscountType(discountType: string | null | undefined): boolean {
   return discountType === 'pwd' || discountType === 'senior_citizen';
@@ -127,6 +128,38 @@ export function computeSaleTax(
   const vatAmount = round2(vatableAfterDiscount * VAT_SHARE_OF_INCLUSIVE);
   const totalAmount = round2(vatableAfterDiscount + nonVatableSubtotal);
   return { discountAmount, vatAmount, vatExemptAmount: nonVatableSubtotal, totalAmount, discountRateUsed };
+}
+
+/**
+ * POS-PERF-P55 — the part of the order a manual peso discount may come off:
+ * the VATable (VAT-inclusive) amount. The non-VATable part above a size's
+ * VAT cap is never discounted, exactly as for Employee and promotions.
+ */
+export function manualDiscountEligibleSubtotal(lines: readonly SaleTaxLine[]): number {
+  return round2(
+    lines.reduce((sum, line) => {
+      const cap = line.vatableCapAmount;
+      return sum + (cap != null ? Math.min(line.lineTotal, round2(cap * line.quantity)) : line.lineTotal);
+    }, 0),
+  );
+}
+
+/**
+ * POS-PERF-P55 — a manual peso discount uses the existing commercial
+ * (non-statutory) treatment unchanged: the amount comes off the VAT-inclusive
+ * VATable amount and VAT is the 12/112 share of what remains — the same path
+ * as Employee and promotions in computeSaleTax. It is never VAT-exempt; only
+ * the statutory PWD/Senior formula is. Caller guarantees 0 < amount ≤
+ * manualDiscountEligibleSubtotal(lines) (the server refuses anything else).
+ */
+export function computeManualDiscountSaleTax(subtotal: number, lines: readonly SaleTaxLine[], amount: number): SaleTaxAmounts {
+  const vatableSubtotal = manualDiscountEligibleSubtotal(lines);
+  const nonVatableSubtotal = round2(subtotal - vatableSubtotal);
+  const discountAmount = round2(amount);
+  const vatableAfterDiscount = round2(vatableSubtotal - discountAmount);
+  const vatAmount = round2(vatableAfterDiscount * VAT_SHARE_OF_INCLUSIVE);
+  const totalAmount = round2(vatableAfterDiscount + nonVatableSubtotal);
+  return { discountAmount, vatAmount, vatExemptAmount: nonVatableSubtotal, totalAmount, discountRateUsed: null };
 }
 
 export interface StoredSaleTax {
@@ -191,4 +224,13 @@ export interface SaleTaxSnapshot {
   discount_choice: 'selected' | 'none_applicable' | null;
   /** The cashier-selected custom discount, if any (lines carry the full snapshot). */
   selected_discount_id: string | null;
+  /** POS-PERF-P55 — 'manual_v1' for a sale from the manual-discount checkout; absent on earlier sales. */
+  discount_flow?: 'manual_v1' | null;
+  /**
+   * POS-PERF-P55 — where the sale's discount came from: 'manual' (cashier-entered pesos, commercial/taxable),
+   * 'statutory' (PWD/Senior formula), 'rate' (Employee %), 'promotion' (P49/P50R), or null for none. Absent on earlier sales.
+   */
+  discount_source?: 'manual' | 'statutory' | 'rate' | 'promotion' | null;
+  /** POS-PERF-P55 — the manual discount type, when discount_source is 'manual'. */
+  manual_discount_type_id?: string | null;
 }

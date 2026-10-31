@@ -24,6 +24,8 @@ vi.mock('./transactions.repository.js', () => ({
     // so every pre-existing fixture takes the normal create path; the
     // dedicated describe block below overrides this per-test.
     findByIdempotencyKey: vi.fn().mockResolvedValue(null),
+    // POS-PERF-P55 — the upload registry row.
+    createDiscountProofUpload: vi.fn().mockResolvedValue({ id: 'upload-1' }),
     listTransactions: vi.fn(),
     voidTransaction: vi.fn(),
     refundTransaction: vi.fn(),
@@ -799,6 +801,7 @@ describe('transactionsService.uploadDiscountProof', () => {
     expect(result).toEqual({
       discount_proof_key: expect.stringMatching(/^branch-1\/shift-1\/user-1-\d+-proof\.jpg\.webp$/),
       discount_proof_type: 'live_capture',
+      discount_proof_upload_id: 'upload-1',
     });
   });
 

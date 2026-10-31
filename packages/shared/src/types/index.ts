@@ -67,6 +67,15 @@ export type UpdatePromotionInput = z.infer<typeof schemas.updatePromotionSchema>
 export type SetPromotionEnabledInput = z.infer<typeof schemas.setPromotionEnabledSchema>;
 export type PromotionResponse = z.infer<typeof schemas.promotionResponseSchema>;
 export type PromotionEligibleProduct = z.infer<typeof schemas.promotionEligibleProductSchema>;
+
+// POS-PERF-P55 — manual peso discounts
+export type CreateManualDiscountTypeInput = z.infer<typeof schemas.createManualDiscountTypeSchema>;
+export type UpdateManualDiscountTypeInput = z.infer<typeof schemas.updateManualDiscountTypeSchema>;
+export type DeactivateManualDiscountTypeInput = z.infer<typeof schemas.deactivateManualDiscountTypeSchema>;
+export type ManualDiscountTypeResponse = z.infer<typeof schemas.manualDiscountTypeResponseSchema>;
+export type PosManualDiscountType = z.infer<typeof schemas.posManualDiscountTypeSchema>;
+export type CheckoutManualDiscountInput = z.infer<typeof schemas.checkoutManualDiscountSchema>;
+export type TransactionManualDiscount = z.infer<typeof schemas.transactionManualDiscountSchema>;
 export type CartItemPromotionAck = NonNullable<z.infer<typeof schemas.cartItemPromotionAckSchema>>;
 export type CartAvailabilityCheckInput = z.infer<typeof schemas.cartAvailabilityCheckSchema>;
 export type CartAvailabilityLine = z.infer<typeof schemas.cartAvailabilityLineSchema>;

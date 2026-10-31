@@ -33,6 +33,8 @@ export interface PublicReceiptResponse {
   subtotal: number;
   discount_amount: number;
   discount_type: string | null;
+  /** POS-PERF-P55 — the manual discount type's name as frozen on the sale; null for every other sale. */
+  manual_discount_name?: string | null;
   // Task 209.xx — the configured percentage actually applied at sale time,
   // frozen on the transaction row; never today's Discount Settings value.
   discount_rate_used?: number | null;

@@ -300,6 +300,17 @@ vi.mock('@/hooks/queries/use-settings', () => ({
   }),
 }));
 
+// POS-PERF-P55 — the branch's manual discount types offered at the POS.
+const { manualTypesState } = vi.hoisted(() => ({
+  manualTypesState: {
+    types: [] as { id: string; name: string; require_proof: boolean; version: number }[],
+    refetch: vi.fn(async () => ({ isError: false, error: null })),
+  },
+}));
+vi.mock('@/hooks/queries/use-manual-discount-types', () => ({
+  usePosManualDiscountTypes: () => ({ data: manualTypesState.types, isError: false, isLoading: false, refetch: manualTypesState.refetch }),
+}));
+
 vi.mock('@/lib/offline/cache', () => ({
   cacheProductCatalog: vi.fn(),
   getCachedProductCatalog: vi.fn().mockResolvedValue([]),
@@ -1914,7 +1925,13 @@ describe('TerminalPage — PWD/Senior Citizen discount-proof capture (Task 209.5
 
   afterEach(() => cleanup());
 
+  // POS-PERF-P55 — statutory discounts are under "Apply discount"; "No discount" is its own choice.
   function selectDiscount(label: string) {
+    if (label === 'No discount') {
+      fireEvent.click(screen.getByRole('radio', { name: 'No discount' }));
+      return;
+    }
+    fireEvent.click(screen.getByRole('radio', { name: 'Apply discount' }));
     fireEvent.click(screen.getByRole('button', { name: label }));
   }
 
@@ -1929,9 +1946,11 @@ describe('TerminalPage — PWD/Senior Citizen discount-proof capture (Task 209.5
   });
 
   it('never shows the discount ID input or proof upload for a non-PWD/Senior discount (e.g. Employee)', () => {
+    manualTypesState.types = [{ id: '55555555-5555-4555-8555-555555555551', name: 'Employee', require_proof: false, version: 1 }];
     render(<TerminalPage />);
     openCheckout();
-    selectDiscount('Employee (20%)');
+    selectDiscount('Employee');
+    manualTypesState.types = [];
 
     expect(screen.queryByPlaceholderText('PWD / Senior Citizen ID number')).not.toBeInTheDocument();
     expect(screen.queryByText('Discount ID Proof')).not.toBeInTheDocument();
@@ -3846,14 +3865,12 @@ describe('TerminalPage — P46R3 option recovery and offline queue', () => {
   });
 });
 
-// POS-PERF-P49 — product promotions on the terminal. The catalog carries the
-// server-resolved promotion per size; the terminal shows it, applies it only
-// online with no PWD/Senior/Employee discount, and sends what it showed as an
-// acknowledgement (never a price). A PROMOTION_CHANGED refusal keeps the cart,
-// re-reads prices from the network and offers only "Review updated prices".
-describe('TerminalPage — P49 product promotions', () => {
+// POS-PERF-P49 → P55 — the catalog still carries server-resolved promotions
+// for older terminals, but this checkout never applies or advertises them:
+// every line is charged its regular price and acknowledged as "no promotion".
+describe('TerminalPage — P49 promotions are not applied in the P55 checkout', () => {
   const PROMO = { promotion_id: '11111111-1111-4111-8111-111111111111', name: 'Ten Off', discount_kind: 'fixed_amount' as const, discount_value: 10, unit_discount: 10, ends_on: null };
-  const promoCatalog = (promotion: typeof PROMO | null = PROMO) => catalogWith([slotVariant({ flavors: [], flavor_slots: [], promotion })]);
+  const promoCatalog = () => catalogWith([slotVariant({ flavors: [], flavor_slots: [], promotion: PROMO })]);
 
   beforeEach(() => {
     mockUseAuth.mockReturnValue({ user: STAFF_USER, selectEmployee: mockSelectEmployee, refreshEmployeeSession: mockRefreshEmployeeSession });
@@ -3863,105 +3880,42 @@ describe('TerminalPage — P49 product promotions', () => {
     mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' }, isLoading: false });
     mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 2 }]);
     mockCreateTransactionMutateAsync.mockReset().mockResolvedValue({});
-    mockClearCart.mockClear();
-    mockConfirmCatalog.mockReset();
   });
 
   afterEach(() => cleanup());
 
-  function charge(cash = '500') {
-    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: cash } });
-    fireEvent.click(screen.getByRole('button', { name: /^Charge/ }));
-  }
-
-  it('shows the promotion, totals the discounted price and acknowledges exactly what was shown', async () => {
+  it('shows no promotion chip, charges the regular price and acknowledges no promotion', async () => {
     render(<TerminalPage />);
-    expect(screen.getAllByTestId('cart-line-promotion')[0]).toHaveTextContent('Promo: Ten Off −₱10.00 each');
-    openCheckout();
-    // 2 × ₱100 = ₱200 gross, ₱20 promotion → ₱180.
-    expect(screen.getByRole('button', { name: /^Charge/ })).toHaveTextContent('180.00');
-    charge();
-
-    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalled());
-    const payload = mockCreateTransactionMutateAsync.mock.calls[0]?.[0] as CreateTransactionInput;
-    expect(payload.items[0]?.promotion).toEqual({ promotion_id: PROMO.promotion_id, unit_discount: 10 });
-    expect(payload.discount_type).toBeUndefined();
-    expect(payload.discount_amount).toBeUndefined();
-  });
-
-  it('never offers the old typed-amount "Promotional" discount', () => {
-    render(<TerminalPage />);
-    openCheckout();
-    expect(screen.queryByRole('button', { name: 'Promotional' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'PWD (20%)' })).toBeInTheDocument();
-  });
-
-  it('does not combine with PWD/Senior: regular price, explained on the line, and no acknowledgement sent', async () => {
-    render(<TerminalPage />);
-    openCheckout();
-    fireEvent.click(screen.getByRole('button', { name: 'PWD (20%)' }));
-    fireEvent.change(screen.getByPlaceholderText('PWD / Senior Citizen ID number'), { target: { value: 'PWD-1' } });
-    expect(screen.getAllByTestId('cart-line-promotion')[0]).toHaveTextContent('not combined with the chosen discount — regular price');
-    charge();
-
-    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalled());
-    const payload = mockCreateTransactionMutateAsync.mock.calls[0]?.[0] as CreateTransactionInput;
-    expect(payload.discount_type).toBe('pwd');
-    expect(payload.items[0]?.promotion).toBeNull();
-  });
-
-  it('queues an offline sale at the regular price with no promotion', async () => {
-    const { enqueueOfflineTransaction } = await import('@/lib/offline/sync-queue');
-    vi.mocked(enqueueOfflineTransaction).mockClear().mockResolvedValueOnce('PC-branch-1-20260101-OFFLINE-0002');
-    const base = mockUseOffline();
-    mockUseOffline.mockReturnValue({ ...base, isOnline: false });
-    render(<TerminalPage />);
-    expect(screen.getAllByTestId('cart-line-promotion')[0]).toHaveTextContent('unavailable offline — regular price');
     expect(screen.queryByTestId('product-card-promotion')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('cart-line-promotion')).not.toBeInTheDocument();
     openCheckout();
-    charge();
-
-    await waitFor(() => expect(enqueueOfflineTransaction).toHaveBeenCalled());
-    const queued = vi.mocked(enqueueOfflineTransaction).mock.calls[0]?.[1] as CreateTransactionInput;
-    expect(queued.items[0]?.promotion).toBeNull();
-    expect(vi.mocked(enqueueOfflineTransaction).mock.calls[0]?.[2]).toMatchObject({ totalAmount: 200 });
-    mockUseOffline.mockReturnValue(base);
+    expect(screen.getByRole('button', { name: /^Charge/ })).toHaveTextContent('200.00');
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '500' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Charge/ }));
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalled());
+    const payload = mockCreateTransactionMutateAsync.mock.calls[0]?.[0] as CreateTransactionInput;
+    expect(payload.items[0]?.promotion).toBeNull();
+    expect(payload).not.toHaveProperty('selected_discount');
+    expect(payload.discount_flow).toBe('manual_v1');
   });
 
-  it('a changed promotion keeps the cart, re-reads prices and requires a review before charging again', async () => {
-    const { TransactionApiError } = await import('@/hooks/queries/use-transactions');
-    mockCreateTransactionMutateAsync.mockRejectedValueOnce(
-      new TransactionApiError('A promotion on this order changed since it was added, so the sale was not charged.', 'PROMOTION_CHANGED', {
-        lines: [{ product_name: 'Mega Mix Fries', variant_name: 'Mega Mix', shown: { unit_discount: 10 }, current: null }],
-      }),
-    );
-    mockConfirmCatalog.mockImplementation(async () => {
-      mockUseCatalog.mockReturnValue({ data: promoCatalog(null), isLoading: false });
-      return promoCatalog(null);
-    });
+  it('never offers the old typed "Promotional", Employee rate or cashier-selected promotions', () => {
+    mockUseCatalog.mockReturnValue({ data: { ...promoCatalog(), selectable_discounts: [{ promotion_id: '7'.repeat(8) + '-7777-4777-8777-777777777777', name: 'Loyalty', discount_kind: 'percentage', discount_value: 10, version: 2, ends_on: null, unit_discounts: { 'variant-1': 10 } }] }, isLoading: false });
     render(<TerminalPage />);
     openCheckout();
-    charge();
-
-    await waitFor(() => expect(screen.getByText('Promotion changed — not charged')).toBeInTheDocument());
-    expect(screen.getAllByText(/Mega Mix Fries \(Mega Mix\): was ₱10\.00 off, now no promotion/).length).toBeGreaterThan(0);
-    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
-    expect(mockConfirmCatalog).toHaveBeenCalledWith('branch-1');
-    expect(mockClearCart).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Review updated prices' }));
-    await waitFor(() => expect(screen.getByTestId('promotion-change-notice')).toHaveTextContent('Total is now ₱200.00 (was ₱180.00)'));
-    expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('radio', { name: 'Apply discount' }));
+    expect(screen.queryByRole('button', { name: 'Promotional' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Employee \(/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Loyalty/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'PWD (20%)' })).toBeInTheDocument();
   });
 });
 
-// POS-PERF-P50 — the terminal sends the rates its total was computed with
-// (tax_basis, never an amount). A TAX_SETTINGS_CHANGED refusal keeps the
-// cart, re-reads Discount Settings and shows the new total for confirmation;
-// it never retries into the new amount by itself.
+// POS-PERF-P50 — the terminal still sends the rates its total was computed
+// with (tax_basis, never an amount); the statutory rate for PWD/Senior,
+// null otherwise (a manual peso discount has no rate).
 describe('TerminalPage — P50 tax basis', () => {
   beforeEach(() => {
-    discountPolicyState.employee = 20;
     mockRefetchDiscountPolicy.mockClear();
     mockUseAuth.mockReturnValue({ user: STAFF_USER, selectEmployee: mockSelectEmployee, refreshEmployeeSession: mockRefreshEmployeeSession });
     useAuthStore.setState({ user: STAFF_USER, accessToken: 'staff-token', isAuthenticated: true, isLoading: false });
@@ -3980,16 +3934,20 @@ describe('TerminalPage — P50 tax basis', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Charge/ }));
   }
 
-  it('sends the VAT rate and the selected discount rate, and no amounts', async () => {
+  it('PWD: sends the VAT rate and the statutory rate, and no amounts', async () => {
     render(<TerminalPage />);
     openCheckout();
-    fireEvent.click(screen.getByRole('button', { name: 'Employee (20%)' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Apply discount' }));
+    fireEvent.click(screen.getByRole('button', { name: 'PWD (20%)' }));
+    fireEvent.change(screen.getByPlaceholderText('PWD / Senior Citizen ID number'), { target: { value: 'PWD-1' } });
     charge();
     await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalled());
     const payload = mockCreateTransactionMutateAsync.mock.calls[0]?.[0] as CreateTransactionInput & Record<string, unknown>;
     expect(payload.tax_basis).toEqual({ vat_rate: 12, discount_rate: 20 });
+    expect(payload.discount_type).toBe('pwd');
+    expect(payload.discount_choice).toBe('selected');
+    expect(payload).not.toHaveProperty('manual_discount');
     for (const key of ['total_amount', 'vat_amount', 'subtotal']) expect(payload).not.toHaveProperty(key);
-    expect(payload.discount_amount).toBeUndefined();
   });
 
   it('no discount: discount_rate is null', async () => {
@@ -4000,173 +3958,277 @@ describe('TerminalPage — P50 tax basis', () => {
     expect((mockCreateTransactionMutateAsync.mock.calls[0]?.[0] as CreateTransactionInput).tax_basis).toEqual({ vat_rate: 12, discount_rate: null });
   });
 
-  it('a changed rate keeps the cart, re-reads settings, shows the new total and offers no Retry', async () => {
+  it('a changed rate keeps the cart, re-reads settings and offers no Retry', async () => {
     const { TransactionApiError } = await import('@/hooks/queries/use-transactions');
     mockCreateTransactionMutateAsync.mockRejectedValueOnce(
       new TransactionApiError('VAT or discount settings changed since this total was shown, so the sale was not charged.', 'TAX_SETTINGS_CHANGED', {
         shown: { vat_rate: 12, discount_rate: 20 },
-        current: { vat_rate: 12, discount_rate: 10 },
-        amounts: { subtotal: 200, discount_amount: 20, vat_amount: 19.29, total_amount: 180 },
+        current: { vat_rate: 12, discount_rate: 25 },
+        amounts: { subtotal: 200, discount_amount: 44.64, vat_amount: 0, total_amount: 133.93 },
       }),
     );
-    mockRefetchDiscountPolicy.mockImplementationOnce(async () => {
-      discountPolicyState.employee = 10;
-      return { isError: false, error: null };
-    });
     render(<TerminalPage />);
     openCheckout();
-    fireEvent.click(screen.getByRole('button', { name: 'Employee (20%)' }));
-    // 2 × ₱100, 20% employee → ₱160.
-    expect(screen.getByRole('button', { name: /^Charge/ })).toHaveTextContent('160.00');
+    fireEvent.click(screen.getByRole('radio', { name: 'Apply discount' }));
+    fireEvent.click(screen.getByRole('button', { name: 'PWD (20%)' }));
+    fireEvent.change(screen.getByPlaceholderText('PWD / Senior Citizen ID number'), { target: { value: 'PWD-1' } });
     charge();
-
     await waitFor(() => expect(screen.getByText('Discount or VAT settings changed — not recorded')).toBeInTheDocument());
     expect(mockRefetchDiscountPolicy).toHaveBeenCalled();
     expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
     expect(mockClearCart).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Review updated prices' }));
-    await waitFor(() => expect(screen.getByTestId('tax-settings-change-notice')).toHaveTextContent('Total is now ₱180.00 (was ₱160.00)'));
-    expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(1);
-
-    // Charging again sends the new basis (this harness stubs the no-commit
-    // allowlist to false, so the prior attempt is resolved first).
-    mockResolveAndFenceCheckoutAttempt.mockResolvedValueOnce({ status: 'not-found' });
-    mockCreateTransactionMutateAsync.mockResolvedValueOnce({});
-    charge();
-    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(2));
-    expect((mockCreateTransactionMutateAsync.mock.calls[1]?.[0] as CreateTransactionInput).tax_basis).toEqual({ vat_rate: 12, discount_rate: 10 });
   });
 
-  it('an offline sale is queued with the basis it was rung at', async () => {
+  it('an offline sale is queued with the basis it was rung at and the explicit decision', async () => {
     const { enqueueOfflineTransaction } = await import('@/lib/offline/sync-queue');
     vi.mocked(enqueueOfflineTransaction).mockClear().mockResolvedValueOnce('PC-branch-1-20260101-OFFLINE-0003');
     const base = mockUseOffline();
     mockUseOffline.mockReturnValue({ ...base, isOnline: false });
-    render(<TerminalPage />);
-    openCheckout();
-    fireEvent.click(screen.getByRole('button', { name: 'Employee (20%)' }));
-    charge();
-    await waitFor(() => expect(enqueueOfflineTransaction).toHaveBeenCalled());
-    expect((vi.mocked(enqueueOfflineTransaction).mock.calls[0]?.[1] as CreateTransactionInput).tax_basis).toEqual({ vat_rate: 12, discount_rate: 20 });
-    mockUseOffline.mockReturnValue(base);
+    try {
+      render(<TerminalPage />);
+      openCheckout();
+      charge();
+      await waitFor(() => expect(enqueueOfflineTransaction).toHaveBeenCalled());
+      const queued = vi.mocked(enqueueOfflineTransaction).mock.calls[0]?.[1] as CreateTransactionInput;
+      expect(queued.tax_basis).toEqual({ vat_rate: 12, discount_rate: null });
+      expect(queued.discount_choice).toBe('none_applicable');
+      expect(queued).not.toHaveProperty('manual_discount');
+    } finally {
+      mockUseOffline.mockReturnValue(base);
+    }
   });
 });
 
-// POS-PERF-P50R — cashier-selected custom discounts (offered only online,
-// only when they cover a cart line, priced like the server, sent as an
-// acknowledgement) and the branch's required discount decision (explicit
-// "No applicable discount", never a forced discount).
-describe('TerminalPage — P50R custom discounts and required choice', () => {
-  const LOYALTY = {
-    promotion_id: '77777777-7777-4777-8777-777777777777',
-    name: 'Loyalty',
-    discount_kind: 'percentage' as const,
-    discount_value: 10,
-    version: 2,
-    ends_on: null,
-    unit_discounts: { 'variant-1': 10 },
-  };
+// POS-PERF-P55 — manual peso discounts: "No discount" / "Apply discount",
+// one branch type, a peso amount, proof when the type requires it, a clear
+// subtotal → discount → amount-to-pay summary, cart-change confirmation,
+// review-only refusals, and nothing carried to the next sale or cashier.
+describe('TerminalPage — P55 manual peso discounts', () => {
+  const EMPLOYEE = { id: '55555555-5555-4555-8555-555555555551', name: 'Employee', require_proof: false, version: 3 };
+  const LOYALTY = { id: '55555555-5555-4555-8555-555555555552', name: 'Loyalty card', require_proof: true, version: 1 };
+  const line = (quantity: number) => [{ product_id: 'product-1', product_variant_id: 'variant-1', quantity }];
 
   beforeEach(() => {
-    discountPolicyState.employee = 20;
     discountPolicyState.requireChoice = false;
+    manualTypesState.types = [EMPLOYEE, LOYALTY];
+    manualTypesState.refetch.mockClear();
     mockUseAuth.mockReturnValue({ user: STAFF_USER, selectEmployee: mockSelectEmployee, refreshEmployeeSession: mockRefreshEmployeeSession });
     useAuthStore.setState({ user: STAFF_USER, accessToken: 'staff-token', isAuthenticated: true, isLoading: false });
-    mockUseCatalog.mockReturnValue({ data: { ...catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), selectable_discounts: [LOYALTY] }, isLoading: false });
+    // 5 × ₱100 = ₱500.
+    mockUseCatalog.mockReturnValue({ data: catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), isLoading: false });
     mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isLoading: false });
     mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' }, isLoading: false });
-    mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 2 }]);
+    mockCartItems.mockReturnValue(line(5));
     mockCreateTransactionMutateAsync.mockReset().mockResolvedValue({});
+    mockUploadDiscountProofMutateAsync.mockReset().mockResolvedValue({
+      discount_proof_key: 'branch-1/shift-1/user-1-789.webp',
+      discount_proof_type: 'live_capture',
+      discount_proof_upload_id: '99999999-9999-4999-8999-999999999999',
+    });
+    mockClearCart.mockClear();
   });
 
   afterEach(() => {
+    manualTypesState.types = [];
     discountPolicyState.requireChoice = false;
     cleanup();
   });
 
-  function charge(cash = '500') {
-    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: cash } });
-    fireEvent.click(screen.getByRole('button', { name: /^Charge/ }));
+  function applyType(name: string) {
+    fireEvent.click(screen.getByRole('radio', { name: 'Apply discount' }));
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(`^${name}`) }));
   }
 
-  it('a chosen custom discount changes the total shown and is sent as id + version with per-line acknowledgements', async () => {
+  function lastPayload() {
+    return mockCreateTransactionMutateAsync.mock.calls.at(-1)?.[0] as CreateTransactionInput;
+  }
+
+  it('starts on "No discount" and records the explicit decision with the flow version', async () => {
     render(<TerminalPage />);
     openCheckout();
-    expect(screen.getByRole('button', { name: /^Charge/ })).toHaveTextContent('200.00');
-    fireEvent.click(screen.getByRole('button', { name: 'Loyalty (10% off)' }));
-    // 2 × ₱100 − 2 × ₱10 = ₱180.
-    expect(screen.getByRole('button', { name: /^Charge/ })).toHaveTextContent('180.00');
-    charge();
+    expect(screen.getByRole('radio', { name: 'No discount' })).toHaveAttribute('aria-checked', 'true');
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '500' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Charge/ }));
     await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalled());
-    const payload = mockCreateTransactionMutateAsync.mock.calls[0]?.[0] as CreateTransactionInput;
-    expect(payload.selected_discount).toEqual({ promotion_id: LOYALTY.promotion_id, version: 2 });
-    expect(payload.items[0]?.promotion).toEqual({ promotion_id: LOYALTY.promotion_id, unit_discount: 10 });
+    const payload = lastPayload();
+    expect(payload).toMatchObject({ discount_flow: 'manual_v1', discount_choice: 'none_applicable' });
     expect(payload.discount_type).toBeUndefined();
-    expect(payload.tax_basis).toEqual({ vat_rate: 12, discount_rate: null });
-    expect(payload).not.toHaveProperty('discount_choice');
+    expect(payload).not.toHaveProperty('manual_discount');
   });
 
-  it('switching to Employee drops the custom discount (one discount per sale)', async () => {
+  it('₱500 − Employee ₱50 = ₱450: the summary, the Charge label and the payload agree', async () => {
     render(<TerminalPage />);
     openCheckout();
-    fireEvent.click(screen.getByRole('button', { name: 'Loyalty (10% off)' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Employee (20%)' }));
-    expect(screen.getByRole('button', { name: /^Charge/ })).toHaveTextContent('160.00');
-    charge();
+    applyType('Employee');
+    expect(screen.getAllByText('Enter the discount amount in pesos.').length).toBeGreaterThan(0);
+    fireEvent.change(screen.getByLabelText('Discount amount (₱)'), { target: { value: '50' } });
+    const summary = screen.getByTestId('manual-discount-summary');
+    expect(summary).toHaveTextContent('Subtotal₱500.00');
+    expect(summary).toHaveTextContent('Employee discount-₱50.00');
+    expect(summary).toHaveTextContent('Amount to pay₱450.00');
+    expect(screen.getByRole('button', { name: /^Charge/ })).toHaveTextContent('Charge ₱450.00');
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '450' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Charge/ }));
     await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalled());
-    const payload = mockCreateTransactionMutateAsync.mock.calls[0]?.[0] as CreateTransactionInput;
-    expect(payload.selected_discount).toBeUndefined();
+    const payload = lastPayload();
+    expect(payload.discount_type).toBe('manual');
+    expect(payload.discount_choice).toBe('selected');
+    expect(payload.manual_discount).toEqual({ discount_type_id: EMPLOYEE.id, type_version: 3, amount: 50, expected_total_amount: 450 });
+    expect(payload.tax_basis).toEqual({ vat_rate: 12, discount_rate: null });
     expect(payload.items[0]?.promotion).toBeNull();
-    expect(payload.discount_type).toBe('employee');
   });
 
-  it('is not offered for a cart it does not cover, nor offline', () => {
-    mockUseCatalog.mockReturnValue({
-      data: { ...catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), selectable_discounts: [{ ...LOYALTY, unit_discounts: { 'other-variant': 5 } }] },
-      isLoading: false,
-    });
-    const { unmount } = render(<TerminalPage />);
+  it('refuses percent, zero, too many decimals and more than the subtotal — Charge stays disabled', () => {
+    render(<TerminalPage />);
     openCheckout();
-    expect(screen.queryByRole('button', { name: /Loyalty/ })).not.toBeInTheDocument();
-    unmount();
+    applyType('Employee');
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '1000' } });
+    const amount = screen.getByLabelText('Discount amount (₱)');
+    for (const [value, message] of [
+      ['10%', 'Enter an amount in pesos, like 50 or 50.25.'],
+      ['0', 'Enter an amount greater than ₱0, or choose “No discount”.'],
+      ['5.555', 'Enter an amount in pesos, like 50 or 50.25.'],
+      ['500.01', 'The discount can be at most ₱500.00.'],
+      ['-5', 'Enter an amount in pesos, like 50 or 50.25.'],
+    ] as const) {
+      fireEvent.change(amount, { target: { value } });
+      expect(screen.getAllByText(message).length).toBeGreaterThan(0);
+      expect(screen.getByRole('button', { name: /^Charge/ })).toBeDisabled();
+    }
+    fireEvent.change(amount, { target: { value: '500' } });
+    expect(screen.getByRole('button', { name: /^Charge/ })).toHaveTextContent('Charge ₱0.00');
+    expect(screen.getByRole('button', { name: /^Charge/ })).not.toBeDisabled();
+  });
 
-    mockUseCatalog.mockReturnValue({ data: { ...catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), selectable_discounts: [LOYALTY] }, isLoading: false });
+  it('a cart change after the amount was entered must be confirmed before charging', () => {
+    const { rerender } = render(<TerminalPage />);
+    openCheckout();
+    applyType('Employee');
+    fireEvent.change(screen.getByLabelText('Discount amount (₱)'), { target: { value: '50' } });
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '1000' } });
+    expect(screen.getByRole('button', { name: /^Charge/ })).not.toBeDisabled();
+
+    mockCartItems.mockReturnValue(line(3));
+    rerender(<TerminalPage />);
+    expect(screen.getByTestId('manual-discount-changed-total')).toHaveTextContent('subtotal is now ₱300.00 (was ₱500.00). Amount to pay is now ₱250.00.');
+    expect(screen.getByRole('button', { name: /^Charge/ })).toBeDisabled();
+    expect(screen.getAllByText('The order changed — confirm the new total before charging.').length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm new total' }));
+    expect(screen.queryByTestId('manual-discount-changed-total')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Charge/ })).toHaveTextContent('Charge ₱250.00');
+    expect(screen.getByRole('button', { name: /^Charge/ })).not.toBeDisabled();
+
+    // Shrinking below the discount blocks it outright.
+    mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
+    rerender(<TerminalPage />);
+    fireEvent.change(screen.getByLabelText('Discount amount (₱)'), { target: { value: '150' } });
+    expect(screen.getAllByText('The discount can be at most ₱100.00.').length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: /^Charge/ })).toBeDisabled();
+  });
+
+  it('required proof: Take Photo and Upload from Gallery offered; Charge waits for the upload; a failed upload keeps everything; the proof id is sent', async () => {
+    mockUploadDiscountProofMutateAsync.mockRejectedValueOnce(new Error('Network error'));
+    render(<TerminalPage />);
+    openCheckout();
+    applyType('Loyalty card');
+    fireEvent.change(screen.getByLabelText('Discount amount (₱)'), { target: { value: '25' } });
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '1000' } });
+    expect(screen.getByText('Discount Proof Photo')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Take Photo/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Upload from Gallery/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Charge/ })).toBeDisabled();
+    expect(screen.getAllByText('Take or upload the discount proof photo before charging.').length).toBeGreaterThan(0);
+
+    const file = new File(['fake-image'], 'id.jpg', { type: 'image/jpeg' });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(fileInput, { target: { files: [file] } });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(screen.getByText('Network error')).toBeInTheDocument());
+    expect(screen.getByLabelText('Discount amount (₱)')).toHaveValue('25');
+    expect(screen.getByRole('button', { name: /^Charge/ })).toBeDisabled();
+    expect(mockClearCart).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Upload' }));
+    await waitFor(() => expect(screen.getByText('Discount proof photo attached')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /^Charge/ })).not.toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: /^Charge/ }));
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalled());
+    expect(lastPayload().manual_discount).toMatchObject({ discount_type_id: LOYALTY.id, amount: 25, proof_upload_id: '99999999-9999-4999-8999-999999999999' });
+    expect(lastPayload()).not.toHaveProperty('discount_proof_key', 'branch-1/shift-1/user-1-789.webp');
+  });
+
+  it('a refused type change is review-only, reloads the branch types and keeps the cart', async () => {
+    const { TransactionApiError } = await import('@/hooks/queries/use-transactions');
+    mockCreateTransactionMutateAsync.mockRejectedValueOnce(
+      new TransactionApiError('The "Employee" discount type was changed by a supervisor, so the sale was not charged.', 'MANUAL_DISCOUNT_TYPE_CHANGED', {}),
+    );
+    render(<TerminalPage />);
+    openCheckout();
+    applyType('Employee');
+    fireEvent.change(screen.getByLabelText('Discount amount (₱)'), { target: { value: '50' } });
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '500' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Charge/ }));
+    await waitFor(() => expect(screen.getByText('Discount type changed — not charged')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+    expect(manualTypesState.refetch).toHaveBeenCalled();
+    expect(mockClearCart).not.toHaveBeenCalled();
+  });
+
+  it('a type that is no longer offered blocks Charge with a reason instead of charging', () => {
+    const { rerender } = render(<TerminalPage />);
+    openCheckout();
+    applyType('Employee');
+    fireEvent.change(screen.getByLabelText('Discount amount (₱)'), { target: { value: '50' } });
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '500' } });
+    manualTypesState.types = [LOYALTY];
+    rerender(<TerminalPage />);
+    expect(screen.getByRole('button', { name: /^Charge/ })).toBeDisabled();
+    expect(screen.getAllByText('The discount type you chose is no longer offered. Choose another discount, or “No discount”.').length).toBeGreaterThan(0);
+  });
+
+  it('offline: only the statutory discounts can be applied; manual types are not offered', () => {
     const base = mockUseOffline();
     mockUseOffline.mockReturnValue({ ...base, isOnline: false });
-    render(<TerminalPage />);
-    openCheckout();
-    expect(screen.queryByRole('button', { name: /Loyalty/ })).not.toBeInTheDocument();
-    mockUseOffline.mockReturnValue(base);
+    try {
+      render(<TerminalPage />);
+      openCheckout();
+      fireEvent.click(screen.getByRole('radio', { name: 'Apply discount' }));
+      expect(screen.queryByRole('button', { name: /^Employee/ })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'PWD (20%)' })).toBeInTheDocument();
+      expect(screen.getByText(/Offline — discount types need a connection/)).toBeInTheDocument();
+    } finally {
+      mockUseOffline.mockReturnValue(base);
+    }
   });
 
-  it('required choice: Charge waits for a decision; "No applicable discount" charges the regular price and says so', async () => {
+  it('a completed sale resets the decision for the next sale', async () => {
+    mockCreateTransactionMutateAsync.mockResolvedValueOnce({ id: 'txn-1', receipt_number: 'R-1', items: [] });
+    render(<TerminalPage />);
+    openCheckout();
+    applyType('Employee');
+    fireEvent.change(screen.getByLabelText('Discount amount (₱)'), { target: { value: '50' } });
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '500' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Charge/ }));
+    await waitFor(() => expect(mockClearCart).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: /New Sale|Next Customer/ }));
+    openCheckout();
+    expect(screen.getByRole('radio', { name: 'No discount' })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.queryByLabelText('Discount amount (₱)')).not.toBeInTheDocument();
+  });
+
+  it('a branch that requires a choice preselects nothing until the cashier decides', async () => {
     discountPolicyState.requireChoice = true;
     render(<TerminalPage />);
     openCheckout();
     fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '500' } });
     expect(screen.getByTestId('discount-choice-prompt')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^Charge/ })).toBeDisabled();
-    expect(screen.getAllByText('Choose the discount that applies, or “No applicable discount”.').length).toBeGreaterThan(0);
-
-    fireEvent.click(screen.getByRole('button', { name: 'No applicable discount' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'No discount' }));
     expect(screen.queryByTestId('discount-choice-prompt')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^Charge/ })).toHaveTextContent('200.00');
     fireEvent.click(screen.getByRole('button', { name: /^Charge/ }));
     await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalled());
-    const payload = mockCreateTransactionMutateAsync.mock.calls[0]?.[0] as CreateTransactionInput;
-    expect(payload.discount_choice).toBe('none_applicable');
-    expect(payload.discount_type).toBeUndefined();
-  });
-
-  it('required choice: choosing a discount sends "selected"', async () => {
-    discountPolicyState.requireChoice = true;
-    render(<TerminalPage />);
-    openCheckout();
-    fireEvent.click(screen.getByRole('button', { name: 'Loyalty (10% off)' }));
-    charge();
-    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalled());
-    expect((mockCreateTransactionMutateAsync.mock.calls[0]?.[0] as CreateTransactionInput).discount_choice).toBe('selected');
+    expect(lastPayload().discount_choice).toBe('none_applicable');
   });
 });
 
@@ -4387,7 +4449,7 @@ describe('TerminalPage — break time (POS-PERF-P51)', () => {
       fireEvent.click(screen.getByRole('button', { name: /Continue as Ana/ }));
       await screen.findByRole('button', { name: /Start Break/ });
       openCheckout();
-      fireEvent.click(screen.getByRole('button', { name: 'No applicable discount' }));
+      fireEvent.click(screen.getByRole('radio', { name: 'No discount' }));
       expect(screen.queryByTestId('discount-choice-prompt')).not.toBeInTheDocument();
 
       // Ana closes checkout, clears the cart by hand, then starts her break.

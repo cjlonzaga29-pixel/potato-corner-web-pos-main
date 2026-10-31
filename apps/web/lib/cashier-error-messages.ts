@@ -62,6 +62,18 @@ const TITLES: Record<string, string> = {
   TAX_SETTINGS_CHANGED: 'Discount or VAT settings changed — not recorded',
   DISCOUNT_CHOICE_REQUIRED: 'Choose a discount or “No applicable discount” — not charged',
   DISCOUNT_CHOICE_CONFLICT: 'Two discount choices — not charged',
+  MANUAL_DISCOUNT_TYPE_UNAVAILABLE: 'Discount type no longer offered — not charged',
+  MANUAL_DISCOUNT_TYPE_CHANGED: 'Discount type changed — not charged',
+  MANUAL_DISCOUNT_PROOF_REQUIRED: 'Proof photo required — not charged',
+  MANUAL_DISCOUNT_PROOF_INVALID: 'Proof photo not accepted — not charged',
+  MANUAL_DISCOUNT_PROOF_ALREADY_USED: 'Proof photo already used — not charged',
+  MANUAL_DISCOUNT_EXCEEDS_SUBTOTAL: 'Discount too large — not charged',
+  MANUAL_DISCOUNT_TOTAL_CHANGED: 'Total changed — not charged',
+  MANUAL_DISCOUNT_OFFLINE_UNSUPPORTED: 'Manual discount not allowed offline — not recorded',
+  DISCOUNT_NOT_COMBINABLE: 'Discounts cannot be combined — not charged',
+  DISCOUNT_NOT_SUPPORTED_IN_MANUAL_FLOW: 'Discount not available here — not charged',
+  PROMOTION_NOT_APPLIED_IN_MANUAL_FLOW: 'Promotions not applied — not charged',
+  DISCOUNT_PROOF_INVALID: 'Proof photo not accepted — not charged',
 };
 
 /** Real server codes that prove only that THIS request made no progress, not that anything failed or succeeded — the network/uncertain bucket, same as the synthetic codes above. */

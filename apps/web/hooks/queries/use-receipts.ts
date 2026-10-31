@@ -31,6 +31,8 @@ export interface PublicReceipt {
   subtotal: number;
   discount_amount: number;
   discount_type: string | null;
+  /** POS-PERF-P55 — frozen manual discount type name; absent from a pre-P55 API. */
+  manual_discount_name?: string | null;
   discount_rate_used?: number | null;
   vat_amount: number;
   /** POS-PERF-P50 — absent from an older API. */

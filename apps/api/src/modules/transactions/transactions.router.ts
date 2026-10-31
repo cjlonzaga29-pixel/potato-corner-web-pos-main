@@ -17,9 +17,11 @@ import {
   type ImageProofType,
   type PaymentMethod,
   type TaxBasisInput,
+  type CheckoutManualDiscountInput,
+  type DiscountFlow,
 } from '@potato-corner/shared';
 import { transactionsService } from './transactions.service.js';
-import { TransactionError, type CartItemInput, type TaxBasis } from './transactions.types.js';
+import { TransactionError, type CartItemInput, type ManualDiscountInput, type TaxBasis } from './transactions.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminOrSupervisor, adminSupervisorOrBranch, allRoles } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
@@ -86,6 +88,18 @@ function toTaxBasis(basis: TaxBasisInput | undefined): TaxBasis | undefined {
   return basis ? { vatRate: basis.vat_rate, discountRate: basis.discount_rate } : undefined;
 }
 
+/** POS-PERF-P55 — snake_case request shape -> service input; absent stays undefined. */
+function toManualDiscount(manual: CheckoutManualDiscountInput | undefined): ManualDiscountInput | undefined {
+  if (!manual) return undefined;
+  return {
+    discountTypeId: manual.discount_type_id,
+    typeVersion: manual.type_version,
+    amount: manual.amount,
+    proofUploadId: manual.proof_upload_id,
+    expectedTotalAmount: manual.expected_total_amount,
+  };
+}
+
 function handleModuleError(error: unknown, res: Response, next: NextFunction): void {
   if (error instanceof TransactionError) {
     res.status(error.statusCode).json({ data: null, error: { code: error.code, message: error.message, details: error.details }, meta: null });
@@ -99,7 +113,7 @@ interface CreateTransactionBody {
   shift_id: string;
   items: CartItem[];
   payment_method: PaymentMethod;
-  discount_type?: 'pwd' | 'senior_citizen' | 'employee' | 'manager_override' | 'promotional';
+  discount_type?: 'pwd' | 'senior_citizen' | 'employee' | 'manager_override' | 'promotional' | 'manual';
   discount_id_reference?: string;
   discount_amount?: number;
   cash_tendered?: number;
@@ -117,6 +131,8 @@ interface CreateTransactionBody {
   tax_basis?: TaxBasisInput;
   selected_discount?: { promotion_id: string; version: number };
   discount_choice?: 'selected' | 'none_applicable';
+  discount_flow?: DiscountFlow;
+  manual_discount?: CheckoutManualDiscountInput;
 }
 
 // authenticate -> authorize -> requirePasswordChange -> branchGuard -> shiftGuard -> validate -> handler.
@@ -218,6 +234,8 @@ router.post(
             ? { promotionId: body.selected_discount.promotion_id, version: body.selected_discount.version }
             : undefined,
           discountChoice: body.discount_choice,
+          discountFlow: body.discount_flow,
+          manualDiscount: toManualDiscount(body.manual_discount),
         },
         req.ip ?? null,
         typeof res.locals?.diagMiddlewareStartedAt === 'number' ? performance.now() - res.locals.diagMiddlewareStartedAt : undefined,
@@ -288,6 +306,8 @@ router.post(
             gcashManuallyVerified: item.gcash_manually_verified,
             taxBasis: toTaxBasis(item.tax_basis),
             discountChoice: item.discount_choice,
+            discountFlow: item.discount_flow,
+            manualDiscount: toManualDiscount(item.manual_discount),
             clientCreatedAt: item.client_created_at,
           })),
         },

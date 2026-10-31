@@ -49,7 +49,7 @@ function parsePercent(value: string, min: number): number | null {
  * and not editable. Saves carry the version this form loaded, so a newer
  * save is never overwritten.
  */
-export function BranchDiscountSettingsForm({ data }: { data: BranchDiscountSettingsResponse }) {
+export function BranchDiscountSettingsForm({ data, statutoryOnly = false }: { data: BranchDiscountSettingsResponse; statutoryOnly?: boolean }) {
   const save = useUpdateBranchDiscountSettings(data.branchId);
   const [form, setForm] = useState<FormState>(() => fromData(data));
   const [conflict, setConflict] = useState(false);
@@ -146,6 +146,11 @@ export function BranchDiscountSettingsForm({ data }: { data: BranchDiscountSetti
           )}
         </div>
 
+        {/* POS-PERF-P55 — statutoryOnly: the Employee rate and the required
+            decision belong to the legacy checkout (manual peso discount types
+            replace them in the new one). Their stored values are kept and
+            re-sent unchanged on save, so older terminals keep behaving as before. */}
+        {!statutoryOnly && (
         <div className="space-y-2 rounded-md border p-3" data-testid="branch-row-employee">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
@@ -198,7 +203,9 @@ export function BranchDiscountSettingsForm({ data }: { data: BranchDiscountSetti
             </p>
           )}
         </div>
+        )}
 
+        {!statutoryOnly && (
         <div className="flex flex-wrap items-start justify-between gap-3 rounded-md border p-3" data-testid="branch-row-require-choice">
           <div className="min-w-0 max-w-prose">
             <Label htmlFor={id('require-choice')} className="font-medium">
@@ -219,6 +226,7 @@ export function BranchDiscountSettingsForm({ data }: { data: BranchDiscountSetti
             <span className="text-xs text-muted-foreground">{form.requireDiscountChoice ? 'Required' : 'Optional'}</span>
           </div>
         </div>
+        )}
       </section>
 
       <dl className="grid gap-x-4 gap-y-1 text-xs sm:grid-cols-[auto_1fr]" aria-label="Where each value comes from now">
@@ -226,22 +234,27 @@ export function BranchDiscountSettingsForm({ data }: { data: BranchDiscountSetti
         <dd>
           {data.effective.pwd.percentage}% · {SOURCE_LABELS[data.effective.pwd.source]}
         </dd>
-        <dt className="text-muted-foreground">Employee now</dt>
-        <dd>
-          {data.effective.employee.percentage}% ({data.effective.employee.isEnabled ? 'enabled' : 'disabled'}) · {SOURCE_LABELS[data.effective.employee.source]}
-        </dd>
+        {!statutoryOnly && (
+          <>
+            <dt className="text-muted-foreground">Employee now</dt>
+            <dd>
+              {data.effective.employee.percentage}% ({data.effective.employee.isEnabled ? 'enabled' : 'disabled'}) · {SOURCE_LABELS[data.effective.employee.source]}
+            </dd>
+          </>
+        )}
       </dl>
 
       {pwdValue !== null && employeeValue !== null && (
         <DiscountPreviewTable
           price={112}
           rates={{ pwd: pwdValue, senior_citizen: data.effective.senior_citizen.percentage, employee: employeeValue }}
-          employeeEnabled={employeeEnabled}
+          employeeEnabled={statutoryOnly ? false : employeeEnabled}
         />
       )}
       <p className="text-xs text-muted-foreground">
-        Custom discounts (name, amount, products, schedule) are set up on the Discounts &amp; Promotions page. Changes apply to new sales only; past sales
-        keep the amounts they were rung with.
+        {statutoryOnly
+          ? 'Other discounts are entered by the cashier as a peso amount, using the discount types above. Changes apply to new sales only; past sales keep the amounts they were rung with.'
+          : 'Custom discounts (name, amount, products, schedule) are set up on the Discounts & Promotions page. Changes apply to new sales only; past sales keep the amounts they were rung with.'}
       </p>
 
       {conflict && (

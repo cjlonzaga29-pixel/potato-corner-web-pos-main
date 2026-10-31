@@ -49,6 +49,8 @@ export interface SaleSnapshot {
   subtotal: number;
   discountAmount: number;
   discountType: string | null;
+  /** POS-PERF-P55 — e.g. "Employee discount" for a manual peso discount (the type name the cashier chose). */
+  discountLabel?: string;
   vatAmount: number;
   totalAmount: number;
   paymentMethod: TransactionResponse['payment_method'];
@@ -107,10 +109,16 @@ export function SaleStatusModal({ phase, snapshot, errorMessage, errorCode, onRe
   // cashier reviews the updated cart instead of retrying straight into a new amount.
   // POS-PERF-P50 — same for a tax-settings refusal: Retry would resend the old rates.
   // POS-PERF-P50R — and for a missing/conflicting discount decision: the cashier must choose first.
+  // POS-PERF-P55 — and for every manual-discount refusal: the type, amount, proof or total must be reviewed first.
   const reviewOnly =
     phase === 'error' &&
     typeof errorCode === 'string' &&
-    (errorCode.startsWith('PROMOTION_') || errorCode === 'TAX_SETTINGS_CHANGED' || errorCode.startsWith('DISCOUNT_CHOICE_'));
+    (errorCode.startsWith('PROMOTION_') ||
+      errorCode === 'TAX_SETTINGS_CHANGED' ||
+      errorCode.startsWith('DISCOUNT_CHOICE_') ||
+      errorCode.startsWith('MANUAL_DISCOUNT_') ||
+      errorCode.startsWith('DISCOUNT_NOT_') ||
+      errorCode === 'DISCOUNT_PROOF_INVALID');
   return (
     <Dialog
       open
@@ -186,7 +194,7 @@ export function SaleStatusModal({ phase, snapshot, errorMessage, errorCode, onRe
           </div>
           {snapshot.discountAmount > 0 && (
             <div className="flex justify-between">
-              <span>{snapshot.discountType === 'promotional' ? 'Promotions' : 'Discount'}</span>
+              <span>{snapshot.discountLabel ?? (snapshot.discountType === 'promotional' ? 'Promotions' : 'Discount')}</span>
               <span className="tabular-nums">-{formatPeso(snapshot.discountAmount)}</span>
             </div>
           )}

@@ -38,7 +38,7 @@ export interface CreateTransactionData {
   cashierId: string;
   items: CartItemInput[];
   paymentMethod: PaymentMethod;
-  discountType?: 'pwd' | 'senior_citizen' | 'employee' | 'manager_override' | 'promotional';
+  discountType?: 'pwd' | 'senior_citizen' | 'employee' | 'manager_override' | 'promotional' | 'manual';
   discountIdReference?: string;
   discountAmount?: number;
   cashTendered?: number;
@@ -68,6 +68,18 @@ export interface CreateTransactionData {
   selectedDiscount?: { promotionId: string; version: number };
   /** POS-PERF-P50R — the cashier's explicit decision when the branch requires one. */
   discountChoice?: 'selected' | 'none_applicable';
+  /** POS-PERF-P55 — 'manual_v1' from the manual-discount checkout; absent = legacy client (pre-P55 rules). */
+  discountFlow?: 'manual_v1';
+  /** POS-PERF-P55 — the cashier-entered peso discount (new flow only). */
+  manualDiscount?: ManualDiscountInput;
+}
+
+export interface ManualDiscountInput {
+  discountTypeId: string;
+  typeVersion: number;
+  amount: number;
+  proofUploadId?: string;
+  expectedTotalAmount?: number;
 }
 
 export interface TaxBasis {
@@ -102,7 +114,7 @@ export interface TransactionListFilters {
 
 export interface DiscountAuditFilters {
   branchIds: 'all' | string[];
-  discountType?: 'pwd' | 'senior_citizen' | 'employee' | 'manager_override' | 'promotional';
+  discountType?: 'pwd' | 'senior_citizen' | 'employee' | 'manager_override' | 'promotional' | 'manual';
   dateFrom?: string;
   dateTo?: string;
   page: number;
@@ -122,7 +134,7 @@ export interface OfflineTransactionItemInput {
   shiftId: string | undefined;
   items: CartItemInput[];
   paymentMethod: PaymentMethod;
-  discountType?: 'pwd' | 'senior_citizen' | 'employee' | 'manager_override' | 'promotional';
+  discountType?: 'pwd' | 'senior_citizen' | 'employee' | 'manager_override' | 'promotional' | 'manual';
   discountIdReference?: string;
   discountAmount?: number;
   cashTendered?: number;
@@ -130,6 +142,9 @@ export interface OfflineTransactionItemInput {
   gcashManuallyVerified?: boolean;
   taxBasis?: TaxBasis;
   discountChoice?: 'selected' | 'none_applicable';
+  /** POS-PERF-P55 — forwarded only so the sync can refuse a queued manual discount visibly. */
+  discountFlow?: 'manual_v1';
+  manualDiscount?: ManualDiscountInput;
   clientCreatedAt: number;
 }
 

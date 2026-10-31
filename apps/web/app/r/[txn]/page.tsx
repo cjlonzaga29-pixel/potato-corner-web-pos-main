@@ -19,12 +19,15 @@ const DISCOUNT_TYPE_LABEL: Record<string, string> = {
   employee: 'Employee',
   manager_override: 'Manager Override',
   promotional: 'Promotional',
+  manual: 'Manual',
 };
 
 /** Task 209.xx — always the rate frozen on this transaction, never today's Discount Settings value; matches receipt-modal.tsx's same-purpose helper. */
 function discountLabel(receipt: PublicReceipt): string {
   const type = receipt.discount_type;
   if (!type) return 'Discount';
+  // POS-PERF-P55 — the type name frozen on the sale (e.g. "Employee"), not the live type.
+  if (type === 'manual') return receipt.manual_discount_name ? `${receipt.manual_discount_name} discount` : 'Discount';
   const name = DISCOUNT_TYPE_LABEL[type] ?? type;
   return receipt.discount_rate_used != null ? `${name} Discount (${receipt.discount_rate_used}%)` : `${name} Discount`;
 }

@@ -14,7 +14,12 @@ import {
   VAT_RATE_PERCENT,
   PRICES_INCLUDE_VAT,
   isVatExemptDiscountType,
+  computeManualDiscountSaleTax,
+  manualDiscountEligibleSubtotal,
+  MANUAL_DISCOUNT_FLOW,
+  MANUAL_DISCOUNT_TYPE,
   type ImageProofType,
+  type ManualDiscountSnapshot,
   type SaleTaxSnapshot,
 } from '@potato-corner/shared';
 import { manilaDateKey } from '../../lib/manila-time.js';
@@ -67,6 +72,7 @@ import { createCheckoutLatencyRecorder, timeStage } from '../../lib/checkout-lat
 import { computeDeductionTotals, sortedDeductionTotalEntries } from '../../lib/deduction-totals.js';
 import { inventoryDeductionRepository } from '../inventory-deduction/inventory-deduction.repository.js';
 import { discountsService } from '../discounts/discounts.service.js';
+import { manualDiscountTypesRepository } from '../discounts/discounts.repository.js';
 import type { PromotionLineSnapshot, ResolvedLinePromotion } from '../discounts/discounts.types.js';
 
 type ActorContext = { id: string; role: string };
@@ -246,6 +252,9 @@ interface TransactionRow {
   discountProofKey: string | null;
   discountProofType: string | null;
   discountProofUploadedAt: Date | null;
+  /** POS-PERF-P55 — absent on rows read through a narrower select; NULL on non-manual sales. */
+  manualDiscountTypeId?: string | null;
+  manualDiscountSnapshot?: unknown;
   receiptPrinted: boolean;
   notes: string | null;
   inventoryDeductionStatus: string;
@@ -265,6 +274,16 @@ interface TransactionRow {
   cashier?: { firstName: string; lastName: string } | null;
 }
 
+/** POS-PERF-P55 — receipt/history view of a manual discount, from the frozen snapshot only (never the current type). */
+function toManualDiscountResponse(snapshot: unknown) {
+  if (typeof snapshot !== 'object' || snapshot === null) return null;
+  const record = snapshot as Partial<ManualDiscountSnapshot>;
+  if (record.source !== 'manual' || typeof record.discount_type_id !== 'string' || typeof record.name !== 'string' || typeof record.amount !== 'number') {
+    return null;
+  }
+  return { discount_type_id: record.discount_type_id, name: record.name, amount: record.amount, require_proof: record.require_proof === true };
+}
+
 function toTransactionResponse(row: TransactionRow) {
   return {
     id: row.id,
@@ -281,6 +300,7 @@ function toTransactionResponse(row: TransactionRow) {
     subtotal: row.subtotal.toNumber(),
     discount_amount: row.discountAmount.toNumber(),
     discount_type: row.discountType,
+    manual_discount: toManualDiscountResponse(row.manualDiscountSnapshot),
     discount_rate_used: row.discountRateUsed?.toNumber() ?? null,
     vat_amount: row.vatAmount.toNumber(),
     vat_exempt_amount: row.vatExemptAmount.toNumber(),
@@ -1111,6 +1131,101 @@ interface ComputedAmounts {
  * PWD/Senior Citizen below is unchanged and stays independent of whatever
  * percentage is configured (architecture doc §Discounts, locked).
  */
+function formatPesoAmount(amount: number): string {
+  return `₱${amount.toFixed(2)}`;
+}
+
+/**
+ * POS-PERF-P55 — structural rules of the manual-discount checkout, checked
+ * before any lookup. One discount per sale: a manual peso discount or the
+ * statutory PWD/Senior discount (unchanged formula), never both, and never
+ * the Employee rate, a typed promotional amount, a cashier-selected
+ * promotion or an automatic product promotion.
+ */
+function assertManualFlowShape(data: CreateTransactionData): void {
+  if (data.isOfflineTransaction && data.manualDiscount) {
+    throw new TransactionError(
+      'MANUAL_DISCOUNT_OFFLINE_UNSUPPORTED',
+      'This offline sale includes a manual discount, which needs a connection to confirm the discount type and proof. It was not recorded, so the amount collected was not changed.',
+      422,
+    );
+  }
+  if (!data.isOfflineTransaction && !data.discountChoice) {
+    throw new TransactionError('DISCOUNT_CHOICE_REQUIRED', 'Choose "No discount" or "Apply discount", then charge again.', 422);
+  }
+  if (data.discountType && data.discountType !== DISCOUNT_TYPE.PWD && data.discountType !== DISCOUNT_TYPE.SENIOR_CITIZEN && data.discountType !== MANUAL_DISCOUNT_TYPE) {
+    throw new TransactionError(
+      'DISCOUNT_NOT_SUPPORTED_IN_MANUAL_FLOW',
+      'This checkout takes a manual peso discount or the statutory PWD/Senior Citizen discount only. Choose a discount type set up for this branch.',
+      422,
+    );
+  }
+  if (data.selectedDiscount) {
+    throw new TransactionError('DISCOUNT_NOT_SUPPORTED_IN_MANUAL_FLOW', 'Promotions are not applied in this checkout. Enter the discount as a peso amount instead.', 422);
+  }
+  if (data.items.some((item) => item.promotionAck)) {
+    throw new TransactionError(
+      'PROMOTION_NOT_APPLIED_IN_MANUAL_FLOW',
+      'Product promotions are not applied in this checkout, so a line cannot claim one. Refresh the order, then charge again.',
+      422,
+    );
+  }
+  if (data.manualDiscount && data.discountType !== MANUAL_DISCOUNT_TYPE) {
+    throw new TransactionError(
+      'DISCOUNT_NOT_COMBINABLE',
+      'A manual discount cannot be combined with the PWD/Senior Citizen discount. Choose one.',
+      422,
+    );
+  }
+  if (data.discountChoice === 'selected' && !data.manualDiscount && !data.discountType) {
+    throw new TransactionError('DISCOUNT_CHOICE_CONFLICT', '"Apply discount" was chosen but no discount was entered. Enter the discount, or choose "No discount".', 422);
+  }
+}
+
+/**
+ * POS-PERF-P55 — the server's own read of the claimed type and proof. The
+ * type must be this sale's branch's, active and offered at the POS, at the
+ * version the screen showed; a required proof must have been uploaded by this
+ * cashier for this branch and shift and not be attached to any sale yet.
+ */
+async function resolveManualDiscount(data: CreateTransactionData, manual: NonNullable<CreateTransactionData['manualDiscount']>) {
+  const [type, proof] = await Promise.all([
+    manualDiscountTypesRepository.findForCheckout(manual.discountTypeId),
+    manual.proofUploadId ? transactionsRepository.findDiscountProofUpload(manual.proofUploadId) : Promise.resolve(null),
+  ]);
+  if (!type || type.branchId !== data.branchId || !type.isActive || !type.applyToPos) {
+    throw new TransactionError(
+      'MANUAL_DISCOUNT_TYPE_UNAVAILABLE',
+      'This discount type is no longer offered at this branch, so the sale was not charged. Choose another discount or "No discount".',
+      409,
+    );
+  }
+  if (type.version !== manual.typeVersion) {
+    throw new TransactionError(
+      'MANUAL_DISCOUNT_TYPE_CHANGED',
+      `The "${type.name}" discount type was changed by a supervisor, so the sale was not charged. Review the discount, then charge again.`,
+      409,
+      { current: { discount_type_id: type.id, name: type.name, require_proof: type.requireProof, version: type.version } },
+    );
+  }
+  if (type.requireProof && !manual.proofUploadId) {
+    throw new TransactionError('MANUAL_DISCOUNT_PROOF_REQUIRED', `"${type.name}" requires a proof photo. Take or upload the photo, then charge again.`, 422);
+  }
+  if (manual.proofUploadId) {
+    if (!proof || proof.branchId !== data.branchId || proof.shiftId !== data.shiftId || proof.uploadedById !== data.cashierId) {
+      throw new TransactionError(
+        'MANUAL_DISCOUNT_PROOF_INVALID',
+        'The proof photo was not uploaded by this cashier for this branch and shift. Take or upload the photo again.',
+        422,
+      );
+    }
+    if (proof.transactionId) {
+      throw new TransactionError('MANUAL_DISCOUNT_PROOF_ALREADY_USED', 'This proof photo is already attached to another sale. Take or upload a new photo.', 409);
+    }
+  }
+  return { type, proof };
+}
+
 export interface DiscountRates {
   pwd: number;
   senior_citizen: number;
@@ -1284,6 +1399,12 @@ function idempotencyReplayMatches(existing: TransactionRow, data: CreateTransact
     return false;
   }
   if (existing.paymentMethod !== data.paymentMethod) return false;
+  // POS-PERF-P55 — the same key must never replay a sale with a different
+  // manual discount (or one without/with a manual discount at all).
+  const existingManualTypeId = existing.manualDiscountTypeId ?? null;
+  const requestedManualTypeId = data.manualDiscount?.discountTypeId ?? null;
+  if (existingManualTypeId !== requestedManualTypeId) return false;
+  if (data.manualDiscount && toCents(existing.discountAmount.toNumber()) !== toCents(data.manualDiscount.amount)) return false;
   const normalize = (items: { productVariantId: string; flavorId: string | null; quantity: number }[]) =>
     items
       .map((item) => `${item.productVariantId}:${item.flavorId ?? ''}:${item.quantity}`)
@@ -2110,16 +2231,27 @@ export const transactionsService = {
       throw new TransactionError('DISCOUNT_PROOF_UPLOAD_FAILED', 'Failed to upload the discount proof image', 502);
     }
 
+    // POS-PERF-P55 — registered so a manual-discount checkout can name this
+    // upload by id and the server can check who uploaded it, where, and
+    // whether a sale already uses it.
+    const upload = await transactionsRepository.createDiscountProofUpload({
+      branchId: data.branchId,
+      shiftId: data.shiftId,
+      uploadedById: actor.id,
+      storageKey: path,
+      proofType: data.type,
+    });
+
     await recordAuditLog({
       action: 'DISCOUNT_PROOF_UPLOADED',
       entityType: 'transaction',
       actorId: actor.id,
       actorRole: actor.role,
       branchId: data.branchId,
-      afterState: { storageKey: path, type: data.type },
+      afterState: { storageKey: path, type: data.type, uploadId: upload.id },
     });
 
-    return { discount_proof_key: path, discount_proof_type: data.type };
+    return { discount_proof_key: path, discount_proof_type: data.type, discount_proof_upload_id: upload.id };
   },
 
   /**
@@ -2334,6 +2466,19 @@ export const transactionsService = {
     if ((data.discountType === DISCOUNT_TYPE.PWD || data.discountType === DISCOUNT_TYPE.SENIOR_CITIZEN) && !data.discountIdReference) {
       throw new TransactionError('DISCOUNT_ID_REQUIRED', 'discount_id_reference is required for PWD/Senior Citizen discounts', 422);
     }
+    // POS-PERF-P55 — the new checkout's rules, only for a client that opts in.
+    const isManualFlow = data.discountFlow === MANUAL_DISCOUNT_FLOW;
+    if (data.manualDiscount && !isManualFlow) {
+      throw new TransactionError('MANUAL_DISCOUNT_FLOW_REQUIRED', 'A manual discount can only be sent by the manual-discount checkout.', 422);
+    }
+    if (isManualFlow) assertManualFlowShape(data);
+    // P55 — a statutory proof key must name an object under this sale's own
+    // branch: before P55 any string was attached, so a forged key could link
+    // another branch's ID photo to this sale and expose it through this
+    // sale's proof viewer. Keys the upload route issues always start with it.
+    if (data.discountProofKey && !data.discountProofKey.startsWith(`${data.branchId}/`)) {
+      throw new TransactionError('DISCOUNT_PROOF_INVALID', 'The discount proof photo does not belong to this branch. Take or upload the photo again.', 422);
+    }
     // Task 209.5 — no proof-required policy exists yet for PWD/Senior
     // Citizen discounts (DISCOUNT_PROOF_REQUIREMENT_POLICY_MISSING), so
     // discount_proof_key is accepted and linked when present but never
@@ -2373,14 +2518,14 @@ export const transactionsService = {
     // POS-PERF-P50R — a branch that requires a discount decision: a live sale
     // from a current POS (it sends tax_basis) must carry the cashier's choice.
     // Older clients and offline sales (already paid) are never refused for it.
-    if (data.discountChoice === 'none_applicable' && (data.discountType || data.selectedDiscount)) {
+    if (data.discountChoice === 'none_applicable' && (data.discountType || data.selectedDiscount || data.manualDiscount)) {
       throw new TransactionError(
         'DISCOUNT_CHOICE_CONFLICT',
         'The sale says "No applicable discount" but also lists a discount. Choose one, then charge again.',
         422,
       );
     }
-    if (effectivePolicy.requireDiscountChoice && !data.isOfflineTransaction && data.taxBasis && !data.discountChoice) {
+    if (!isManualFlow && effectivePolicy.requireDiscountChoice && !data.isOfflineTransaction && data.taxBasis && !data.discountChoice) {
       throw new TransactionError(
         'DISCOUNT_CHOICE_REQUIRED',
         'This branch requires a discount decision for every sale. Choose the discount that applies, or "No applicable discount", then charge again.',
@@ -2389,20 +2534,64 @@ export const transactionsService = {
     }
 
     const catalogResolveStartedAt = performance.now();
-    resolvedItems = await resolveCartItems(data.branchId, data.items);
-    resolvedItems = await applyLinePromotions(data, resolvedItems);
+    const [cartItems, manualResolution] = await Promise.all([
+      resolveCartItems(data.branchId, data.items),
+      data.manualDiscount ? resolveManualDiscount(data, data.manualDiscount) : Promise.resolve(null),
+    ]);
+    resolvedItems = cartItems;
+    // POS-PERF-P55 — the manual-discount checkout never applies product
+    // promotions (automatic or cashier-selected); assertManualFlowShape has
+    // already refused any line that claims one.
+    if (!isManualFlow) resolvedItems = await applyLinePromotions(data, resolvedItems);
     catalogResolveMs = performance.now() - catalogResolveStartedAt;
     const subtotal = round2(resolvedItems.reduce((sum, item) => sum + item.lineTotal, 0));
-    const { discountAmount, vatAmount, vatExemptAmount, totalAmount, discountRateUsed } = computeAmounts(
-      subtotal,
-      resolvedItems,
-      data.discountType,
-      discountRates,
-    );
+    let manualEligibleSubtotal: number | null = null;
+    if (data.manualDiscount) {
+      manualEligibleSubtotal = manualDiscountEligibleSubtotal(resolvedItems);
+      if (toCents(data.manualDiscount.amount) > toCents(manualEligibleSubtotal)) {
+        throw new TransactionError(
+          'MANUAL_DISCOUNT_EXCEEDS_SUBTOTAL',
+          manualEligibleSubtotal < subtotal
+            ? `The discount can be at most ${formatPesoAmount(manualEligibleSubtotal)} (the order's VATable amount; the non-VATable part above a size's VAT cap is never discounted).`
+            : `The discount can be at most the order subtotal, ${formatPesoAmount(manualEligibleSubtotal)}.`,
+          422,
+          { subtotal, eligible_subtotal: manualEligibleSubtotal, amount: data.manualDiscount.amount },
+        );
+      }
+    }
+    const { discountAmount, vatAmount, vatExemptAmount, totalAmount, discountRateUsed } = data.manualDiscount
+      ? computeManualDiscountSaleTax(subtotal, resolvedItems, data.manualDiscount.amount)
+      : computeAmounts(subtotal, resolvedItems, data.discountType, discountRates);
+    if (data.manualDiscount?.expectedTotalAmount !== undefined && toCents(data.manualDiscount.expectedTotalAmount) !== toCents(totalAmount)) {
+      throw new TransactionError(
+        'MANUAL_DISCOUNT_TOTAL_CHANGED',
+        `The amount to pay is now ${formatPesoAmount(totalAmount)} (the screen showed ${formatPesoAmount(data.manualDiscount.expectedTotalAmount)}), so the sale was not charged. Review the order, then charge again.`,
+        409,
+        { shown_total_amount: data.manualDiscount.expectedTotalAmount, amounts: { subtotal, discount_amount: discountAmount, vat_amount: vatAmount, total_amount: totalAmount } },
+      );
+    }
     assertTaxBasisUnchanged(data.taxBasis, data.isOfflineTransaction, data.discountType, discountRates, { subtotal, discountAmount, vatAmount, totalAmount });
     // POS-PERF-P49 — a sale whose only discount is product promotions is
     // recorded as 'promotional' so every report's discount breakdown sees it.
-    const effectiveDiscountType = data.discountType ?? (discountAmount > 0 ? DISCOUNT_TYPE.PROMOTIONAL : null);
+    // POS-PERF-P55 — a manual peso discount is recorded as 'manual'.
+    const effectiveDiscountType = data.manualDiscount
+      ? MANUAL_DISCOUNT_TYPE
+      : (data.discountType ?? (discountAmount > 0 ? DISCOUNT_TYPE.PROMOTIONAL : null));
+    const manualSnapshot: ManualDiscountSnapshot | null =
+      data.manualDiscount && manualResolution && manualEligibleSubtotal !== null
+        ? {
+            version: 1,
+            source: 'manual',
+            discount_type_id: manualResolution.type.id,
+            name: manualResolution.type.name,
+            require_proof: manualResolution.type.requireProof,
+            type_version: manualResolution.type.version,
+            amount: discountAmount,
+            eligible_subtotal: manualEligibleSubtotal,
+            proof_upload_id: manualResolution.proof?.id ?? null,
+            entered_by_id: data.cashierId,
+          }
+        : null;
     const rateType =
       data.discountType === DISCOUNT_TYPE.PWD || data.discountType === DISCOUNT_TYPE.SENIOR_CITIZEN || data.discountType === DISCOUNT_TYPE.EMPLOYEE
         ? data.discountType
@@ -2419,7 +2608,20 @@ export const transactionsService = {
       require_discount_choice: effectivePolicy.requireDiscountChoice,
       discount_choice: data.discountChoice ?? null,
       selected_discount_id: data.selectedDiscount?.promotionId ?? null,
+      discount_flow: isManualFlow ? MANUAL_DISCOUNT_FLOW : null,
+      discount_source: data.manualDiscount
+        ? 'manual'
+        : isVatExemptDiscountType(data.discountType)
+          ? 'statutory'
+          : rateType
+            ? 'rate'
+            : discountAmount > 0
+              ? 'promotion'
+              : null,
+      manual_discount_type_id: manualSnapshot?.discount_type_id ?? null,
     };
+
+    const manualProof = manualResolution?.proof ?? null;
 
     let changeGiven: number | null = null;
     if (data.paymentMethod === 'cash') {
@@ -2493,9 +2695,13 @@ export const transactionsService = {
             paymentProofKey: requiresProof ? (data.paymentProofKey as string) : null,
             paymentProofType: requiresProof ? (data.paymentProofType as ImageProofType) : null,
             paymentProofUploadedAt: requiresProof ? new Date() : null,
-            discountProofKey: hasDiscountProof ? (data.discountProofKey as string) : null,
-            discountProofType: hasDiscountProof ? (data.discountProofType as ImageProofType) : null,
-            discountProofUploadedAt: hasDiscountProof ? new Date() : null,
+            // POS-PERF-P55 — a manual discount's proof comes from the
+            // server's own upload registry (never a client-sent key).
+            discountProofKey: manualProof ? manualProof.storageKey : hasDiscountProof ? (data.discountProofKey as string) : null,
+            discountProofType: manualProof ? manualProof.proofType : hasDiscountProof ? (data.discountProofType as ImageProofType) : null,
+            discountProofUploadedAt: manualProof ? manualProof.createdAt : hasDiscountProof ? new Date() : null,
+            manualDiscountTypeId: manualSnapshot?.discount_type_id ?? null,
+            manualDiscountSnapshot: manualSnapshot as unknown as Prisma.InputJsonValue | null,
             isOfflineTransaction: data.isOfflineTransaction,
             offlineProvisionalNumber: data.offlineProvisionalNumber ?? null,
             notes: data.notes ?? null,
@@ -2549,6 +2755,15 @@ export const transactionsService = {
         await timeStage(diag, 'stockReservation', () =>
           reserveStockForSale(tx, data.branchId, txCreated.id, resolvedItems.map((item) => ({ lines: item.deductionLines }))),
         );
+
+        // POS-PERF-P55 — claim the proof for this sale atomically with it.
+        // A concurrent sale that already claimed it makes this one roll back.
+        if (manualProof) {
+          const claimed = await transactionsRepository.consumeDiscountProofUpload(tx, manualProof.id, txCreated.id);
+          if (claimed === 0) {
+            throw new TransactionError('MANUAL_DISCOUNT_PROOF_ALREADY_USED', 'This proof photo is already attached to another sale. Take or upload a new photo.', 409);
+          }
+        }
 
         // POS-PERF-P15R3 — flip the fencing row to 'committed' atomically
         // with the sale insert/reservation above: same $transaction, so
@@ -2864,6 +3079,8 @@ export const transactionsService = {
               deviceId: data.deviceId,
               taxBasis: item.taxBasis,
               discountChoice: item.discountChoice,
+              discountFlow: item.discountFlow,
+              manualDiscount: item.manualDiscount,
             },
             ipAddress,
           );

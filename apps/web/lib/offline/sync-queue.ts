@@ -65,7 +65,16 @@ export async function enqueueOfflineTransaction(branchCode: string, payload: Cre
 // discount/VAT rate checkout no longer uses. Resending gets the same answer,
 // and charging the new total would record something other than what the
 // customer paid, so it waits visibly for a supervisor (runbook §Offline).
-const DEFINITIVE_QUEUE_REJECTION_CODES = new Set(['PRODUCT_OPTION_REQUIRED', 'PRODUCT_OPTION_LIMIT_EXCEEDED', 'PRODUCT_OPTION_NOT_AVAILABLE', 'TAX_SETTINGS_CHANGED']);
+// POS-PERF-P55 — MANUAL_DISCOUNT_OFFLINE_UNSUPPORTED: a queued sale that
+// claims a manual discount (this terminal never queues one) is never
+// accepted, so it waits visibly instead of being resent on every reconnect.
+const DEFINITIVE_QUEUE_REJECTION_CODES = new Set([
+  'PRODUCT_OPTION_REQUIRED',
+  'PRODUCT_OPTION_LIMIT_EXCEEDED',
+  'PRODUCT_OPTION_NOT_AVAILABLE',
+  'TAX_SETTINGS_CHANGED',
+  'MANUAL_DISCOUNT_OFFLINE_UNSUPPORTED',
+]);
 
 export function isDefinitiveQueueRejection(code: string | null | undefined): boolean {
   return code !== null && code !== undefined && DEFINITIVE_QUEUE_REJECTION_CODES.has(code);

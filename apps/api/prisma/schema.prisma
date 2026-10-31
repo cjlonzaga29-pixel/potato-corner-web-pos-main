@@ -398,18 +398,23 @@ model User {
   // POS-PERF-P35R — explicit catalog-management assignment, separate from
   // the createdBy provenance relations above. A user can be the recorded
   // manager of records they did not create.
-  managedProducts            Product[]                     @relation("ProductManagedBy")
-  managedProductCategories   ProductCategory[]             @relation("ProductCategoryManagedBy")
-  managedProductOptionGroups ProductOptionGroup[]          @relation("ProductOptionGroupManagedBy")
-  managedProductOptions      ProductOption[]               @relation("ProductOptionManagedBy")
-  managedInventoryCategories InventoryCategory[]           @relation("InventoryCategoryManagedBy")
-  managedUnitsOfMeasure      UnitOfMeasure[]               @relation("UnitOfMeasureManagedBy")
-  managedUnitConversions     UnitConversion[]              @relation("UnitConversionManagedBy")
-  managedInventoryItems      InventoryItem[]               @relation("InventoryItemManagedBy")
-  catalogAssignmentsMade     CatalogManagementAssignment[] @relation("CatalogAssignmentAssignedBy")
-  catalogAssignmentsReceived CatalogManagementAssignment[] @relation("CatalogAssignmentNewManager")
-  promotionsCreated          Promotion[]                   @relation("PromotionCreatedBy")
-  promotionsUpdated          Promotion[]                   @relation("PromotionUpdatedBy")
+  managedProducts                Product[]                     @relation("ProductManagedBy")
+  managedProductCategories       ProductCategory[]             @relation("ProductCategoryManagedBy")
+  managedProductOptionGroups     ProductOptionGroup[]          @relation("ProductOptionGroupManagedBy")
+  managedProductOptions          ProductOption[]               @relation("ProductOptionManagedBy")
+  managedInventoryCategories     InventoryCategory[]           @relation("InventoryCategoryManagedBy")
+  managedUnitsOfMeasure          UnitOfMeasure[]               @relation("UnitOfMeasureManagedBy")
+  managedUnitConversions         UnitConversion[]              @relation("UnitConversionManagedBy")
+  managedInventoryItems          InventoryItem[]               @relation("InventoryItemManagedBy")
+  catalogAssignmentsMade         CatalogManagementAssignment[] @relation("CatalogAssignmentAssignedBy")
+  catalogAssignmentsReceived     CatalogManagementAssignment[] @relation("CatalogAssignmentNewManager")
+  promotionsCreated              Promotion[]                   @relation("PromotionCreatedBy")
+  promotionsUpdated              Promotion[]                   @relation("PromotionUpdatedBy")
+  // POS-PERF-P55
+  manualDiscountTypesCreated     ManualDiscountType[]          @relation("ManualDiscountTypeCreatedBy")
+  manualDiscountTypesUpdated     ManualDiscountType[]          @relation("ManualDiscountTypeUpdatedBy")
+  manualDiscountTypesDeactivated ManualDiscountType[]          @relation("ManualDiscountTypeDeactivatedBy")
+  discountProofUploads           DiscountProofUpload[]
 
   // POS-PERF-P52 — payroll (employee side only; actor columns are plain ids)
   payRates           EmployeePayRate[]
@@ -455,9 +460,12 @@ model Branch {
   staffPinBranchLookups    StaffPinBranchLookup[]
 
   // CR-001
-  exclusiveProducts Product[]          @relation("ProductExclusiveBranch")
-  promotionBranches PromotionBranch[]
-  productInventory  ProductInventory[]
+  exclusiveProducts    Product[]             @relation("ProductExclusiveBranch")
+  promotionBranches    PromotionBranch[]
+  // POS-PERF-P55
+  manualDiscountTypes  ManualDiscountType[]
+  discountProofUploads DiscountProofUpload[]
+  productInventory     ProductInventory[]
 
   expenses Expense[]
 
@@ -2143,6 +2151,11 @@ model Transaction {
   // POS-PERF-P50R — tax basis frozen at creation (see SaleTaxSnapshot in
   // @potato-corner/shared). NULL on sales recorded before P50R.
   taxSnapshot                 Json?                    @map("tax_snapshot")
+  // POS-PERF-P55 — a cashier-entered peso discount (discount_type 'manual').
+  // The type id plus a frozen snapshot of its name/settings and the amount;
+  // NULL on every other sale, including all sales recorded before P55.
+  manualDiscountTypeId        String?                  @map("manual_discount_type_id")
+  manualDiscountSnapshot      Json?                    @map("manual_discount_snapshot")
 
   branch                 Branch                 @relation(fields: [branchId], references: [id], onDelete: Cascade)
   shift                  Shift?                 @relation(fields: [shiftId], references: [id])
@@ -2153,6 +2166,8 @@ model Transaction {
   items                  TransactionItem[]
   deductionJob           InventoryDeductionJob?
   checkoutAttempt        CheckoutAttempt?
+  manualDiscountType     ManualDiscountType?    @relation(fields: [manualDiscountTypeId], references: [id])
+  discountProofUpload    DiscountProofUpload?
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -2206,6 +2221,64 @@ model Promotion {
 
   @@index([isEnabled])
   @@map("promotions")
+}
+
+/// POS-PERF-P55 — a supervisor-managed, branch-scoped discount type for the
+/// manual peso discount at checkout. Name and two switches only: the cashier
+/// enters the amount per sale, so there is no rate, amount, product scope or
+/// schedule here. Never deleted once created (sales reference it):
+/// deactivated instead. Every sale also freezes a snapshot of it.
+model ManualDiscountType {
+  id              String    @id @default(uuid())
+  branchId        String    @map("branch_id")
+  name            String
+  applyToPos      Boolean   @default(true) @map("apply_to_pos")
+  requireProof    Boolean   @default(false) @map("require_proof")
+  isActive        Boolean   @default(true) @map("is_active")
+  // Optimistic-concurrency token, same contract as Promotion.version.
+  version         Int       @default(1)
+  createdById     String    @map("created_by_id")
+  updatedById     String?   @map("updated_by_id")
+  deactivatedAt   DateTime? @map("deactivated_at")
+  deactivatedById String?   @map("deactivated_by_id")
+
+  branch        Branch        @relation(fields: [branchId], references: [id])
+  createdBy     User          @relation("ManualDiscountTypeCreatedBy", fields: [createdById], references: [id])
+  updatedBy     User?         @relation("ManualDiscountTypeUpdatedBy", fields: [updatedById], references: [id])
+  deactivatedBy User?         @relation("ManualDiscountTypeDeactivatedBy", fields: [deactivatedById], references: [id])
+  transactions  Transaction[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([branchId, isActive])
+  @@map("manual_discount_types")
+}
+
+/// POS-PERF-P55 — server-side registry of every discount-proof photo
+/// uploaded through POST /api/transactions/discount-proof. Checkout refers
+/// to a manual-discount proof by this row's id (never a storage key), and
+/// the row records who uploaded it, for which branch and shift, and which
+/// sale consumed it — so a proof can be attached only to a sale by the same
+/// cashier, branch and shift, and only to one sale.
+model DiscountProofUpload {
+  id            String         @id @default(uuid())
+  branchId      String         @map("branch_id")
+  shiftId       String         @map("shift_id")
+  uploadedById  String         @map("uploaded_by_id")
+  storageKey    String         @unique @map("storage_key")
+  proofType     ImageProofType @map("proof_type")
+  transactionId String?        @unique @map("transaction_id")
+  consumedAt    DateTime?      @map("consumed_at")
+
+  branch      Branch       @relation(fields: [branchId], references: [id])
+  uploadedBy  User         @relation(fields: [uploadedById], references: [id])
+  transaction Transaction? @relation(fields: [transactionId], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([branchId, createdAt])
+  @@map("discount_proof_uploads")
 }
 
 model PromotionProduct {
@@ -2570,11 +2643,11 @@ model AttendanceRecord {
   originalRecordId   String?             @map("original_record_id")
   deletedAt          DateTime?           @map("deleted_at")
 
-  employee       User               @relation("AttendanceEmployee", fields: [employeeId], references: [id])
-  branch         Branch             @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  corrector      User?              @relation("AttendanceCorrector", fields: [correctedBy], references: [id])
-  originalRecord AttendanceRecord?  @relation("AttendanceCorrection", fields: [originalRecordId], references: [id])
-  corrections    AttendanceRecord[] @relation("AttendanceCorrection")
+  employee       User                     @relation("AttendanceEmployee", fields: [employeeId], references: [id])
+  branch         Branch                   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  corrector      User?                    @relation("AttendanceCorrector", fields: [correctedBy], references: [id])
+  originalRecord AttendanceRecord?        @relation("AttendanceCorrection", fields: [originalRecordId], references: [id])
+  corrections    AttendanceRecord[]       @relation("AttendanceCorrection")
   breaks         AttendanceBreak[]
   payrollClaims  PayrollAttendanceClaim[]
 

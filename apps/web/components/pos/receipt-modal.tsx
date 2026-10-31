@@ -38,6 +38,8 @@ const DISCOUNT_TYPE_LABEL: Record<string, string> = {
 function discountLabel(transaction: TransactionResponse): string {
   const type = transaction.discount_type;
   if (!type) return 'Discount';
+  // POS-PERF-P55 — the type name frozen on the sale, never the live type.
+  if (type === 'manual') return transaction.manual_discount ? `${transaction.manual_discount.name} discount` : 'Discount';
   const name = DISCOUNT_TYPE_LABEL[type] ?? type;
   return transaction.discount_rate_used != null ? `${name} Discount (${transaction.discount_rate_used}%)` : `${name} Discount`;
 }

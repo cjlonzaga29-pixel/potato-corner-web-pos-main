@@ -96,6 +96,9 @@ interface CreateTransactionRow {
   notes?: string | null;
   /** POS-PERF-P50R — SaleTaxSnapshot frozen at creation. */
   taxSnapshot?: Prisma.InputJsonValue | null;
+  /** POS-PERF-P55 — manual peso discount reference + frozen snapshot; omitted/null for every other sale. */
+  manualDiscountTypeId?: string | null;
+  manualDiscountSnapshot?: Prisma.InputJsonValue | null;
   deviceId: string | null;
   /** POS-PERF-P15 — see transactions.repository.ts findByIdempotencyKey. Null when the client omitted it (no idempotency protection, same as before this column existed). */
   idempotencyKey?: string | null;
@@ -357,6 +360,8 @@ export const transactionsRepository = {
           offlineProvisionalNumber: data.offlineProvisionalNumber,
           notes: data.notes,
           ...(data.taxSnapshot ? { taxSnapshot: data.taxSnapshot } : {}),
+          ...(data.manualDiscountTypeId ? { manualDiscountTypeId: data.manualDiscountTypeId } : {}),
+          ...(data.manualDiscountSnapshot ? { manualDiscountSnapshot: data.manualDiscountSnapshot } : {}),
           deviceId: data.deviceId,
           idempotencyKey: data.idempotencyKey ?? null,
           items: {
@@ -428,6 +433,29 @@ export const transactionsRepository = {
    */
   findByIdempotencyKey(idempotencyKey: string) {
     return prisma.transaction.findUnique({ where: { idempotencyKey }, include: transactionInclude });
+  },
+
+  /** POS-PERF-P55 — registers a discount-proof object the server itself just stored. */
+  async createDiscountProofUpload(data: { branchId: string; shiftId: string; uploadedById: string; storageKey: string; proofType: ImageProofType }) {
+    return prisma.discountProofUpload.create({ data, select: { id: true } });
+  },
+
+  async findDiscountProofUpload(id: string) {
+    return prisma.discountProofUpload.findUnique({ where: { id } });
+  },
+
+  /**
+   * POS-PERF-P55 — attaches the upload to the sale inside the sale's own
+   * $transaction. Conditional on it still being unattached, so one proof can
+   * never end up on two sales even under concurrent checkouts (the loser's
+   * whole sale rolls back). Returns the number of rows claimed (0 or 1).
+   */
+  async consumeDiscountProofUpload(tx: Prisma.TransactionClient, id: string, transactionId: string): Promise<number> {
+    const result = await tx.discountProofUpload.updateMany({
+      where: { id, transactionId: null },
+      data: { transactionId, consumedAt: new Date() },
+    });
+    return result.count;
   },
 
   /**

@@ -10,6 +10,7 @@ import {
   type ImageProofType,
 } from '../constants/status.js';
 import { cartItemPromotionAckSchema, selectedDiscountAckSchema } from './promotion.schema.js';
+import { DISCOUNT_FLOWS, MANUAL_DISCOUNT_TYPE, checkoutManualDiscountSchema, transactionManualDiscountSchema } from './manual-discount.schema.js';
 
 const paymentMethodValues = Object.values(PAYMENT_METHOD) as [PaymentMethod, ...PaymentMethod[]];
 const discountTypeValues = Object.values(DISCOUNT_TYPE) as [DiscountType, ...DiscountType[]];
@@ -18,6 +19,21 @@ const transactionStatusValues = Object.values(TRANSACTION_STATUS) as [
   ...TransactionStatus[],
 ];
 const imageProofTypeValues = Object.values(IMAGE_PROOF_TYPE) as [ImageProofType, ...ImageProofType[]];
+/**
+ * POS-PERF-P55 — every discount_type a stored sale can carry: the client-
+ * selectable ones plus 'manual', which only the server ever writes (a
+ * client cannot send it as discount_type; see checkoutManualDiscountSchema).
+ */
+const storedDiscountTypeSchema = z.union([z.enum(discountTypeValues), z.literal(MANUAL_DISCOUNT_TYPE)]);
+/**
+ * POS-PERF-P55 — a checkout's discount_type: the legacy values, plus
+ * 'manual', which is valid only together with manual_discount and
+ * discount_flow 'manual_v1' (superRefine below). Sending it is also the
+ * rollback fence: a pre-P55 API rejects 'manual' as an unknown enum value
+ * (VALIDATION_ERROR, nothing written) instead of stripping the unknown
+ * manual_discount field and charging the full price.
+ */
+const checkoutDiscountTypeSchema = z.enum([...discountTypeValues, MANUAL_DISCOUNT_TYPE]);
 
 /**
  * flavor_id is optional — not every product variant has flavors to choose
@@ -86,7 +102,7 @@ export const createTransactionSchema = z
     shift_id: z.uuid().optional(),
     items: z.array(cartItemSchema).min(1),
     payment_method: z.enum(paymentMethodValues),
-    discount_type: z.enum(discountTypeValues).optional(),
+    discount_type: checkoutDiscountTypeSchema.optional(),
     // PWD/Senior Citizen only — logged encrypted for BIR compliance.
     discount_id_reference: z.string().trim().min(1).optional(),
     // PROMO only — passed directly rather than computed (architecture doc §Discounts).
@@ -123,6 +139,11 @@ export const createTransactionSchema = z
     // (id + version); per-line amounts are acknowledged in items[].promotion.
     selected_discount: selectedDiscountAckSchema,
     discount_choice: z.enum(DISCOUNT_CHOICES).optional(),
+    // POS-PERF-P55 — 'manual_v1' opts the sale into the manual-discount rules
+    // (explicit choice, no promotions, one manual peso discount or the
+    // statutory PWD/Senior discount). Absent = legacy client, pre-P55 rules.
+    discount_flow: z.enum(DISCOUNT_FLOWS).optional(),
+    manual_discount: checkoutManualDiscountSchema.optional(),
     // POS-PERF-P25 — optional cashier-entered order note (e.g. "no straw").
     // Never required, never validated beyond a length cap; empty/whitespace
     // is normalized to undefined so a blank textarea never persists an
@@ -155,6 +176,12 @@ export const createTransactionSchema = z
         path: ['payment_method'],
         message: 'Offline sales must be paid in cash — non-cash payment proof cannot be captured while offline',
       });
+    }
+    if (data.manual_discount && data.discount_flow === undefined) {
+      ctx.addIssue({ code: 'custom', path: ['discount_flow'], message: 'manual_discount requires discount_flow "manual_v1"' });
+    }
+    if ((data.discount_type === MANUAL_DISCOUNT_TYPE) !== (data.manual_discount !== undefined)) {
+      ctx.addIssue({ code: 'custom', path: ['discount_type'], message: 'discount_type "manual" and manual_discount must be sent together' });
     }
   });
 
@@ -209,7 +236,7 @@ export const transactionExportQuerySchema = z.object({
 
 export const discountAuditQuerySchema = z.object({
   branch_id: z.uuid().optional(),
-  discount_type: z.enum(['pwd', 'senior_citizen', 'employee', 'manager_override', 'promotional']).optional(),
+  discount_type: z.enum(['pwd', 'senior_citizen', 'employee', 'manager_override', 'promotional', MANUAL_DISCOUNT_TYPE]).optional(),
   date_from: z.iso.date().optional(),
   date_to: z.iso.date().optional(),
   page: z.coerce.number().int().positive().default(1),
@@ -235,7 +262,7 @@ export const discountAuditTransactionRowSchema = z.object({
   branchId: z.uuid(),
   transactionNumber: z.string(),
   cashierId: z.uuid(),
-  discountType: z.enum(discountTypeValues).nullable(),
+  discountType: storedDiscountTypeSchema.nullable(),
   discountAmount: z.number(),
   discountRateUsed: z.number().nullable().optional(),
   discountCustomerId: z.string().nullable(),
@@ -315,7 +342,10 @@ export const transactionResponseSchema = z.object({
   payment_method: z.enum(paymentMethodValues),
   subtotal: z.number(),
   discount_amount: z.number(),
-  discount_type: z.enum(discountTypeValues).nullable(),
+  discount_type: storedDiscountTypeSchema.nullable(),
+  // POS-PERF-P55 — the manual peso discount of a 'manual' sale, from its
+  // frozen snapshot (name as it was when the sale was rung). Null otherwise.
+  manual_discount: transactionManualDiscountSchema.nullable().optional(),
   // Task 209.xx — the configured discount percentage actually applied at
   // transaction-creation time, frozen forever on the row (transactions.service.ts
   // computeAmounts). Never recomputed from today's Discount Settings —
@@ -387,7 +417,7 @@ export const offlineTransactionItemSchema = z
     shift_id: z.uuid().optional(),
     items: z.array(cartItemSchema).min(1),
     payment_method: z.enum(paymentMethodValues),
-    discount_type: z.enum(discountTypeValues).optional(),
+    discount_type: checkoutDiscountTypeSchema.optional(),
     discount_id_reference: z.string().trim().min(1).optional(),
     discount_amount: z.number().nonnegative().optional(),
     cash_tendered: z.number().nonnegative().optional(),
@@ -400,6 +430,10 @@ export const offlineTransactionItemSchema = z
     tax_basis: taxBasisSchema.optional(),
     // POS-PERF-P50R — recorded only; a paid offline sale is never refused for it.
     discount_choice: z.enum(DISCOUNT_CHOICES).optional(),
+    // POS-PERF-P55 — accepted only so sync can refuse it visibly: a manual
+    // discount needs online configuration and proof, so it is never queued.
+    discount_flow: z.enum(DISCOUNT_FLOWS).optional(),
+    manual_discount: checkoutManualDiscountSchema.optional(),
     // Epoch ms from the client's Dexie queue (createdAt) — the server sorts
     // the batch by this before processing, per the architecture doc's "sync
     // queue processes transactions in chronological order" rule.
@@ -524,6 +558,9 @@ export const discountProofUploadRequestSchema = z.object({
 export const discountProofUploadResponseSchema = z.object({
   discount_proof_key: z.string(),
   discount_proof_type: z.enum(imageProofTypeValues),
+  // POS-PERF-P55 — server-issued reference a manual-discount checkout sends
+  // instead of the key. Optional so a pre-P55 API response still parses.
+  discount_proof_upload_id: z.uuid().optional(),
 });
 
 export const discountProofResponseSchema = z.object({

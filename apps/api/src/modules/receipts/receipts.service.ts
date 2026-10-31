@@ -2,7 +2,7 @@ import { receiptsRepository } from './receipts.repository.js';
 import { ReceiptError, type PublicReceiptResponse } from './receipts.types.js';
 import type { SelectedOptionSnapshot } from '../transactions/transactions.repository.js';
 
-/** POS-PERF-P49 — the frozen promotion name from TransactionItem.promotionSnapshot, never the live promotion row. */
+/** POS-PERF-P49 — the frozen promotion name from TransactionItem.promotionSnapshot, never the live promotion row. P55 reuses it for the manual discount snapshot's name. */
 function promotionName(snapshot: unknown): string | null {
   if (!snapshot || typeof snapshot !== 'object') return null;
   const name = (snapshot as { name?: unknown }).name;
@@ -40,6 +40,7 @@ export const receiptsService = {
       subtotal: transaction.subtotal.toNumber(),
       discount_amount: transaction.discountAmount.toNumber(),
       discount_type: transaction.discountType,
+      manual_discount_name: promotionName(transaction.manualDiscountSnapshot),
       discount_rate_used: transaction.discountRateUsed?.toNumber() ?? null,
       vat_amount: transaction.vatAmount.toNumber(),
       vat_exempt_amount: transaction.vatExemptAmount.toNumber(),

@@ -622,7 +622,7 @@ and the browser runs (P1–P4, K1, B1–B2) re-checked them.
 - **Refunds/voids** flip status only. The stored mode, VAT placeholder and snapshots are kept (integration-tested), and
   nothing is recomputed from current settings.
 - **Not changed (limitation):** the branch dashboard's `todayVat` card sums stored `vat_amount`. Manual-total sales
-  add 0 to it and are not counted separately there.
+  add 0 to it and are not counted separately there. *(Fixed in P55R3, §14.3.)*
 
 ### 13.6 Offline and compatibility
 
@@ -733,3 +733,178 @@ and the old web's Reports/transaction views of manual-total sales (code-reading 
 | Starting SHA | `6012fcb575739b7fce1de4ac4778dc3e712f8a5d` (on `ab35dd1` → `042a700`), clean tree, branch `feat/pos-perf-p55-manual-discounts` |
 | Final SHA | the local P55R2 commit on top of `6012fcb` (reported in the handoff) |
 | Git status after commit | clean; branch 3 commits ahead of `origin/main`. Not pushed, not merged, not deployed, no production access |
+
+## 14. P55R3 — receipt and report compatibility for manual-total sales (2026-11-01)
+
+Started at `81f7d38` (on `6012fcb` → `ab35dd1` → `042a700`), clean tree. One session, no subagents. Local only:
+nothing merged to `main`, pushed or deployed, and no production access. The manual-total arithmetic, proof security,
+`computeSaleTax` and the PWD/Senior formula are unchanged. No tax-policy decision was made.
+
+### 14.1 Defects reproduced before any fix
+
+All reproduced in a real browser on final builds against the P55R2 API, using legacy-only, manual-only and mixed
+periods (§14.6), unless marked "unit".
+
+| # | Build | Reader | Observed |
+| --- | --- | --- | --- |
+| 1 | actual 042a700 web | public receipt `/r/<manual-total sale>` | "Application error … Something went wrong" (`ReceiptTaxLines` → `formatPeso(null)`) |
+| 2 | 042a700 web | Branch Sales → receipt (`ReceiptModal`, the same component as the terminal's View Receipt) | the whole page becomes "Application error" |
+| 3 | 042a700 web | Supervisor Reports | manual-only day "VAT Collected ₱0", each row VAT "₱0.00"; mixed day "₱53.57" with no sign that 5 sales were left out (`Intl` formats `null` as 0) |
+| 4 | P55R2 web | Supervisor Reports "VAT Collected" | manual-only day "₱0"; the mixed day's exclusion only in a hover tooltip |
+| 5 | P55R2 API | `GET /branches/:id/stats` `todayVat` | summed every `vat_amount`, placeholders included, with no coverage information (code + unit; no screen shows it) |
+| 6 | P55R2 API | Daily Sales CSV/PDF | a period with manual-total sales still had a plain "VAT" header (unit, failing test first) |
+
+Already correct in P55R2 and re-verified: rows / detail / drilldown "Not calculated"; `/r/` and the POS receipt "VAT not
+calculated by this checkout"; Discount Compliance `null`; transaction-row exports (blank VAT + "Tax Calculation");
+refunds (status only; stored mode and values kept); checkout recovery; offline sync.
+
+### 14.2 Why one release is not enough
+
+Deploying new code cannot change an already-loaded 042a700 bundle, and the API cannot help it truthfully:
+`null` or an absent field crashes its receipt formatter, and any number would be a false VAT figure. So:
+
+- **Release 1 — compatibility** (`release/pos-perf-p55r3-compat-readers`, from the deployed `042a700`): tolerant
+  receipt and report readers only. It adds no checkout, request field, migration or API code, so no build in
+  production can write a manual-total sale while it rolls out. Runbook: `docs/runbooks/pos-perf-p55r3-compat-readers.md`.
+- **Release 2 — P55** (this branch): the manual-total checkout, which merges release 1.
+
+### 14.3 Fixes
+
+Release 1 (`a414bf1`), web plus shared **response** types only:
+
+- Receipts (`/r/`, `ReceiptModal`): "VAT not calculated by this checkout"; legacy and PWD/Senior receipts unchanged; an
+  unknown discount type shows as "Discount" (on `/r/`, the frozen `manual_discount_name`). `DISCOUNT_TYPE` and every
+  request schema are untouched, so the 042a700 API still refuses a `manual` write.
+- Reports, detail, drilldown, Discount Compliance and Admin Daily Sales: the P55R2 readers back-ported verbatim, plus
+  the KPI fix below.
+- Offline queue: a sale the P55 web queued in the same browser is forwarded with its own `discount_flow` and
+  `manual_discount` (the P55R2 sync fix). Without this, a web rollback would leave such sales queued indefinitely
+  (`CALCULATION_MODE_NOT_SUPPORTED` is retryable there: never discarded, but never synced either).
+
+Release 2 (`f5a5691`):
+
+- **VAT Collected** (Supervisor/Branch Reports): mixed period → "₱X" plus a visible "VAT-calculated sales only —
+  excludes N manual-total sale(s)"; manual-only period → "Not calculated" (never ₱0); a "Without VAT Calculation"
+  card shows their amount paid and count. `KpiCard` gains `valueText` and `caption` (always visible, unlike `tooltip`).
+- **`todayVat`** (`branchStats`, `findAllStatsGrouped`): a `groupBy calculationMode` sums the VAT of VAT-calculated
+  sales only (`NULL` = before P55R2) and adds `todayTaxNotCalculatedCount` / `todayTaxNotCalculatedSales` (optional in
+  `branchStatsResponseSchema` for older APIs).
+- **Daily Sales export**: when the export contains manual-total sales, the VAT column is headed "VAT (VAT-calculated
+  sales only)" (`ReportColumn.partialCoverageHeader`, applied in `columnsForRows`, so CSV and PDF both get it).
+  Historical exports keep exactly their headers (asserted).
+
+Merge `5b7320d` brings release 1 into this branch. Every conflict was resolved to this branch (a superset). Two
+auto-merged duplicates (the calculation-mode constants in `sale-tax.ts`, the queue forwarding in `sync-queue.ts`) were
+restored to this branch's version, so the merged code tree is **identical to `f5a5691`**, the build verified below.
+
+### 14.4 Report semantics (unchanged where not listed)
+
+| Figure | Covers | Manual-total sales |
+| --- | --- | --- |
+| VAT Collected / `todayVat` / Daily Sales `vat_total` | VAT-calculated sales only | excluded; counted apart with amount paid; labelled whenever present |
+| Gross sales, net sales, discounts, refunds, payments, expenses | all sales, as before | included at their stored amounts |
+| Row VAT, detail, drilldown | per sale | "Not calculated" / blank; a genuine calculated ₱0 (PWD/Senior) stays "₱0.00" |
+| Discount Compliance | split by mode | VAT-exempt figures `null` ("Not calculated") |
+| Exports | historical periods byte-identical | extra columns and the VAT header change only when the export contains such sales |
+
+### 14.5 Rollout (separate branches, explicit ancestry; nothing pushed)
+
+| Step | Ref | SHA | Parent(s) |
+| --- | --- | --- | --- |
+| Deployed base | `main` / `origin/main` | `042a700` | — |
+| Release 1 code | `release/pos-perf-p55r3-compat-readers` | `a414bf1` | `042a700` |
+| Release 1 runbook (tip) | same | `6d1fd93` | `a414bf1` |
+| P55 → P55R2 | `feat/pos-perf-p55-manual-discounts` | `ab35dd1`, `6012fcb`, `81f7d38` | `042a700` → … |
+| P55R3 release-2 fixes | same | `f5a5691` | `81f7d38` |
+| Merge of release 1 | same | `5b7320d` | `f5a5691`, `6d1fd93` |
+| Runbook §14 (tip) | same | the commit adding this section | `5b7320d` |
+
+**Release 1:** (1) deploy the web from `6d1fd93` (the API is unchanged, so deploying it is unnecessary); (2) reload
+every terminal and back-office browser once while **online**; (3) soak until every device has reloaded. No
+manual-total sale may exist before it: confirm `SELECT count(*) FROM transactions WHERE calculation_mode =
+'manual_total_v1';` = 0 on production (not run in this session).
+
+**Release 2** (order unchanged from §13.7): migrations → API (API-first: release-1 webs work against it, verified) →
+web → reload. Do not ring manual-total sales through a staged web before the API step. A sale rung by a staged web
+after that step is readable by release 1.
+
+**Rollback.**
+- Web: roll back to **release 1**, never to `042a700` once any manual-total sale exists. Release 1 reads such sales
+  truthfully and syncs their queue (verified).
+- API: once any manual-total sale exists, **do not roll the API back below P55R2.** Verified: the 042a700 API returns
+  such a sale's placeholder `vat_amount: 0` with no mode, and even the release-1 web then prints "VATable sales ₱500.00 /
+  VAT (12%) ₱0.00". That is false, and no web build can correct it. Fix forward instead, or roll back the web only.
+  Before the first manual-total sale, API rollback follows §12.6 / §13.7 as before.
+- Migrations: never roll back (§13.7).
+
+**Migration inventory.** Release 1: none. Release 2: `20261101120000_pos_perf_p55_manual_discounts`,
+`20261101120100_pos_perf_p55_validate_fks`, `20261101120200_pos_perf_p55_manual_discount_type_unique_name` (run the
+§12.5 duplicate pre-check first), `20261101130000_pos_perf_p55r2_calculation_mode`,
+`20261101130100_pos_perf_p55r2_validate_calculation_mode`. P55R3 adds none; no schema or proof code changed.
+
+### 14.6 Verification
+
+Environment: a **new** embedded Postgres 18.4 cluster on `127.0.0.1:46755` (data in this session's scratchpad, fresh
+password, throwaway `ENCRYPTION_KEY`/`HASH_KEY`), DBs `p55b_311013` (browser) and `p55r3_t` (API suites). Every
+`prisma migrate deploy` printed and checked its `127.0.0.1:46755/<db>` target; `PRODUCTION_DATABASE_URL_DIRECT` was
+unset; the worktree `.env` DB URLs still point at `127.0.0.1:1`. Production, `pos_verify` and other sessions' clusters
+were not touched. `API_PORT=4755`; webs: P55R3 on 3755, the actual 042a700 (a `git archive 042a700` build) on 3756,
+release 1 on 3757, and 3760 for same-origin build swaps. Storage: the in-memory stand-in on `127.0.0.1:54755`. **No proof
+code changed**, so real Supabase Storage was not used; the proof evidence is §12 (real local Storage) and §13.4. Fixture
+sales were rung through the real webs. To build three periods, a harness-only `UPDATE … created_at` on the disposable DB
+moved sales to D-2 (legacy only) and D-1 (manual only), leaving today mixed. Chromium (Playwright 1.61.1): desktop
+1440 × 900, tablet 820 × 1180, phone 390 × 844.
+
+| Check | Result |
+| --- | --- |
+| Reproduction (§14.1) on the pre-fix builds | defects 1–4 observed in the browser; 5–6 as failing unit tests |
+| Release-2 API suites, real Postgres, serial (branches incl. integration, reports, receipts, report renderers, transactions incl. P55 integration) | **28 files, 858 / 858** |
+| Release-2 web / shared / type-check + lint | see §14.6a |
+| Release 1: type-check + lint · shared · API receipts/reports/renderers | 7 / 7 tasks, 0 errors · 41 / 41 · 93 / 93 |
+| Release-1 web suite | 1551 / 1554 in the parallel run. The 4 failing files re-run alone: **203 / 203** (3 timeouts under load in untouched files; `sync-queue.test.ts` was read mid-edit) |
+| Builds | shared, API `tsc` and web `next build` for release 1, release 2 and 042a700: pass |
+| **Release-1 web → P55R3 API** (receipts, receipt modal, Reports for 4 periods, 3 layouts) | **18 / 18**. `/r/` manual: "VAT not calculated"; PWD and legacy `/r/` show exactly the historical breakdown; mixed day "₱53.57 VAT-calculated sales only — excludes 5 manual-total sales" + "Without VAT Calculation ₱2,400"; manual-only day "Not calculated"; "₱0.00" only on the 2 genuine PWD rows |
+| **P55R3 web → P55R3 API** | **12 / 12**, plus 6 / 6 layout checks; the receipt modal shows "Employee discount −₱50.00 … VAT not calculated" |
+| **Actual 042a700 web → P55R3 API** (residual, documented) | 8 / 8 as expected: `/r/` and the Branch Sales receipt crash; VAT Collected "₱0" or silent |
+| Release-1 web → **actual 042a700 API** | legacy sale ₱500, VAT ₱53.57, mode NULL (as 042a700); legacy and PWD receipts unchanged |
+| Release-1 web → P55R3 API, legacy sale | ₱500, VAT ₱53.57, `legacy_vat_v1` |
+| Live `GET /branches/:id/stats` | `todayVat` 160.71 = DB sum over VAT-calculated sales; 6 manual-total sales / ₱3,150 = DB; gross/net over all sales |
+| Service worker, same origin, 042a700 → release 1 | A0 the SW controls the page; A1 old `/r/` crashes; **A2 an open old page that is not reloaded still crashes after the deploy**; A3 a new online navigation gets release 1; A4 an online reload → release 1, receipt correct; A5 the registration survives; **A6 an offline reload serves the cached 042a700 build** (no cached sales list, so nothing to crash on in that run); A7 back online, one navigation → release 1 |
+| Web rollback P55R3 → release 1, queue | B0–B3 pass: a ₱750 manual-total sale queued offline on P55R3 (flow `manual_v1`, basis `manual_total_v1`); the web swapped to release 1 while offline; reconnect; first sync response lost after commit. **B4: one sale, `manual_total_v1`, ₱750, flow `manual_v1`, cashier Ana Reyes, offline number unique, 10 → 11 sales.** The harness marked B4 FAIL because its cashier lookup matched the seed's other "Ana" (super admin Ana Delacruz). The stored row was checked directly, and the lookup is fixed |
+
+Harness-only issues (fixed in the scratch scripts, not the app): the `127.0.0.1` vs `localhost` cookie origin (the
+middleware redirects to `request.url`'s host); git-bash rewriting a leading-slash env value; the first `/r/` request
+right after an API restart returned "Receipt not found" (passed on re-run without a restart); a reload aborted while the
+worker was mid-navigation; the duplicate "Ana".
+
+**§14.6a Release 2 at the merge tree (= `f5a5691` code).** `turbo type-check lint --force`: 7 / 7 tasks, 0 errors
+(API warnings 370, unchanged from §13.8). Shared 49 / 49. Web full suite 1582 / 1583. The one failure,
+`login-form.test.tsx` "returns to the credentials form when the challenge expires" (a countdown timing test in a file
+P55R3 does not touch), passed 15 / 15 twice when run alone. Affected web suites: reports-view 34 / 34, kpi-card 3 / 3.
+
+### 14.7 Residual old-client behavior (cannot be fixed by deploying code)
+
+- A 042a700 page already open and never reloaded keeps its code: a manual-total receipt crashes it, and its Reports
+  show "₱0.00" or a silent VAT total. Its own checkout stays legacy and correct.
+- A 042a700 build loaded **offline** from the service-worker cache stays 042a700 until the device is online and
+  navigates once. If its cached API responses (`/api/*` GETs are NetworkFirst, 24 h) include a manual-total sale, that
+  receipt crashes. Not reproduced (nothing such was cached in the run).
+- Mitigation: release 1 must reach every device before release 2 rings a manual-total sale. Do not rely on everyone
+  reloading at the same moment: soak release 1, and confirm the reload per terminal (open the POS and check that a
+  receipt renders) before release 2's web step. Customers' phones opening `/r/` load the current deployment.
+- An API rolled back below P55R2 misreports manual-total sales on every web (§14.5).
+
+### 14.8 Not verified
+
+Real iOS/Android devices and an installed (home-screen) PWA (desktop Chromium only); the offline-cached old receipt
+crash (A6 had nothing cached); production data shapes and the production manual-total count; Admin Reports in the
+browser (unit tests and code review only); the Daily Sales export through the real export job and Storage (renderer
+unit tests only).
+
+### 14.9 State
+
+| | |
+| --- | --- |
+| Release 1 | `release/pos-perf-p55r3-compat-readers` at `6d1fd93` (worktree `pc-p55r3-compat-worktree`), 2 commits on `042a700` |
+| Release 2 | `feat/pos-perf-p55-manual-discounts`: `f5a5691`, merge `5b7320d`, then this runbook commit |
+| Pushed / merged to main / deployed | none |

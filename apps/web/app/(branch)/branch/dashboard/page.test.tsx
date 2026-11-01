@@ -219,6 +219,16 @@ describe('BranchDashboardPage', () => {
     expect(screen.getAllByText('5')).toHaveLength(2);
   });
 
+  it('names the threshold count for what it is when the alerts could not load', () => {
+    setup(statsRow({ lowStockIngredientCount: 3 }));
+    mockUseBranchInventoryStockAlerts.mockReturnValue({ data: undefined, isLoading: false });
+    render(<BranchDashboardPage />);
+
+    expect(screen.queryByText('Items Needing Stock')).not.toBeInTheDocument();
+    expect(screen.getByText('Items At Stock Threshold')).toBeInTheDocument();
+    expect(screen.getByText('3')).toBeInTheDocument();
+  });
+
   it('renders the simplified quick actions including Stock Adjustment', () => {
     setup(statsRow());
     render(<BranchDashboardPage />);

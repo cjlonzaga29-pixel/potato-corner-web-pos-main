@@ -167,6 +167,21 @@ export async function buildBatchConverter(
 export async function computeBomDeductionBatch(
   requests: { productVariantId: string; flavorId: string | null | undefined; quantitySold: number }[],
 ): Promise<BomDeductionLine[][]> {
+  return (await computeBomDeductionBatchSettled(requests)).map((result) => {
+    if (result instanceof Error) throw result;
+    return result;
+  });
+}
+
+/**
+ * POS-PERF-P57 — computeBomDeductionBatch, with a recipe that can't be converted
+ * returned as that request's own error. Readiness vets a sellable variant's own
+ * recipe but not its Mix & Max snacks' conversions, and one bad snack must not
+ * fail the check for the whole branch.
+ */
+export async function computeBomDeductionBatchSettled(
+  requests: { productVariantId: string; flavorId: string | null | undefined; quantitySold: number }[],
+): Promise<(BomDeductionLine[] | Error)[]> {
   const variantIds = [...new Set(requests.map((r) => r.productVariantId))];
   const components: ActiveComponentRowBatch[] = await shadowBomDeductionRepository.findActiveComponentsForVariants(variantIds);
 
@@ -187,16 +202,20 @@ export async function computeBomDeductionBatch(
       (c) => c.flavorId === null || (flavorId != null && c.flavorId === flavorId),
     );
     const map = new Map<string, BomDeductionLine>();
-    for (const row of rows) {
-      const fromUnitId = row.recipeUnitId ?? row.baseUnitId;
-      const baseQuantity = convert(row.quantityRequired, fromUnitId, row.baseUnitId, row.inventoryItemId);
-      const quantity = baseQuantity * quantitySold;
-      const existing = map.get(row.inventoryItemId);
-      if (existing) {
-        existing.quantity += quantity;
-      } else {
-        map.set(row.inventoryItemId, { inventoryItemId: row.inventoryItemId, baseUnitId: row.baseUnitId, quantity });
+    try {
+      for (const row of rows) {
+        const fromUnitId = row.recipeUnitId ?? row.baseUnitId;
+        const baseQuantity = convert(row.quantityRequired, fromUnitId, row.baseUnitId, row.inventoryItemId);
+        const quantity = baseQuantity * quantitySold;
+        const existing = map.get(row.inventoryItemId);
+        if (existing) {
+          existing.quantity += quantity;
+        } else {
+          map.set(row.inventoryItemId, { inventoryItemId: row.inventoryItemId, baseUnitId: row.baseUnitId, quantity });
+        }
       }
+    } catch (error) {
+      return error instanceof Error ? error : new Error(String(error));
     }
     return Array.from(map.values());
   });

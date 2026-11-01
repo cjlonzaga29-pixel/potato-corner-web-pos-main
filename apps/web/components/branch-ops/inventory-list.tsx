@@ -239,8 +239,9 @@ export function InventoryList({ basePath }: { basePath: string }) {
           </summary>
           <ul className="mt-2 space-y-1 text-muted-foreground">
             {setupIssues.map((issue) => (
-              <li key={`${issue.inventory_item_id}:${issue.product_name}:${issue.variant_name}`}>
-                {issue.product_name} {issue.variant_name}: {issue.name} {issue.reason === 'not_assigned' ? 'is not assigned to this branch' : 'is not tracked, but its recipe still needs stock here'}.
+              <li key={`${issue.inventory_item_id ?? issue.name}:${issue.product_name}:${issue.variant_name}`}>
+                {issue.product_name} {issue.variant_name}: {issue.name}{' '}
+                {issue.reason === 'not_assigned' ? 'is not assigned to this branch' : issue.reason === 'untracked' ? 'is not tracked, but its recipe still needs stock here' : issue.reason === 'no_slot_choice' ? 'has no snack and flavor to choose at this branch' : 'uses a unit with no conversion to the stock unit'}.
               </li>
             ))}
           </ul>

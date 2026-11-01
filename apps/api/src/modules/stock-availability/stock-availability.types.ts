@@ -36,7 +36,7 @@ export interface RecipeShortageAffected {
   variantId: string;
   variantName: string;
   choiceName: string | null;
-  choiceKind: 'flavor' | 'option' | null;
+  choiceKind: 'flavor' | 'option' | 'slot' | 'combination' | null;
   required: number;
   deficit: number;
   blocksSize: boolean;
@@ -50,9 +50,10 @@ export interface RecipeShortage {
 }
 
 export interface RecipeSetupIssue {
-  inventoryItemId: string;
+  /** Null when no one item is the cause: a Mix & Max slot with nothing to choose, or a recipe unit with no conversion. */
+  inventoryItemId: string | null;
   name: string;
-  reason: 'not_assigned' | 'untracked';
+  reason: 'not_assigned' | 'untracked' | 'no_slot_choice' | 'no_unit_conversion';
   productName: string;
   variantName: string;
 }
@@ -66,6 +67,15 @@ export interface BranchRecipeShortages {
 export interface CatalogStockRequest {
   productVariantId: string;
   flavorIds: string[];
+  /** POS-PERF-P57 — what checkout makes the cashier pick, when there's more to it than one flavor. Absent means the flavor check alone decides. */
+  choices?: RequiredStockChoices;
+}
+
+export interface RequiredStockChoices {
+  flavorNames: Map<string, string>;
+  slots: { label: string; options: { productVariantId: string; name: string; flavors: { flavorId: string; name: string }[] }[] }[];
+  /** One entry per pick checkout requires, so a group needing two picks is listed twice. */
+  requiredPicks: { id: string; name: string }[][];
 }
 
 export interface CartAvailabilityLineInput {

@@ -833,11 +833,37 @@ export const productsRepository = {
               where: { isAvailable: true, flavor: { isActive: true } },
               select: { flavorId: true, flavor: { select: { name: true } } },
             },
+            flavorSlots: {
+              orderBy: { slotIndex: 'asc' },
+              select: {
+                label: true,
+                snackOptions: {
+                  select: {
+                    snackProductVariant: {
+                      select: {
+                        id: true,
+                        name: true,
+                        isActive: true,
+                        product: { select: { name: true, status: true, branchAvailability: { where: { branchId }, select: { isAvailable: true } } } },
+                        variantFlavors: {
+                          where: { isAvailable: true, flavor: { isActive: true } },
+                          select: { flavorId: true, flavor: { select: { name: true } } },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
             optionGroupAssignments: {
               select: {
                 required: true,
                 optionGroup: {
                   select: {
+                    id: true,
+                    name: true,
+                    posButtonLabel: true,
+                    selectionType: true,
                     required: true,
                     minSelections: true,
                     isActive: true,

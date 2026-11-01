@@ -348,7 +348,7 @@ export const recipeShortageAffectedSchema = z.object({
   variant_name: z.string(),
   /** The flavor or add-on that needs the item; null when every configuration of the size does. */
   choice_name: z.string().nullable(),
-  choice_kind: z.enum(['flavor', 'option']).nullable(),
+  choice_kind: z.enum(['flavor', 'option', 'slot', 'combination']).nullable(),
   required: z.number(),
   deficit: z.number(),
   /** True when nothing of this size can be sold; false when another flavor or no add-on still sells. */
@@ -387,9 +387,9 @@ export const branchInventoryStockRowSchema = z.object({
 
 /** POS-PERF-P57 — a size the POS blocks for a reason that is not a stock shortage. Shown apart: more stock would not fix it. */
 export const recipeSetupIssueSchema = z.object({
-  inventory_item_id: z.uuid(),
+  inventory_item_id: z.uuid().nullable(),
   name: z.string(),
-  reason: z.enum(['not_assigned', 'untracked']),
+  reason: z.enum(['not_assigned', 'untracked', 'no_slot_choice', 'no_unit_conversion']),
   product_name: z.string(),
   variant_name: z.string(),
 });

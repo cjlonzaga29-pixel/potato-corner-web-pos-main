@@ -78,7 +78,7 @@ describe('DashboardLowStockSummary', () => {
   it('renders an empty state when no branch has low stock', () => {
     mockUseAdminInventoryRollup.mockReturnValue({ data: { branches: [branch({})] }, isLoading: false, isError: false, refetch: vi.fn() });
     render(<DashboardLowStockSummary />);
-    expect(screen.getByText('No low stock items')).toBeInTheDocument();
+    expect(screen.getByText('No items at a stock threshold')).toBeInTheDocument();
   });
 
   it('renders an error state with retry', () => {

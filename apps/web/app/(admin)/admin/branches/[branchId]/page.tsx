@@ -166,7 +166,7 @@ function OverviewTab({ branchId, address, gpsLatitude, gpsLongitude, gpsRadiusMe
         <StatTile label="Net Sales" value={stats ? formatCurrency(stats.todayNetSales) : '—'} />
         <StatTile label="Transactions Today" value={stats ? String(stats.todayTransactionCount) : '—'} />
         <StatTile label="Active Staff" value={stats ? String(stats.activeStaffCount) : '—'} />
-        <StatTile label="Low Stock Items" value={stats ? String(stats.lowStockIngredientCount) : '—'} />
+        <StatTile label="Items At Stock Threshold" value={stats ? String(stats.lowStockIngredientCount) : '—'} />
       </div>
     </div>
   );
@@ -268,7 +268,7 @@ function StatisticsTab({ branchId }: { branchId: string }) {
         <StatTile label="Net Operating Result" value={formatCurrency(stats.todayNetOperatingResult)} />
         <StatTile label="Active Staff" value={String(stats.activeStaffCount)} />
         <StatTile label="Staff Timed In" value={String(stats.staffTimedInCount)} />
-        <StatTile label="Low Stock Items" value={String(stats.lowStockIngredientCount)} />
+        <StatTile label="Items At Stock Threshold" value={String(stats.lowStockIngredientCount)} />
       </div>
       <Card>
         <CardContent className="flex h-48 items-center justify-center text-sm text-muted-foreground">

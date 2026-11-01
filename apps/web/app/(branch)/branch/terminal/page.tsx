@@ -5,7 +5,19 @@ import { useDensityMode, type DensityMode } from '@/hooks/use-density-mode';
 import { DENSITY_POS_GRID_COLUMNS } from '@/lib/density-tokens';
 import { shouldShowInlineCart } from '@/lib/pos/cart-layout';
 import { Coffee, KeyRound, Loader2, Lock, LockKeyhole, LogOut, ShoppingCart, WifiOff } from 'lucide-react';
-import { ROLES, STAFF_PIN_MAX_LENGTH, STAFF_PIN_MIN_LENGTH, VAT_RATE_PERCENT, computeSaleTax, discountRateFor, type SaleDiscountRates } from '@potato-corner/shared';
+import {
+  ROLES,
+  STAFF_PIN_MAX_LENGTH,
+  STAFF_PIN_MIN_LENGTH,
+  VAT_RATE_PERCENT,
+  MANUAL_DISCOUNT_FLOW,
+  computeSaleTax,
+  computeManualTotal,
+  discountRateFor,
+  isVatExemptDiscountType,
+  MANUAL_TOTAL_CALCULATION,
+  type SaleDiscountRates,
+} from '@potato-corner/shared';
 import type { CreateTransactionInput, ImageProofType, PosCatalogProduct, TransactionResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -26,6 +38,7 @@ import { ProductCard } from '@/components/pos/product-card';
 import { ProductCardSkeleton } from '@/components/pos/product-card-skeleton';
 import { CartLineItem, type CartLine } from '@/components/pos/cart-line-item';
 import type { DiscountChoice } from '@/components/pos/payment-footer';
+import type { ManualDiscountFooterState, ManualDiscountMode, StatutoryDiscountChoice } from '@/components/pos/manual-discount-fields';
 import { CheckoutWorkspace } from '@/components/pos/checkout-workspace';
 import { splitAddOnLines, isAddOnsGroup, chosenQuantity, type AddOnAssignments } from '@/lib/pos/split-add-ons';
 import { cartLineKey, type PosCartItem, type PosCartSelectedOption } from '@/stores/cart.store';
@@ -52,6 +65,7 @@ import { useVerifyPosPin } from '@/hooks/queries/use-staff-pin';
 import { useMyActiveShift, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useCreateTransaction, useUploadPaymentProof, useUploadDiscountProof, TransactionApiError } from '@/hooks/queries/use-transactions';
 import { useDiscountPolicy } from '@/hooks/queries/use-settings';
+import { usePosManualDiscountTypes, ManualDiscountsUnsupportedError } from '@/hooks/queries/use-manual-discount-types';
 import { cacheProductCatalog, getCachedProductCatalog } from '@/lib/offline/cache';
 import { enqueueOfflineTransaction } from '@/lib/offline/sync-queue';
 import { getCurrentPosition, type GpsCoords } from '@/lib/geolocation';
@@ -84,11 +98,15 @@ import {
   CONNECTION_UNCERTAIN,
   STILL_PROCESSING,
   NOT_SAVED_SAFE_TO_RETRY,
+  MANUAL_DISCOUNT_UNSUPPORTED_BY_SERVER,
+  MANUAL_DISCOUNT_UNSUPPORTED_MESSAGE,
+  CALCULATION_MODE_UNSUPPORTED_BY_SERVER,
+  CALCULATION_MODE_UNSUPPORTED_MESSAGE,
 } from '@/lib/cashier-error-messages';
 import { OrderTabContent } from '@/components/pos/order-tabs-content';
 import { OfflineSalesList } from '@/components/pos/offline-sales-list';
 import { isOptionConfigErrorCode, refreshCartLineOptionDetails, reviewCartLineOptions } from '@/lib/pos/option-recovery';
-import { cartLinePromotionAck, cartLinePromotionDiscount, describePromotionChanges, resolveCartLinePromotion } from '@/lib/pos/cart-promotions';
+import { cartLinePromotionAck, cartLinePromotionDiscount, describePromotionChanges, type resolveCartLinePromotion } from '@/lib/pos/cart-promotions';
 import { VoidRefundSaleDialog } from '@/components/pos/void-refund-sale-dialog';
 import { toast } from 'sonner';
 
@@ -288,6 +306,21 @@ function previewAmounts(
   return { discountAmount, vatAmount, totalAmount };
 }
 
+/**
+ * POS-PERF-P55 — the cashier's peso entry: a plain amount with at most two
+ * decimals (no percent sign, no negatives). The server re-checks the same
+ * rules against the order it prices itself.
+ */
+function parseManualAmount(raw: string, maxAmount: number): { value: number | null; error: string | null } {
+  const text = raw.trim();
+  if (text === '') return { value: null, error: 'Enter the discount amount in pesos.' };
+  if (!/^\d+(\.\d{1,2})?$/.test(text)) return { value: null, error: 'Enter an amount in pesos, like 50 or 50.25.' };
+  const value = Number(text);
+  if (!(value > 0)) return { value: null, error: 'Enter an amount greater than ₱0, or choose “No discount”.' };
+  if (Math.round(value * 100) > Math.round(maxAmount * 100)) return { value: null, error: `The discount can be at most ${formatPeso(maxAmount)}.` };
+  return { value, error: null };
+}
+
 /** POS-PERF-P50 — the parts of a TAX_SETTINGS_CHANGED refusal's details the notice uses; tolerant of a missing/odd shape. */
 function readTaxSettingsChange(details: unknown): { serverTotal: number | null; serverVatRate: number | null } {
   const record = typeof details === 'object' && details !== null ? (details as Record<string, unknown>) : {};
@@ -314,7 +347,14 @@ export default function TerminalPage() {
   // display/preview only, never trusted for the actual charge.
   // POS-PERF-P50R — this branch's effective rates (a staff/branch session is always scoped to its own branch by the API).
   const { data: discountPolicy, refetch: refetchDiscountPolicy } = useDiscountPolicy(branchId);
+  // POS-PERF-P55 — every sale records an explicit decision ("No discount" /
+  // "Apply discount"). A sale starts on "No discount" unless this branch
+  // requires the cashier to choose (the P50R switch), in which case nothing
+  // is preselected and Charge waits for a choice.
   const requireDiscountChoice = discountPolicy?.requireDiscountChoice === true;
+  // The branch's manual discount types, offered only online.
+  const posManualTypesQuery = usePosManualDiscountTypes(branchId);
+  const refetchPosManualTypes = posManualTypesQuery.refetch;
   const discountRatesPreview: PreviewDiscountRates = useMemo(
     () => ({
       pwd: discountPolicy?.pwd.percentage ?? DEFAULT_PREVIEW_DISCOUNT_RATES.pwd,
@@ -430,9 +470,13 @@ export default function TerminalPage() {
   // change of operator (Resume after a lock counts): mounting already fetched.
   const lastOperatorIdRef = useRef(operatorId);
   useEffect(() => {
-    if (operatorId && operatorId !== lastOperatorIdRef.current) void refetchDiscountPolicy();
+    if (operatorId && operatorId !== lastOperatorIdRef.current) {
+      void refetchDiscountPolicy();
+      // POS-PERF-P55 — same for the branch's discount types.
+      void refetchPosManualTypes();
+    }
     lastOperatorIdRef.current = operatorId;
-  }, [operatorId, refetchDiscountPolicy]);
+  }, [operatorId, refetchDiscountPolicy, refetchPosManualTypes]);
   const operatorToken = isBranchAccount ? (activeEmployeeToken ?? undefined) : undefined;
   const operatorName = isBranchAccount && activeEmployee ? `${activeEmployee.firstName} ${activeEmployee.lastName}`.trim() : `${user?.firstName ?? ''} ${user?.lastName ?? ''}`.trim() || user?.email;
 
@@ -816,11 +860,22 @@ export default function TerminalPage() {
   } | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'gcash' | 'maya' | 'other'>('cash');
   const [discountType, setDiscountType] = useState<DiscountChoice>('none');
-  // POS-PERF-P50R — a cashier-selected custom discount (P49 promotion with
-  // application_mode 'cashier_selected'), and whether the cashier has made
-  // an explicit discount decision (needed when the branch requires one).
-  const [selectedCustomDiscountId, setSelectedCustomDiscountId] = useState<string | null>(null);
-  const [discountChoiceMade, setDiscountChoiceMade] = useState(false);
+  // POS-PERF-P55 — the checkout's discount decision. 'unset' until the
+  // cashier picks "No discount" or "Apply discount". With "Apply discount",
+  // either a branch manual type (manualTypeId + a peso amount) or the
+  // statutory PWD/Senior discount (discountType above). Belongs to this sale
+  // and this cashier: resetPaymentFields clears it after every sale and at
+  // every operator change. manualConfirmedSubtotal is the subtotal the
+  // cashier last confirmed the amount against; a cart change after that
+  // must be confirmed before Charge is enabled again.
+  const [discountModeChoice, setDiscountMode] = useState<ManualDiscountMode>('unset');
+  const discountMode: ManualDiscountMode = discountModeChoice === 'unset' && !requireDiscountChoice ? 'none' : discountModeChoice;
+  const [manualTypeId, setManualTypeId] = useState<string | null>(null);
+  const [manualAmount, setManualAmount] = useState('');
+  const [manualConfirmedSubtotal, setManualConfirmedSubtotal] = useState<number | null>(null);
+  // The server-issued upload id of a required proof (never the storage key).
+  const [manualProofUploadId, setManualProofUploadId] = useState<string | null>(null);
+  const [manualProofPreviewUrl, setManualProofPreviewUrl] = useState<string | null>(null);
   const [discountIdReference, setDiscountIdReference] = useState('');
   const [promoAmount, setPromoAmount] = useState('');
   const [cashTendered, setCashTendered] = useState('');
@@ -1452,22 +1507,9 @@ export default function TerminalPage() {
 
   const cachedProducts = cachedCatalog && cachedCatalog.branchId === branchId ? cachedCatalog.products : EMPTY_CATALOG;
   const catalog = liveCatalog?.products ?? cachedProducts;
-  // POS-PERF-P50R — cashier-selected discounts active at this branch now
-  // (server-resolved). Online only: like promotions, they cannot be
-  // confirmed offline, so none is offered or kept while offline.
-  const selectableDiscounts = useMemo(() => (isOnline ? (liveCatalog?.selectable_discounts ?? []) : []), [isOnline, liveCatalog]);
-  const selectedCustomDiscount = useMemo(
-    () => (selectedCustomDiscountId ? (selectableDiscounts.find((d) => d.promotion_id === selectedCustomDiscountId) ?? null) : null),
-    [selectableDiscounts, selectedCustomDiscountId],
-  );
-  // A chosen discount that is no longer offered (edited, disabled, offline)
-  // is dropped and the cashier decides again; never silently kept.
-  useEffect(() => {
-    if (selectedCustomDiscountId && !selectedCustomDiscount) {
-      setSelectedCustomDiscountId(null);
-      setDiscountChoiceMade(false);
-    }
-  }, [selectedCustomDiscountId, selectedCustomDiscount]);
+  // POS-PERF-P55 — this checkout no longer offers P50R cashier-selected
+  // promotions (liveCatalog.selectable_discounts); the manual discount types
+  // below replace them. The catalog still carries them for older terminals.
   const categories = useMemo(
     () => [...new Set(catalog.map((p) => p.category).filter((c): c is string => Boolean(c)))].sort(),
     [catalog],
@@ -1970,18 +2012,11 @@ export default function TerminalPage() {
           slotSelections.length > 0
             ? (info?.variant.price ?? 0) + slotSelections.reduce((sum, s) => sum + s.pricePremium, 0) + optionsAdjustment
             : (info?.variant.price ?? 0) + (flavor?.price_premium ?? 0) + optionsAdjustment;
-        // POS-PERF-P49 — the server-resolved promotion for this size at this
-        // branch (catalog), applied only online with no transaction discount.
-        // POS-PERF-P50R — a chosen custom discount replaces automatic
-        // promotions for the whole sale (one discount per sale).
-        const customUnit = selectedCustomDiscount ? (selectedCustomDiscount.unit_discounts[item.product_variant_id] ?? 0) : 0;
-        const promotion =
-          selectedCustomDiscount && customUnit > 0
-            ? { promotionId: selectedCustomDiscount.promotion_id, name: selectedCustomDiscount.name, unitDiscount: customUnit, status: 'applied' as const }
-            : resolveCartLinePromotion(info?.variant.promotion, {
-                isOnline,
-                transactionDiscountSelected: discountType !== 'none' || selectedCustomDiscount !== null,
-              });
+        // POS-PERF-P55 — the manual-discount checkout never applies product
+        // promotions (automatic or cashier-selected): every line is charged
+        // its regular price and acknowledged as "no promotion" (null). The
+        // server refuses any line that claims one in this flow.
+        const promotion: ReturnType<typeof resolveCartLinePromotion> = null;
         return {
           index,
           item,
@@ -2000,16 +2035,7 @@ export default function TerminalPage() {
           promotionDiscount: cartLinePromotionDiscount(promotion, item.quantity),
         };
       }),
-    [items, variantIndex, optionIssuesByIndex, isOnline, discountType, selectedCustomDiscount],
-  );
-
-  // POS-PERF-P50R — only discounts that cover at least one cart line are offered.
-  const applicableCustomDiscounts = useMemo(
-    () =>
-      selectableDiscounts
-        .filter((d) => items.some((item) => (d.unit_discounts[item.product_variant_id] ?? 0) > 0) || d.promotion_id === selectedCustomDiscountId)
-        .map((d) => ({ id: d.promotion_id, label: d.discount_kind === 'percentage' ? `${d.name} (${d.discount_value}% off)` : `${d.name} (₱${d.discount_value.toFixed(2)} off each)` })),
-    [selectableDiscounts, items, selectedCustomDiscountId],
+    [items, variantIndex, optionIssuesByIndex],
   );
 
   // P46R3 — the option check belongs to this cart; a sale or a cleared cart ends it.
@@ -2040,10 +2066,31 @@ export default function TerminalPage() {
   // used to recompute on every render (e.g. every Cash Tendered keystroke)
   // even though its only real inputs are cartLines, which are already memoized.
   const subtotal = useMemo(() => round2(cartLines.reduce((sum, line) => sum + line.lineTotal, 0)), [cartLines]);
+  // POS-PERF-P55 — the manual type the cashier picked, as currently offered
+  // (online only); null when none is picked or it is no longer offered.
+  const posManualTypes = useMemo(() => (isOnline ? (posManualTypesQuery.data ?? []) : []), [isOnline, posManualTypesQuery.data]);
+  const manualType = useMemo(() => (manualTypeId ? (posManualTypes.find((t) => t.id === manualTypeId) ?? null) : null), [manualTypeId, posManualTypes]);
+  // POS-PERF-P55R2 — a manual discount may be up to the whole subtotal (no VATable cap: VAT is not calculated).
+  const manualEligibleSubtotal = subtotal;
+  const isManualSelected = discountMode === 'apply' && manualTypeId !== null;
+  const manualParsed = parseManualAmount(manualAmount, manualEligibleSubtotal);
+  const manualAmountValue = isManualSelected && manualType ? manualParsed.value : null;
+  // POS-PERF-P55R2 — this checkout calculates subtotal − peso discount =
+  // amount to pay, with no VAT extracted, added or deducted (vatAmount null:
+  // not calculated). Only the statutory PWD/Senior discount keeps its VAT
+  // exemption formula, the same computeSaleTax the server runs.
+  const isStatutorySelected = isVatExemptDiscountType(discountType === 'none' ? null : discountType);
   const { discountAmount, vatAmount, totalAmount } = useMemo(
-    () => previewAmounts(cartLines, discountType, discountRatesPreview),
-    [cartLines, discountType, discountRatesPreview],
+    (): { discountAmount: number; vatAmount: number | null; totalAmount: number } =>
+      isStatutorySelected
+        ? previewAmounts(cartLines, discountType, discountRatesPreview)
+        : { ...computeManualTotal(subtotal, manualAmountValue), vatAmount: null },
+    [cartLines, discountType, discountRatesPreview, isStatutorySelected, manualAmountValue, subtotal],
   );
+  const manualChangedTotal =
+    manualAmountValue !== null && manualConfirmedSubtotal !== null && Math.round(subtotal * 100) !== Math.round(manualConfirmedSubtotal * 100)
+      ? { previousSubtotal: manualConfirmedSubtotal, subtotal, totalAmount }
+      : null;
   const tenderedNumber = Number(cashTendered);
   const change = paymentMethod === 'cash' && tenderedNumber >= totalAmount ? round2(tenderedNumber - totalAmount) : 0;
 
@@ -2061,7 +2108,15 @@ export default function TerminalPage() {
     if (stockValidation.status === 'checking' || stockValidation.pendingKeys.size > 0) return 'Checking stock for the latest cart changes…';
     if (!isClockedIn) return 'Clock in before completing a sale.';
     if (cartLines.length === 0) return 'Add items to the cart to start a sale.';
-    if (requireDiscountChoice && !discountChoiceMade) return 'Choose the discount that applies, or “No applicable discount”.';
+    if (discountMode === 'unset') return 'Choose “No discount” or “Apply discount”.';
+    if (discountMode === 'apply' && manualTypeId === null && discountType === 'none') return 'Choose the discount type.';
+    if (isManualSelected) {
+      if (!isOnline) return 'Manual discounts need a connection. Choose “No discount” or a statutory discount, or wait until you are back online.';
+      if (!manualType) return 'The discount type you chose is no longer offered. Choose another discount, or “No discount”.';
+      if (manualParsed.error) return manualParsed.error;
+      if (manualType.require_proof && !manualProofUploadId) return 'Take or upload the discount proof photo before charging.';
+      if (manualChangedTotal) return 'The order changed — confirm the new total before charging.';
+    }
     if ((discountType === 'pwd' || discountType === 'senior_citizen') && discountIdReference.trim().length === 0) {
       return 'Enter the PWD/Senior Citizen ID number.';
     }
@@ -2088,6 +2143,80 @@ export default function TerminalPage() {
   })();
 
   const canCharge = Boolean(branchId) && chargeDisabledReason === null;
+
+  // POS-PERF-P55 — what the checkout shows for the discount decision.
+  const statutoryAvailable = (['pwd', 'senior_citizen'] as const).filter((type) => !disabledDiscountTypes.includes(type));
+  const manualDiscountState: ManualDiscountFooterState = {
+    mode: discountMode,
+    onModeChange: (mode) => {
+      setDiscountMode(mode);
+      if (mode === 'none') {
+        setDiscountType('none');
+        setManualTypeId(null);
+        setManualAmount('');
+        setManualConfirmedSubtotal(null);
+        handleClearManualProof();
+        setDiscountIdReference('');
+        handleClearDiscountProof();
+      }
+    },
+    types: posManualTypes.map((type) => ({ id: type.id, name: type.name, requireProof: type.require_proof })),
+    typesStatus: !isOnline
+      ? 'offline'
+      : posManualTypesQuery.error instanceof ManualDiscountsUnsupportedError
+        ? 'unsupported'
+        : posManualTypesQuery.isError
+          ? 'error'
+          : posManualTypesQuery.data
+            ? 'ready'
+            : 'loading',
+    onRetryTypes: () => void refetchPosManualTypes(),
+    selection: manualTypeId ? `manual:${manualTypeId}` : discountType === 'pwd' || discountType === 'senior_citizen' ? discountType : null,
+    onSelectionChange: (value) => {
+      if (value.startsWith('manual:')) {
+        setManualTypeId(value.slice('manual:'.length));
+        setDiscountType('none');
+        setDiscountIdReference('');
+        handleClearDiscountProof();
+        setManualConfirmedSubtotal(subtotal);
+      } else {
+        setDiscountType(value as StatutoryDiscountChoice);
+        setManualTypeId(null);
+        setManualAmount('');
+        setManualConfirmedSubtotal(null);
+        handleClearManualProof();
+      }
+    },
+    statutoryLabels: { pwd: discountLabels.pwd, senior_citizen: discountLabels.senior_citizen },
+    statutoryAvailable,
+    amount: manualAmount,
+    onAmountChange: (value) => {
+      setManualAmount(value);
+      setManualConfirmedSubtotal(subtotal);
+    },
+    amountError: manualAmount.trim() === '' ? null : manualParsed.error,
+    maxAmount: manualEligibleSubtotal,
+    proofRequired: isManualSelected && manualType?.require_proof === true,
+    proofAttached: manualProofUploadId !== null,
+    proofPreviewUrl: manualProofPreviewUrl,
+    onProofSelected: handleManualProofSelected,
+    onClearProof: handleClearManualProof,
+    changedTotal: manualChangedTotal,
+    onConfirmChangedTotal: () => setManualConfirmedSubtotal(subtotal),
+    summary: {
+      subtotal,
+      label:
+        discountAmount > 0
+          ? manualType && manualAmountValue !== null
+            ? `${manualType.name} discount`
+            : discountType === 'pwd' || discountType === 'senior_citizen'
+              ? discountLabels[discountType]
+              : 'Discount'
+          : null,
+      discountAmount,
+      totalAmount,
+    },
+  };
 
   const openVoidRefund = useCallback(() => setIsVoidRefundOpen(true), []);
 
@@ -2149,10 +2278,36 @@ export default function TerminalPage() {
     });
   }
 
+  /** POS-PERF-P55 — required proof for a manual discount type. Same async/re-throw contract: a failed upload keeps the file, cart, amount and selections. */
+  async function handleManualProofSelected(file: File, type: ImageProofType) {
+    if (!branchId) return;
+    const result = await uploadDiscountProof.mutateAsync({ branchId, shiftId: shift?.id, type, file });
+    if (!result.discount_proof_upload_id) {
+      // A pre-P55 API answered: it cannot link a proof to a manual discount.
+      throw new Error('This server cannot attach a proof photo to a manual discount yet. Choose another discount.');
+    }
+    setManualProofUploadId(result.discount_proof_upload_id);
+    setManualProofPreviewUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return isMobileOrTablet() ? null : URL.createObjectURL(file);
+    });
+  }
+
+  function handleClearManualProof() {
+    setManualProofUploadId(null);
+    setManualProofPreviewUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+  }
+
   function resetPaymentFields() {
     setDiscountType('none');
-    setSelectedCustomDiscountId(null);
-    setDiscountChoiceMade(false);
+    setDiscountMode('unset');
+    setManualTypeId(null);
+    setManualAmount('');
+    setManualConfirmedSubtotal(null);
+    handleClearManualProof();
     setDiscountIdReference('');
     setPromoAmount('');
     setCashTendered('');
@@ -2210,24 +2365,40 @@ export default function TerminalPage() {
         promotion: cartLinePromotionAck(cartLines[index]?.promotion),
       })),
       payment_method: paymentMethod,
-      discount_type: discountType === 'none' ? undefined : discountType,
+      // POS-PERF-P55 — 'manual' with a manual discount: besides naming the
+      // sale's discount, it makes a pre-P55 API refuse the sale (unknown
+      // value) instead of dropping the manual discount and charging in full.
+      discount_type: manualType && manualAmountValue !== null ? 'manual' : discountType === 'none' ? undefined : discountType,
       discount_id_reference: discountIdReference.trim() || undefined,
-      // POS-PERF-P50R — the custom discount this screen applied (id +
-      // version; per-line amounts are in items[].promotion), and the
-      // cashier's explicit decision when the branch requires one.
-      ...(selectedCustomDiscount && isOnline
-        ? { selected_discount: { promotion_id: selectedCustomDiscount.promotion_id, version: selectedCustomDiscount.version } }
-        : {}),
-      ...(requireDiscountChoice && discountChoiceMade
-        ? { discount_choice: discountType !== 'none' || selectedCustomDiscount ? ('selected' as const) : ('none_applicable' as const) }
+      // POS-PERF-P55 — the manual-discount checkout: an explicit decision on
+      // every sale, and at most one manual peso discount (type + version the
+      // screen showed, the amount, the server-issued proof id and the total
+      // shown, as an acknowledgement — the server recomputes everything).
+      discount_flow: MANUAL_DISCOUNT_FLOW,
+      discount_choice: discountMode === 'apply' ? ('selected' as const) : ('none_applicable' as const),
+      ...(manualType && manualAmountValue !== null
+        ? {
+            manual_discount: {
+              discount_type_id: manualType.id,
+              type_version: manualType.version,
+              amount: manualAmountValue,
+              ...(manualProofUploadId ? { proof_upload_id: manualProofUploadId } : {}),
+              expected_total_amount: totalAmount,
+            },
+          }
         : {}),
       // POS-PERF-P50 — the rates the total on screen was computed with. Never
       // an amount: the server refuses a mismatch instead of charging a
       // different total (TAX_SETTINGS_CHANGED).
-      tax_basis: {
-        vat_rate: VAT_RATE_PERCENT,
-        discount_rate: discountRateFor(discountType === 'none' ? null : discountType, discountRatesPreview),
-      },
+      // POS-PERF-P55R2 — every other sale says it is a manual total (no VAT).
+      // vat_rate null also makes a pre-P55R2 API refuse it rather than drop
+      // the mode and calculate VAT. Queued offline sales keep this as sent.
+      tax_basis: isStatutorySelected
+        ? {
+            vat_rate: VAT_RATE_PERCENT,
+            discount_rate: discountRateFor(discountType === 'none' ? null : discountType, discountRatesPreview),
+          }
+        : { calculation_mode: MANUAL_TOTAL_CALCULATION, vat_rate: null, discount_rate: null },
       cash_tendered: paymentMethod === 'cash' ? tenderedNumber : undefined,
       // POS-PERF-P25R — optional payment reference, re-added at the owner's
       // request. gcash_reference_number backs both GCash and Maya (the
@@ -2293,7 +2464,7 @@ export default function TerminalPage() {
     // since the last attempt (see lastChargeFingerprintRef's doc comment) —
     // otherwise a charge-after-Edit-Cart with a genuinely different cart
     // would keep colliding with the backend's reuse guard forever.
-    const chargeFingerprint = JSON.stringify(payload.items) + '|' + payload.payment_method + '|' + String(payload.discount_type ?? '') + '|' + String(payload.discount_amount ?? '') + '|' + String(payload.cash_tendered ?? '') + '|' + JSON.stringify(payload.tax_basis ?? null) + '|' + JSON.stringify(payload.selected_discount ?? null) + '|' + String(payload.discount_choice ?? '');
+    const chargeFingerprint = JSON.stringify(payload.items) + '|' + payload.payment_method + '|' + String(payload.discount_type ?? '') + '|' + String(payload.discount_amount ?? '') + '|' + String(payload.cash_tendered ?? '') + '|' + JSON.stringify(payload.tax_basis ?? null) + '|' + JSON.stringify(payload.manual_discount ?? null) + '|' + String(payload.discount_choice ?? '');
     const previousKey = idempotencyKeyRef.current;
     const isUnmodifiedRetry = previousKey !== null && lastChargeFingerprintRef.current === chargeFingerprint;
     // POS-PERF-P21 — same first-click-mints/retry-reuses lifecycle as
@@ -2330,7 +2501,8 @@ export default function TerminalPage() {
       })),
       subtotal,
       discountAmount,
-      discountType: discountType === 'none' ? (discountAmount > 0 ? 'promotional' : null) : discountType,
+      discountType: discountType === 'none' ? (manualAmountValue !== null ? 'manual' : null) : discountType,
+      discountLabel: manualType && manualAmountValue !== null ? `${manualType.name} discount` : undefined,
       vatAmount,
       totalAmount,
       paymentMethod,
@@ -2515,8 +2687,25 @@ export default function TerminalPage() {
       // POS-PERF-P50R — the branch now requires a discount decision: reload
       // its settings so the picker asks for one; nothing was charged.
       if (error instanceof TransactionApiError && error.code === 'DISCOUNT_CHOICE_REQUIRED') {
-        setDiscountChoiceMade(false);
+        setDiscountMode('unset');
         void refetchDiscountPolicy();
+      }
+      // POS-PERF-P55 — nothing was charged. Reload what the refusal is about
+      // so the cashier reviews the current state before charging again: the
+      // branch's types (changed / no longer offered), the proof (re-take it),
+      // or the prices (the total the server computes differs from the screen).
+      if (error instanceof TransactionApiError && (error.code === 'MANUAL_DISCOUNT_TYPE_CHANGED' || error.code === 'MANUAL_DISCOUNT_TYPE_UNAVAILABLE')) {
+        void refetchPosManualTypes();
+      }
+      if (error instanceof TransactionApiError && (error.code === 'MANUAL_DISCOUNT_PROOF_INVALID' || error.code === 'MANUAL_DISCOUNT_PROOF_ALREADY_USED')) {
+        handleClearManualProof();
+      }
+      // The PWD/Senior ID photo was refused (not this cashier's, branch's or shift's upload, or already on a sale): retake it.
+      if (error instanceof TransactionApiError && (error.code === 'DISCOUNT_PROOF_INVALID' || error.code === 'DISCOUNT_PROOF_ALREADY_USED')) {
+        handleClearDiscountProof();
+      }
+      if (error instanceof TransactionApiError && error.code === 'MANUAL_DISCOUNT_TOTAL_CHANGED') {
+        void confirmCatalog(branchId).catch(() => undefined);
       }
       if (error instanceof TransactionApiError && error.code === 'TAX_SETTINGS_CHANGED') {
         const details = readTaxSettingsChange(error.details);
@@ -2532,6 +2721,32 @@ export default function TerminalPage() {
           );
         setSaleErrorMessage(error.message);
         setSaleErrorCode(error.code);
+        setSalePhase('error');
+        return;
+      }
+      // POS-PERF-P55R2 — a pre-P55R2 API refuses the manual-total basis (its
+      // vat_rate must be a number): nothing written, no VAT calculated instead.
+      // Checked first: a manual discount travels with the same basis, and on
+      // such an API "No discount" is refused too.
+      if (
+        error instanceof TransactionApiError &&
+        error.code === 'VALIDATION_ERROR' &&
+        payload.tax_basis !== undefined &&
+        'calculation_mode' in payload.tax_basis &&
+        payload.tax_basis.calculation_mode === MANUAL_TOTAL_CALCULATION
+      ) {
+        setSaleErrorMessage(CALCULATION_MODE_UNSUPPORTED_MESSAGE);
+        setSaleErrorCode(CALCULATION_MODE_UNSUPPORTED_BY_SERVER);
+        setSalePhase('error');
+        return;
+      }
+      // P55 release fix — a pre-P55 API (rolled back, or not deployed yet)
+      // rejects discount_type 'manual' at validation, before anything is
+      // written. Show what to do instead of the raw schema message; the cart,
+      // type and amount stay so the cashier can choose another discount.
+      if (error instanceof TransactionApiError && error.code === 'VALIDATION_ERROR' && payload.discount_type === 'manual') {
+        setSaleErrorMessage(MANUAL_DISCOUNT_UNSUPPORTED_MESSAGE);
+        setSaleErrorCode(MANUAL_DISCOUNT_UNSUPPORTED_BY_SERVER);
         setSalePhase('error');
         return;
       }
@@ -3343,20 +3558,8 @@ export default function TerminalPage() {
       discountAmount={discountAmount}
       totalAmount={totalAmount}
       discountType={discountType}
-      onDiscountTypeChange={(value) => {
-        setDiscountType(value);
-        setSelectedCustomDiscountId(null);
-        setDiscountChoiceMade(true);
-      }}
-      customDiscounts={applicableCustomDiscounts}
-      selectedCustomDiscountId={selectedCustomDiscount?.promotion_id ?? null}
-      onCustomDiscountChange={(id) => {
-        setDiscountType('none');
-        setSelectedCustomDiscountId(id);
-        setDiscountChoiceMade(true);
-      }}
-      requireDiscountChoice={requireDiscountChoice}
-      discountChoiceMade={discountChoiceMade}
+      onDiscountTypeChange={setDiscountType}
+      manualDiscount={manualDiscountState}
       discountLabels={discountLabels}
       disabledDiscountTypes={disabledDiscountTypes}
       discountIdReference={discountIdReference}
@@ -3606,9 +3809,10 @@ export default function TerminalPage() {
             />
           ) : (
             <div className={productGridClasses(densityMode)} data-testid="pos-product-grid">
+              {/* POS-PERF-P55 — promotions are not applied in this checkout, so cards never advertise one. */}
               {visibleProducts.map((product) =>
                 product.variants.map((variant) => (
-                  <ProductCard key={variant.id} product={product} variant={variant} message={readinessMessage(variant)} onTap={handleProductTap} promotionsAvailable={isOnline} />
+                  <ProductCard key={variant.id} product={product} variant={variant} message={readinessMessage(variant)} onTap={handleProductTap} promotionsAvailable={false} />
                 )),
               )}
             </div>

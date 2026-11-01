@@ -200,3 +200,96 @@ export const discountsRepository = {
     });
   },
 };
+
+const manualDiscountTypeSelect = {
+  id: true,
+  branchId: true,
+  name: true,
+  applyToPos: true,
+  requireProof: true,
+  isActive: true,
+  version: true,
+  createdAt: true,
+  updatedAt: true,
+  deactivatedAt: true,
+  _count: { select: { transactions: true } },
+} satisfies Prisma.ManualDiscountTypeSelect;
+
+export type ManualDiscountTypeRow = Prisma.ManualDiscountTypeGetPayload<{ select: typeof manualDiscountTypeSelect }>;
+
+/**
+ * POS-PERF-P55 — supervisor-managed manual discount types. Writes are
+ * compare-and-set on `version` (and only on active rows), so a stale editor
+ * or a concurrent save can never overwrite a newer change; the caller turns
+ * a null result into a conflict.
+ */
+export const manualDiscountTypesRepository = {
+  list(branchIds: 'all' | string[], includeInactive: boolean): Promise<ManualDiscountTypeRow[]> {
+    return prisma.manualDiscountType.findMany({
+      where: {
+        ...(branchIds === 'all' ? {} : { branchId: { in: branchIds } }),
+        ...(includeInactive ? {} : { isActive: true }),
+      },
+      select: manualDiscountTypeSelect,
+      orderBy: [{ isActive: 'desc' }, { name: 'asc' }, { id: 'asc' }],
+    });
+  },
+
+  findById(id: string): Promise<ManualDiscountTypeRow | null> {
+    return prisma.manualDiscountType.findUnique({ where: { id }, select: manualDiscountTypeSelect });
+  },
+
+  /** Case-insensitive name clash among the branch's active types. */
+  findActiveByName(branchId: string, name: string, excludeId?: string) {
+    return prisma.manualDiscountType.findFirst({
+      where: { branchId, isActive: true, name: { equals: name, mode: 'insensitive' }, ...(excludeId ? { id: { not: excludeId } } : {}) },
+      select: { id: true },
+    });
+  },
+
+  create(data: { branchId: string; name: string; applyToPos: boolean; requireProof: boolean }, actorId: string): Promise<ManualDiscountTypeRow> {
+    return prisma.manualDiscountType.create({ data: { ...data, createdById: actorId }, select: manualDiscountTypeSelect });
+  },
+
+  async update(
+    id: string,
+    expectedVersion: number,
+    data: { name?: string; applyToPos?: boolean; requireProof?: boolean },
+    actorId: string,
+  ): Promise<ManualDiscountTypeRow | null> {
+    const result = await prisma.manualDiscountType.updateMany({
+      where: { id, version: expectedVersion, isActive: true },
+      data: { ...data, updatedById: actorId, version: { increment: 1 } },
+    });
+    return result.count === 0 ? null : this.findById(id);
+  },
+
+  async deactivate(id: string, expectedVersion: number, actorId: string): Promise<ManualDiscountTypeRow | null> {
+    const result = await prisma.manualDiscountType.updateMany({
+      where: { id, version: expectedVersion, isActive: true },
+      data: { isActive: false, deactivatedAt: new Date(), deactivatedById: actorId, updatedById: actorId, version: { increment: 1 } },
+    });
+    return result.count === 0 ? null : this.findById(id);
+  },
+
+  /** What a terminal at this branch may offer: active, Apply-to-POS types only. */
+  findForPos(branchId: string) {
+    return prisma.manualDiscountType.findMany({
+      where: { branchId, isActive: true, applyToPos: true },
+      select: { id: true, name: true, requireProof: true, version: true },
+      orderBy: [{ name: 'asc' }, { id: 'asc' }],
+    });
+  },
+
+  /** Checkout's authoritative read of the claimed type (no count needed). */
+  findForCheckout(id: string) {
+    return prisma.manualDiscountType.findUnique({
+      where: { id },
+      select: { id: true, branchId: true, name: true, applyToPos: true, requireProof: true, isActive: true, version: true },
+    });
+  },
+
+  findBranchIsActive(branchId: string) {
+    return prisma.branch.findUnique({ where: { id: branchId }, select: { status: true } });
+  },
+};

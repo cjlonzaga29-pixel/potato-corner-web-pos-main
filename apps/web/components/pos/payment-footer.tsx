@@ -12,6 +12,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { ImageUpload } from '@/components/shared/forms/image-upload';
+import { ManualDiscountFields, type ManualDiscountFooterState } from './manual-discount-fields';
 
 function formatPeso(amount: number): string {
   return `₱${amount.toFixed(2)}`;
@@ -145,6 +146,13 @@ interface PaymentFooterProps {
    * which JSX renders.
    */
   section?: 'fields' | 'proof' | 'confirm';
+  /**
+   * POS-PERF-P55 — the manual-discount checkout. When present it replaces
+   * the legacy discount picker (statutory/Employee/custom promotions and the
+   * typed promo amount) with "No discount" / "Apply discount", a type and a
+   * peso amount; the statutory PWD/Senior choice keeps using discountType.
+   */
+  manualDiscount?: ManualDiscountFooterState;
 }
 
 /**
@@ -223,6 +231,7 @@ export const PaymentFooter = memo(function PaymentFooter({
   isChargePending,
   onCharge,
   section,
+  manualDiscount,
 }: PaymentFooterProps) {
   const showFields = section === undefined || section === 'fields';
   const showProof = section === undefined || section === 'proof';
@@ -277,6 +286,10 @@ export const PaymentFooter = memo(function PaymentFooter({
             <p className="text-xs text-muted-foreground">GCash, Maya, and Other are unavailable offline — payment proof can only be captured while connected.</p>
           )}
 
+          {manualDiscount ? (
+            <ManualDiscountFields state={manualDiscount} />
+          ) : (
+          <>
           <Select
             value={pickerValue}
             onValueChange={(v) => {
@@ -321,6 +334,8 @@ export const PaymentFooter = memo(function PaymentFooter({
               This branch asks for a discount decision on every sale. Pick the one the customer qualifies for, or &ldquo;No applicable discount&rdquo;.
             </p>
           )}
+          </>
+          )}
 
           {(discountType === 'pwd' || discountType === 'senior_citizen') && (
             <Input
@@ -330,7 +345,7 @@ export const PaymentFooter = memo(function PaymentFooter({
               onChange={(e) => onDiscountIdReferenceChange(e.target.value)}
             />
           )}
-          {discountType === 'promotional' && (
+          {!manualDiscount && discountType === 'promotional' && (
             <Input
               className="app-control"
               type="number"
@@ -396,6 +411,22 @@ export const PaymentFooter = memo(function PaymentFooter({
 
       {showProof && (
         <>
+          {manualDiscount?.proofRequired && (
+            <Card className="rounded-lg shadow-none">
+              <CardContent className="app-pos-proof-padding space-y-2" style={{ padding: 'var(--app-pos-proof-padding)' }}>
+                {manualDiscount.proofAttached ? (
+                  <ProofSummary label="Discount proof photo attached" previewUrl={manualDiscount.proofPreviewUrl} onClear={manualDiscount.onClearProof} />
+                ) : (
+                  <ImageUpload
+                    label="Discount Proof Photo"
+                    description="Required for this discount type — take or upload a clear photo. Charge is enabled once it has uploaded."
+                    required
+                    onImageSelected={manualDiscount.onProofSelected}
+                  />
+                )}
+              </CardContent>
+            </Card>
+          )}
           {(discountType === 'pwd' || discountType === 'senior_citizen') && (
             <Card className="rounded-lg shadow-none">
               {/* Task 209.23 — `CardContent`'s own default `p-4 sm:p-6` (card.tsx)

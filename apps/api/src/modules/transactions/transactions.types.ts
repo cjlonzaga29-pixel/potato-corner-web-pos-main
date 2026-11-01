@@ -38,7 +38,7 @@ export interface CreateTransactionData {
   cashierId: string;
   items: CartItemInput[];
   paymentMethod: PaymentMethod;
-  discountType?: 'pwd' | 'senior_citizen' | 'employee' | 'manager_override' | 'promotional';
+  discountType?: 'pwd' | 'senior_citizen' | 'employee' | 'manager_override' | 'promotional' | 'manual';
   discountIdReference?: string;
   discountAmount?: number;
   cashTendered?: number;
@@ -64,10 +64,24 @@ export interface CreateTransactionData {
   notes?: string;
   /** POS-PERF-P50 — the VAT/discount rates the cashier's total was computed with; a mismatch is refused (TAX_SETTINGS_CHANGED). Absent = no check. */
   taxBasis?: TaxBasis;
+  /** POS-PERF-P55R2 — 'manual_total_v1' from tax_basis.calculation_mode: no VAT calculated. Absent = the VAT calculation (taxBasis then holds the rates). */
+  calculationMode?: 'manual_total_v1';
   /** POS-PERF-P50R — the cashier-selected custom discount the screen showed (id + version). */
   selectedDiscount?: { promotionId: string; version: number };
   /** POS-PERF-P50R — the cashier's explicit decision when the branch requires one. */
   discountChoice?: 'selected' | 'none_applicable';
+  /** POS-PERF-P55 — 'manual_v1' from the manual-discount checkout; absent = legacy client (pre-P55 rules). */
+  discountFlow?: 'manual_v1';
+  /** POS-PERF-P55 — the cashier-entered peso discount (new flow only). */
+  manualDiscount?: ManualDiscountInput;
+}
+
+export interface ManualDiscountInput {
+  discountTypeId: string;
+  typeVersion: number;
+  amount: number;
+  proofUploadId?: string;
+  expectedTotalAmount?: number;
 }
 
 export interface TaxBasis {
@@ -102,7 +116,7 @@ export interface TransactionListFilters {
 
 export interface DiscountAuditFilters {
   branchIds: 'all' | string[];
-  discountType?: 'pwd' | 'senior_citizen' | 'employee' | 'manager_override' | 'promotional';
+  discountType?: 'pwd' | 'senior_citizen' | 'employee' | 'manager_override' | 'promotional' | 'manual';
   dateFrom?: string;
   dateTo?: string;
   page: number;
@@ -122,14 +136,19 @@ export interface OfflineTransactionItemInput {
   shiftId: string | undefined;
   items: CartItemInput[];
   paymentMethod: PaymentMethod;
-  discountType?: 'pwd' | 'senior_citizen' | 'employee' | 'manager_override' | 'promotional';
+  discountType?: 'pwd' | 'senior_citizen' | 'employee' | 'manager_override' | 'promotional' | 'manual';
   discountIdReference?: string;
   discountAmount?: number;
   cashTendered?: number;
   gcashReferenceNumber?: string;
   gcashManuallyVerified?: boolean;
   taxBasis?: TaxBasis;
+  /** POS-PERF-P55R2 — the queued sale's own calculation mode; never changed by sync. */
+  calculationMode?: 'manual_total_v1';
   discountChoice?: 'selected' | 'none_applicable';
+  /** POS-PERF-P55 — forwarded only so the sync can refuse a queued manual discount visibly. */
+  discountFlow?: 'manual_v1';
+  manualDiscount?: ManualDiscountInput;
   clientCreatedAt: number;
 }
 

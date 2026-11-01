@@ -1,5 +1,5 @@
 // apps/api/src/lib/reports/csv.ts
-import type { ReportColumn } from '../../modules/reports/reports.types.js';
+import { columnsForRows, type ReportColumn } from '../../modules/reports/reports.types.js';
 
 const FORMULA_TRIGGER_CHARS = new Set(['=', '+', '-', '@']);
 
@@ -27,8 +27,9 @@ export function escapeCsvField(value: unknown): string {
  * spreadsheet compatibility — formatting is the viewer's job, not ours.
  */
 export function generateCsv<T extends Record<string, unknown>>(data: T[], columns: Array<ReportColumn<T>>): Buffer {
-  const visibleColumns = columns.filter((c) => !c.isAudit);
-  const auditColumns = columns.filter((c) => c.isAudit);
+  const rendered = columnsForRows(columns, data);
+  const visibleColumns = rendered.filter((c) => !c.isAudit);
+  const auditColumns = rendered.filter((c) => c.isAudit);
   const orderedColumns = [...visibleColumns, ...auditColumns];
 
   const headerRow = [...visibleColumns.map((c) => c.header), ...auditColumns.map((c) => `_${c.header}`)].join(',');

@@ -1,0 +1,18 @@
+-- POS-PERF-P55 release fix — one ACTIVE manual discount type per name per
+-- branch, case-insensitive. The service check (findActiveByName) alone let
+-- concurrent creates/renames of one name all succeed (8 concurrent creates
+-- of one name gave 8 active rows in the release verification); this index
+-- decides and the service reports its violation as
+-- MANUAL_DISCOUNT_TYPE_NAME_TAKEN (409).
+--
+-- Partial (active rows only): a deactivated type keeps its name for the
+-- sales that reference it and the name can be reused. lower(name) because
+-- names are stored trimmed (Zod) and compared case-insensitively. Raw SQL:
+-- Prisma's schema DSL cannot express WHERE-clause or lower() indexes (same
+-- as inventory_items_sku_ci_key).
+--
+-- manual_discount_types is new in P55 and small, so a plain (non-concurrent)
+-- build is fine. It fails if the table already holds active duplicates —
+-- possible only on a database where P55 ran before this fix; deactivate the
+-- extras first (runbook §8).
+CREATE UNIQUE INDEX "manual_discount_types_branch_active_name_key" ON "manual_discount_types" ("branch_id", LOWER("name")) WHERE "is_active";

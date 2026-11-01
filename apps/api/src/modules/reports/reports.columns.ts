@@ -13,6 +13,8 @@ export const DAILY_SALES_TRANSACTION_COLUMNS: ReportColumn<DailySalesTransaction
   { key: 'payment_method', header: 'Payment' },
   { key: 'total_amount', header: 'Total' },
   { key: 'vat_amount', header: 'VAT' },
+  // POS-PERF-P55R2 — only in exports that contain a manual-total sale.
+  { key: 'tax_calculation', header: 'Tax Calculation', omitWhenEmpty: true },
   { key: 'discount_amount', header: 'Discount' },
   { key: 'discount_type', header: 'Discount Type' },
   // reports.service.ts's requestExport strips this column for the 'branch'
@@ -42,6 +44,8 @@ export const DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS: ReportColumn<DailySalesTra
   { key: 'discount_id_reference', header: 'Customer ID / Reference' },
   { key: 'discount_amount', header: 'Discount Amount' },
   { key: 'discount_proof_available', header: 'Proof Available' },
+  // POS-PERF-P55R2 — only in exports that contain a manual-total sale.
+  { key: 'tax_calculation', header: 'Tax Calculation', omitWhenEmpty: true },
 ];
 
 export const REPORT_COLUMNS: Record<ReportType, ReportColumn<Record<string, unknown>>[]> = {
@@ -52,13 +56,16 @@ export const REPORT_COLUMNS: Record<ReportType, ReportColumn<Record<string, unkn
     { key: 'gross_sales', header: 'Gross Sales' },
     { key: 'discount_total', header: 'Discounts' },
     { key: 'refund_total', header: 'Refunds' },
-    { key: 'vat_total', header: 'VAT' },
+    { key: 'vat_total', header: 'VAT', partialCoverageHeader: 'VAT (VAT-calculated sales only)' },
     { key: 'net_sales', header: 'Net Sales' },
     { key: 'expense_total', header: 'Operating Expenses' },
     { key: 'net_operating_result', header: 'Net Operating Result' },
     { key: 'completed_count', header: 'Completed' },
     { key: 'voided_count', header: 'Voided' },
     { key: 'refunded_count', header: 'Refunded' },
+    // POS-PERF-P55R2 — only in exports whose period has manual-total sales.
+    { key: 'tax_not_calculated_count', header: 'Sales Without VAT Calculation', omitWhenEmpty: true },
+    { key: 'tax_not_calculated_sales', header: 'Amount Paid Without VAT Calculation', omitWhenEmpty: true },
   ],
   SHIFT_SUMMARY: [
     { key: 'shift_id', header: 'Shift ID', isAudit: true },
@@ -109,6 +116,8 @@ export const REPORT_COLUMNS: Record<ReportType, ReportColumn<Record<string, unkn
     { key: 'total_discount_amount', header: 'Total Discount' },
     { key: 'total_vat_exempt_sales', header: 'VAT-Exempt Sales (PWD/Senior)' },
     { key: 'total_vat_exempt_amount', header: 'Non-VATable Amount (VAT cap)' },
+    // POS-PERF-P55R2 — only in exports that contain a manual-total row.
+    { key: 'tax_calculation', header: 'Tax Calculation', omitWhenEmpty: true },
   ],
   INVENTORY_MOVEMENT: [
     { key: 'movement_id', header: 'Movement ID', isAudit: true },

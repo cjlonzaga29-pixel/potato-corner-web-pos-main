@@ -82,6 +82,12 @@ export default function SupervisorPromotionsPage() {
             Automatic promotions and cashier-selected discounts at your branches. Checkout always applies the current setting; past sales keep
             the discount they were charged. PWD, Senior Citizen and Employee rates are in Settings.
           </p>
+          {/* POS-PERF-P55 — cutover notice: the current POS no longer applies these. */}
+          <p className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200" data-testid="promotions-legacy-notice">
+            The current POS checkout no longer applies promotions. Cashiers apply discounts as a peso amount using the discount types in Settings.
+            Promotions here only affect terminals still running an older version; turn them off once every terminal is updated. Nothing here is
+            deleted.
+          </p>
         </div>
         <Button
           onClick={() => {

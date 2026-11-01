@@ -1,7 +1,7 @@
 // apps/api/src/lib/reports/pdf.ts
 import React from 'react';
 import { Document, Page, Text, View, StyleSheet, renderToBuffer } from '@react-pdf/renderer';
-import type { ReportColumn, ReportFilters } from '../../modules/reports/reports.types.js';
+import { columnsForRows, type ReportColumn, type ReportFilters } from '../../modules/reports/reports.types.js';
 import type { ReportType } from '@potato-corner/shared';
 import { manilaDateKey, formatManilaDateTime } from '../manila-time.js';
 
@@ -170,7 +170,7 @@ export async function generatePdf<T extends Record<string, unknown>>(
   columns: Array<ReportColumn<T>>,
   branchName: string | null,
 ): Promise<Buffer> {
-  const visibleColumns = columns.filter((c) => !c.isAudit);
+  const visibleColumns = columnsForRows(columns, data).filter((c) => !c.isAudit);
   const generatedAt = new Date().toISOString();
   // filters.dateFrom/dateTo are Manila day-boundary UTC instants (see
   // reports.router.ts's toBoundaryDate) — .toISOString().slice(0, 10) would

@@ -20,11 +20,16 @@ interface OrderReviewPanelProps {
   onRemoveLine: (index: number) => void;
   onQuantityChange: (index: number, quantity: number) => void;
   subtotal: number;
-  vatAmount: number;
+  /** POS-PERF-P55R2 — null: the manual-total checkout does not calculate VAT, so no VAT line is shown. */
+  vatAmount: number | null;
   discountAmount: number;
   totalAmount: number;
   /** POS-PERF-P50 — PWD/Senior Citizen: the sale is VAT-exempt, shown as such instead of "VAT ₱0.00". */
   isVatExempt?: boolean;
+  /** POS-PERF-P55 — e.g. "Employee discount"; defaults to "Discount". */
+  discountLabel?: string;
+  /** POS-PERF-P55 — "Amount to pay" in the manual-discount checkout; defaults to "Total". */
+  totalLabel?: string;
   /** P46R3 — shown above the lines (the Edit Cart option check). */
   notice?: ReactNode;
   className?: string;
@@ -50,6 +55,8 @@ export function OrderReviewPanel({
   discountAmount,
   totalAmount,
   isVatExempt = false,
+  discountLabel,
+  totalLabel,
   notice,
   className,
 }: OrderReviewPanelProps) {
@@ -82,17 +89,19 @@ export function OrderReviewPanel({
           </div>
           {discountAmount > 0 && (
             <div className="app-pos-total-row flex items-center justify-between font-medium text-destructive">
-              <span>Discount</span>
+              <span>{discountLabel ?? 'Discount'}</span>
               <span className="tabular-nums">-{formatPeso(discountAmount)}</span>
             </div>
           )}
-          <div className="flex justify-between text-xs text-muted-foreground" data-testid="checkout-vat-line">
-            <span>{isVatExempt ? 'VAT-exempt (PWD/Senior) — no VAT' : `VAT (${VAT_RATE_PERCENT}%, included in prices)`}</span>
-            <span className="tabular-nums">{formatPeso(vatAmount)}</span>
-          </div>
+          {vatAmount !== null && (
+            <div className="flex justify-between text-xs text-muted-foreground" data-testid="checkout-vat-line">
+              <span>{isVatExempt ? 'VAT-exempt (PWD/Senior) — no VAT' : `VAT (${VAT_RATE_PERCENT}%, included in prices)`}</span>
+              <span className="tabular-nums">{formatPeso(vatAmount)}</span>
+            </div>
+          )}
           <Separator className="my-1.5 lg:my-1" />
           <div className="app-pos-total-row flex items-center justify-between rounded-lg bg-primary/5 px-2.5">
-            <span className="text-sm font-semibold">Total</span>
+            <span className="text-sm font-semibold">{totalLabel ?? 'Total'}</span>
             <span className="flex items-center gap-1.5 text-xl font-bold tabular-nums text-primary">
               <Receipt className="h-4 w-4 text-primary/70" aria-hidden="true" />
               {formatPeso(totalAmount)}
@@ -128,8 +137,12 @@ export function PaymentPanel(props: PaymentFooterProps & { className?: string })
 // neither a discount ID proof nor a payment proof applies (e.g. no discount,
 // paying cash), the Payment step's own CTA becomes Confirm directly — an
 // empty "Proof" step with nothing to attach would just be an extra tap.
-function needsProofStep(discountType: PaymentFooterProps['discountType'], paymentMethod: PaymentFooterProps['paymentMethod']): boolean {
-  return discountType === 'pwd' || discountType === 'senior_citizen' || paymentMethod !== 'cash';
+function needsProofStep(
+  discountType: PaymentFooterProps['discountType'],
+  paymentMethod: PaymentFooterProps['paymentMethod'],
+  manualProofRequired = false,
+): boolean {
+  return discountType === 'pwd' || discountType === 'senior_citizen' || paymentMethod !== 'cash' || manualProofRequired;
 }
 
 interface CheckoutWorkspaceProps extends PaymentFooterProps {
@@ -150,7 +163,7 @@ interface CheckoutWorkspaceProps extends PaymentFooterProps {
   onRemoveLine: (index: number) => void;
   onQuantityChange: (index: number, quantity: number) => void;
   subtotal: number;
-  vatAmount: number;
+  vatAmount: number | null;
   discountAmount: number;
   reviewNotice?: ReactNode;
 }
@@ -194,7 +207,7 @@ export function CheckoutWorkspace({
   const shouldKeepTwoPane = open && (keepTwoPane || layout === 'two-pane');
   if (shouldKeepTwoPane !== keepTwoPane) setKeepTwoPane(shouldKeepTwoPane);
   const activeLayout = shouldKeepTwoPane ? 'two-pane' : layout;
-  const requiresProofStep = needsProofStep(discountType, paymentMethod);
+  const requiresProofStep = needsProofStep(discountType, paymentMethod, paymentFooterProps.manualDiscount?.proofRequired === true);
 
   // Task 209.25 — every reopen starts back on Order Review, same as a fresh
   // checkout would; this never touches cart/payment/discount/proof state,
@@ -214,6 +227,8 @@ export function CheckoutWorkspace({
       discountAmount={discountAmount}
       totalAmount={totalAmount}
       isVatExempt={isVatExemptDiscountType(discountType)}
+      discountLabel={paymentFooterProps.manualDiscount?.summary.label ?? undefined}
+      totalLabel={paymentFooterProps.manualDiscount ? 'Amount to pay' : undefined}
       notice={reviewNotice}
     />
   );

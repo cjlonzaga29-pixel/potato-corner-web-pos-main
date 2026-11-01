@@ -4,15 +4,24 @@ import {
   updatePromotionSchema,
   setPromotionEnabledSchema,
   promotionListQuerySchema,
+  createManualDiscountTypeSchema,
+  updateManualDiscountTypeSchema,
+  deactivateManualDiscountTypeSchema,
+  manualDiscountTypeListQuerySchema,
+  ROLES,
+  type CreateManualDiscountTypeInput,
+  type UpdateManualDiscountTypeInput,
+  type DeactivateManualDiscountTypeInput,
   type CreatePromotionInput,
   type UpdatePromotionInput,
   type SetPromotionEnabledInput,
 } from '@potato-corner/shared';
-import { discountsService } from './discounts.service.js';
+import { discountsService, manualDiscountTypesService } from './discounts.service.js';
 import { DiscountError } from './discounts.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
-import { adminOrSupervisor, supervisorOnly } from '../../middleware/authorize.js';
-import { requireActiveSupervisor } from '../../middleware/require-active-employee.js';
+import { adminOrSupervisor, allRoles, supervisorOnly } from '../../middleware/authorize.js';
+import { requireActiveEmployee, requireActiveSupervisor } from '../../middleware/require-active-employee.js';
+import { hasBranchAccess } from '../../lib/branch-access.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
 
@@ -132,6 +141,119 @@ router.patch(
         req.ip ?? null,
       );
       res.status(200).json({ data: promotion, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+// POS-PERF-P55 — manual peso discount types. Reads: super_admin (everything,
+// read-only) and supervisors (their live branches). Writes: supervisors only,
+// re-checked against live branch authority in manualDiscountTypesService.
+// /manual-types/pos is the terminal's offer list for its own branch.
+router.get('/manual-types', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    const query = manualDiscountTypeListQuerySchema.safeParse(req.query);
+    if (!query.success) {
+      res.status(400).json({ data: null, error: { code: 'VALIDATION_ERROR', message: 'Invalid query', details: query.error.issues }, meta: null });
+      return;
+    }
+    const types = await manualDiscountTypesService.list(req.user, query.data.branch_id, query.data.include_inactive);
+    res.status(200).json({ data: types, error: null, meta: null });
+  } catch (error) {
+    handleModuleError(error, res, next);
+  }
+});
+
+// Registered before /manual-types/:typeId routes so "pos" is never captured as an id.
+router.get(
+  '/manual-types/pos',
+  authenticate,
+  allRoles,
+  requireActiveEmployee,
+  requirePasswordChange,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      // Staff and Branch Account tokens pin their branch: a query branch_id is
+      // ignored for them (same rule as GET /settings/discount-policy).
+      let branchId: string | undefined;
+      if (req.user.role === ROLES.STAFF || req.user.role === ROLES.BRANCH) {
+        branchId = req.user.branch_ids[0];
+      } else {
+        const query = manualDiscountTypeListQuerySchema.safeParse(req.query);
+        branchId = query.success ? query.data.branch_id : undefined;
+        if (branchId && !(await hasBranchAccess(req.user, branchId))) {
+          res.status(403).json({ data: null, error: { code: 'BRANCH_ACCESS_DENIED', message: 'You do not have access to this branch' }, meta: null });
+          return;
+        }
+      }
+      if (!branchId) {
+        res.status(422).json({ data: null, error: { code: 'BRANCH_REQUIRED', message: 'branch_id is required' }, meta: null });
+        return;
+      }
+      const types = await manualDiscountTypesService.listForPos(branchId);
+      res.status(200).json({ data: types, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+router.post(
+  '/manual-types',
+  authenticate,
+  supervisorOnly,
+  requireActiveSupervisor,
+  requirePasswordChange,
+  validate(createManualDiscountTypeSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const type = await manualDiscountTypesService.create(req.user, req.body as CreateManualDiscountTypeInput, req.ip ?? null);
+      res.status(201).json({ data: type, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+router.patch(
+  '/manual-types/:typeId',
+  authenticate,
+  supervisorOnly,
+  requireActiveSupervisor,
+  requirePasswordChange,
+  validate(updateManualDiscountTypeSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const type = await manualDiscountTypesService.update(req.user, req.params.typeId as string, req.body as UpdateManualDiscountTypeInput, req.ip ?? null);
+      res.status(200).json({ data: type, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
+
+router.post(
+  '/manual-types/:typeId/deactivate',
+  authenticate,
+  supervisorOnly,
+  requireActiveSupervisor,
+  requirePasswordChange,
+  validate(deactivateManualDiscountTypeSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const type = await manualDiscountTypesService.deactivate(
+        req.user,
+        req.params.typeId as string,
+        req.body as DeactivateManualDiscountTypeInput,
+        req.ip ?? null,
+      );
+      res.status(200).json({ data: type, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);
     }

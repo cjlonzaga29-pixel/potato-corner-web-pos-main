@@ -1,5 +1,5 @@
 import type { Prisma } from '@prisma/client';
-import { PAYMENT_METHOD, type PaymentMethod } from '@potato-corner/shared';
+import { MANUAL_TOTAL_CALCULATION, PAYMENT_METHOD, type PaymentMethod } from '@potato-corner/shared';
 import { prisma } from '../../lib/prisma.js';
 import { nextCounterValue } from '../../lib/id-counter.js';
 import { dayBounds } from '../../lib/manila-time.js';
@@ -10,6 +10,32 @@ function emptyPaymentBreakdown(): Record<PaymentMethod, { total: number; count: 
   return Object.fromEntries(
     Object.values(PAYMENT_METHOD).map((method) => [method, { total: 0, count: 0 }]),
   ) as Record<PaymentMethod, { total: number; count: number }>;
+}
+
+interface CalculationModeGroup {
+  calculationMode: string | null;
+  _sum: { vatAmount: Prisma.Decimal | null; totalAmount: Prisma.Decimal | null };
+  _count: { _all: number };
+}
+
+/**
+ * POS-PERF-P55R3 — today's VAT of the VAT-calculated sales only (NULL = recorded
+ * before P55R2), with the manual-total sales counted apart: their stored 0 VAT
+ * is a placeholder for "VAT not calculated", never a ₱0 VAT result.
+ */
+function vatCoverage(groups: CalculationModeGroup[]) {
+  let vat = 0;
+  let notCalculatedCount = 0;
+  let notCalculatedSales = 0;
+  for (const group of groups) {
+    if (group.calculationMode === MANUAL_TOTAL_CALCULATION) {
+      notCalculatedCount += group._count._all;
+      notCalculatedSales += Number(group._sum.totalAmount ?? 0);
+    } else {
+      vat += Number(group._sum.vatAmount ?? 0);
+    }
+  }
+  return { todayVat: round2(vat), todayTaxNotCalculatedCount: notCalculatedCount, todayTaxNotCalculatedSales: round2(notCalculatedSales) };
 }
 
 /**
@@ -316,6 +342,7 @@ export const branchesRepository = {
     const [
       activeShiftsCount,
       todayTransactions,
+      calculationModeGroups,
       todayRefunds,
       paymentGroups,
       activeStaffCount,
@@ -327,7 +354,13 @@ export const branchesRepository = {
       prisma.transaction.aggregate({
         where: { branchId, createdAt: todayRange, status: 'completed' },
         _count: { _all: true },
-        _sum: { subtotal: true, discountAmount: true, vatAmount: true },
+        _sum: { subtotal: true, discountAmount: true },
+      }),
+      prisma.transaction.groupBy({
+        by: ['calculationMode'],
+        where: { branchId, createdAt: todayRange, status: 'completed' },
+        _sum: { vatAmount: true, totalAmount: true },
+        _count: { _all: true },
       }),
       prisma.transaction.aggregate({
         where: { branchId, createdAt: todayRange, status: 'refunded' },
@@ -388,7 +421,7 @@ export const branchesRepository = {
       todayDiscountTotal: metrics.discountTotal,
       todayRefundTotal: metrics.refundTotal,
       todayNetSales: metrics.netSales,
-      todayVat: Number(todayTransactions._sum.vatAmount ?? 0),
+      ...vatCoverage(calculationModeGroups),
       todayExpenses: metrics.expenseTotal,
       todayNetOperatingResult: metrics.netOperatingResult,
       paymentBreakdown,
@@ -435,6 +468,7 @@ export const branchesRepository = {
       staffGroups,
       staffTimedInGroups,
       txnGroups,
+      calculationModeGroups,
       refundGroups,
       paymentGroups,
       expenseGroups,
@@ -457,7 +491,13 @@ export const branchesRepository = {
       prisma.transaction.groupBy({
         by: ['branchId'],
         where: { status: 'completed', createdAt: todayRange },
-        _sum: { subtotal: true, discountAmount: true, vatAmount: true },
+        _sum: { subtotal: true, discountAmount: true },
+        _count: { _all: true },
+      }),
+      prisma.transaction.groupBy({
+        by: ['branchId', 'calculationMode'],
+        where: { status: 'completed', createdAt: todayRange },
+        _sum: { vatAmount: true, totalAmount: true },
         _count: { _all: true },
       }),
       prisma.transaction.groupBy({
@@ -515,7 +555,7 @@ export const branchesRepository = {
         todayDiscountTotal: metrics.discountTotal,
         todayRefundTotal: metrics.refundTotal,
         todayNetSales: metrics.netSales,
-        todayVat: Number(txnGroup?._sum.vatAmount ?? 0),
+        ...vatCoverage(calculationModeGroups.filter((g) => g.branchId === b.id)),
         todayExpenses: metrics.expenseTotal,
         todayNetOperatingResult: metrics.netOperatingResult,
         paymentBreakdown,

@@ -112,7 +112,15 @@ export const branchStatsResponseSchema = z.object({
   todayDiscountTotal: z.number(),
   todayRefundTotal: z.number(),
   todayNetSales: z.number(),
+  /** VAT of today's VAT-calculated sales only — never complete coverage when todayTaxNotCalculatedCount > 0. */
   todayVat: z.number(),
+  /**
+   * POS-PERF-P55R3 — today's completed manual-total sales (VAT not
+   * calculated) and their amount paid: excluded from todayVat, included in
+   * gross/net sales. Optional only because an older API omits them.
+   */
+  todayTaxNotCalculatedCount: z.number().int().optional(),
+  todayTaxNotCalculatedSales: z.number().optional(),
   todayExpenses: z.number(),
   // Canonical P2 formula: todayNetSales - todayExpenses. No COGS/waste
   // dependency — see lib/financial-metrics.ts's computeFinancialMetrics.

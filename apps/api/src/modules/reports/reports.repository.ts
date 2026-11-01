@@ -1,5 +1,11 @@
 import { Prisma, type $Enums } from '@prisma/client';
-import { isVatExemptDiscountType } from '@potato-corner/shared';
+import {
+  isVatExemptDiscountType,
+  resolveCalculationMode,
+  MANUAL_TOTAL_CALCULATION,
+  TAX_NOT_CALCULATED_LABEL,
+  type SaleCalculationMode,
+} from '@potato-corner/shared';
 import { prisma } from '../../lib/prisma.js';
 import { manilaDateKey, dayBounds, monthBounds } from '../../lib/manila-time.js';
 import { classifyStockStatus } from '../universal-inventory/universal-inventory.service.js';
@@ -231,7 +237,7 @@ export const reportsRepository = {
     const [rows, branches, expenseRows] = await Promise.all([
       prisma.transaction.findMany({
         where,
-        select: { branchId: true, status: true, subtotal: true, totalAmount: true, discountAmount: true, vatAmount: true, createdAt: true },
+        select: { branchId: true, status: true, subtotal: true, totalAmount: true, discountAmount: true, vatAmount: true, calculationMode: true, createdAt: true },
       }),
       prisma.branch.findMany({ select: { id: true, name: true } }),
       prisma.expense.findMany({
@@ -260,6 +266,8 @@ export const reportsRepository = {
       completedCount: number;
       voidedCount: number;
       refundedCount: number;
+      taxNotCalculatedCount: number;
+      taxNotCalculatedSales: number;
     }
     const buckets = new Map<string, Bucket>();
     for (const row of rows) {
@@ -276,6 +284,8 @@ export const reportsRepository = {
         completedCount: 0,
         voidedCount: 0,
         refundedCount: 0,
+        taxNotCalculatedCount: 0,
+        taxNotCalculatedSales: 0,
       };
       if (row.status === 'completed') {
         // gross_sales is the pre-discount line-item total (Transaction.subtotal),
@@ -284,7 +294,14 @@ export const reportsRepository = {
         // gross sales for any discounted transaction (PWD/Senior, promos, etc.).
         existing.grossSales += row.subtotal.toNumber();
         existing.discountTotal += row.discountAmount.toNumber();
-        existing.vatTotal += row.vatAmount.toNumber();
+        // POS-PERF-P55R2 — a manual-total sale has no VAT figure: it is
+        // counted separately, never as ₱0 VAT.
+        if (resolveCalculationMode(row.calculationMode) === MANUAL_TOTAL_CALCULATION) {
+          existing.taxNotCalculatedCount += 1;
+          existing.taxNotCalculatedSales += row.totalAmount.toNumber();
+        } else {
+          existing.vatTotal += row.vatAmount.toNumber();
+        }
         existing.completedCount += 1;
       } else if (row.status === 'voided') {
         existing.voidedCount += 1;
@@ -329,6 +346,8 @@ export const reportsRepository = {
           completed_count: b.completedCount,
           voided_count: b.voidedCount,
           refunded_count: b.refundedCount,
+          tax_not_calculated_count: b.taxNotCalculatedCount,
+          tax_not_calculated_sales: round2(b.taxNotCalculatedSales),
         };
       })
       .sort((a, b) => a.report_date.localeCompare(b.report_date) || a.branch_name.localeCompare(b.branch_name));
@@ -371,6 +390,7 @@ export const reportsRepository = {
         paymentMethod: true,
         totalAmount: true,
         vatAmount: true,
+        calculationMode: true,
         discountAmount: true,
         discountType: true,
         discountRateUsed: true,
@@ -407,12 +427,15 @@ export const reportsRepository = {
           });
         }
       }
+      // POS-PERF-P55R2 — no VAT figure for a manual-total sale (blank, not 0).
+      const isManualTotal = resolveCalculationMode(row.calculationMode) === MANUAL_TOTAL_CALCULATION;
       return {
         transaction_id: row.id,
         receipt_number: row.transactionNumber,
         payment_method: row.paymentMethod,
         total_amount: row.totalAmount.toNumber(),
-        vat_amount: row.vatAmount.toNumber(),
+        vat_amount: isManualTotal ? null : row.vatAmount.toNumber(),
+        tax_calculation: isManualTotal ? TAX_NOT_CALCULATED_LABEL : null,
         discount_amount: row.discountAmount.toNumber(),
         discount_type: row.discountType,
         discount_rate_used: row.discountRateUsed?.toNumber() ?? null,
@@ -546,7 +569,7 @@ export const reportsRepository = {
     const range = dateRangeFilter(filters);
     const [rows, branches] = await Promise.all([
       prisma.transaction.groupBy({
-        by: ['branchId', 'discountType'],
+        by: ['branchId', 'discountType', 'calculationMode'],
         where: { discountType: { not: null }, status: 'completed', ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) },
         _count: { _all: true },
         _sum: { discountAmount: true, vatExemptAmount: true, totalAmount: true },
@@ -554,21 +577,46 @@ export const reportsRepository = {
       prisma.branch.findMany({ select: { id: true, name: true } }),
     ]);
     const branchNameById = new Map(branches.map((b) => [b.id, b.name]));
-    return rows
-      .filter((row): row is typeof row & { discountType: string } => row.discountType !== null)
-      .map((row) => ({
+    // POS-PERF-P55R2 — one row per branch, discount type and calculation.
+    // NULL (recorded before P55R2) and 'legacy_vat_v1' are the same VAT
+    // calculation, so they are merged and historical rows read as before.
+    const merged = new Map<string, DiscountComplianceReportRow & { calculation_mode: SaleCalculationMode }>();
+    for (const row of rows) {
+      if (row.discountType === null) continue;
+      const calculationMode = resolveCalculationMode(row.calculationMode);
+      const key = `${row.branchId}|${row.discountType}|${calculationMode}`;
+      const existing = merged.get(key) ?? {
         branch_id: row.branchId,
         branch_name: branchNameById.get(row.branchId) ?? 'Unknown Branch',
         discount_type: row.discountType,
-        transaction_count: row._count._all,
-        total_discount_amount: row._sum.discountAmount?.toNumber() ?? 0,
-        total_vat_exempt_amount: row._sum.vatExemptAmount?.toNumber() ?? 0,
+        calculation_mode: calculationMode,
+        transaction_count: 0,
+        total_discount_amount: 0,
+        total_vat_exempt_amount: 0,
+        total_vat_exempt_sales: 0,
+      };
+      existing.transaction_count += row._count._all;
+      existing.total_discount_amount = round2(existing.total_discount_amount + (row._sum.discountAmount?.toNumber() ?? 0));
+      if (calculationMode === MANUAL_TOTAL_CALCULATION) {
+        // VAT was not calculated: no non-VATable or VAT-exempt figure exists.
+        existing.total_vat_exempt_amount = null;
+        existing.total_vat_exempt_sales = null;
+      } else {
+        existing.total_vat_exempt_amount = round2((existing.total_vat_exempt_amount ?? 0) + (row._sum.vatExemptAmount?.toNumber() ?? 0));
         // POS-PERF-P50 — a PWD/Senior sale is VAT-exempt in full, but its
         // vatExemptAmount only holds the VAT-cap overflow (usually 0), so the
         // exempt-sales figure comes from the stored totals instead. Stored
         // amounts only — never recomputed from current settings.
-        total_vat_exempt_sales: isVatExemptDiscountType(row.discountType) ? round2(row._sum.totalAmount?.toNumber() ?? 0) : 0,
-      }));
+        existing.total_vat_exempt_sales = isVatExemptDiscountType(row.discountType)
+          ? round2((existing.total_vat_exempt_sales ?? 0) + (row._sum.totalAmount?.toNumber() ?? 0))
+          : 0;
+      }
+      merged.set(key, existing);
+    }
+    return [...merged.values()].map((row) => ({
+      ...row,
+      tax_calculation: row.calculation_mode === MANUAL_TOTAL_CALCULATION ? TAX_NOT_CALCULATED_LABEL : null,
+    }));
   },
 
   async getPaymentMethodMix(filters: ReportFilters): Promise<PaymentMethodMixReportRow[]> {

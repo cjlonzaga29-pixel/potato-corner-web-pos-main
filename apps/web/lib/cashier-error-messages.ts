@@ -27,6 +27,22 @@ export const CONNECTION_UNCERTAIN = 'CONNECTION_UNCERTAIN';
 export const STILL_PROCESSING = 'STILL_PROCESSING';
 /** Server confirmed (via resolve, not the original request's own catch) that nothing committed — safe to retry. */
 export const NOT_SAVED_SAFE_TO_RETRY = 'NOT_SAVED_SAFE_TO_RETRY';
+/**
+ * P55 release fix — a pre-P55 API refused a manual-discount sale at
+ * validation (it has no 'manual' discount type), so nothing was written.
+ * Retrying cannot succeed until the API is updated: review-only.
+ */
+export const MANUAL_DISCOUNT_UNSUPPORTED_BY_SERVER = 'MANUAL_DISCOUNT_UNSUPPORTED_BY_SERVER';
+export const MANUAL_DISCOUNT_UNSUPPORTED_MESSAGE =
+  'This server does not support manual discounts yet, so the sale was not charged. Choose “No discount” or a statutory discount, or ask a supervisor to check the system update.';
+/**
+ * P55R2 — a pre-P55R2 API refused a manual-total sale at validation (its
+ * tax_basis needs a VAT rate), so nothing was written and no VAT was
+ * calculated. Retrying cannot succeed until the API is updated: review-only.
+ */
+export const CALCULATION_MODE_UNSUPPORTED_BY_SERVER = 'CALCULATION_MODE_UNSUPPORTED_BY_SERVER';
+export const CALCULATION_MODE_UNSUPPORTED_MESSAGE =
+  'This server does not support this checkout yet (amount to pay = subtotal − discount), so the sale was not charged. Ask a supervisor to check the system update. The PWD/Senior Citizen discount can still be charged.';
 
 const CONNECTION_UNCERTAIN_TITLE = 'Connection problem — checking order status';
 
@@ -62,6 +78,24 @@ const TITLES: Record<string, string> = {
   TAX_SETTINGS_CHANGED: 'Discount or VAT settings changed — not recorded',
   DISCOUNT_CHOICE_REQUIRED: 'Choose a discount or “No applicable discount” — not charged',
   DISCOUNT_CHOICE_CONFLICT: 'Two discount choices — not charged',
+  MANUAL_DISCOUNT_TYPE_UNAVAILABLE: 'Discount type no longer offered — not charged',
+  MANUAL_DISCOUNT_TYPE_CHANGED: 'Discount type changed — not charged',
+  MANUAL_DISCOUNT_PROOF_REQUIRED: 'Proof photo required — not charged',
+  MANUAL_DISCOUNT_PROOF_INVALID: 'Proof photo not accepted — not charged',
+  MANUAL_DISCOUNT_PROOF_ALREADY_USED: 'Proof photo already used — not charged',
+  MANUAL_DISCOUNT_EXCEEDS_SUBTOTAL: 'Discount too large — not charged',
+  MANUAL_DISCOUNT_TOTAL_CHANGED: 'Total changed — not charged',
+  MANUAL_DISCOUNT_OFFLINE_UNSUPPORTED: 'Manual discount not allowed offline — not recorded',
+  DISCOUNT_NOT_COMBINABLE: 'Discounts cannot be combined — not charged',
+  DISCOUNT_NOT_SUPPORTED_IN_MANUAL_FLOW: 'Discount not available here — not charged',
+  PROMOTION_NOT_APPLIED_IN_MANUAL_FLOW: 'Promotions not applied — not charged',
+  DISCOUNT_PROOF_INVALID: 'Proof photo not accepted — not charged',
+  DISCOUNT_PROOF_ALREADY_USED: 'Proof photo already used — not charged',
+  [MANUAL_DISCOUNT_UNSUPPORTED_BY_SERVER]: 'Manual discounts not available yet — not charged',
+  [CALCULATION_MODE_UNSUPPORTED_BY_SERVER]: 'Server update needed — not charged',
+  CALCULATION_MODE_REQUIRED: 'POS update needed — not charged',
+  CALCULATION_MODE_NOT_SUPPORTED: 'POS update needed — not charged',
+  STATUTORY_DISCOUNT_REQUIRES_TAX_CALCULATION: 'POS update needed — not charged',
 };
 
 /** Real server codes that prove only that THIS request made no progress, not that anything failed or succeeded — the network/uncertain bucket, same as the synthetic codes above. */

@@ -1081,6 +1081,8 @@ describe('branchesService.getAllBranchStats', () => {
       todayRefundTotal: 0,
       todayNetSales: 500,
       todayVat: 53.57,
+      todayTaxNotCalculatedCount: 0,
+      todayTaxNotCalculatedSales: 0,
       todayExpenses: 100,
       todayNetOperatingResult: 346.43,
       paymentBreakdown: {
@@ -1128,6 +1130,8 @@ describe('branchesService.getAllBranchStats', () => {
       todayRefundTotal: 0,
       todayNetSales: 500,
       todayVat: 53.57,
+      todayTaxNotCalculatedCount: 0,
+      todayTaxNotCalculatedSales: 0,
       todayExpenses: 100,
       todayNetOperatingResult: 346.43,
       paymentBreakdown: {
@@ -1171,6 +1175,8 @@ describe('branchesService.getAllBranchStats', () => {
     expect(result[0]).toMatchObject({
       todayGrossSales: 500,
       todayVat: 53.57,
+      todayTaxNotCalculatedCount: 0,
+      todayTaxNotCalculatedSales: 0,
       todayExpenses: 100,
       todayNetOperatingResult: 346.43,
     });
@@ -1185,6 +1191,8 @@ describe('branchesService.getAllBranchStats', () => {
       todayRefundTotal: 0,
       todayNetSales: 500,
       todayVat: 53.57,
+      todayTaxNotCalculatedCount: 0,
+      todayTaxNotCalculatedSales: 0,
       todayExpenses: 100,
       todayNetOperatingResult: 346.43,
       paymentBreakdown: {
@@ -1203,6 +1211,8 @@ describe('branchesService.getAllBranchStats', () => {
     expect(result[0]).toMatchObject({
       todayGrossSales: 500,
       todayVat: 53.57,
+      todayTaxNotCalculatedCount: 0,
+      todayTaxNotCalculatedSales: 0,
       todayExpenses: 100,
       todayNetOperatingResult: 346.43,
     });
@@ -1466,6 +1476,8 @@ describe('branchesService.getBranchStats (single branch)', () => {
       todayRefundTotal: 0,
       todayNetSales: 500,
       todayVat: 53.57,
+      todayTaxNotCalculatedCount: 0,
+      todayTaxNotCalculatedSales: 0,
       todayExpenses: 100,
       todayNetOperatingResult: 346.43,
       paymentBreakdown: {

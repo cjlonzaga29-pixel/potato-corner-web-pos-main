@@ -117,6 +117,28 @@ const DEFINITE_NO_COMMIT_CODES = new Set([
   // POS-PERF-P50 — compared after the amounts are computed, before the
   // sale's $transaction opens (assertTaxBasisUnchanged), so nothing was written.
   'TAX_SETTINGS_CHANGED',
+  // POS-PERF-P55 — manual-discount checks. All run before the sale's
+  // $transaction opens, except the two *PROOF_ALREADY_USED codes, which can
+  // also be thrown inside it (the proof claim) — and throwing there rolls the
+  // whole sale back, same as INSUFFICIENT_STOCK below.
+  'MANUAL_DISCOUNT_FLOW_REQUIRED',
+  'MANUAL_DISCOUNT_OFFLINE_UNSUPPORTED',
+  'MANUAL_DISCOUNT_TYPE_UNAVAILABLE',
+  'MANUAL_DISCOUNT_TYPE_CHANGED',
+  'MANUAL_DISCOUNT_PROOF_REQUIRED',
+  'MANUAL_DISCOUNT_PROOF_INVALID',
+  'MANUAL_DISCOUNT_PROOF_ALREADY_USED',
+  'MANUAL_DISCOUNT_EXCEEDS_SUBTOTAL',
+  'MANUAL_DISCOUNT_TOTAL_CHANGED',
+  'DISCOUNT_NOT_SUPPORTED_IN_MANUAL_FLOW',
+  'DISCOUNT_NOT_COMBINABLE',
+  'PROMOTION_NOT_APPLIED_IN_MANUAL_FLOW',
+  // POS-PERF-P55R2 — calculation-mode checks (assertCalculationMode), before any lookup.
+  'CALCULATION_MODE_REQUIRED',
+  'CALCULATION_MODE_NOT_SUPPORTED',
+  'STATUTORY_DISCOUNT_REQUIRES_TAX_CALCULATION',
+  'DISCOUNT_PROOF_INVALID',
+  'DISCOUNT_PROOF_ALREADY_USED',
   // Thrown inside the $transaction callback itself (stock reservation) —
   // still safe, since throwing there rolls back the whole interactive
   // transaction, including the sale insert.
@@ -292,6 +314,7 @@ export function transactionToSaleSnapshot(transaction: TransactionResponse, orde
     subtotal: transaction.subtotal,
     discountAmount: transaction.discount_amount,
     discountType: transaction.discount_type,
+    ...(transaction.manual_discount ? { discountLabel: `${transaction.manual_discount.name} discount` } : {}),
     vatAmount: transaction.vat_amount,
     totalAmount: transaction.total_amount,
     paymentMethod: transaction.payment_method,

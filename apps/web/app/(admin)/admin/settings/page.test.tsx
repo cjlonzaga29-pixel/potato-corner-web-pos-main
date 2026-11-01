@@ -66,6 +66,9 @@ vi.mock('@/components/settings/discount-settings-section', () => ({
 vi.mock('@/components/settings/branch-discount-settings-section', () => ({
   BranchDiscountSettingsSection: () => <div>Branch Discounts Section Content</div>,
 }));
+vi.mock('@/components/settings/manual-discount-types-section', () => ({
+  ManualDiscountTypesSection: () => <div>Discount Types Section Content</div>,
+}));
 
 afterEach(() => {
   cleanup();

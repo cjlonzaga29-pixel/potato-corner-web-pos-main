@@ -12,14 +12,17 @@ import {
   paymentProofUploadRequestSchema,
   discountProofUploadRequestSchema,
   ROLES,
+  MANUAL_TOTAL_CALCULATION,
   type CartItem,
   type OfflineTransactionItem,
   type ImageProofType,
   type PaymentMethod,
   type TaxBasisInput,
+  type CheckoutManualDiscountInput,
+  type DiscountFlow,
 } from '@potato-corner/shared';
 import { transactionsService } from './transactions.service.js';
-import { TransactionError, type CartItemInput, type TaxBasis } from './transactions.types.js';
+import { TransactionError, type CartItemInput, type ManualDiscountInput, type TaxBasis } from './transactions.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminOrSupervisor, adminSupervisorOrBranch, allRoles } from '../../middleware/authorize.js';
 import { branchGuard } from '../../middleware/branch-guard.js';
@@ -81,9 +84,30 @@ function toPromotionAck(promotion: CartItem['promotion']): CartItemInput['promot
   return { promotionId: promotion.promotion_id, unitDiscount: promotion.unit_discount };
 }
 
-/** POS-PERF-P50 — absent (older client / pre-P50 queued sale) stays undefined: no tax-basis check. */
+/**
+ * POS-PERF-P50 — absent (older client / pre-P50 queued sale) stays undefined: no tax-basis check.
+ * POS-PERF-P55R2 — a manual-total basis carries no rates, so it is not a TaxBasis (see toCalculationMode).
+ */
 function toTaxBasis(basis: TaxBasisInput | undefined): TaxBasis | undefined {
-  return basis ? { vatRate: basis.vat_rate, discountRate: basis.discount_rate } : undefined;
+  if (!basis || basis.calculation_mode === MANUAL_TOTAL_CALCULATION || basis.vat_rate === null) return undefined;
+  return { vatRate: basis.vat_rate, discountRate: basis.discount_rate };
+}
+
+/** POS-PERF-P55R2 — the calculation the screen used, when it is the manual total (no VAT). */
+function toCalculationMode(basis: TaxBasisInput | undefined): typeof MANUAL_TOTAL_CALCULATION | undefined {
+  return basis?.calculation_mode === MANUAL_TOTAL_CALCULATION ? MANUAL_TOTAL_CALCULATION : undefined;
+}
+
+/** POS-PERF-P55 — snake_case request shape -> service input; absent stays undefined. */
+function toManualDiscount(manual: CheckoutManualDiscountInput | undefined): ManualDiscountInput | undefined {
+  if (!manual) return undefined;
+  return {
+    discountTypeId: manual.discount_type_id,
+    typeVersion: manual.type_version,
+    amount: manual.amount,
+    proofUploadId: manual.proof_upload_id,
+    expectedTotalAmount: manual.expected_total_amount,
+  };
 }
 
 function handleModuleError(error: unknown, res: Response, next: NextFunction): void {
@@ -99,7 +123,7 @@ interface CreateTransactionBody {
   shift_id: string;
   items: CartItem[];
   payment_method: PaymentMethod;
-  discount_type?: 'pwd' | 'senior_citizen' | 'employee' | 'manager_override' | 'promotional';
+  discount_type?: 'pwd' | 'senior_citizen' | 'employee' | 'manager_override' | 'promotional' | 'manual';
   discount_id_reference?: string;
   discount_amount?: number;
   cash_tendered?: number;
@@ -117,6 +141,8 @@ interface CreateTransactionBody {
   tax_basis?: TaxBasisInput;
   selected_discount?: { promotion_id: string; version: number };
   discount_choice?: 'selected' | 'none_applicable';
+  discount_flow?: DiscountFlow;
+  manual_discount?: CheckoutManualDiscountInput;
 }
 
 // authenticate -> authorize -> requirePasswordChange -> branchGuard -> shiftGuard -> validate -> handler.
@@ -214,10 +240,13 @@ router.post(
           idempotencyKey: body.idempotency_key ?? null,
           notes: body.notes,
           taxBasis: toTaxBasis(body.tax_basis),
+          calculationMode: toCalculationMode(body.tax_basis),
           selectedDiscount: body.selected_discount
             ? { promotionId: body.selected_discount.promotion_id, version: body.selected_discount.version }
             : undefined,
           discountChoice: body.discount_choice,
+          discountFlow: body.discount_flow,
+          manualDiscount: toManualDiscount(body.manual_discount),
         },
         req.ip ?? null,
         typeof res.locals?.diagMiddlewareStartedAt === 'number' ? performance.now() - res.locals.diagMiddlewareStartedAt : undefined,
@@ -287,7 +316,10 @@ router.post(
             gcashReferenceNumber: item.gcash_reference_number,
             gcashManuallyVerified: item.gcash_manually_verified,
             taxBasis: toTaxBasis(item.tax_basis),
+            calculationMode: toCalculationMode(item.tax_basis),
             discountChoice: item.discount_choice,
+            discountFlow: item.discount_flow,
+            manualDiscount: toManualDiscount(item.manual_discount),
             clientCreatedAt: item.client_created_at,
           })),
         },

@@ -15,7 +15,7 @@ import { BranchDiscountSettingsForm } from './branch-discount-settings-form';
  * read and save against live assignments); a Super Admin sees every active
  * branch and can also record VAT registration.
  */
-export function BranchDiscountSettingsSection() {
+export function BranchDiscountSettingsSection({ statutoryOnly = false }: { statutoryOnly?: boolean }) {
   const { availableBranches } = useSelectedBranch();
   const [branchId, setBranchId] = useState<string | null>(null);
 
@@ -30,9 +30,11 @@ export function BranchDiscountSettingsSection() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Discounts &amp; VAT by branch</CardTitle>
+        <CardTitle>{statutoryOnly ? 'Statutory discounts & VAT registration by branch' : 'Discounts & VAT by branch'}</CardTitle>
         <CardDescription>
-          Each branch follows the organization default unless you set a rate for that branch. Saving here changes only the selected branch.
+          {statutoryOnly
+            ? 'PWD and Senior Citizen discounts are set by law and keep their VAT-exempt calculation. The POS does not calculate VAT on any other sale (subtotal − discount = amount to pay). Saving here changes only the selected branch.'
+            : 'Each branch follows the organization default unless you set a rate for that branch. Saving here changes only the selected branch.'}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -71,7 +73,7 @@ export function BranchDiscountSettingsSection() {
                 </button>
               </div>
             )}
-            {data && <BranchDiscountSettingsForm key={data.branchId} data={data} />}
+            {data && <BranchDiscountSettingsForm key={data.branchId} data={data} statutoryOnly={statutoryOnly} />}
           </>
         )}
       </CardContent>

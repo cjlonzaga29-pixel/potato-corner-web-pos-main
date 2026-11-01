@@ -2,6 +2,7 @@
 
 import { Suspense } from 'react';
 import { BranchDiscountSettingsSection } from '@/components/settings/branch-discount-settings-section';
+import { ManualDiscountTypesSection } from '@/components/settings/manual-discount-types-section';
 import { TaxSettingsSection } from '@/components/settings/tax-settings-section';
 import { BranchWorkHoursSection } from '@/components/settings/branch-work-hours-section';
 
@@ -17,13 +18,16 @@ export default function SupervisorSettingsPage() {
     <div className="app-section app-section-gap">
       <div>
         <h1 className="text-xl font-semibold">Settings</h1>
-        <p className="text-muted-foreground text-sm">VAT, discounts and work hours for the branches you manage.</p>
+        <p className="text-muted-foreground text-sm">Discounts, VAT registration and work hours for the branches you manage.</p>
       </div>
 
       <TaxSettingsSection />
       {/* useSelectedBranch reads search params, which needs a Suspense boundary. */}
       <Suspense fallback={null}>
-        <BranchDiscountSettingsSection />
+        {/* POS-PERF-P55 — discount types replace the Employee rate and the
+            required-decision switch; the statutory PWD/Senior rows stay. */}
+        <ManualDiscountTypesSection />
+        <BranchDiscountSettingsSection statutoryOnly />
         <BranchWorkHoursSection />
       </Suspense>
     </div>

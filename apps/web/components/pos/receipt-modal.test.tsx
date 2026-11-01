@@ -221,6 +221,16 @@ describe('ReceiptModal', () => {
     expect(screen.getByText(/1x Sour Cream/)).toBeInTheDocument();
   });
 
+  it('P55 — a manual discount shows its frozen type name; a type this build does not know is a plain "Discount", never its raw code', () => {
+    setup();
+    render(<ReceiptModal transaction={transaction({ discount_type: 'manual', discount_rate_used: null, manual_discount: { discount_type_id: 't-1', name: 'Employee', amount: 20, require_proof: false } })} onClose={vi.fn()} />);
+    expect(screen.getByText('Employee discount')).toBeInTheDocument();
+    cleanup();
+    render(<ReceiptModal transaction={transaction({ discount_type: 'loyalty_v9' as TransactionResponse['discount_type'], discount_rate_used: null })} onClose={vi.fn()} />);
+    expect(screen.getByText('Discount')).toBeInTheDocument();
+    expect(screen.queryByText(/loyalty_v9/)).not.toBeInTheDocument();
+  });
+
   it('renders nothing when there is no transaction', () => {
     setup();
     const { container } = render(<ReceiptModal transaction={null} onClose={vi.fn()} />);

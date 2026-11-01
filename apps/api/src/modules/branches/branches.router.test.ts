@@ -980,6 +980,8 @@ describe('GET /api/branches/:branchId/stats — role guard', () => {
       todayRefundTotal: 0,
       todayNetSales: 0,
       todayVat: 0,
+      todayTaxNotCalculatedCount: 0,
+      todayTaxNotCalculatedSales: 0,
       todayExpenses: 0,
       todayNetOperatingResult: 0,
       paymentBreakdown: {

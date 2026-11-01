@@ -129,7 +129,11 @@ export interface BranchStatsOverview {
   todayDiscountTotal: number;
   todayRefundTotal: number;
   todayNetSales: number;
+  /** VAT of today's VAT-calculated sales only (POS-PERF-P55R3). */
   todayVat: number;
+  /** POS-PERF-P55R3 — manual-total sales (VAT not calculated); an older API omits them. */
+  todayTaxNotCalculatedCount?: number;
+  todayTaxNotCalculatedSales?: number;
   todayExpenses: number;
   todayNetOperatingResult: number;
   paymentBreakdown: PaymentBreakdown;

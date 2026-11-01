@@ -661,9 +661,13 @@ export function ReportsView() {
   // formula change, out of scope here) — instead labeled "Total Sales"
   // below so it no longer claims to be the same metric.
   const totalSalesCollected = completedTransactions.reduce((sum, t) => sum + t.total_amount, 0);
-  // POS-PERF-P55R2 — VAT of the VAT-calculated sales only; a manual-total sale has no VAT figure and is counted apart.
+  // POS-PERF-P55R2/R3 — VAT of the VAT-calculated sales only; a manual-total sale has no VAT figure and is counted apart.
+  const taxNotCalculated = completedTransactions.filter((t) => t.vat_amount === null);
   const vatCollected = completedTransactions.reduce((sum, t) => sum + (t.vat_amount ?? 0), 0);
-  const taxNotCalculatedCount = completedTransactions.filter((t) => t.vat_amount === null).length;
+  const taxNotCalculatedCount = taxNotCalculated.length;
+  const taxNotCalculatedSales = taxNotCalculated.reduce((sum, t) => sum + t.total_amount, 0);
+  const vatCalculatedCount = totalTransactions - taxNotCalculatedCount;
+  const manualTotalSalesLabel = `${taxNotCalculatedCount} manual-total sale${taxNotCalculatedCount === 1 ? '' : 's'}`;
   const discountsGiven = completedTransactions.reduce((sum, t) => sum + t.discount_amount, 0);
 
   // Sold Product Transactions
@@ -831,17 +835,36 @@ export function ReportsView() {
               isLoading={completedQuery.isLoading}
               tooltip={`Completed transaction totals, after discounts, from ${fromInput} to ${toInput}. For pre-discount Gross Sales, see Admin Reports > Financial Summary.`}
             />
+            {/* POS-PERF-P55R3 — never a VAT figure that reads as covering every sale: a period with manual-total sales says so on screen, and one with only manual-total sales has no VAT figure at all (not ₱0). */}
             <KpiCard
               title="VAT Collected"
               value={vatCollected}
               prefix="₱"
               isLoading={completedQuery.isLoading}
+              valueText={taxNotCalculatedCount > 0 && vatCalculatedCount === 0 ? 'Not calculated' : undefined}
+              caption={
+                taxNotCalculatedCount === 0
+                  ? undefined
+                  : vatCalculatedCount === 0
+                    ? `${manualTotalSalesLabel} — the manual-total checkout does not calculate VAT`
+                    : `VAT-calculated sales only — excludes ${manualTotalSalesLabel}`
+              }
               tooltip={
                 taxNotCalculatedCount > 0
-                  ? `VAT of VAT-calculated sales only. ${taxNotCalculatedCount} sale(s) used the manual-total checkout, which does not calculate VAT; their tax is not shown here (not ₱0).`
+                  ? 'Manual-total sales do not calculate VAT. Their tax is not shown here — it is unknown, not ₱0.'
                   : undefined
               }
             />
+            {taxNotCalculatedCount > 0 && (
+              <KpiCard
+                title="Without VAT Calculation"
+                value={taxNotCalculatedSales}
+                prefix="₱"
+                isLoading={completedQuery.isLoading}
+                caption={`${manualTotalSalesLabel}, amount paid`}
+                tooltip="Completed manual-total sales (VAT not calculated). They are included in Total Sales."
+              />
+            )}
             <KpiCard title="Discounts Given" value={discountsGiven} prefix="₱" isLoading={completedQuery.isLoading} />
           </div>
           <DataTable

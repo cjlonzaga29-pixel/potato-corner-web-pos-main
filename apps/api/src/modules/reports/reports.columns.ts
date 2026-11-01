@@ -56,7 +56,7 @@ export const REPORT_COLUMNS: Record<ReportType, ReportColumn<Record<string, unkn
     { key: 'gross_sales', header: 'Gross Sales' },
     { key: 'discount_total', header: 'Discounts' },
     { key: 'refund_total', header: 'Refunds' },
-    { key: 'vat_total', header: 'VAT' },
+    { key: 'vat_total', header: 'VAT', partialCoverageHeader: 'VAT (VAT-calculated sales only)' },
     { key: 'net_sales', header: 'Net Sales' },
     { key: 'expense_total', header: 'Operating Expenses' },
     { key: 'net_operating_result', header: 'Net Operating Result' },

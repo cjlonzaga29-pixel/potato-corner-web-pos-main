@@ -59,14 +59,17 @@ function asAggregateMock(fn: unknown): Mock<(args: TransactionQueryArgs) => Prom
   return fn as unknown as Mock<(args: TransactionQueryArgs) => Promise<unknown>>;
 }
 
-/** transaction.groupBy backs three different queries in this module — dispatch on shape instead of call order. */
+/** transaction.groupBy backs four different queries in this module — dispatch on shape instead of call order. */
 function mockTransactionGroupBy(rows: {
   txn?: unknown[];
   refund?: unknown[];
   payment?: unknown[];
+  /** POS-PERF-P55R3 — completed sales grouped by calculation mode (the VAT figure and the manual-total sales). */
+  coverage?: unknown[];
 }) {
   asGroupByMock(prisma.transaction.groupBy).mockImplementation(async (args) => {
     if (args.by?.includes('paymentMethod')) return rows.payment ?? [];
+    if (args.by?.includes('calculationMode')) return rows.coverage ?? [];
     if (args.where?.status === 'refunded') return rows.refund ?? [];
     return rows.txn ?? [];
   });
@@ -140,6 +143,8 @@ describe('branchesRepository.findAllStatsGrouped', () => {
         todayRefundTotal: 0,
         todayNetSales: 0,
         todayVat: 0,
+        todayTaxNotCalculatedCount: 0,
+        todayTaxNotCalculatedSales: 0,
         todayExpenses: 0,
         todayNetOperatingResult: 0,
         paymentBreakdown: EMPTY_PAYMENT_BREAKDOWN,
@@ -156,6 +161,8 @@ describe('branchesRepository.findAllStatsGrouped', () => {
         todayRefundTotal: 0,
         todayNetSales: 0,
         todayVat: 0,
+        todayTaxNotCalculatedCount: 0,
+        todayTaxNotCalculatedSales: 0,
         todayExpenses: 0,
         todayNetOperatingResult: 0,
         paymentBreakdown: EMPTY_PAYMENT_BREAKDOWN,
@@ -256,11 +263,12 @@ describe('branchesRepository.findAllStatsGrouped', () => {
       txn: [
         {
           branchId: 'branch-1',
-          _sum: { subtotal: decimal(1120), discountAmount: decimal(20), vatAmount: decimal(120) },
+          _sum: { subtotal: decimal(1120), discountAmount: decimal(20) },
           _count: { _all: 5 },
         },
       ],
       refund: [{ branchId: 'branch-1', _sum: { totalAmount: decimal(100) } }],
+      coverage: [{ branchId: 'branch-1', calculationMode: null, _sum: { vatAmount: decimal(120), totalAmount: decimal(1100) }, _count: { _all: 5 } }],
     });
     vi.mocked(prisma.expense.groupBy).mockResolvedValue([{ branchId: 'branch-1', _sum: { amount: decimal(300) } }] as never);
 
@@ -387,9 +395,10 @@ describe('branchesRepository.branchStats', () => {
 
   it('computes Net Sales / Net Operating Result using the shared financial-metrics formula (no VAT double-subtraction, no COGS dependency)', async () => {
     mockTransactionAggregate(
-      { _count: { _all: 5 }, _sum: { subtotal: decimal(1120), discountAmount: decimal(20), vatAmount: decimal(120) } },
+      { _count: { _all: 5 }, _sum: { subtotal: decimal(1120), discountAmount: decimal(20) } },
       { _sum: { totalAmount: decimal(100) } },
     );
+    mockTransactionGroupBy({ coverage: [{ calculationMode: 'legacy_vat_v1', _sum: { vatAmount: decimal(120), totalAmount: decimal(1100) }, _count: { _all: 5 } }] });
     vi.mocked(prisma.expense.aggregate).mockResolvedValue({ _sum: { amount: decimal(300) } } as never);
 
     const stats = await branchesRepository.branchStats('branch-1');
@@ -486,6 +495,46 @@ describe('branchesRepository.branchStats', () => {
     );
     expect(prisma.ingredient.findMany).not.toHaveBeenCalled();
     expect(inventoryRepository.getCurrentStockMap).not.toHaveBeenCalled();
+  });
+});
+
+describe('branchesRepository — VAT coverage (POS-PERF-P55R3)', () => {
+  // A manual-total sale stores vat_amount 0 only as a placeholder (VAT not
+  // calculated): it must never be summed as ₱0 VAT, and it is counted apart.
+  const mixed = [
+    { branchId: 'branch-1', calculationMode: null, _sum: { vatAmount: decimal(53.57), totalAmount: decimal(500) }, _count: { _all: 1 } },
+    { branchId: 'branch-1', calculationMode: 'legacy_vat_v1', _sum: { vatAmount: decimal(42.86), totalAmount: decimal(400) }, _count: { _all: 1 } },
+    { branchId: 'branch-1', calculationMode: 'manual_total_v1', _sum: { vatAmount: decimal(0), totalAmount: decimal(950) }, _count: { _all: 2 } },
+  ];
+
+  it('branchStats: todayVat sums VAT-calculated sales only (NULL = recorded before P55R2); manual-total sales are counted with their amount paid', async () => {
+    mockTransactionGroupBy({ coverage: mixed.map(({ branchId: _branchId, ...row }) => row) });
+
+    const stats = await branchesRepository.branchStats('branch-1');
+
+    expect(stats).toMatchObject({ todayVat: 96.43, todayTaxNotCalculatedCount: 2, todayTaxNotCalculatedSales: 950 });
+    const call = vi.mocked(prisma.transaction.groupBy).mock.calls.find(([args]) => args.by?.includes('calculationMode'));
+    expect(call?.[0].where?.status).toBe('completed');
+  });
+
+  it('branchStats: a day with only legacy sales reports no manual-total sales', async () => {
+    mockTransactionGroupBy({ coverage: mixed.slice(0, 1).map(({ branchId: _branchId, ...row }) => row) });
+
+    const stats = await branchesRepository.branchStats('branch-1');
+
+    expect(stats).toMatchObject({ todayVat: 53.57, todayTaxNotCalculatedCount: 0, todayTaxNotCalculatedSales: 0 });
+  });
+
+  it('findAllStatsGrouped: the same split per branch, never mixing branches', async () => {
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'branch-1' }, { id: 'branch-2' }] as never);
+    mockTransactionGroupBy({
+      coverage: [...mixed, { branchId: 'branch-2', calculationMode: 'manual_total_v1', _sum: { vatAmount: decimal(0), totalAmount: decimal(70) }, _count: { _all: 1 } }],
+    });
+
+    const rows = await branchesRepository.findAllStatsGrouped();
+
+    expect(rows[0]).toMatchObject({ todayVat: 96.43, todayTaxNotCalculatedCount: 2, todayTaxNotCalculatedSales: 950 });
+    expect(rows[1]).toMatchObject({ todayVat: 0, todayTaxNotCalculatedCount: 1, todayTaxNotCalculatedSales: 70 });
   });
 });
 

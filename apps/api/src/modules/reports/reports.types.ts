@@ -88,11 +88,19 @@ export interface ReportColumn<T> {
    * keeps exactly its earlier columns.
    */
   omitWhenEmpty?: boolean;
+  /**
+   * POS-PERF-P55R3 — the header used instead when the export also renders an
+   * omitWhenEmpty (manual-total, VAT not calculated) column: a VAT total then
+   * covers only the VAT-calculated sales and must say so.
+   */
+  partialCoverageHeader?: string;
 }
 
-/** POS-PERF-P55R2 — the columns an export of these rows renders (see ReportColumn.omitWhenEmpty). */
+/** POS-PERF-P55R2 — the columns an export of these rows renders (see ReportColumn.omitWhenEmpty / partialCoverageHeader). */
 export function columnsForRows<T extends Record<string, unknown>>(columns: Array<ReportColumn<T>>, rows: readonly T[]): Array<ReportColumn<T>> {
-  return columns.filter((c) => !c.omitWhenEmpty || rows.some((row) => { const value = row[c.key]; return value !== null && value !== undefined && value !== '' && value !== 0; }));
+  const rendered = columns.filter((c) => !c.omitWhenEmpty || rows.some((row) => { const value = row[c.key]; return value !== null && value !== undefined && value !== '' && value !== 0; }));
+  if (!rendered.some((c) => c.omitWhenEmpty)) return rendered;
+  return rendered.map((c) => (c.partialCoverageHeader ? { ...c, header: c.partialCoverageHeader } : c));
 }
 
 /**

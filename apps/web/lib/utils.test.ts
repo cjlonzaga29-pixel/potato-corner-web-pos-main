@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { formatInventoryQuantity } from './utils';
+import { formatCurrency, formatInventoryQuantity, formatVatAmount } from './utils';
+
+describe('formatVatAmount — POS-PERF-P55R3', () => {
+  it('null (VAT not calculated) is never formatted as ₱0.00; a calculated zero still is', () => {
+    expect(formatVatAmount(null)).toBe('Not calculated');
+    expect(formatVatAmount(0)).toBe(formatCurrency(0));
+    expect(formatVatAmount(53.57)).toBe(formatCurrency(53.57));
+  });
+});
 
 describe('formatInventoryQuantity — TASK 209.9 gram/kg display conversion', () => {
   it('keeps sub-1000g quantities in grams', () => {

@@ -138,13 +138,17 @@ describe('syncOfflineTransactions', () => {
       payload: { ...base, discount_flow: 'manual_v1', manual_discount: { type_id: 't-1', amount: 10 }, tax_basis: manualTotal } as unknown as typeof base,
     });
     const own = offlineRow({ id: 'PC-MAIN01-20260719-OFFLINE-0002', payload: { ...base, tax_basis: { vat_rate: 12, discount_rate: null } } });
-    mockPendingRows([newer, own]);
+    // Rung on the newer build by another cashier: still only sent under that cashier's own token.
+    const otherCashier = offlineRow({ id: 'PC-MAIN01-20260719-OFFLINE-0003', cashierUserId: 'cashier-b', payload: newer.payload });
+    mockPendingRows([newer, own, otherCashier]);
     vi.mocked(apiClient).mockResolvedValue({ data: { results: [], synced_count: 0 }, error: null, meta: null });
 
     await syncOfflineTransactions(OPTIONS);
 
     const body = JSON.parse(vi.mocked(apiClient).mock.calls[0]?.[1]?.body as string) as { transactions: Record<string, unknown>[] };
-    expect(body.transactions[0]).toMatchObject({ discount_flow: 'manual_v1', manual_discount: { type_id: 't-1', amount: 10 }, tax_basis: manualTotal });
+    expect(body.transactions).toHaveLength(2);
+    // The offline identity the server dedupes on is the row's own, unchanged by the forwarded fields.
+    expect(body.transactions[0]).toMatchObject({ offline_provisional_number: 'PC-MAIN01-20260719-OFFLINE-0001', discount_flow: 'manual_v1', manual_discount: { type_id: 't-1', amount: 10 }, tax_basis: manualTotal });
     expect(body.transactions[1]).toMatchObject({ tax_basis: { vat_rate: 12, discount_rate: null } });
     expect(body.transactions[1]).not.toHaveProperty('discount_flow');
     expect(body.transactions[1]).not.toHaveProperty('manual_discount');

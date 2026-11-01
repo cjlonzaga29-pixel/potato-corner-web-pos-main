@@ -38,9 +38,11 @@ export interface PublicReceiptResponse {
   // Task 209.xx — the configured percentage actually applied at sale time,
   // frozen on the transaction row; never today's Discount Settings value.
   discount_rate_used?: number | null;
-  vat_amount: number;
+  /** POS-PERF-P55R2 — 'manual_total_v1': VAT not calculated, so both VAT fields are null. */
+  calculation_mode: 'legacy_vat_v1' | 'manual_total_v1';
+  vat_amount: number | null;
   /** POS-PERF-P50 — stored non-VATable portion (VAT-cap overflow), for the receipt's tax breakdown. */
-  vat_exempt_amount: number;
+  vat_exempt_amount: number | null;
   total_amount: number;
   payment_method: string;
   cash_tendered: number | null;

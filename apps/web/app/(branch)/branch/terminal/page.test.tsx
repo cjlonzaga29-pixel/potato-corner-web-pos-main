@@ -3947,6 +3947,8 @@ describe('TerminalPage — P50 tax basis', () => {
     fireEvent.click(screen.getByRole('radio', { name: 'Apply discount' }));
     fireEvent.click(screen.getByRole('button', { name: 'PWD (20%)' }));
     fireEvent.change(screen.getByPlaceholderText('PWD / Senior Citizen ID number'), { target: { value: 'PWD-1' } });
+    // P55R2 — the statutory discount keeps its VAT-exempt calculation and shows it.
+    expect(screen.getByTestId('checkout-vat-line')).toHaveTextContent('VAT-exempt (PWD/Senior)');
     charge();
     await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalled());
     const payload = mockCreateTransactionMutateAsync.mock.calls[0]?.[0] as CreateTransactionInput & Record<string, unknown>;
@@ -3957,12 +3959,13 @@ describe('TerminalPage — P50 tax basis', () => {
     for (const key of ['total_amount', 'vat_amount', 'subtotal']) expect(payload).not.toHaveProperty(key);
   });
 
-  it('no discount: discount_rate is null', async () => {
+  it('P55R2 — no discount: a manual total with no VAT rate, and no VAT line on screen', async () => {
     render(<TerminalPage />);
     openCheckout();
+    expect(screen.queryByTestId('checkout-vat-line')).toBeNull();
     charge();
     await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalled());
-    expect((mockCreateTransactionMutateAsync.mock.calls[0]?.[0] as CreateTransactionInput).tax_basis).toEqual({ vat_rate: 12, discount_rate: null });
+    expect((mockCreateTransactionMutateAsync.mock.calls[0]?.[0] as CreateTransactionInput).tax_basis).toEqual({ calculation_mode: 'manual_total_v1', vat_rate: null, discount_rate: null });
   });
 
   it('a changed rate keeps the cart, re-reads settings and offers no Retry', async () => {
@@ -3997,7 +4000,8 @@ describe('TerminalPage — P50 tax basis', () => {
       charge();
       await waitFor(() => expect(enqueueOfflineTransaction).toHaveBeenCalled());
       const queued = vi.mocked(enqueueOfflineTransaction).mock.calls[0]?.[1] as CreateTransactionInput;
-      expect(queued.tax_basis).toEqual({ vat_rate: 12, discount_rate: null });
+      // P55R2 — queued with its own calculation; sync never converts it to the VAT calculation.
+      expect(queued.tax_basis).toEqual({ calculation_mode: 'manual_total_v1', vat_rate: null, discount_rate: null });
       expect(queued.discount_choice).toBe('none_applicable');
       expect(queued).not.toHaveProperty('manual_discount');
     } finally {
@@ -4081,7 +4085,9 @@ describe('TerminalPage — P55 manual peso discounts', () => {
     expect(payload.discount_type).toBe('manual');
     expect(payload.discount_choice).toBe('selected');
     expect(payload.manual_discount).toEqual({ discount_type_id: EMPLOYEE.id, type_version: 3, amount: 50, expected_total_amount: 450 });
-    expect(payload.tax_basis).toEqual({ vat_rate: 12, discount_rate: null });
+    // P55R2 — subtotal − discount, no VAT extracted/added/deducted and no VAT line shown.
+    expect(payload.tax_basis).toEqual({ calculation_mode: 'manual_total_v1', vat_rate: null, discount_rate: null });
+    expect(screen.queryByTestId('checkout-vat-line')).toBeNull();
     expect(payload.items[0]?.promotion).toBeNull();
   });
 
@@ -4182,7 +4188,7 @@ describe('TerminalPage — P55 manual peso discounts', () => {
     expect(mockClearCart).not.toHaveBeenCalled();
   });
 
-  it('a pre-P55 API refusing discount_type "manual" shows what to do, review-only, cart and amount kept (P55 release fix)', async () => {
+  it('a pre-P55R2 API refusing a manual discount shows what to do, review-only, cart and amount kept (P55 release fix, P55R2 wording)', async () => {
     const { TransactionApiError } = await import('@/hooks/queries/use-transactions');
     mockCreateTransactionMutateAsync.mockRejectedValueOnce(
       new TransactionApiError('discount_type: Invalid option: expected one of "pwd"|"senior_citizen"|"employee"|"manager_override"|"promotional"', 'VALIDATION_ERROR', {}),
@@ -4193,13 +4199,27 @@ describe('TerminalPage — P55 manual peso discounts', () => {
     fireEvent.change(screen.getByLabelText('Discount amount (₱)'), { target: { value: '50' } });
     fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '500' } });
     fireEvent.click(screen.getByRole('button', { name: /^Charge/ }));
-    await waitFor(() => expect(screen.getByText('Manual discounts not available yet — not charged')).toBeInTheDocument());
-    expect(screen.getByText(/This server does not support manual discounts yet/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Server update needed — not charged')).toBeInTheDocument());
+    expect(screen.getByText(/This server does not support this checkout yet/)).toBeInTheDocument();
     expect(screen.queryByText(/Invalid option/)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
     expect(mockClearCart).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Review updated prices' }));
     expect(screen.getByLabelText('Discount amount (₱)')).toHaveValue('50');
+  });
+
+  it('P55R2 — a pre-P55R2 API refusing a no-discount manual total (vat_rate must be a number): explained, review-only, never re-sent with VAT', async () => {
+    const { TransactionApiError } = await import('@/hooks/queries/use-transactions');
+    mockCreateTransactionMutateAsync.mockRejectedValueOnce(new TransactionApiError('tax_basis.vat_rate: Invalid input: expected number, received null', 'VALIDATION_ERROR', {}));
+    render(<TerminalPage />);
+    openCheckout();
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '500' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Charge/ }));
+    await waitFor(() => expect(screen.getByText('Server update needed — not charged')).toBeInTheDocument());
+    expect(screen.queryByText(/expected number/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+    expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(1);
+    expect(mockClearCart).not.toHaveBeenCalled();
   });
 
   it('a pre-P55 API without the discount-types route: only statutory discounts, an explanation and no Retry (P55 release fix)', () => {

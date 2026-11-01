@@ -35,6 +35,14 @@ export const NOT_SAVED_SAFE_TO_RETRY = 'NOT_SAVED_SAFE_TO_RETRY';
 export const MANUAL_DISCOUNT_UNSUPPORTED_BY_SERVER = 'MANUAL_DISCOUNT_UNSUPPORTED_BY_SERVER';
 export const MANUAL_DISCOUNT_UNSUPPORTED_MESSAGE =
   'This server does not support manual discounts yet, so the sale was not charged. Choose “No discount” or a statutory discount, or ask a supervisor to check the system update.';
+/**
+ * P55R2 — a pre-P55R2 API refused a manual-total sale at validation (its
+ * tax_basis needs a VAT rate), so nothing was written and no VAT was
+ * calculated. Retrying cannot succeed until the API is updated: review-only.
+ */
+export const CALCULATION_MODE_UNSUPPORTED_BY_SERVER = 'CALCULATION_MODE_UNSUPPORTED_BY_SERVER';
+export const CALCULATION_MODE_UNSUPPORTED_MESSAGE =
+  'This server does not support this checkout yet (amount to pay = subtotal − discount), so the sale was not charged. Ask a supervisor to check the system update. The PWD/Senior Citizen discount can still be charged.';
 
 const CONNECTION_UNCERTAIN_TITLE = 'Connection problem — checking order status';
 
@@ -84,6 +92,10 @@ const TITLES: Record<string, string> = {
   DISCOUNT_PROOF_INVALID: 'Proof photo not accepted — not charged',
   DISCOUNT_PROOF_ALREADY_USED: 'Proof photo already used — not charged',
   [MANUAL_DISCOUNT_UNSUPPORTED_BY_SERVER]: 'Manual discounts not available yet — not charged',
+  [CALCULATION_MODE_UNSUPPORTED_BY_SERVER]: 'Server update needed — not charged',
+  CALCULATION_MODE_REQUIRED: 'POS update needed — not charged',
+  CALCULATION_MODE_NOT_SUPPORTED: 'POS update needed — not charged',
+  STATUTORY_DISCOUNT_REQUIRES_TAX_CALCULATION: 'POS update needed — not charged',
 };
 
 /** Real server codes that prove only that THIS request made no progress, not that anything failed or succeeded — the network/uncertain bucket, same as the synthetic codes above. */

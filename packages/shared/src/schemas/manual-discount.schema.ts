@@ -134,10 +134,15 @@ export const checkoutManualDiscountSchema = z.object({
   expected_total_amount: z.number().finite().nonnegative().optional(),
 });
 
-/** Frozen onto transactions.manual_discount_snapshot when the sale is created. */
+/**
+ * Frozen onto transactions.manual_discount_snapshot when the sale is created.
+ * Version 2 (P55R2): calculated without VAT; eligible_subtotal is the whole
+ * order subtotal. Version 1 exists only on local pre-P55R2 test data.
+ */
 export interface ManualDiscountSnapshot {
-  version: 1;
+  version: 2;
   source: 'manual';
+  calculation_mode: 'manual_total_v1';
   discount_type_id: string;
   name: string;
   require_proof: boolean;

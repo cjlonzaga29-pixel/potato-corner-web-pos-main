@@ -51,7 +51,8 @@ export interface SaleSnapshot {
   discountType: string | null;
   /** POS-PERF-P55 — e.g. "Employee discount" for a manual peso discount (the type name the cashier chose). */
   discountLabel?: string;
-  vatAmount: number;
+  /** POS-PERF-P55R2 — null for a manual-total sale (VAT not calculated). */
+  vatAmount: number | null;
   totalAmount: number;
   paymentMethod: TransactionResponse['payment_method'];
   cashTendered: number | null;
@@ -119,7 +120,10 @@ export function SaleStatusModal({ phase, snapshot, errorMessage, errorCode, onRe
       errorCode.startsWith('MANUAL_DISCOUNT_') ||
       errorCode.startsWith('DISCOUNT_NOT_') ||
       errorCode === 'DISCOUNT_PROOF_INVALID' ||
-      errorCode === 'DISCOUNT_PROOF_ALREADY_USED');
+      errorCode === 'DISCOUNT_PROOF_ALREADY_USED' ||
+      // POS-PERF-P55R2 — a calculation-mode refusal: resending the same sale gets the same answer.
+      errorCode.startsWith('CALCULATION_MODE_') ||
+      errorCode === 'STATUTORY_DISCOUNT_REQUIRES_TAX_CALCULATION');
   return (
     <Dialog
       open

@@ -12,6 +12,7 @@ import {
   paymentProofUploadRequestSchema,
   discountProofUploadRequestSchema,
   ROLES,
+  MANUAL_TOTAL_CALCULATION,
   type CartItem,
   type OfflineTransactionItem,
   type ImageProofType,
@@ -83,9 +84,18 @@ function toPromotionAck(promotion: CartItem['promotion']): CartItemInput['promot
   return { promotionId: promotion.promotion_id, unitDiscount: promotion.unit_discount };
 }
 
-/** POS-PERF-P50 — absent (older client / pre-P50 queued sale) stays undefined: no tax-basis check. */
+/**
+ * POS-PERF-P50 — absent (older client / pre-P50 queued sale) stays undefined: no tax-basis check.
+ * POS-PERF-P55R2 — a manual-total basis carries no rates, so it is not a TaxBasis (see toCalculationMode).
+ */
 function toTaxBasis(basis: TaxBasisInput | undefined): TaxBasis | undefined {
-  return basis ? { vatRate: basis.vat_rate, discountRate: basis.discount_rate } : undefined;
+  if (!basis || basis.calculation_mode === MANUAL_TOTAL_CALCULATION || basis.vat_rate === null) return undefined;
+  return { vatRate: basis.vat_rate, discountRate: basis.discount_rate };
+}
+
+/** POS-PERF-P55R2 — the calculation the screen used, when it is the manual total (no VAT). */
+function toCalculationMode(basis: TaxBasisInput | undefined): typeof MANUAL_TOTAL_CALCULATION | undefined {
+  return basis?.calculation_mode === MANUAL_TOTAL_CALCULATION ? MANUAL_TOTAL_CALCULATION : undefined;
 }
 
 /** POS-PERF-P55 — snake_case request shape -> service input; absent stays undefined. */
@@ -230,6 +240,7 @@ router.post(
           idempotencyKey: body.idempotency_key ?? null,
           notes: body.notes,
           taxBasis: toTaxBasis(body.tax_basis),
+          calculationMode: toCalculationMode(body.tax_basis),
           selectedDiscount: body.selected_discount
             ? { promotionId: body.selected_discount.promotion_id, version: body.selected_discount.version }
             : undefined,
@@ -305,6 +316,7 @@ router.post(
             gcashReferenceNumber: item.gcash_reference_number,
             gcashManuallyVerified: item.gcash_manually_verified,
             taxBasis: toTaxBasis(item.tax_basis),
+            calculationMode: toCalculationMode(item.tax_basis),
             discountChoice: item.discount_choice,
             discountFlow: item.discount_flow,
             manualDiscount: toManualDiscount(item.manual_discount),

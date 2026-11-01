@@ -36,7 +36,7 @@ import { DashboardConnectionBadge } from '@/components/shared/dashboard/dashboar
 import { createExpenseColumns, categoryLabel } from '@/components/admin/expense-columns';
 import { ViewInventoryMovementProofDialog } from '@/components/shared/transactions/view-inventory-movement-proof-dialog';
 import { ViewExpenseReceiptDialog, type ExpenseReceiptProofData } from '@/components/shared/transactions/view-expense-receipt-dialog';
-import { downloadCsv, formatCurrency, formatDateTime } from '@/lib/utils';
+import { downloadCsv, formatCurrency, formatDateTime, formatVatAmount } from '@/lib/utils';
 import { movementTypeLabel } from '@/lib/inventory-movement-labels';
 import { manilaToday, manilaDaysAgo } from '@/lib/manila-date';
 import { useAuthStore } from '@/stores/auth.store';
@@ -98,6 +98,13 @@ function getDailySalesColumns(onViewTransactions: (row: DailySalesReportRow) => 
     { accessorKey: 'voided_count', header: 'Voided' },
     { accessorKey: 'refunded_count', header: 'Refunded' },
     {
+      // POS-PERF-P55R2 — manual-total sales (VAT not calculated): count and amount paid; an older API omits them.
+      id: 'tax_not_calculated',
+      header: 'Without VAT Calc.',
+      cell: ({ row }) =>
+        row.original.tax_not_calculated_count ? `${row.original.tax_not_calculated_count} · ${formatCurrency(row.original.tax_not_calculated_sales ?? 0)}` : '—',
+    },
+    {
       id: 'actions',
       header: 'Actions',
       cell: ({ row }) => (
@@ -147,12 +154,13 @@ function getDiscountComplianceColumns(onViewTransactions: (row: DiscountComplian
       // POS-PERF-P50 — the stored total of each PWD/Senior sale (VAT-exempt in full); older API: not reported.
       id: 'total_vat_exempt_sales',
       header: 'VAT-Exempt Sales',
-      cell: ({ row }) => (row.original.total_vat_exempt_sales === undefined ? '—' : formatCurrency(row.original.total_vat_exempt_sales)),
+      // POS-PERF-P55R2 — null: a manual-total row, VAT not calculated.
+      cell: ({ row }) => (row.original.total_vat_exempt_sales === undefined ? '—' : formatVatAmount(row.original.total_vat_exempt_sales)),
     },
     {
       accessorKey: 'total_vat_exempt_amount',
       header: 'Non-VATable (VAT cap)',
-      cell: ({ row }) => formatCurrency(row.original.total_vat_exempt_amount),
+      cell: ({ row }) => formatVatAmount(row.original.total_vat_exempt_amount),
     },
     {
       id: 'actions',

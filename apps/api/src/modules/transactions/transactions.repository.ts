@@ -96,6 +96,8 @@ interface CreateTransactionRow {
   notes?: string | null;
   /** POS-PERF-P50R — SaleTaxSnapshot frozen at creation. */
   taxSnapshot?: Prisma.InputJsonValue | null;
+  /** POS-PERF-P55R2 — 'legacy_vat_v1' | 'manual_total_v1', written on every new sale. */
+  calculationMode: 'legacy_vat_v1' | 'manual_total_v1';
   /** POS-PERF-P55 — manual peso discount reference + frozen snapshot; omitted/null for every other sale. */
   manualDiscountTypeId?: string | null;
   manualDiscountSnapshot?: Prisma.InputJsonValue | null;
@@ -360,6 +362,7 @@ export const transactionsRepository = {
           offlineProvisionalNumber: data.offlineProvisionalNumber,
           notes: data.notes,
           ...(data.taxSnapshot ? { taxSnapshot: data.taxSnapshot } : {}),
+          calculationMode: data.calculationMode,
           ...(data.manualDiscountTypeId ? { manualDiscountTypeId: data.manualDiscountTypeId } : {}),
           ...(data.manualDiscountSnapshot ? { manualDiscountSnapshot: data.manualDiscountSnapshot } : {}),
           deviceId: data.deviceId,

@@ -1,4 +1,5 @@
 import { receiptsRepository } from './receipts.repository.js';
+import { LEGACY_VAT_CALCULATION, resolveCalculationMode } from '@potato-corner/shared';
 import { ReceiptError, type PublicReceiptResponse } from './receipts.types.js';
 import type { SelectedOptionSnapshot } from '../transactions/transactions.repository.js';
 
@@ -17,6 +18,9 @@ export const receiptsService = {
   async getPublicReceipt(transactionNumber: string): Promise<PublicReceiptResponse> {
     const transaction = await receiptsRepository.findByTransactionNumber(transactionNumber);
     if (!transaction) throw new ReceiptError('RECEIPT_NOT_FOUND', 'Receipt not found', 404);
+    // POS-PERF-P55R2 — a manual-total sale has no VAT figures (null, not ₱0).
+    const calculationMode = resolveCalculationMode(transaction.calculationMode);
+    const vatCalculated = calculationMode === LEGACY_VAT_CALCULATION;
 
     return {
       receipt_number: transaction.transactionNumber,
@@ -42,8 +46,9 @@ export const receiptsService = {
       discount_type: transaction.discountType,
       manual_discount_name: promotionName(transaction.manualDiscountSnapshot),
       discount_rate_used: transaction.discountRateUsed?.toNumber() ?? null,
-      vat_amount: transaction.vatAmount.toNumber(),
-      vat_exempt_amount: transaction.vatExemptAmount.toNumber(),
+      calculation_mode: calculationMode,
+      vat_amount: vatCalculated ? transaction.vatAmount.toNumber() : null,
+      vat_exempt_amount: vatCalculated ? transaction.vatExemptAmount.toNumber() : null,
       total_amount: transaction.totalAmount.toNumber(),
       payment_method: transaction.paymentMethod,
       cash_tendered: transaction.amountTendered?.toNumber() ?? null,

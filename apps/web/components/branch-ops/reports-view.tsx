@@ -29,7 +29,7 @@ import { ViewDiscountProofDialog } from '@/components/shared/transactions/view-d
 import { ViewTransactionItemsDialog } from '@/components/shared/transactions/view-transaction-items-dialog';
 import { ViewTransactionDetailDialog } from '@/components/shared/transactions/view-transaction-detail-dialog';
 import { MOVEMENT_TYPE_LABELS } from '@/lib/inventory-movement-labels';
-import { formatCurrency, formatDateTime, formatDuration, formatInventoryQuantity, formatTimeAgo } from '@/lib/utils';
+import { formatCurrency, formatVatAmount, formatDateTime, formatDuration, formatInventoryQuantity, formatTimeAgo } from '@/lib/utils';
 import { manilaEndOfDayISO, manilaStartOfDayISO } from '@/lib/manila-date';
 import { useAuthStore } from '@/stores/auth.store';
 import { useBranchStore } from '@/stores/branch.store';
@@ -135,7 +135,7 @@ function getDailySalesColumns(
       cell: ({ row }) => <Badge variant="outline">{humanizeSnake(row.original.payment_method)}</Badge>,
     },
     { id: 'total_amount', header: 'Total', cell: ({ row }) => formatCurrency(row.original.total_amount) },
-    { id: 'vat_amount', header: 'VAT', cell: ({ row }) => formatCurrency(row.original.vat_amount) },
+    { id: 'vat_amount', header: 'VAT', cell: ({ row }) => formatVatAmount(row.original.vat_amount) },
     { id: 'discount_amount', header: 'Discount', cell: ({ row }) => formatCurrency(row.original.discount_amount) },
     {
       id: 'discount_type',
@@ -230,7 +230,7 @@ function getSoldProductTransactionsColumns(
       },
     },
     { id: 'subtotal', header: 'Subtotal', cell: ({ row }) => formatCurrency(row.original.subtotal) },
-    { id: 'vat_amount', header: 'VAT', cell: ({ row }) => formatCurrency(row.original.vat_amount) },
+    { id: 'vat_amount', header: 'VAT', cell: ({ row }) => formatVatAmount(row.original.vat_amount) },
     { id: 'discount_amount', header: 'Discount', cell: ({ row }) => formatCurrency(row.original.discount_amount) },
     { id: 'total_amount', header: 'Total', cell: ({ row }) => formatCurrency(row.original.total_amount) },
     {
@@ -661,7 +661,9 @@ export function ReportsView() {
   // formula change, out of scope here) — instead labeled "Total Sales"
   // below so it no longer claims to be the same metric.
   const totalSalesCollected = completedTransactions.reduce((sum, t) => sum + t.total_amount, 0);
-  const vatCollected = completedTransactions.reduce((sum, t) => sum + t.vat_amount, 0);
+  // POS-PERF-P55R2 — VAT of the VAT-calculated sales only; a manual-total sale has no VAT figure and is counted apart.
+  const vatCollected = completedTransactions.reduce((sum, t) => sum + (t.vat_amount ?? 0), 0);
+  const taxNotCalculatedCount = completedTransactions.filter((t) => t.vat_amount === null).length;
   const discountsGiven = completedTransactions.reduce((sum, t) => sum + t.discount_amount, 0);
 
   // Sold Product Transactions
@@ -829,7 +831,17 @@ export function ReportsView() {
               isLoading={completedQuery.isLoading}
               tooltip={`Completed transaction totals, after discounts, from ${fromInput} to ${toInput}. For pre-discount Gross Sales, see Admin Reports > Financial Summary.`}
             />
-            <KpiCard title="VAT Collected" value={vatCollected} prefix="₱" isLoading={completedQuery.isLoading} />
+            <KpiCard
+              title="VAT Collected"
+              value={vatCollected}
+              prefix="₱"
+              isLoading={completedQuery.isLoading}
+              tooltip={
+                taxNotCalculatedCount > 0
+                  ? `VAT of VAT-calculated sales only. ${taxNotCalculatedCount} sale(s) used the manual-total checkout, which does not calculate VAT; their tax is not shown here (not ₱0).`
+                  : undefined
+              }
+            />
             <KpiCard title="Discounts Given" value={discountsGiven} prefix="₱" isLoading={completedQuery.isLoading} />
           </div>
           <DataTable

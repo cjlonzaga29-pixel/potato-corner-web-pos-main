@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { checkoutManualDiscountSchema, createManualDiscountTypeSchema, isStatutoryDiscountName, updateManualDiscountTypeSchema } from './manual-discount.schema.js';
 import { createTransactionSchema, offlineTransactionItemSchema } from './transaction.schema.js';
-import { computeManualDiscountSaleTax, computeSaleTax, manualDiscountEligibleSubtotal } from '../tax/sale-tax.js';
+import { computeManualTotal, computeSaleTax, resolveCalculationMode, MANUAL_TOTAL_CALCULATION, LEGACY_VAT_CALCULATION } from '../tax/sale-tax.js';
 
 const TYPE_ID = '11111111-1111-4111-8111-111111111111';
 const BRANCH_ID = '22222222-2222-4222-8222-222222222222';
@@ -43,27 +43,42 @@ describe('POS-PERF-P55 manual discount schemas', () => {
   });
 });
 
-describe('POS-PERF-P55 manual discount tax', () => {
+describe('POS-PERF-P55R2 manual-total calculation (no VAT)', () => {
   const line = (lineTotal: number, quantity = 1, vatableCapAmount: number | null = null) => ({ lineTotal, quantity, vatableCapAmount });
 
-  it('₱500 − ₱50 = ₱450 with VAT as the 12/112 share of what remains (same path as Employee)', () => {
-    const result = computeManualDiscountSaleTax(500, [line(500)], 50);
-    expect(result).toEqual({ discountAmount: 50, vatAmount: 48.21, vatExemptAmount: 0, totalAmount: 450, discountRateUsed: null });
-    // Identical to an Employee discount of the same peso size (10% of ₱500).
-    const employee = computeSaleTax(500, [line(500)], 'employee', { pwd: 20, senior_citizen: 20, employee: 10 });
-    expect([employee.discountAmount, employee.vatAmount, employee.totalAmount]).toEqual([50, 48.21, 450]);
+  it('₱500 − ₱50 = ₱450; no discount = the subtotal; nothing VAT-related is returned', () => {
+    expect(computeManualTotal(500, 50)).toEqual({ discountAmount: 50, totalAmount: 450 });
+    expect(computeManualTotal(500, null)).toEqual({ discountAmount: 0, totalAmount: 500 });
+    // The legacy VAT calculation is unchanged and still extracts VAT from the same order.
+    expect(computeSaleTax(500, [line(500)], null, { pwd: 20, senior_citizen: 20, employee: 20 })).toMatchObject({ vatAmount: 53.57, totalAmount: 500 });
   });
 
-  it('never discounts the non-VATable part above a VAT cap', () => {
-    // 2 × ₱300 with a ₱250 cap: VATable ₱500, non-VATable ₱100.
-    const lines = [line(600, 2, 250)];
-    expect(manualDiscountEligibleSubtotal(lines)).toBe(500);
-    const result = computeManualDiscountSaleTax(600, lines, 100);
-    expect(result).toEqual({ discountAmount: 100, vatAmount: 42.86, vatExemptAmount: 100, totalAmount: 500, discountRateUsed: null });
+  it('the whole subtotal can be discounted, including the part above a VAT cap; centavos stay exact', () => {
+    // 2 × ₱300 with a ₱250 cap: the legacy calculation would cap a commercial discount at ₱500.
+    expect(computeManualTotal(600, 600)).toEqual({ discountAmount: 600, totalAmount: 0 });
+    expect(computeManualTotal(600, 550)).toEqual({ discountAmount: 550, totalAmount: 50 });
+    expect(computeManualTotal(100.1, 0.29)).toEqual({ discountAmount: 0.29, totalAmount: 99.81 });
+    expect(computeManualTotal(0.3, 0.1)).toEqual({ discountAmount: 0.1, totalAmount: 0.2 });
   });
 
-  it('the whole eligible subtotal leaves ₱0 and ₱0 VAT; centavos stay exact', () => {
-    expect(computeManualDiscountSaleTax(112, [line(112)], 112)).toMatchObject({ totalAmount: 0, vatAmount: 0 });
-    expect(computeManualDiscountSaleTax(100.1, [line(100.1)], 0.29)).toMatchObject({ discountAmount: 0.29, totalAmount: 99.81, vatAmount: 10.69 });
+  it('a stored NULL mode is the VAT calculation; only the explicit value is manual total', () => {
+    expect(resolveCalculationMode(null)).toBe(LEGACY_VAT_CALCULATION);
+    expect(resolveCalculationMode(undefined)).toBe(LEGACY_VAT_CALCULATION);
+    expect(resolveCalculationMode('legacy_vat_v1')).toBe(LEGACY_VAT_CALCULATION);
+    expect(resolveCalculationMode('manual_total_v1')).toBe(MANUAL_TOTAL_CALCULATION);
+  });
+
+  it('tax_basis: manual total needs both rates null; the VAT calculation needs a number; unknown modes are refused', () => {
+    const manualBasis = { calculation_mode: 'manual_total_v1', vat_rate: null, discount_rate: null };
+    expect(createTransactionSchema.safeParse({ ...base, tax_basis: manualBasis }).success).toBe(true);
+    expect(createTransactionSchema.safeParse({ ...base, tax_basis: { ...manualBasis, vat_rate: 12 } }).success).toBe(false);
+    expect(createTransactionSchema.safeParse({ ...base, tax_basis: { ...manualBasis, discount_rate: 20 } }).success).toBe(false);
+    expect(createTransactionSchema.safeParse({ ...base, tax_basis: { ...manualBasis, calculation_mode: 'no_vat' } }).success).toBe(false);
+    expect(createTransactionSchema.safeParse({ ...base, tax_basis: { vat_rate: null, discount_rate: null } }).success).toBe(false);
+    // Legacy basis unchanged.
+    expect(createTransactionSchema.safeParse({ ...base, tax_basis: { vat_rate: 12, discount_rate: null } }).success).toBe(true);
+    const queued = { offline_provisional_number: 'X', items: [item], payment_method: 'cash', cash_tendered: 1, client_created_at: 1 };
+    expect(offlineTransactionItemSchema.safeParse({ ...queued, tax_basis: manualBasis }).success).toBe(true);
+    expect(offlineTransactionItemSchema.safeParse({ ...queued, tax_basis: { vat_rate: 12, discount_rate: null } }).success).toBe(true);
   });
 });

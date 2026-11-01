@@ -10,6 +10,8 @@ interface DiscountPreviewTableProps {
   price: number;
   rates: SaleDiscountRates;
   employeeEnabled: boolean;
+  /** POS-PERF-P55R2 — the manual-total checkout: only the statutory rows (a sale without a discount is not VAT-calculated there). */
+  statutoryOnly?: boolean;
 }
 
 /**
@@ -17,10 +19,10 @@ interface DiscountPreviewTableProps {
  * computed with computeSaleTax (the same function checkout runs), so the
  * preview cannot disagree with a real sale.
  */
-export function DiscountPreviewTable({ price, rates, employeeEnabled }: DiscountPreviewTableProps) {
+export function DiscountPreviewTable({ price, rates, employeeEnabled, statutoryOnly = false }: DiscountPreviewTableProps) {
   const line = [{ lineTotal: price, quantity: 1, vatableCapAmount: null }];
   const rows = [
-    { label: 'No discount', result: computeSaleTax(price, line, null, rates), exempt: false },
+    ...(statutoryOnly ? [] : [{ label: 'No discount', result: computeSaleTax(price, line, null, rates), exempt: false }]),
     { label: `PWD (${rates.pwd}%)`, result: computeSaleTax(price, line, 'pwd', rates), exempt: true },
     { label: `Senior Citizen (${rates.senior_citizen}%)`, result: computeSaleTax(price, line, 'senior_citizen', rates), exempt: true },
     ...(employeeEnabled ? [{ label: `Employee (${rates.employee}%)`, result: computeSaleTax(price, line, 'employee', rates), exempt: false }] : []),

@@ -56,7 +56,7 @@ export function ManualDiscountTypesSection() {
         <CardTitle>Discount types</CardTitle>
         <CardDescription>
           Choose which discounts cashiers can apply. At checkout the cashier picks a type and enters the discount in pesos — nothing is applied
-          automatically.
+          automatically. Amount to pay = subtotal − discount; the POS does not calculate VAT on these sales.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

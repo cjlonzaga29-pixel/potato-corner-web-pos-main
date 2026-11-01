@@ -79,11 +79,35 @@ describe('reportsRepository.getDailySales', () => {
         completed_count: 1,
         voided_count: 1,
         refunded_count: 0,
+        tax_not_calculated_count: 0,
+        tax_not_calculated_sales: 0,
       },
     ]);
     expect(prisma.transaction.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ branchId: 'b1' }) }),
     );
+  });
+
+  it('P55R2 — a manual-total sale adds nothing to vat_total and is counted separately; NULL mode stays VAT-calculated', async () => {
+    vi.mocked(prisma.transaction.findMany).mockResolvedValue([
+      { branchId: 'b1', status: 'completed', subtotal: decimal(112), totalAmount: decimal(112), discountAmount: decimal(0), vatAmount: decimal(12), calculationMode: null, createdAt: new Date('2026-07-01T10:00:00.000Z') },
+      { branchId: 'b1', status: 'completed', subtotal: decimal(56), totalAmount: decimal(56), discountAmount: decimal(0), vatAmount: decimal(6), calculationMode: 'legacy_vat_v1', createdAt: new Date('2026-07-01T10:30:00.000Z') },
+      // Stored placeholder 0 VAT on a manual-total sale is not a VAT result.
+      { branchId: 'b1', status: 'completed', subtotal: decimal(500), totalAmount: decimal(450), discountAmount: decimal(50), vatAmount: decimal(0), calculationMode: 'manual_total_v1', createdAt: new Date('2026-07-01T11:00:00.000Z') },
+    ] as never);
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
+
+    const [row] = await reportsRepository.getDailySales({ branchId: 'b1', page: 1, limit: 25 });
+
+    expect(row).toMatchObject({
+      gross_sales: 668,
+      discount_total: 50,
+      net_sales: 618,
+      vat_total: 18,
+      completed_count: 3,
+      tax_not_calculated_count: 1,
+      tax_not_calculated_sales: 450,
+    });
   });
 
   it('computes net_sales via computeFinancialMetrics (gross - discounts - refunds, no VAT subtraction) to match branchStats.todayNetSales for the same branch/day', async () => {
@@ -224,12 +248,28 @@ describe('reportsRepository.getDiscountCompliance', () => {
 
     // P50 — a PWD/Senior sale is VAT-exempt in full (stored total); other types have no exempt sales.
     expect(rows).toEqual([
-      { branch_id: 'b1', branch_name: 'SM North', discount_type: 'pwd', transaction_count: 3, total_discount_amount: 60, total_vat_exempt_amount: 30, total_vat_exempt_sales: 270 },
-      { branch_id: 'b1', branch_name: 'SM North', discount_type: 'employee', transaction_count: 1, total_discount_amount: 10, total_vat_exempt_amount: 5, total_vat_exempt_sales: 0 },
+      { branch_id: 'b1', branch_name: 'SM North', discount_type: 'pwd', calculation_mode: 'legacy_vat_v1', transaction_count: 3, total_discount_amount: 60, total_vat_exempt_amount: 30, total_vat_exempt_sales: 270, tax_calculation: null },
+      { branch_id: 'b1', branch_name: 'SM North', discount_type: 'employee', calculation_mode: 'legacy_vat_v1', transaction_count: 1, total_discount_amount: 10, total_vat_exempt_amount: 5, total_vat_exempt_sales: 0, tax_calculation: null },
     ]);
     expect(prisma.transaction.groupBy).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ discountType: { not: null } }) }),
     );
+  });
+
+  it('P55R2 — merges NULL and legacy_vat_v1 groups; a manual-total row has no VAT figures and its own row', async () => {
+    vi.mocked(prisma.transaction.groupBy).mockResolvedValue([
+      { branchId: 'b1', discountType: 'pwd', calculationMode: null, _count: { _all: 2 }, _sum: { discountAmount: decimal(40), vatExemptAmount: decimal(0), totalAmount: decimal(160) } },
+      { branchId: 'b1', discountType: 'pwd', calculationMode: 'legacy_vat_v1', _count: { _all: 1 }, _sum: { discountAmount: decimal(20), vatExemptAmount: decimal(0), totalAmount: decimal(80) } },
+      { branchId: 'b1', discountType: 'manual', calculationMode: 'manual_total_v1', _count: { _all: 4 }, _sum: { discountAmount: decimal(200), vatExemptAmount: decimal(0), totalAmount: decimal(1800) } },
+    ] as never);
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
+
+    const rows = await reportsRepository.getDiscountCompliance(baseFilters);
+
+    expect(rows).toEqual([
+      { branch_id: 'b1', branch_name: 'SM North', discount_type: 'pwd', calculation_mode: 'legacy_vat_v1', transaction_count: 3, total_discount_amount: 60, total_vat_exempt_amount: 0, total_vat_exempt_sales: 240, tax_calculation: null },
+      { branch_id: 'b1', branch_name: 'SM North', discount_type: 'manual', calculation_mode: 'manual_total_v1', transaction_count: 4, total_discount_amount: 200, total_vat_exempt_amount: null, total_vat_exempt_sales: null, tax_calculation: 'Not calculated (manual total)' },
+    ]);
   });
 });
 

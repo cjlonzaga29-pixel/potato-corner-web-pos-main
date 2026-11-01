@@ -33,4 +33,17 @@ describe('ReceiptTaxLines (P50)', () => {
     expect(screen.getByText('VAT (12%)')).toBeInTheDocument();
     expect(screen.queryByText('VATable sales')).not.toBeInTheDocument();
   });
+
+  it('P55R2 manual-total sale: says VAT was not calculated — no VATable, VAT, ₱0.00 or exempt line', () => {
+    render(<ReceiptTaxLines sale={{ discount_type: 'manual', calculation_mode: 'manual_total_v1', vat_amount: null, vat_exempt_amount: null, total_amount: 450 }} />);
+    expect(screen.getByTestId('receipt-tax-lines')).toHaveTextContent('VAT not calculated by this checkout');
+    for (const text of ['VATable sales', 'VAT (12%)', 'VAT-exempt sale (PWD/Senior)', 'Non-VATable amount']) expect(screen.queryByText(text)).not.toBeInTheDocument();
+    expect(screen.queryByText('₱0.00')).not.toBeInTheDocument();
+  });
+
+  it('P55R2 a legacy sale from a new API keeps its breakdown', () => {
+    render(<ReceiptTaxLines sale={{ discount_type: null, calculation_mode: 'legacy_vat_v1', vat_amount: 7.5, vat_exempt_amount: 0, total_amount: 70 }} />);
+    expect(screen.getByText('VAT (12%)')).toBeInTheDocument();
+    expect(screen.getByText('₱7.50')).toBeInTheDocument();
+  });
 });

@@ -14,13 +14,17 @@ import {
   VAT_RATE_PERCENT,
   PRICES_INCLUDE_VAT,
   isVatExemptDiscountType,
-  computeManualDiscountSaleTax,
-  manualDiscountEligibleSubtotal,
+  computeManualTotal,
+  resolveCalculationMode,
+  LEGACY_VAT_CALCULATION,
+  MANUAL_TOTAL_CALCULATION,
+  TAX_NOT_CALCULATED_LABEL,
   MANUAL_DISCOUNT_FLOW,
   MANUAL_DISCOUNT_TYPE,
   type ImageProofType,
   type ManualDiscountSnapshot,
   type SaleTaxSnapshot,
+  type ManualTotalSaleSnapshot,
 } from '@potato-corner/shared';
 import { manilaDateKey } from '../../lib/manila-time.js';
 import { transactionsRepository, type SelectedOptionSnapshot, type TransactionExportFilters } from './transactions.repository.js';
@@ -255,6 +259,8 @@ interface TransactionRow {
   /** POS-PERF-P55 — absent on rows read through a narrower select; NULL on non-manual sales. */
   manualDiscountTypeId?: string | null;
   manualDiscountSnapshot?: unknown;
+  /** POS-PERF-P55R2 — NULL on sales recorded before P55R2 (VAT-calculated); absent on rows read through a narrower select. */
+  calculationMode?: string | null;
   receiptPrinted: boolean;
   notes: string | null;
   inventoryDeductionStatus: string;
@@ -285,6 +291,11 @@ function toManualDiscountResponse(snapshot: unknown) {
 }
 
 function toTransactionResponse(row: TransactionRow) {
+  // POS-PERF-P55R2 — a manual-total sale's stored VAT columns are 0
+  // placeholders: VAT was not calculated, so the response says null
+  // (unknown), never a confirmed ₱0 or a VAT-exempt amount.
+  const calculationMode = resolveCalculationMode(row.calculationMode);
+  const vatCalculated = calculationMode === LEGACY_VAT_CALCULATION;
   return {
     id: row.id,
     receipt_number: row.transactionNumber,
@@ -302,8 +313,9 @@ function toTransactionResponse(row: TransactionRow) {
     discount_type: row.discountType,
     manual_discount: toManualDiscountResponse(row.manualDiscountSnapshot),
     discount_rate_used: row.discountRateUsed?.toNumber() ?? null,
-    vat_amount: row.vatAmount.toNumber(),
-    vat_exempt_amount: row.vatExemptAmount.toNumber(),
+    calculation_mode: calculationMode,
+    vat_amount: vatCalculated ? row.vatAmount.toNumber() : null,
+    vat_exempt_amount: vatCalculated ? row.vatExemptAmount.toNumber() : null,
     total_amount: row.totalAmount.toNumber(),
     cash_tendered: row.amountTendered?.toNumber() ?? null,
     change_given: row.changeAmount?.toNumber() ?? null,
@@ -1183,6 +1195,45 @@ function assertManualFlowShape(data: CreateTransactionData): void {
 }
 
 /**
+ * POS-PERF-P55R2 — the manual-discount checkout calculates without VAT
+ * (subtotal − peso discount), and says so in tax_basis.calculation_mode on
+ * every sale except the statutory PWD/Senior discount, which keeps its VAT
+ * exemption formula (a VAT calculation) and a numeric tax_basis. Nothing is
+ * inferred: a sale that does not say which calculation its screen used is
+ * refused, never charged under the other one. Returns true for manual total.
+ */
+function assertCalculationMode(data: CreateTransactionData, isManualFlow: boolean): boolean {
+  const isManualTotal = data.calculationMode === MANUAL_TOTAL_CALCULATION;
+  if (!isManualFlow) {
+    if (isManualTotal) {
+      throw new TransactionError('CALCULATION_MODE_NOT_SUPPORTED', 'This sale uses the manual-total checkout but was not sent by it. It was not recorded. Reload the POS, then charge again.', 422);
+    }
+    return false;
+  }
+  const isStatutory = data.discountType === DISCOUNT_TYPE.PWD || data.discountType === DISCOUNT_TYPE.SENIOR_CITIZEN;
+  if (isStatutory && isManualTotal) {
+    throw new TransactionError(
+      'STATUTORY_DISCOUNT_REQUIRES_TAX_CALCULATION',
+      'The PWD/Senior Citizen discount keeps its statutory VAT-exempt calculation and cannot be charged as a manual total. Reload the POS, then charge again.',
+      422,
+    );
+  }
+  if (!isStatutory && !isManualTotal) {
+    throw new TransactionError(
+      'CALCULATION_MODE_REQUIRED',
+      data.isOfflineTransaction
+        ? 'This offline sale was rung by a POS version that calculated VAT for the manual-discount checkout. It was not recorded, so the amount collected was not changed. Ask a supervisor to review it.'
+        : 'This POS version calculates the sale differently from the server. It was not charged. Reload the POS, then charge again.',
+      422,
+    );
+  }
+  if (isStatutory && !data.taxBasis) {
+    throw new TransactionError('CALCULATION_MODE_REQUIRED', 'This sale did not say how its total was calculated. It was not charged. Reload the POS, then charge again.', 422);
+  }
+  return isManualTotal;
+}
+
+/**
  * POS-PERF-P55 — the server's own read of the claimed type and proof. The
  * type must be this sale's branch's, active and offered at the POS, at the
  * version the screen showed; a required proof must have been uploaded by this
@@ -1430,6 +1481,8 @@ function idempotencyReplayMatches(existing: TransactionRow, data: CreateTransact
   const requestedManualTypeId = data.manualDiscount?.discountTypeId ?? null;
   if (existingManualTypeId !== requestedManualTypeId) return false;
   if (data.manualDiscount && toCents(existing.discountAmount.toNumber()) !== toCents(data.manualDiscount.amount)) return false;
+  // POS-PERF-P55R2 — nor a sale calculated another way (VAT vs manual total).
+  if (resolveCalculationMode(existing.calculationMode) !== (data.calculationMode ?? LEGACY_VAT_CALCULATION)) return false;
   const normalize = (items: { productVariantId: string; flavorId: string | null; quantity: number }[]) =>
     items
       .map((item) => `${item.productVariantId}:${item.flavorId ?? ''}:${item.quantity}`)
@@ -2168,7 +2221,8 @@ export const transactionsService = {
         payment: humanize(row.paymentMethod),
         reference: row.gcashReference ?? dash,
         subtotal: money(row.subtotal),
-        vat: money(row.vatAmount),
+        // POS-PERF-P55R2 — a manual-total sale has no VAT figure (not ₱0.00).
+        vat: resolveCalculationMode(row.calculationMode) === MANUAL_TOTAL_CALCULATION ? TAX_NOT_CALCULATED_LABEL : money(row.vatAmount),
         discount: row.discountAmount.toNumber() > 0 ? money(row.discountAmount) : dash,
         discount_type: row.discountType ? humanize(row.discountType) : dash,
         customer_id: customerId,
@@ -2497,6 +2551,8 @@ export const transactionsService = {
       throw new TransactionError('MANUAL_DISCOUNT_FLOW_REQUIRED', 'A manual discount can only be sent by the manual-discount checkout.', 422);
     }
     if (isManualFlow) assertManualFlowShape(data);
+    // POS-PERF-P55R2 — which calculation this sale gets is explicit, never inferred.
+    const isManualTotal = assertCalculationMode(data, isManualFlow);
     // P55 — a statutory proof key must name an object under this sale's own
     // branch: before P55 any string was attached, so a forged key could link
     // another branch's ID photo to this sale and expose it through this
@@ -2572,29 +2628,34 @@ export const transactionsService = {
     if (!isManualFlow) resolvedItems = await applyLinePromotions(data, resolvedItems);
     catalogResolveMs = performance.now() - catalogResolveStartedAt;
     const subtotal = round2(resolvedItems.reduce((sum, item) => sum + item.lineTotal, 0));
+    // POS-PERF-P55R2 — a manual discount may be up to the whole order
+    // subtotal (no VATable cap: no VAT is calculated in this mode).
     let manualEligibleSubtotal: number | null = null;
     if (data.manualDiscount) {
-      manualEligibleSubtotal = manualDiscountEligibleSubtotal(resolvedItems);
+      manualEligibleSubtotal = subtotal;
       if (toCents(data.manualDiscount.amount) > toCents(manualEligibleSubtotal)) {
         throw new TransactionError(
           'MANUAL_DISCOUNT_EXCEEDS_SUBTOTAL',
-          manualEligibleSubtotal < subtotal
-            ? `The discount can be at most ${formatPesoAmount(manualEligibleSubtotal)} (the order's VATable amount; the non-VATable part above a size's VAT cap is never discounted).`
-            : `The discount can be at most the order subtotal, ${formatPesoAmount(manualEligibleSubtotal)}.`,
+          `The discount can be at most the order subtotal, ${formatPesoAmount(manualEligibleSubtotal)}.`,
           422,
           { subtotal, eligible_subtotal: manualEligibleSubtotal, amount: data.manualDiscount.amount },
         );
       }
     }
-    const { discountAmount, vatAmount, vatExemptAmount, totalAmount, discountRateUsed } = data.manualDiscount
-      ? computeManualDiscountSaleTax(subtotal, resolvedItems, data.manualDiscount.amount)
+    // POS-PERF-P55R2 — manual total: subtotal − peso discount, no VAT
+    // extracted, added or deducted. vatAmount/vatExemptAmount are stored as
+    // 0 placeholders (the columns are NOT NULL and older APIs read them);
+    // calculation_mode says they are not a VAT result. Everything else keeps
+    // the unchanged VAT calculation (including PWD/Senior).
+    const { discountAmount, vatAmount, vatExemptAmount, totalAmount, discountRateUsed }: ComputedAmounts = isManualTotal
+      ? { ...computeManualTotal(subtotal, data.manualDiscount?.amount ?? null), vatAmount: 0, vatExemptAmount: 0, discountRateUsed: null }
       : computeAmounts(subtotal, resolvedItems, data.discountType, discountRates);
     if (data.manualDiscount?.expectedTotalAmount !== undefined && toCents(data.manualDiscount.expectedTotalAmount) !== toCents(totalAmount)) {
       throw new TransactionError(
         'MANUAL_DISCOUNT_TOTAL_CHANGED',
         `The amount to pay is now ${formatPesoAmount(totalAmount)} (the screen showed ${formatPesoAmount(data.manualDiscount.expectedTotalAmount)}), so the sale was not charged. Review the order, then charge again.`,
         409,
-        { shown_total_amount: data.manualDiscount.expectedTotalAmount, amounts: { subtotal, discount_amount: discountAmount, vat_amount: vatAmount, total_amount: totalAmount } },
+        { shown_total_amount: data.manualDiscount.expectedTotalAmount, amounts: { subtotal, discount_amount: discountAmount, total_amount: totalAmount } },
       );
     }
     assertTaxBasisUnchanged(data.taxBasis, data.isOfflineTransaction, data.discountType, discountRates, { subtotal, discountAmount, vatAmount, totalAmount });
@@ -2607,8 +2668,9 @@ export const transactionsService = {
     const manualSnapshot: ManualDiscountSnapshot | null =
       data.manualDiscount && manualResolution && manualEligibleSubtotal !== null
         ? {
-            version: 1,
+            version: 2,
             source: 'manual',
+            calculation_mode: MANUAL_TOTAL_CALCULATION,
             discount_type_id: manualResolution.type.id,
             name: manualResolution.type.name,
             require_proof: manualResolution.type.requireProof,
@@ -2623,7 +2685,19 @@ export const transactionsService = {
       data.discountType === DISCOUNT_TYPE.PWD || data.discountType === DISCOUNT_TYPE.SENIOR_CITIZEN || data.discountType === DISCOUNT_TYPE.EMPLOYEE
         ? data.discountType
         : null;
-    const taxSnapshot: SaleTaxSnapshot = {
+    const taxSnapshot: SaleTaxSnapshot | ManualTotalSaleSnapshot = isManualTotal
+      ? {
+          version: 2,
+          calculation_mode: MANUAL_TOTAL_CALCULATION,
+          vat_calculated: false,
+          vat_registration: effectivePolicy.vatRegistration,
+          discount_flow: MANUAL_DISCOUNT_FLOW,
+          discount_source: data.manualDiscount ? 'manual' : null,
+          manual_discount_type_id: manualSnapshot?.discount_type_id ?? null,
+          require_discount_choice: effectivePolicy.requireDiscountChoice,
+          discount_choice: data.discountChoice ?? null,
+        }
+      : {
       version: 1,
       vat_rate_percent: VAT_RATE_PERCENT,
       prices_include_vat: PRICES_INCLUDE_VAT,
@@ -2646,6 +2720,7 @@ export const transactionsService = {
               ? 'promotion'
               : null,
       manual_discount_type_id: manualSnapshot?.discount_type_id ?? null,
+      calculation_mode: LEGACY_VAT_CALCULATION,
     };
 
     const manualProof = manualResolution?.proof ?? null;
@@ -2734,6 +2809,7 @@ export const transactionsService = {
             offlineProvisionalNumber: data.offlineProvisionalNumber ?? null,
             notes: data.notes ?? null,
             taxSnapshot: taxSnapshot as unknown as Prisma.InputJsonValue,
+            calculationMode: isManualTotal ? MANUAL_TOTAL_CALCULATION : LEGACY_VAT_CALCULATION,
             // Task 209.47 — only persisted for offline-synced sales (the
             // idempotency key this backs is offlineProvisionalNumber-scoped
             // and that field is itself only ever set for offline sales); a
@@ -3110,6 +3186,7 @@ export const transactionsService = {
               offlineProvisionalNumber: item.offlineProvisionalNumber,
               deviceId: data.deviceId,
               taxBasis: item.taxBasis,
+              calculationMode: item.calculationMode,
               discountChoice: item.discountChoice,
               discountFlow: item.discountFlow,
               manualDiscount: item.manualDiscount,

@@ -11,6 +11,7 @@ import {
 } from '../constants/status.js';
 import { cartItemPromotionAckSchema, selectedDiscountAckSchema } from './promotion.schema.js';
 import { DISCOUNT_FLOWS, MANUAL_DISCOUNT_TYPE, checkoutManualDiscountSchema, transactionManualDiscountSchema } from './manual-discount.schema.js';
+import { MANUAL_TOTAL_CALCULATION, SALE_CALCULATION_MODES } from '../tax/sale-tax.js';
 
 const paymentMethodValues = Object.values(PAYMENT_METHOD) as [PaymentMethod, ...PaymentMethod[]];
 const discountTypeValues = Object.values(DISCOUNT_TYPE) as [DiscountType, ...DiscountType[]];
@@ -74,10 +75,29 @@ export const cartItemSchema = z.object({
  * charging a total the cashier did not see. Absent (older client or a sale
  * queued before P50) = no check, the pre-P50 behavior.
  */
-export const taxBasisSchema = z.object({
-  vat_rate: z.number().finite().min(0).max(100),
-  discount_rate: z.number().finite().min(0).max(100).nullable(),
-});
+export const taxBasisSchema = z
+  .object({
+    /**
+     * POS-PERF-P55R2 — 'manual_total_v1': the screen calculated subtotal −
+     * peso discount with no VAT (see MANUAL_TOTAL_CALCULATION). Then both
+     * rates must be null. Absent = the VAT calculation (legacy_vat_v1), which
+     * needs a numeric vat_rate. vat_rate null is also the rollback fence: a
+     * pre-P55R2 API requires a number and refuses the sale (VALIDATION_ERROR,
+     * nothing written) instead of stripping the mode and calculating VAT.
+     */
+    calculation_mode: z.literal(MANUAL_TOTAL_CALCULATION).optional(),
+    vat_rate: z.number().finite().min(0).max(100).nullable(),
+    discount_rate: z.number().finite().min(0).max(100).nullable(),
+  })
+  .superRefine((basis, ctx) => {
+    if (basis.calculation_mode === MANUAL_TOTAL_CALCULATION) {
+      if (basis.vat_rate !== null || basis.discount_rate !== null) {
+        ctx.addIssue({ code: 'custom', path: ['vat_rate'], message: 'A manual-total sale carries no VAT or discount rate' });
+      }
+    } else if (basis.vat_rate === null) {
+      ctx.addIssue({ code: 'custom', path: ['vat_rate'], message: 'vat_rate is required unless calculation_mode is "manual_total_v1"' });
+    }
+  });
 
 /**
  * POS-PERF-P50R — the cashier's explicit discount decision, sent when the
@@ -352,8 +372,13 @@ export const transactionResponseSchema = z.object({
   // historical receipts/reports must keep showing the rate that was live
   // when the sale happened, not whatever a supervisor has since changed it to.
   discount_rate_used: z.number().nullable().optional(),
-  vat_amount: z.number(),
-  vat_exempt_amount: z.number(),
+  // POS-PERF-P55R2 — how the amounts were calculated. 'manual_total_v1':
+  // VAT was not calculated, so vat_amount and vat_exempt_amount are null
+  // (unknown — never a confirmed ₱0). Optional for pre-P55R2 API responses,
+  // which were all 'legacy_vat_v1'.
+  calculation_mode: z.enum(SALE_CALCULATION_MODES).optional(),
+  vat_amount: z.number().nullable(),
+  vat_exempt_amount: z.number().nullable(),
   total_amount: z.number(),
   cash_tendered: z.number().nullable(),
   change_given: z.number().nullable(),

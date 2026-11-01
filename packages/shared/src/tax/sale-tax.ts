@@ -69,7 +69,7 @@ export interface SaleTaxAmounts {
   discountRateUsed: number | null;
 }
 
-/** POS-PERF-P55 — 'manual' carries no rate and no line promotions here (computeManualDiscountSaleTax prices it). */
+/** POS-PERF-P55 — 'manual' carries no rate and no line promotions here (computeManualTotal prices it, without VAT). */
 export type SaleDiscountType = 'pwd' | 'senior_citizen' | 'employee' | 'manager_override' | 'promotional' | 'manual' | null | undefined;
 
 export function isVatExemptDiscountType(discountType: string | null | undefined): boolean {
@@ -131,35 +131,48 @@ export function computeSaleTax(
 }
 
 /**
- * POS-PERF-P55 — the part of the order a manual peso discount may come off:
- * the VATable (VAT-inclusive) amount. The non-VATable part above a size's
- * VAT cap is never discounted, exactly as for Employee and promotions.
+ * POS-PERF-P55R2 — how a sale's amounts were calculated, recorded on every
+ * new sale (transactions.calculation_mode) and sent by the new checkout in
+ * tax_basis.calculation_mode.
+ *
+ * - 'legacy_vat_v1': computeSaleTax above — VAT-inclusive prices, VAT
+ *   extracted (12/112), PWD/Senior statutory VAT exemption. Every sale
+ *   recorded before P55R2 (stored as NULL), every older client, and the
+ *   statutory PWD/Senior discount in the new checkout.
+ * - 'manual_total_v1': the manual-total checkout (computeManualTotal). The
+ *   amount to pay is the order subtotal minus the cashier's peso discount.
+ *   VAT is NOT calculated: none is extracted, added or deducted, and the
+ *   stored vat_amount/vat_exempt_amount (0) are placeholders, not a VAT
+ *   result. This is not a VAT-exempt or zero-rated treatment, and it does
+ *   not establish what tax, if any, is owed on the sale.
  */
-export function manualDiscountEligibleSubtotal(lines: readonly SaleTaxLine[]): number {
-  return round2(
-    lines.reduce((sum, line) => {
-      const cap = line.vatableCapAmount;
-      return sum + (cap != null ? Math.min(line.lineTotal, round2(cap * line.quantity)) : line.lineTotal);
-    }, 0),
-  );
+export const LEGACY_VAT_CALCULATION = 'legacy_vat_v1' as const;
+export const MANUAL_TOTAL_CALCULATION = 'manual_total_v1' as const;
+export const SALE_CALCULATION_MODES = [LEGACY_VAT_CALCULATION, MANUAL_TOTAL_CALCULATION] as const;
+export type SaleCalculationMode = (typeof SALE_CALCULATION_MODES)[number];
+
+/** A stored mode (NULL on sales recorded before P55R2, which were all VAT-calculated) as the mode it represents. */
+export function resolveCalculationMode(stored: string | null | undefined): SaleCalculationMode {
+  return stored === MANUAL_TOTAL_CALCULATION ? MANUAL_TOTAL_CALCULATION : LEGACY_VAT_CALCULATION;
+}
+
+/** POS-PERF-P55R2 — how receipts, reports and exports show the VAT of a manual-total sale: not a number. */
+export const TAX_NOT_CALCULATED_LABEL = 'Not calculated (manual total)';
+
+export interface ManualTotalAmounts {
+  discountAmount: number;
+  totalAmount: number;
 }
 
 /**
- * POS-PERF-P55 — a manual peso discount uses the existing commercial
- * (non-statutory) treatment unchanged: the amount comes off the VAT-inclusive
- * VATable amount and VAT is the 12/112 share of what remains — the same path
- * as Employee and promotions in computeSaleTax. It is never VAT-exempt; only
- * the statutory PWD/Senior formula is. Caller guarantees 0 < amount ≤
- * manualDiscountEligibleSubtotal(lines) (the server refuses anything else).
+ * POS-PERF-P55R2 — the manual-total checkout: subtotal − peso discount =
+ * amount to pay. No VAT is extracted, added or deducted. Caller guarantees
+ * 0 < discount ≤ subtotal when a discount is given (the server refuses
+ * anything else); null or 0 means no discount.
  */
-export function computeManualDiscountSaleTax(subtotal: number, lines: readonly SaleTaxLine[], amount: number): SaleTaxAmounts {
-  const vatableSubtotal = manualDiscountEligibleSubtotal(lines);
-  const nonVatableSubtotal = round2(subtotal - vatableSubtotal);
-  const discountAmount = round2(amount);
-  const vatableAfterDiscount = round2(vatableSubtotal - discountAmount);
-  const vatAmount = round2(vatableAfterDiscount * VAT_SHARE_OF_INCLUSIVE);
-  const totalAmount = round2(vatableAfterDiscount + nonVatableSubtotal);
-  return { discountAmount, vatAmount, vatExemptAmount: nonVatableSubtotal, totalAmount, discountRateUsed: null };
+export function computeManualTotal(subtotal: number, discount: number | null): ManualTotalAmounts {
+  const discountAmount = round2(discount ?? 0);
+  return { discountAmount, totalAmount: round2(subtotal - discountAmount) };
 }
 
 export interface StoredSaleTax {
@@ -227,10 +240,33 @@ export interface SaleTaxSnapshot {
   /** POS-PERF-P55 — 'manual_v1' for a sale from the manual-discount checkout; absent on earlier sales. */
   discount_flow?: 'manual_v1' | null;
   /**
-   * POS-PERF-P55 — where the sale's discount came from: 'manual' (cashier-entered pesos, commercial/taxable),
-   * 'statutory' (PWD/Senior formula), 'rate' (Employee %), 'promotion' (P49/P50R), or null for none. Absent on earlier sales.
+   * POS-PERF-P55 — where the sale's discount came from: 'statutory' (PWD/Senior formula), 'rate' (Employee %),
+   * 'promotion' (P49/P50R), or null for none. Absent on earlier sales. ('manual' only on local pre-P55R2 test data;
+   * a manual discount is now always a ManualTotalSaleSnapshot.)
    */
   discount_source?: 'manual' | 'statutory' | 'rate' | 'promotion' | null;
   /** POS-PERF-P55 — the manual discount type, when discount_source is 'manual'. */
   manual_discount_type_id?: string | null;
+  /** POS-PERF-P55R2 — written on every VAT-calculated sale from P55R2 on; absent on earlier sales. */
+  calculation_mode?: typeof LEGACY_VAT_CALCULATION;
 }
+
+/**
+ * POS-PERF-P55R2 — tax_snapshot of a manual-total sale. It records that VAT
+ * was not calculated (vat_calculated: false, no rate, no treatment), never a
+ * VAT-exempt, zero-rated or zero-VAT result. vat_registration is the branch
+ * setting at the time, kept for the accountant; it was not applied.
+ */
+export interface ManualTotalSaleSnapshot {
+  version: 2;
+  calculation_mode: typeof MANUAL_TOTAL_CALCULATION;
+  vat_calculated: false;
+  vat_registration: 'unconfirmed' | 'vat_registered';
+  discount_flow: 'manual_v1';
+  discount_source: 'manual' | null;
+  manual_discount_type_id: string | null;
+  require_discount_choice: boolean;
+  discount_choice: 'selected' | 'none_applicable' | null;
+}
+
+export type StoredSaleSnapshot = SaleTaxSnapshot | ManualTotalSaleSnapshot;

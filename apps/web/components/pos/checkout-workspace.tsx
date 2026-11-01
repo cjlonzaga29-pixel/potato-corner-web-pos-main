@@ -20,7 +20,8 @@ interface OrderReviewPanelProps {
   onRemoveLine: (index: number) => void;
   onQuantityChange: (index: number, quantity: number) => void;
   subtotal: number;
-  vatAmount: number;
+  /** POS-PERF-P55R2 — null: the manual-total checkout does not calculate VAT, so no VAT line is shown. */
+  vatAmount: number | null;
   discountAmount: number;
   totalAmount: number;
   /** POS-PERF-P50 — PWD/Senior Citizen: the sale is VAT-exempt, shown as such instead of "VAT ₱0.00". */
@@ -92,10 +93,12 @@ export function OrderReviewPanel({
               <span className="tabular-nums">-{formatPeso(discountAmount)}</span>
             </div>
           )}
-          <div className="flex justify-between text-xs text-muted-foreground" data-testid="checkout-vat-line">
-            <span>{isVatExempt ? 'VAT-exempt (PWD/Senior) — no VAT' : `VAT (${VAT_RATE_PERCENT}%, included in prices)`}</span>
-            <span className="tabular-nums">{formatPeso(vatAmount)}</span>
-          </div>
+          {vatAmount !== null && (
+            <div className="flex justify-between text-xs text-muted-foreground" data-testid="checkout-vat-line">
+              <span>{isVatExempt ? 'VAT-exempt (PWD/Senior) — no VAT' : `VAT (${VAT_RATE_PERCENT}%, included in prices)`}</span>
+              <span className="tabular-nums">{formatPeso(vatAmount)}</span>
+            </div>
+          )}
           <Separator className="my-1.5 lg:my-1" />
           <div className="app-pos-total-row flex items-center justify-between rounded-lg bg-primary/5 px-2.5">
             <span className="text-sm font-semibold">{totalLabel ?? 'Total'}</span>
@@ -160,7 +163,7 @@ interface CheckoutWorkspaceProps extends PaymentFooterProps {
   onRemoveLine: (index: number) => void;
   onQuantityChange: (index: number, quantity: number) => void;
   subtotal: number;
-  vatAmount: number;
+  vatAmount: number | null;
   discountAmount: number;
   reviewNotice?: ReactNode;
 }

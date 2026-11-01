@@ -130,6 +130,22 @@ describe('syncOfflineTransactions', () => {
     );
   });
 
+  it('P55R2 — a new-checkout sale keeps its flow, choice and manual-total basis; an old queued sale is sent as it was', async () => {
+    const manualTotal = { calculation_mode: 'manual_total_v1' as const, vat_rate: null, discount_rate: null };
+    const base = offlineRow().payload;
+    const fresh = offlineRow({ id: 'PC-MAIN01-20260719-OFFLINE-0001', payload: { ...base, discount_flow: 'manual_v1', discount_choice: 'none_applicable', tax_basis: manualTotal } });
+    const old = offlineRow({ id: 'PC-MAIN01-20260719-OFFLINE-0002', payload: { ...base, tax_basis: { vat_rate: 12, discount_rate: null } } });
+    mockPendingRows([fresh, old]);
+    vi.mocked(apiClient).mockResolvedValue({ data: { results: [], synced_count: 0 }, error: null, meta: null });
+
+    await syncOfflineTransactions(OPTIONS);
+
+    const body = JSON.parse(vi.mocked(apiClient).mock.calls[0]?.[1]?.body as string) as { transactions: Record<string, unknown>[] };
+    expect(body.transactions[0]).toMatchObject({ discount_flow: 'manual_v1', discount_choice: 'none_applicable', tax_basis: manualTotal });
+    expect(body.transactions[1]).toMatchObject({ tax_basis: { vat_rate: 12, discount_rate: null } });
+    expect(body.transactions[1]).not.toHaveProperty('discount_flow');
+  });
+
   it('marks a synced row with the official receipt number and keeps a retryable failure queued with its reason', async () => {
     mockPendingRows([offlineRow({ id: 'PC-MAIN01-20260719-OFFLINE-0001' }), offlineRow({ id: 'PC-MAIN01-20260719-OFFLINE-0002' })]);
     vi.mocked(apiClient).mockResolvedValue({

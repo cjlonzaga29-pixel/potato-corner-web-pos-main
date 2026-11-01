@@ -82,6 +82,17 @@ export interface ReportColumn<T> {
   header: string;
   /** Audit-only columns (e.g. raw ids) are appended after visible columns, headers prefixed with `_`. */
   isAudit?: boolean;
+  /**
+   * POS-PERF-P55R2 — left out of the export when no row has a value for it
+   * (null, undefined, '' or 0), so an export of sales recorded before P55R2
+   * keeps exactly its earlier columns.
+   */
+  omitWhenEmpty?: boolean;
+}
+
+/** POS-PERF-P55R2 — the columns an export of these rows renders (see ReportColumn.omitWhenEmpty). */
+export function columnsForRows<T extends Record<string, unknown>>(columns: Array<ReportColumn<T>>, rows: readonly T[]): Array<ReportColumn<T>> {
+  return columns.filter((c) => !c.omitWhenEmpty || rows.some((row) => { const value = row[c.key]; return value !== null && value !== undefined && value !== '' && value !== 0; }));
 }
 
 /**
@@ -95,7 +106,10 @@ export type DailySalesTransactionRow = {
   receipt_number: string;
   payment_method: string;
   total_amount: number;
-  vat_amount: number;
+  /** POS-PERF-P55R2 — null for a manual-total sale (VAT not calculated). */
+  vat_amount: number | null;
+  /** POS-PERF-P55R2 — TAX_NOT_CALCULATED_LABEL for a manual-total sale, else null. */
+  tax_calculation?: string | null;
   discount_amount: number;
   discount_type: string | null;
   // Task 209.xx — the configured percentage actually applied at sale time

@@ -12,9 +12,10 @@ import {
   VAT_RATE_PERCENT,
   MANUAL_DISCOUNT_FLOW,
   computeSaleTax,
-  computeManualDiscountSaleTax,
+  computeManualTotal,
   discountRateFor,
-  manualDiscountEligibleSubtotal,
+  isVatExemptDiscountType,
+  MANUAL_TOTAL_CALCULATION,
   type SaleDiscountRates,
 } from '@potato-corner/shared';
 import type { CreateTransactionInput, ImageProofType, PosCatalogProduct, TransactionResponse } from '@potato-corner/shared';
@@ -99,6 +100,8 @@ import {
   NOT_SAVED_SAFE_TO_RETRY,
   MANUAL_DISCOUNT_UNSUPPORTED_BY_SERVER,
   MANUAL_DISCOUNT_UNSUPPORTED_MESSAGE,
+  CALCULATION_MODE_UNSUPPORTED_BY_SERVER,
+  CALCULATION_MODE_UNSUPPORTED_MESSAGE,
 } from '@/lib/cashier-error-messages';
 import { OrderTabContent } from '@/components/pos/order-tabs-content';
 import { OfflineSalesList } from '@/components/pos/offline-sales-list';
@@ -2067,16 +2070,22 @@ export default function TerminalPage() {
   // (online only); null when none is picked or it is no longer offered.
   const posManualTypes = useMemo(() => (isOnline ? (posManualTypesQuery.data ?? []) : []), [isOnline, posManualTypesQuery.data]);
   const manualType = useMemo(() => (manualTypeId ? (posManualTypes.find((t) => t.id === manualTypeId) ?? null) : null), [manualTypeId, posManualTypes]);
-  const manualEligibleSubtotal = useMemo(() => manualDiscountEligibleSubtotal(cartLines), [cartLines]);
+  // POS-PERF-P55R2 — a manual discount may be up to the whole subtotal (no VATable cap: VAT is not calculated).
+  const manualEligibleSubtotal = subtotal;
   const isManualSelected = discountMode === 'apply' && manualTypeId !== null;
   const manualParsed = parseManualAmount(manualAmount, manualEligibleSubtotal);
   const manualAmountValue = isManualSelected && manualType ? manualParsed.value : null;
+  // POS-PERF-P55R2 — this checkout calculates subtotal − peso discount =
+  // amount to pay, with no VAT extracted, added or deducted (vatAmount null:
+  // not calculated). Only the statutory PWD/Senior discount keeps its VAT
+  // exemption formula, the same computeSaleTax the server runs.
+  const isStatutorySelected = isVatExemptDiscountType(discountType === 'none' ? null : discountType);
   const { discountAmount, vatAmount, totalAmount } = useMemo(
-    () =>
-      manualAmountValue !== null
-        ? computeManualDiscountSaleTax(subtotal, cartLines, manualAmountValue)
-        : previewAmounts(cartLines, discountType, discountRatesPreview),
-    [cartLines, discountType, discountRatesPreview, manualAmountValue, subtotal],
+    (): { discountAmount: number; vatAmount: number | null; totalAmount: number } =>
+      isStatutorySelected
+        ? previewAmounts(cartLines, discountType, discountRatesPreview)
+        : { ...computeManualTotal(subtotal, manualAmountValue), vatAmount: null },
+    [cartLines, discountType, discountRatesPreview, isStatutorySelected, manualAmountValue, subtotal],
   );
   const manualChangedTotal =
     manualAmountValue !== null && manualConfirmedSubtotal !== null && Math.round(subtotal * 100) !== Math.round(manualConfirmedSubtotal * 100)
@@ -2381,10 +2390,15 @@ export default function TerminalPage() {
       // POS-PERF-P50 — the rates the total on screen was computed with. Never
       // an amount: the server refuses a mismatch instead of charging a
       // different total (TAX_SETTINGS_CHANGED).
-      tax_basis: {
-        vat_rate: VAT_RATE_PERCENT,
-        discount_rate: discountRateFor(discountType === 'none' ? null : discountType, discountRatesPreview),
-      },
+      // POS-PERF-P55R2 — every other sale says it is a manual total (no VAT).
+      // vat_rate null also makes a pre-P55R2 API refuse it rather than drop
+      // the mode and calculate VAT. Queued offline sales keep this as sent.
+      tax_basis: isStatutorySelected
+        ? {
+            vat_rate: VAT_RATE_PERCENT,
+            discount_rate: discountRateFor(discountType === 'none' ? null : discountType, discountRatesPreview),
+          }
+        : { calculation_mode: MANUAL_TOTAL_CALCULATION, vat_rate: null, discount_rate: null },
       cash_tendered: paymentMethod === 'cash' ? tenderedNumber : undefined,
       // POS-PERF-P25R — optional payment reference, re-added at the owner's
       // request. gcash_reference_number backs both GCash and Maya (the
@@ -2707,6 +2721,22 @@ export default function TerminalPage() {
           );
         setSaleErrorMessage(error.message);
         setSaleErrorCode(error.code);
+        setSalePhase('error');
+        return;
+      }
+      // POS-PERF-P55R2 — a pre-P55R2 API refuses the manual-total basis (its
+      // vat_rate must be a number): nothing written, no VAT calculated instead.
+      // Checked first: a manual discount travels with the same basis, and on
+      // such an API "No discount" is refused too.
+      if (
+        error instanceof TransactionApiError &&
+        error.code === 'VALIDATION_ERROR' &&
+        payload.tax_basis !== undefined &&
+        'calculation_mode' in payload.tax_basis &&
+        payload.tax_basis.calculation_mode === MANUAL_TOTAL_CALCULATION
+      ) {
+        setSaleErrorMessage(CALCULATION_MODE_UNSUPPORTED_MESSAGE);
+        setSaleErrorCode(CALCULATION_MODE_UNSUPPORTED_BY_SERVER);
         setSalePhase('error');
         return;
       }

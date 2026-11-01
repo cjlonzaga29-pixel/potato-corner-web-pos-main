@@ -1,5 +1,10 @@
 # POS-PERF-P55 — Manual peso discounts, supervisor discount types, preserved proof photos
 
+> **P55R2 supersedes the tax behavior described in §3 (steps 3 and 5), §4 (the VATable-amount limit), §5, §12.6 (new
+> web → old API: "No discount" is now refused too), §12.7 ("taxable commercial treatment") and §10 items 2 and 7 as
+> they apply to the new checkout.** The new checkout no longer calculates VAT: amount to pay = subtotal − manual peso
+> discount. See **§13**. Sections 1–12 are kept as the record of the first and release passes.
+
 Owner-approved UX: a supervisor enables discount types for a branch; the cashier picks a type, enters a **peso**
 amount, adds a proof photo when the type requires one, reviews the total and charges. This replaces automatic
 discounts in the new checkout flow. Local work only — nothing pushed, deployed or run against production.
@@ -515,3 +520,216 @@ proof, default "No discount", the promotion retirement date, and a per-type repo
 
 **Release blockers:** none found in code. Open before go-live: the real-device / installed-PWA reload check, and the
 owner's promotion-retirement decision (not a code change).
+
+## 13. P55R2 — the new checkout no longer calculates VAT (2026-11-01)
+
+Owner intent: **order subtotal − manually entered peso discount = amount to pay.** The new checkout does not extract,
+add or deduct VAT. Camera/proof requirements are unchanged. Local work only: nothing merged, pushed, deployed, or
+run against production.
+
+### 13.1 What this is, and what it is not
+
+- **"VAT not calculated by this checkout"** is an operating mode of the POS software. It is **not** a VAT-exempt sale,
+  **not** a zero-rated sale and **not** a ₱0 VAT result. The app records that it did not compute VAT. It makes no
+  statement about what tax, if any, is owed on the sale.
+- Not issuing or printing a receipt does not change any tax obligation. P55R2 does not establish tax compliance and
+  does not remove any obligation. Its receipts are **not** labeled, and must not be presented, as VAT invoices or
+  official receipts. The legal treatment is unresolved (§13.9).
+- The legacy shared formula (`computeSaleTax`), `VAT_RATE_PERCENT = 12`, the PWD/Senior statutory formula locked in
+  `.claude/CLAUDE.md`, and organization/branch tax configuration are **unchanged**. Nothing sets VAT to 0 globally.
+
+### 13.2 Calculation modes (explicit, versioned, server-authoritative)
+
+| Mode | Stored `transactions.calculation_mode` | Arithmetic | Who gets it |
+| --- | --- | --- | --- |
+| VAT calculation | `legacy_vat_v1` (new sales) or `NULL` (every sale recorded before P55R2, and sales an older API writes) | `computeSaleTax`: VAT-inclusive prices, VAT = 12/112 of the VATable remainder; PWD/Senior VAT-exempt formula; VAT-cap overflow non-VATable | old clients (no `discount_flow`); the statutory PWD/Senior discount in the new checkout |
+| Manual total | `manual_total_v1` | `computeManualTotal`: total = subtotal − peso discount (0 with no discount), centavo-rounded. Nothing VAT-related is computed | new checkout: no-discount and manual-discount sales |
+
+**Request contract.** The new checkout sends `tax_basis: { calculation_mode: "manual_total_v1", vat_rate: null,
+discount_rate: null }` (shared `taxBasisSchema`; both rates must be null for that mode, and a numeric `vat_rate` is
+required otherwise; unknown modes are refused). The server (`assertCalculationMode`, run before any lookup) enforces:
+
+- `discount_flow: manual_v1` without the manual-total basis → `422 CALCULATION_MODE_REQUIRED`. The unreleased P55
+  first-pass build, or a queued sale from it, is never silently VAT-calculated.
+- the manual-total basis without `discount_flow` → `422 CALCULATION_MODE_NOT_SUPPORTED`. A legacy client cannot skip
+  the new flow's rules.
+- PWD/Senior with the manual-total basis → `422 STATUTORY_DISCOUNT_REQUIRES_TAX_CALCULATION`; PWD/Senior in the new
+  flow without a numeric basis → `CALCULATION_MODE_REQUIRED`.
+- A same-key replay under the other mode → `IDEMPOTENCY_KEY_REUSE`.
+
+**Amounts.** Subtotal = the server's own item prices × quantities, including add-ons and options. A manual discount
+must be a finite peso amount over ₱0 with at most 2 decimals, and **≤ the order subtotal**
+(`MANUAL_DISCOUNT_EXCEEDS_SUBTOTAL`, compared in centavos). The **VATable-amount cap is removed** in this mode: on a
+size with a VAT cap, the whole subtotal can now be discounted. The total is never negative. The
+`expected_total_amount` acknowledgement still refuses a changed total (`MANUAL_DISCOUNT_TOTAL_CHANGED`). Client
+totals, rates, labels, keys and modes are never trusted. There is one discount per sale, and no automatic or
+cashier-selected promotion is ever applied (unchanged).
+
+**Stored for a manual-total sale.** `calculation_mode = 'manual_total_v1'` (CHECK-constrained). `vat_amount = 0` and
+`vat_exempt_amount = 0` are stored only as **placeholders**: the columns are NOT NULL and older APIs read them.
+`calculation_mode` says they are not a VAT result. `tax_snapshot` is version 2:
+`{ version: 2, calculation_mode, vat_calculated: false, vat_registration (the branch setting at the time, recorded
+for the accountant, not applied), discount_flow, discount_source: 'manual' | null, manual_discount_type_id,
+require_discount_choice, discount_choice }`. It has no rate, no treatment and no discount basis. The
+`manual_discount_snapshot` is version 2 with `calculation_mode` and `eligible_subtotal` = the subtotal. VAT-calculated
+sales get `tax_snapshot` v1 plus `calculation_mode: 'legacy_vat_v1'`. All of it is written once at insert; the
+immutability guard blocks later changes.
+
+**Read side.** Responses (`toTransactionResponse`, public receipt) add `calculation_mode` (NULL → `legacy_vat_v1`)
+and return **`vat_amount: null` and `vat_exempt_amount: null`** for a manual-total sale: unknown, never ₱0.
+
+### 13.3 Old vs new behavior
+
+| | Before P55R2 (`ab35dd1`/`6012fcb`, never deployed) | P55R2 |
+| --- | --- | --- |
+| No discount, new checkout | ₱500 → VAT ₱53.57 extracted | ₱500 → amount to pay ₱500; VAT not calculated (`null`) |
+| ₱500 − ₱50 manual | ₱450, VAT ₱48.21 (commercial path) | ₱450; VAT not calculated |
+| Manual limit | ≤ VATable amount | ≤ subtotal |
+| PWD/Senior in new checkout | statutory formula | **unchanged** statutory formula, `legacy_vat_v1` (₱500 → ₱357.14, VAT ₱0) |
+| Old web → API | legacy rules | **unchanged** legacy rules, now recorded `legacy_vat_v1` (browser: ₱500 → VAT ₱53.57; Employee 20% → ₱400, VAT ₱42.86; PWD → ₱357.14) |
+| Checkout screen | Subtotal / discount / VAT line / total | **Subtotal / Discount / Amount to pay**; no VAT line (the PWD/Senior line "VAT-exempt (PWD/Senior) — no VAT" remains for statutory sales) |
+| Receipts (POS + public `/r/`) | VATable / VAT / non-VATable breakdown | "VAT not calculated by this checkout"; no VATable/VAT/exempt figures. Legacy and PWD receipts unchanged |
+
+**PWD/Senior coexistence.** Statutory discounts stay on their statutory path: the rate comes from the law and
+settings, there is an ID number, an optional ID photo bound to cashier/branch/shift, and the VAT-exempt formula
+applies. They are listed under "Statutory · VAT-exempt" in the new checkout. A manual peso amount is never routed
+through the statutory formula, and a manual type can never carry a statutory name. Manual + statutory together is
+still refused. Whether PWD/Senior should also become a peso entry, and how the statutory 20% and the VAT exemption
+relate to a not-calculated total, is an open decision (§13.9). It is **not** silently implemented.
+
+### 13.4 Proof security (unchanged by P55R2, re-verified)
+
+Supervisor branch-scoped types with *Apply to POS* and *Require proof photo*, camera and gallery upload, Charge
+blocked until a required upload succeeds, the proof bound to cashier/branch/shift and consumed once inside the
+sale's `$transaction`, idempotent replay, and historical proof access are all unchanged. The integration suite (10/10)
+and the browser runs (P1–P4, K1, B1–B2) re-checked them.
+
+### 13.5 History, reports, exports, refunds
+
+- **No existing row changes.** Every sale, VAT amount, snapshot, receipt and report calculation recorded before P55R2
+  keeps its stored values. The rehearsal (§13.7) proves all 82 tables byte-identical after the migrations.
+- **Daily Sales:** `vat_total` sums VAT-calculated sales only. New fields `tax_not_calculated_count` and
+  `tax_not_calculated_sales` (amount paid) count manual-total sales separately; gross/net sales include them. Admin
+  Reports adds a "Without VAT Calc." column.
+- **Discount Compliance:** rows are split by calculation mode (NULL merged with `legacy_vat_v1`). A manual-total row
+  has `total_vat_exempt_sales` and `total_vat_exempt_amount` = **null** ("Not calculated"), never 0.
+- **Transaction rows / exports:** a manual-total row's VAT is blank (CSV/PDF) or "Not calculated (manual total)"
+  (transaction PDF). A **Tax Calculation** column (and the two Daily Sales columns) appears only when the export
+  contains a manual-total sale (`ReportColumn.omitWhenEmpty`). **Exports of historical periods are byte-identical**:
+  their headers were asserted in the rehearsal and in `csv.test.ts`.
+- **Screens:** the VAT columns in Reports, transaction detail and the daily drilldown show "Not calculated". The
+  "VAT Collected" KPI sums VAT-calculated sales only, and its tooltip counts the excluded sales.
+- **Refunds/voids** flip status only. The stored mode, VAT placeholder and snapshots are kept (integration-tested), and
+  nothing is recomputed from current settings.
+- **Not changed (limitation):** the branch dashboard's `todayVat` card sums stored `vat_amount`. Manual-total sales
+  add 0 to it and are not counted separately there.
+
+### 13.6 Offline and compatibility
+
+| Combination | Behavior (verified unless noted) |
+| --- | --- |
+| Old web → P55R2 API | Legacy calculation exactly as before, recorded `legacy_vat_v1` (browser D1–D3; integration "old web" case) |
+| New web → P55R2 API | Manual total (browser A, A2, B) |
+| **New web → pre-P55R2 API** (rollback, or the API not yet deployed) | The old schema requires a numeric `tax_basis.vat_rate`, so **every manual-total sale, including "No discount", is refused at validation**. Nothing is written and nothing is charged; the terminal shows "Server update needed — not charged", review-only with no Retry (browser C1, C2). **Only PWD/Senior can be sold** (C3; the old API writes `calculation_mode` NULL = VAT-calculated). After a reload, the types route 404 shows "Only the statutory PWD/Senior Citizen discount can be charged until the server is updated." (C6) |
+| Queued offline sales, new web | Queued with their own manual-total basis and flow (O1). They sync once as `manual_total_v1` with the same total (O2, C5) and are never re-priced or converted |
+| Queued offline sales, old API | The whole batch is refused (`422 VALIDATION_ERROR`); nothing is recorded; rows stay queued, retryable (`SYNC_FAILED`). Note this also holds back any legacy rows in the same batch. When the API is restored they sync once (C4 → C5) |
+| Old queued sales (no flow) | Keep their original VAT calculation (integration OFFLINE-0003) |
+| New-flow queued sale without the mode | Refused visibly (`CALCULATION_MODE_REQUIRED`, a definitive queue rejection), never VAT-calculated (integration OFFLINE-0004) |
+| Lost responses | Resolve with the original idempotency identity: one sale, no duplicate discount or deduction (browser N1, B3; integration idempotency) |
+| **Old web viewing a manual-total sale** (mixed-version window) | **Observed in the browser (D4): the 042a700 public receipt page `/r/<number>` shows "Application error"** for a manual-total sale, because it formats `vat_amount: null`. From the code (not browser-verified): old Reports and transaction views show "₱0.00" VAT for such sales. This cannot be fixed in the old build |
+
+**Defect found and fixed in this pass (pre-existing in P55):** `syncOfflineTransactions` never forwarded
+`discount_flow`. Under P55 a new-flow offline sale was silently synced under the legacy rules; under P55R2 it was
+refused (`CALCULATION_MODE_NOT_SUPPORTED`, retryable, nothing recorded). It now forwards `discount_flow` (and
+`manual_discount`, so a queued manual discount is still refused visibly). Unit test added; browser O2 passes on the
+rebuilt web.
+
+### 13.7 Migrations, rollout, rollback
+
+Migrations (additive): `20261101130000_pos_perf_p55r2_calculation_mode` adds the nullable column `calculation_mode`
+(no default, metadata-only) and `CHECK (calculation_mode IS NULL OR IN ('legacy_vat_v1','manual_total_v1')) NOT
+VALID`. `20261101130100_pos_perf_p55r2_validate_calculation_mode` runs `VALIDATE CONSTRAINT` under SHARE UPDATE
+EXCLUSIVE, which does not block checkout inserts. There is no backfill and no index. An older API runs unchanged on
+the new schema.
+
+Rollout (matches validation → approval → staged web → migrations → API → web promotion):
+
+1. Validation and approval of this runbook and the open decisions (§13.9).
+2. **Staged web.** Do **not** ring real manual-total sales through a staged web against production before step 5.
+   Until the API is updated they are refused anyway. After step 4, any manual-total sale rung before web promotion
+   has a public receipt the production (old) web cannot render (D4).
+3. **Migrations** (all five P55 + P55R2 migrations; the §12.5 duplicate-name pre-check first).
+4. **API.** Old webs keep working with the legacy calculation (D1–D3).
+5. **Web promotion, then reload every terminal and back-office browser** (close/reopen the PWA). An unreloaded old
+   build keeps VAT-calculating its own sales against the new API (supported) but shows manual-total sales wrongly
+   (D4 / ₱0.00).
+
+Do not switch production modes or disable promotions as part of this release. Promotion retirement stays §12.6.
+
+Rollback: keep the schema. Before rolling the **API** back, **roll the web back first, or accept that the new web
+can sell only PWD/Senior** (C1–C6). Queued new-web offline sales wait until the API is rolled forward (C4–C5). Do
+not roll back the migrations while `manual_total_v1` sales exist: their mode would be lost and their 0 VAT
+placeholders would read as genuine ₱0 VAT. Export them first if that is ever needed. Detection:
+`SELECT count(*) FROM transactions WHERE calculation_mode = 'manual_total_v1';`.
+
+### 13.8 Verification (this pass)
+
+Environment: a **new** embedded Postgres 18.4 cluster on `127.0.0.1:46595`, with data in this session's scratchpad
+and databases `p55r2_t` (API suites) and `p55b_110295` (browser); the rehearsal used its own throwaway cluster on
+`127.0.0.1:469xx`. Every `prisma migrate` printed its `127.0.0.1:46595/<db>` target; `PRODUCTION_DATABASE_URL_DIRECT`
+was unset, and the worktree `.env` DB URLs still point at `127.0.0.1:1`. Throwaway base64 `ENCRYPTION_KEY`/`HASH_KEY`
+were generated. Production, `pos_verify`, Docker containers and other sessions' databases were not touched. Ports:
+API 4595, new web 3595, old web 3596. **Storage:** Docker was not running, so instead of starting it (which would
+restart this repo's shared local Supabase stack) the browser runs used an in-memory Supabase-Storage **stand-in** on
+`127.0.0.1:54395` (upload / sign / signed GET, with a failure toggle). Real Supabase Storage was **not** used in
+P55R2. The proof pipeline is unchanged and was verified against real local Storage in §9/§12. The 042a700 API and web
+were built from a `git archive 042a700` export in the scratchpad (no worktree registered). The seed's committed demo
+accounts and random fixture PINs (scratch file only) were used. No accounts were provisioned elsewhere, and no
+queues were cleared.
+
+| Check | Result |
+| --- | --- |
+| Shared package | 6 files, **49 / 49** |
+| P55 integration (real Express + Postgres), P55R2-updated | **10 / 10** (new: mode refusals, old-web legacy case, VAT-capped full-subtotal discount, centavo rounding, replay under the other mode, offline old/new/mode-less queued sales and retried sync, report separation, refund basis). The suite now bypasses only the general `apiLimiter` (it exceeded 100 req/min from one IP; route-specific limiters stay real) |
+| API full suite, serial, real Postgres | **210 files passed / 1 skipped; 3,554 passed / 5 skipped / 0 failed** |
+| Web full suite | **170 files, 1,576 / 1,576** (before the sync-queue fix); affected suites after the last edits: terminal + lib + components/pos **503 / 503**, lib/offline **22 / 22** |
+| `turbo type-check lint --force` | **7 / 7 tasks, 0 errors**. API warnings 370 (= 358 + 12 `no-console` in the new rehearsal script, same convention) |
+| Builds | shared `tsc`, API `tsc`, web `next build` (final, after the sync fix): pass. 042a700 API/web builds: pass |
+| Populated rehearsal `scripts/test-p55r2-migration-on-populated-data.ts` (20,000 sales incl. Employee, PWD, promotional, P55 first-pass manual-with-VAT, voided, refunded) | **PASS**: 82 tables byte-identical; all rows `calculation_mode` NULL; CHECK validated and refusing unknown values; no drift; Daily Sales VAT = stored VAT (₱163,120.00), no "not calculated" sales; Discount Compliance equals stored group sums; all four export headers unchanged; a first-pass manual sale keeps its stored ₱10.71 VAT. Wall time 3.9 s. (Trailing `prisma:error … 10054` lines after PASS are the app client's connections closing when the cluster stopped) |
+| Browser A — final build | **7 / 7**: ₱500 no discount → ₱500, no VAT line, stored manual_total + snapshot v2; ₱500 − ₱50 → ₱450 with Subtotal / Employee discount / Amount to pay |
+| Browser A2 — final build | **18 / 18**: POS receipt "VAT not calculated"; ₱500.01 and "10%" refused; ₱750 − ₱0.29 = ₱749.71; VAT-capped size ₱500 − ₱450 = ₱50; upload failure → Retry Upload (amount kept, Charge blocked) → success → ₱480; camera capture → ₱475; PWD statutory line + ₱357.14 `legacy_vat_v1`; public receipts (manual: "VAT not calculated"; PWD: statutory breakdown); dropped response → Retry → one ₱470 sale; offline queue → sync as manual_total ₱500 |
+| Browser B (switching / break / pending) | **9 / 9**: Ana's proof never offered to Ben; Ben starts on "No discount"; his sales are his; held response + Next Customer + Start Break → Ben retries Pending → still one ₱485 sale, cashier and `entered_by` Ana |
+| Browser C (new web → real 042a700 API) | **8 / 8** on the final run (an earlier run had one C1 sub-check fail; the API log needed to diagnose it was overwritten, so the cause is unknown; split into three checks it passed): refusals for no-discount and manual, nothing written, no raw schema text, no Retry; PWD works; offline batch refused and held, then syncs once after the API is restored; reload message |
+| Browser D (042a700 web → P55R2 API) | **4 / 4**: legacy none/Employee/PWD figures, `legacy_vat_v1`; **observation: the old public receipt page errors for a manual-total sale** |
+| Browser S (settings) | 4 / 4: "Statutory discounts & VAT registration by branch" with the no-VAT explanation; the types card explains it; the statutory preview drops the automatic-VAT "No discount" row; VAT registration still shown. (A fifth check assumed a VAT column on the branch Sales page; that page has none, so the check was dropped) |
+| Browser DB after all runs | 49 sales: 41 `manual_total_v1` (all VAT/exempt placeholders 0, all subtotal − discount = total, all snapshot v2), 6 `legacy_vat_v1`, 2 NULL (PWD via the old API); 0 duplicate idempotency keys; 0 proofs consumed by another cashier; 0 statutory sales charged as manual totals |
+
+Harness-only issues fixed in the scratch scripts, not the app: `isVisible` doesn't wait; the success wait matched the
+"Saving" dialog; the port-kill pattern missed `:::4595`, so one "old API" run actually hit the new API (it recorded a
+correct manual-total sale); the API was restarted to reset the select-employee and general limiters. Not verified:
+real iOS/Android devices and installed-PWA update behavior, real Supabase Storage in P55R2, production data shapes,
+and the old web's Reports/transaction views of manual-total sales (code-reading only).
+
+### 13.9 Accounting and legal decisions still unresolved (owner + accountant)
+
+1. **Tax treatment of manual-total sales.** Whether, how and by whom VAT (or other tax) is computed and reported for
+   sales the POS records as "VAT not calculated". P55R2 records the stored amounts and the mode only. It does not
+   establish VAT liability, exemption or zero rating.
+2. **Receipt/invoice requirements.** Whether manual-total sales need a BIR-compliant invoice or receipt from another
+   system. The POS receipt is not labeled as one (carries over P50 D6).
+3. **VAT registration** (P50 D1) and the VAT-cap basis (D3): kept as configuration and still used by legacy and
+   statutory sales.
+4. **PWD/Senior in the manual-total checkout**, as a peso amount or otherwise: still on the statutory VAT-exempt
+   formula. The combination is blocked (§5 decision 1 carried).
+5. **Reporting:** whether the accountant needs a per-type breakdown or a gross-up of manual-total sales. Reports only
+   separate them. They never infer a VAT figure.
+6. **Mixed-version window:** whether the D4 public-receipt failure on old builds is acceptable for the planned
+   rollout, or the rollout must guarantee no manual-total sale before web promotion (§13.7 step 2).
+
+### 13.10 State
+
+| | |
+| --- | --- |
+| Starting SHA | `6012fcb575739b7fce1de4ac4778dc3e712f8a5d` (on `ab35dd1` → `042a700`), clean tree, branch `feat/pos-perf-p55-manual-discounts` |
+| Final SHA | the local P55R2 commit on top of `6012fcb` (reported in the handoff) |
+| Git status after commit | clean; branch 3 commits ahead of `origin/main`. Not pushed, not merged, not deployed, no production access |

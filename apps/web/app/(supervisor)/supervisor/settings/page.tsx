@@ -18,7 +18,7 @@ export default function SupervisorSettingsPage() {
     <div className="app-section app-section-gap">
       <div>
         <h1 className="text-xl font-semibold">Settings</h1>
-        <p className="text-muted-foreground text-sm">VAT, discounts and work hours for the branches you manage.</p>
+        <p className="text-muted-foreground text-sm">Discounts, VAT registration and work hours for the branches you manage.</p>
       </div>
 
       <TaxSettingsSection />

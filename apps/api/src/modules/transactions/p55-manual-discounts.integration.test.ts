@@ -32,6 +32,13 @@ const isLocalDatabase = /(^|@)(127\.0\.0\.1|localhost)(:|\/)/.test(databaseUrl);
 
 const storedObjects = new Map<string, number>();
 vi.mock('../../lib/notify.js', () => ({ notifyBranch: vi.fn(), notifySuperAdmin: vi.fn(), notifyUser: vi.fn() }));
+// P55R2 — this suite now makes more than the general limiter's 100 requests a
+// minute from one IP (it runs before authentication); only that limiter is
+// bypassed here. Route-specific limiters (login, PIN, receipts) stay real.
+vi.mock('../../middleware/rate-limiter.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../middleware/rate-limiter.js')>()),
+  apiLimiter: (_req: unknown, _res: unknown, next: () => void) => next(),
+}));
 vi.mock('../../lib/supabase.js', () => ({
   supabaseAdmin: {
     storage: {
@@ -86,6 +93,8 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
   }
 
   const item = (quantity = 2) => ({ product_id: ids.product, product_variant_id: ids.variant, quantity, promotion: null });
+  // P55R2 — what the new checkout sends for every sale except the statutory discount.
+  const MANUAL_TOTAL_BASIS = { calculation_mode: 'manual_total_v1', vat_rate: null, discount_rate: null };
 
   function manualSale(
     token: string,
@@ -105,7 +114,7 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
       cash_tendered: opts.cash ?? 1000,
       is_offline_transaction: false,
       idempotency_key: opts.key ?? randomUUID(),
-      tax_basis: { vat_rate: 12, discount_rate: null },
+      tax_basis: MANUAL_TOTAL_BASIS,
       discount_flow: 'manual_v1',
       ...(opts.choice === null ? {} : { discount_choice: opts.choice ?? (opts.manual ? 'selected' : 'none_applicable') }),
       // The rollback fence: a manual discount always travels with discount_type 'manual'.
@@ -281,18 +290,19 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
     expect((adminList.body.data as unknown as { can_edit: boolean }[]).every((t) => !t.can_edit)).toBe(true);
   });
 
-  it('checkout: no discount, manual ₱50 off ₱500, VAT on the remainder, statutory PWD unchanged, combinations refused', async () => {
+  it('checkout: no discount, manual ₱50 off ₱500 with no VAT calculated, statutory PWD unchanged, combinations refused', async () => {
     const type = await prisma.manualDiscountType.findFirstOrThrow({ where: { branchId: ids.branchA, name: 'Employee', isActive: true } });
 
     const none = await manualSale(tokens.ana);
     expect(none.status).toBe(201);
-    expect(none.body.data).toMatchObject({ subtotal: 500, discount_amount: 0, discount_type: null, total_amount: 500, vat_amount: 53.57, manual_discount: null });
+    // P55R2 — no discount: amount to pay = subtotal; VAT not calculated (null, not ₱53.57 and not ₱0).
+    expect(none.body.data).toMatchObject({ subtotal: 500, discount_amount: 0, discount_type: null, total_amount: 500, calculation_mode: 'manual_total_v1', vat_amount: null, vat_exempt_amount: null, manual_discount: null });
 
     const stockBefore = await availableStock();
     const manual = await manualSale(tokens.ana, { manual: { discount_type_id: type.id, type_version: type.version, amount: 50, expected_total_amount: 450 } });
     expect(manual.status).toBe(201);
-    // ₱500 − ₱50 = ₱450; VAT is the 12/112 share of ₱450 (commercial discount — not VAT-exempt).
-    expect(manual.body.data).toMatchObject({ subtotal: 500, discount_amount: 50, discount_type: 'manual', total_amount: 450, vat_amount: 48.21, change_given: 550 });
+    // P55R2 — ₱500 − ₱50 = ₱450; no VAT extracted, added or deducted.
+    expect(manual.body.data).toMatchObject({ subtotal: 500, discount_amount: 50, discount_type: 'manual', total_amount: 450, calculation_mode: 'manual_total_v1', vat_amount: null, vat_exempt_amount: null, change_given: 550 });
     expect(manual.body.data?.manual_discount).toEqual({ discount_type_id: type.id, name: 'Employee', amount: 50, require_proof: false });
     // Recipe × quantity reserved (2 × 100 g), same as any sale.
     expect(stockBefore - (await availableStock())).toBe(200);
@@ -300,13 +310,23 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
     expect(row.manualDiscountTypeId).toBe(type.id);
     expect(row.discountRateUsed).toBeNull();
     expect(row.cashierId).toBe(ids.ana);
-    expect(row.manualDiscountSnapshot).toMatchObject({ source: 'manual', name: 'Employee', amount: 50, eligible_subtotal: 500, type_version: type.version, entered_by_id: ids.ana });
-    expect(row.taxSnapshot).toMatchObject({ treatment: 'vatable', discount_basis: 'vat_inclusive', discount_source: 'manual', discount_flow: 'manual_v1', manual_discount_type_id: type.id, vat_rate_percent: 12 });
+    expect(row.manualDiscountSnapshot).toMatchObject({ version: 2, source: 'manual', calculation_mode: 'manual_total_v1', name: 'Employee', amount: 50, eligible_subtotal: 500, type_version: type.version, entered_by_id: ids.ana });
+    // Stored distinctly from a zero-VAT/exempt result: the mode column and a snapshot with no rate and no treatment.
+    expect(row.calculationMode).toBe('manual_total_v1');
+    expect([row.vatAmount.toNumber(), row.vatExemptAmount.toNumber()]).toEqual([0, 0]);
+    expect(row.taxSnapshot).toEqual({
+      version: 2, calculation_mode: 'manual_total_v1', vat_calculated: false, vat_registration: expect.any(String), discount_flow: 'manual_v1',
+      discount_source: 'manual', manual_discount_type_id: type.id, require_discount_choice: false, discount_choice: 'selected',
+    });
+    expect(row.taxSnapshot).not.toHaveProperty('vat_rate_percent');
+    expect(row.taxSnapshot).not.toHaveProperty('treatment');
+    expect((await prisma.transaction.findUniqueOrThrow({ where: { id: none.body.data?.id as string } })).calculationMode).toBe('manual_total_v1');
 
     // The statutory PWD formula is untouched in the new flow (₱500 → ÷1.12 → −20% → ₱357.14, VAT ₱0).
     const pwd = await manualSale(tokens.ana, { choice: 'selected', extra: { discount_type: 'pwd', discount_id_reference: `PWD-${tag}`, tax_basis: { vat_rate: 12, discount_rate: 20 } } });
     expect(pwd.status).toBe(201);
-    expect(pwd.body.data).toMatchObject({ discount_type: 'pwd', vat_amount: 0, total_amount: 357.14, manual_discount: null });
+    expect(pwd.body.data).toMatchObject({ discount_type: 'pwd', calculation_mode: 'legacy_vat_v1', vat_amount: 0, total_amount: 357.14, manual_discount: null });
+    expect((await prisma.transaction.findUniqueOrThrow({ where: { id: pwd.body.data?.id as string } })).taxSnapshot).toMatchObject({ version: 1, calculation_mode: 'legacy_vat_v1', treatment: 'vat_exempt' });
 
     const before = await saleCount();
     const refusals: [Record<string, unknown>, number, string][] = [
@@ -325,7 +345,39 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
     expect((await manualSale(tokens.ana, { choice: 'none_applicable', manual: { discount_type_id: type.id, type_version: type.version, amount: 10 } })).body.error?.code).toBe('DISCOUNT_CHOICE_CONFLICT');
     // 'manual' can never be sent as a discount_type.
     expect((await manualSale(tokens.ana, { choice: 'selected', extra: { discount_type: 'manual', discount_amount: 400 } })).body.error?.code).toBe('VALIDATION_ERROR');
+
+    // P55R2 — the calculation is explicit and cannot be forged or mixed.
+    const modeRefusals: [Record<string, unknown>, string][] = [
+      // The new flow without the mode (e.g. the unreleased first-pass build): never silently VAT-calculated.
+      [{ tax_basis: { vat_rate: 12, discount_rate: null } }, 'CALCULATION_MODE_REQUIRED'],
+      [{ tax_basis: undefined }, 'CALCULATION_MODE_REQUIRED'],
+      // Statutory PWD/Senior cannot be charged as a manual total, nor without a basis.
+      [{ discount_type: 'pwd', discount_id_reference: 'PWD-X', discount_choice: 'selected' }, 'STATUTORY_DISCOUNT_REQUIRES_TAX_CALCULATION'],
+      [{ discount_type: 'senior_citizen', discount_id_reference: 'SC-X', discount_choice: 'selected', tax_basis: undefined }, 'CALCULATION_MODE_REQUIRED'],
+      // Unknown or inconsistent modes are refused by validation.
+      [{ tax_basis: { calculation_mode: 'no_vat', vat_rate: null, discount_rate: null } }, 'VALIDATION_ERROR'],
+      [{ tax_basis: { calculation_mode: 'manual_total_v1', vat_rate: 12, discount_rate: null } }, 'VALIDATION_ERROR'],
+      [{ tax_basis: { vat_rate: null, discount_rate: null } }, 'VALIDATION_ERROR'],
+      // A top-level mode field is not part of the contract (stripped), so the numeric basis still needs the mode.
+      [{ calculation_mode: 'manual_total_v1', tax_basis: { vat_rate: 12, discount_rate: null } }, 'CALCULATION_MODE_REQUIRED'],
+    ];
+    for (const [extra, code] of modeRefusals) {
+      expect((await manualSale(tokens.ben, { extra })).body.error?.code, JSON.stringify(extra)).toBe(code);
+    }
+    // A legacy client cannot claim the manual total (it would skip the new flow's rules).
+    const legacyClaim = await call('POST', '/api/transactions', tokens.ben, {
+      branch_id: ids.branchA, items: [item()], payment_method: 'cash', cash_tendered: 1000, is_offline_transaction: false, tax_basis: MANUAL_TOTAL_BASIS,
+    });
+    expect(legacyClaim.body.error?.code).toBe('CALCULATION_MODE_NOT_SUPPORTED');
     expect(await saleCount()).toBe(before);
+
+    // Old web -> new API: no flow, numeric basis -> the documented legacy VAT calculation, recorded as such.
+    const oldWeb = await call('POST', '/api/transactions', tokens.ben, {
+      branch_id: ids.branchA, items: [item()], payment_method: 'cash', cash_tendered: 1000, is_offline_transaction: false, tax_basis: { vat_rate: 12, discount_rate: null },
+    });
+    expect(oldWeb.status).toBe(201);
+    expect(oldWeb.body.data).toMatchObject({ total_amount: 500, vat_amount: 53.57, vat_exempt_amount: 0, calculation_mode: 'legacy_vat_v1' });
+    expect((await prisma.transaction.findUniqueOrThrow({ where: { id: oldWeb.body.data?.id as string } })).calculationMode).toBe('legacy_vat_v1');
   });
 
   it('amounts: invalid, over-subtotal and changed totals are refused with nothing written; the full subtotal is allowed', async () => {
@@ -354,7 +406,25 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
     // Exactly the subtotal → ₱0 to pay.
     const full = await manualSale(tokens.ana, { manual: md(500), cash: 0 });
     expect(full.status).toBe(201);
-    expect(full.body.data).toMatchObject({ total_amount: 0, vat_amount: 0, discount_amount: 500 });
+    expect(full.body.data).toMatchObject({ total_amount: 0, vat_amount: null, discount_amount: 500 });
+
+    // P55R2 — no VATable cap: on a size whose VAT cap leaves ₱100 non-VATable, the whole subtotal can still be discounted.
+    await prisma.productVariant.update({ where: { id: ids.variant }, data: { vatableCapAmount: 200 } });
+    try {
+      const capped = await manualSale(tokens.ben, { manual: md(450) });
+      expect(capped.status).toBe(201);
+      expect(capped.body.data).toMatchObject({ subtotal: 500, discount_amount: 450, total_amount: 50, vat_amount: null, vat_exempt_amount: null });
+      expect((await manualSale(tokens.ben, { manual: md(500.01) })).body.error?.code).toBe('MANUAL_DISCOUNT_EXCEEDS_SUBTOTAL');
+      // The legacy calculation of the same cart is unchanged (₱400 VATable, ₱100 non-VATable).
+      const legacy = await call('POST', '/api/transactions', tokens.ben, {
+        branch_id: ids.branchA, items: [item()], payment_method: 'cash', cash_tendered: 1000, is_offline_transaction: false, tax_basis: { vat_rate: 12, discount_rate: null },
+      });
+      expect(legacy.body.data).toMatchObject({ total_amount: 500, vat_amount: 42.86, vat_exempt_amount: 100, calculation_mode: 'legacy_vat_v1' });
+    } finally {
+      await prisma.productVariant.update({ where: { id: ids.variant }, data: { vatableCapAmount: null } });
+    }
+    // Centavo rounding: ₱500 − ₱0.29 = ₱499.71 exactly.
+    expect((await manualSale(tokens.ben, { manual: md(0.29) })).body.data).toMatchObject({ discount_amount: 0.29, total_amount: 499.71 });
   });
 
   it('proof: required, bound to cashier/branch/shift, consumed once, kept after a failed sale; legacy keys must be own-branch', async () => {
@@ -456,6 +526,14 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
     expect(retry.body.data).toMatchObject({ discount_amount: 75, total_amount: 425 });
     expect((await manualSale(tokens.ana, { key, manual: md(80) })).body.error?.code).toBe('IDEMPOTENCY_KEY_REUSE');
     expect((await manualSale(tokens.ana, { key })).body.error?.code).toBe('IDEMPOTENCY_KEY_REUSE');
+    // P55R2 — nor under the other calculation: a no-discount manual total replayed by a VAT-calculating client is refused.
+    const totalKey = randomUUID();
+    expect((await manualSale(tokens.ben, { key: totalKey })).status).toBe(201);
+    const asLegacy = await call('POST', '/api/transactions', tokens.ben, {
+      branch_id: ids.branchA, items: [item()], payment_method: 'cash', cash_tendered: 1000, is_offline_transaction: false, idempotency_key: totalKey, tax_basis: { vat_rate: 12, discount_rate: null },
+    });
+    expect(asLegacy.body.error?.code).toBe('IDEMPOTENCY_KEY_REUSE');
+    expect(await prisma.transaction.count({ where: { idempotencyKey: totalKey } })).toBe(1);
     const resolved = await call('GET', `/api/transactions/by-idempotency-key/${key}?branch_id=${ids.branchA}`, tokens.branch);
     expect(resolved.status).toBe(200);
     expect(JSON.stringify(resolved.body.data)).toContain(first.body.data?.id as string);
@@ -478,13 +556,13 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
       is_offline_transaction: false, tax_basis: { vat_rate: 12, discount_rate: null },
     });
     expect(legacy.status).toBe(201);
-    expect(legacy.body.data).toMatchObject({ discount_type: 'promotional', discount_amount: 10, total_amount: 90 });
+    expect(legacy.body.data).toMatchObject({ discount_type: 'promotional', discount_amount: 10, total_amount: 90, vat_amount: 9.64, calculation_mode: 'legacy_vat_v1' });
 
     // New flow: a line claiming the promotion is refused; without it nothing is deducted automatically.
     const claimed = await manualSale(tokens.ana, { items: [{ ...promoItem, promotion: { promotion_id: promotion.id, unit_discount: 10 } }] });
     expect(claimed.body.error?.code).toBe('PROMOTION_NOT_APPLIED_IN_MANUAL_FLOW');
     const plain = await manualSale(tokens.ana, { items: [{ ...promoItem, promotion: null }] });
-    expect(plain.body.data).toMatchObject({ discount_type: null, discount_amount: 0, total_amount: 100 });
+    expect(plain.body.data).toMatchObject({ discount_type: null, discount_amount: 0, total_amount: 100, vat_amount: null });
     const type = await prisma.manualDiscountType.findFirstOrThrow({ where: { branchId: ids.branchA, name: 'Employee', isActive: true } });
     const withManual = await manualSale(tokens.ana, { items: [{ ...promoItem, promotion: null }], manual: { discount_type_id: type.id, type_version: type.version, amount: 5 } });
     expect(withManual.body.data).toMatchObject({ discount_type: 'manual', discount_amount: 5, total_amount: 95 });
@@ -515,7 +593,7 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
     expect((history.body.data?.manual_discount as { name: string }).name).toBe('Barkada');
     const receipt = await fetch(`${baseUrl}/api/receipts/${sold.body.data?.receipt_number as string}`);
     const receiptBody = (await receipt.json()) as ApiBody;
-    expect(receiptBody.data).toMatchObject({ discount_type: 'manual', manual_discount_name: 'Barkada', discount_amount: 30 });
+    expect(receiptBody.data).toMatchObject({ discount_type: 'manual', manual_discount_name: 'Barkada', discount_amount: 30, calculation_mode: 'manual_total_v1', vat_amount: null, vat_exempt_amount: null });
 
     await call('POST', `/api/discounts/manual-types/${type.id}/deactivate`, tokens.supA, { expected_version: 2 });
     const gone = await manualSale(tokens.ana, { manual: { discount_type_id: type.id, type_version: 3, amount: 30 } });
@@ -530,20 +608,36 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
 
   it('offline: a queued manual discount is refused visibly while other queued sales sync', async () => {
     const type = await prisma.manualDiscountType.findFirstOrThrow({ where: { branchId: ids.branchA, name: 'Employee', isActive: true } });
-    const base = { items: [item(1)], payment_method: 'cash', cash_tendered: 1000, client_created_at: Date.now() - 60_000, tax_basis: { vat_rate: 12, discount_rate: null } };
+    const base = { items: [item(1)], payment_method: 'cash', cash_tendered: 1000, client_created_at: Date.now() - 60_000, tax_basis: MANUAL_TOTAL_BASIS };
+    const legacyBasis = { vat_rate: 12, discount_rate: null };
     const res = await call('POST', '/api/transactions/sync-offline', tokens.ana, {
       branch_id: ids.branchA,
       transactions: [
         { ...base, offline_provisional_number: `PC-P55-${tag}-OFFLINE-0001`, discount_flow: 'manual_v1', manual_discount: { discount_type_id: type.id, type_version: type.version, amount: 10 } },
         { ...base, offline_provisional_number: `PC-P55-${tag}-OFFLINE-0002`, discount_flow: 'manual_v1', discount_choice: 'none_applicable' },
+        // P55R2 — an old queued sale keeps its original VAT calculation.
+        { ...base, offline_provisional_number: `PC-P55-${tag}-OFFLINE-0003`, tax_basis: legacyBasis },
+        // P55R2 — a new-flow sale queued without the mode is never converted to the VAT calculation: refused visibly.
+        { ...base, offline_provisional_number: `PC-P55-${tag}-OFFLINE-0004`, discount_flow: 'manual_v1', discount_choice: 'none_applicable', tax_basis: legacyBasis },
       ],
     });
     expect(res.status).toBe(200);
     const results = res.body.data?.results as { offline_provisional_number: string; status: string; error?: { code: string; message?: string } }[];
     expect(results[0]).toMatchObject({ status: 'failed', error: { code: 'MANUAL_DISCOUNT_OFFLINE_UNSUPPORTED' } });
     expect(results[0]?.error?.message).toContain('not recorded');
-    expect(results[1]).toMatchObject({ status: 'synced' });
-    expect(await prisma.transaction.count({ where: { offlineProvisionalNumber: `PC-P55-${tag}-OFFLINE-0001` } })).toBe(0);
+    expect(results[1]).toMatchObject({ status: 'synced', transaction: { total_amount: 250, calculation_mode: 'manual_total_v1', vat_amount: null } });
+    expect(results[2]).toMatchObject({ status: 'synced', transaction: { total_amount: 250, calculation_mode: 'legacy_vat_v1', vat_amount: 26.79 } });
+    expect(results[3]).toMatchObject({ status: 'failed', error: { code: 'CALCULATION_MODE_REQUIRED' } });
+    expect(results[3]?.error?.message).toContain('not recorded');
+    for (const n of ['0001', '0004']) expect(await prisma.transaction.count({ where: { offlineProvisionalNumber: `PC-P55-${tag}-OFFLINE-${n}` } })).toBe(0);
+    // A retried sync of the same queued sale (lost response) returns the same sale, never a duplicate.
+    const firstId = (results[1] as unknown as { transaction: { id: string } }).transaction.id;
+    const again = await call('POST', '/api/transactions/sync-offline', tokens.ana, {
+      branch_id: ids.branchA,
+      transactions: [{ ...base, offline_provisional_number: `PC-P55-${tag}-OFFLINE-0002`, discount_flow: 'manual_v1', discount_choice: 'none_applicable' }],
+    });
+    expect((again.body.data?.results as { status: string; transaction?: { id: string } }[])[0]?.transaction?.id).toBe(firstId);
+    expect(await prisma.transaction.count({ where: { offlineProvisionalNumber: `PC-P55-${tag}-OFFLINE-0002` } })).toBe(1);
   });
 
   it('reports and refunds: manual sales are their own group and stored totals reconcile', async () => {
@@ -552,7 +646,23 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
     const manualSales = await prisma.transaction.findMany({ where: { branchId: ids.branchA, discountType: 'manual', status: 'completed' } });
     expect(manualRow?.transaction_count).toBe(manualSales.length);
     expect(manualRow?.total_discount_amount).toBeCloseTo(manualSales.reduce((s, t) => s + t.discountAmount.toNumber(), 0), 2);
-    expect(manualRow?.total_vat_exempt_sales).toBe(0);
+    // P55R2 — VAT not calculated: no exempt/non-VATable figure (null), not ₱0.
+    expect(manualRow).toMatchObject({ calculation_mode: 'manual_total_v1', total_vat_exempt_sales: null, total_vat_exempt_amount: null });
+    expect(rows.find((r) => r.discount_type === 'pwd')).toMatchObject({ calculation_mode: 'legacy_vat_v1' });
+    // Daily Sales: VAT totals only VAT-calculated sales; manual-total sales are counted apart.
+    const completed = await prisma.transaction.findMany({ where: { branchId: ids.branchA, status: 'completed' } });
+    const daily = await reportsRepository.getDailySales({ branchId: ids.branchA, page: 1, limit: 25 });
+    const sum = (list: typeof completed, f: (t: (typeof completed)[number]) => number) => Math.round(list.reduce((a, t) => a + f(t), 0) * 100) / 100;
+    const notCalculated = completed.filter((t) => t.calculationMode === 'manual_total_v1');
+    const calculated = completed.filter((t) => t.calculationMode !== 'manual_total_v1');
+    expect(calculated.length).toBeGreaterThan(0);
+    expect(daily.reduce((a, r) => a + (r.tax_not_calculated_count ?? 0), 0)).toBe(notCalculated.length);
+    expect(Math.round(daily.reduce((a, r) => a + (r.tax_not_calculated_sales ?? 0), 0) * 100) / 100).toBe(sum(notCalculated, (t) => t.totalAmount.toNumber()));
+    expect(Math.round(daily.reduce((a, r) => a + r.vat_total, 0) * 100) / 100).toBe(sum(calculated, (t) => t.vatAmount.toNumber()));
+    const txRows = await reportsRepository.getDailySalesTransactions({ branchId: ids.branchA, page: 1, limit: 500 } as Parameters<typeof reportsRepository.getDailySalesTransactions>[0]);
+    expect(txRows.some((r) => r.vat_amount === null)).toBe(true);
+    expect(txRows.filter((r) => r.vat_amount === null).every((r) => r.tax_calculation === 'Not calculated (manual total)')).toBe(true);
+    expect(txRows.filter((r) => r.vat_amount !== null).every((r) => r.tax_calculation === null)).toBe(true);
     expect(rows.some((r) => r.discount_type === 'pwd')).toBe(true);
     expect(rows.some((r) => r.discount_type === 'promotional')).toBe(true);
     for (const t of manualSales) expect(t.subtotal.toNumber() - t.discountAmount.toNumber()).toBeCloseTo(t.totalAmount.toNumber(), 2);
@@ -565,5 +675,9 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
     expect(after.status).toBe('refunded');
     expect([after.discountAmount.toNumber(), after.totalAmount.toNumber(), after.manualDiscountTypeId]).toEqual([target.discountAmount.toNumber(), target.totalAmount.toNumber(), target.manualDiscountTypeId]);
     expect(after.manualDiscountSnapshot).toEqual(target.manualDiscountSnapshot);
+    // P55R2 — refunds keep the original calculation basis; nothing is recomputed.
+    expect([after.calculationMode, after.vatAmount.toNumber(), after.taxSnapshot]).toEqual([target.calculationMode, target.vatAmount.toNumber(), target.taxSnapshot]);
+    const refundedView = await call('GET', `/api/transactions/${target.id}`, tokens.supA);
+    expect(refundedView.body.data).toMatchObject({ status: 'refunded', calculation_mode: 'manual_total_v1', vat_amount: null });
   });
 });

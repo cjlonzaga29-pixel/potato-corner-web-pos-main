@@ -133,6 +133,10 @@ const DEFINITE_NO_COMMIT_CODES = new Set([
   'DISCOUNT_NOT_SUPPORTED_IN_MANUAL_FLOW',
   'DISCOUNT_NOT_COMBINABLE',
   'PROMOTION_NOT_APPLIED_IN_MANUAL_FLOW',
+  // POS-PERF-P55R2 — calculation-mode checks (assertCalculationMode), before any lookup.
+  'CALCULATION_MODE_REQUIRED',
+  'CALCULATION_MODE_NOT_SUPPORTED',
+  'STATUTORY_DISCOUNT_REQUIRES_TAX_CALCULATION',
   'DISCOUNT_PROOF_INVALID',
   'DISCOUNT_PROOF_ALREADY_USED',
   // Thrown inside the $transaction callback itself (stock reservation) —

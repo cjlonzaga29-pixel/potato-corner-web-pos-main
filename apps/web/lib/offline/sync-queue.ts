@@ -68,12 +68,16 @@ export async function enqueueOfflineTransaction(branchCode: string, payload: Cre
 // POS-PERF-P55 — MANUAL_DISCOUNT_OFFLINE_UNSUPPORTED: a queued sale that
 // claims a manual discount (this terminal never queues one) is never
 // accepted, so it waits visibly instead of being resent on every reconnect.
+// POS-PERF-P55R2 — CALCULATION_MODE_REQUIRED: a queued new-checkout sale
+// without its calculation mode (an unreleased build) is never recorded under
+// the VAT calculation instead, so it waits visibly for a supervisor too.
 const DEFINITIVE_QUEUE_REJECTION_CODES = new Set([
   'PRODUCT_OPTION_REQUIRED',
   'PRODUCT_OPTION_LIMIT_EXCEEDED',
   'PRODUCT_OPTION_NOT_AVAILABLE',
   'TAX_SETTINGS_CHANGED',
   'MANUAL_DISCOUNT_OFFLINE_UNSUPPORTED',
+  'CALCULATION_MODE_REQUIRED',
 ]);
 
 export function isDefinitiveQueueRejection(code: string | null | undefined): boolean {
@@ -194,6 +198,12 @@ async function runSync(options: SyncOfflineOptions): Promise<SyncOfflineOutcome>
             tax_basis: t.payload.tax_basis,
             // POS-PERF-P50R — recorded only; selected_discount is never queued (custom discounts are online-only).
             ...(t.payload.discount_choice ? { discount_choice: t.payload.discount_choice } : {}),
+            // POS-PERF-P55R2 — the queued sale's checkout version travels with
+            // its tax_basis, so a manual-total sale syncs as one (without it the
+            // server refuses it rather than applying the legacy rules). A queued
+            // manual discount is forwarded only so the server refuses it visibly.
+            ...(t.payload.discount_flow ? { discount_flow: t.payload.discount_flow } : {}),
+            ...(t.payload.manual_discount ? { manual_discount: t.payload.manual_discount } : {}),
             client_created_at: t.createdAt,
           })),
         }),

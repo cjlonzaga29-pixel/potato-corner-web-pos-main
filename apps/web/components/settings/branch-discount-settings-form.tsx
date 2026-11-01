@@ -249,11 +249,12 @@ export function BranchDiscountSettingsForm({ data, statutoryOnly = false }: { da
           price={112}
           rates={{ pwd: pwdValue, senior_citizen: data.effective.senior_citizen.percentage, employee: employeeValue }}
           employeeEnabled={statutoryOnly ? false : employeeEnabled}
+          statutoryOnly={statutoryOnly}
         />
       )}
       <p className="text-xs text-muted-foreground">
         {statutoryOnly
-          ? 'Other discounts are entered by the cashier as a peso amount, using the discount types above. Changes apply to new sales only; past sales keep the amounts they were rung with.'
+          ? 'Other discounts are entered by the cashier as a peso amount, using the discount types above. Those sales, and sales without a discount, are charged as subtotal − discount: the POS does not calculate VAT on them. The VAT registration above is kept as recorded. Changes apply to new sales only; past sales keep the amounts and VAT they were rung with.'
           : 'Custom discounts (name, amount, products, schedule) are set up on the Discounts & Promotions page. Changes apply to new sales only; past sales keep the amounts they were rung with.'}
       </p>
 

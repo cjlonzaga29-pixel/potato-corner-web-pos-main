@@ -32,7 +32,7 @@ export interface ManualDiscountFooterState {
   amount: string;
   onAmountChange: (value: string) => void;
   amountError: string | null;
-  /** Largest amount allowed (the order's VATable amount). */
+  /** Largest amount allowed: the order subtotal (P55R2 — no VAT is calculated, so there is no VATable cap). */
   maxAmount: number;
   proofRequired: boolean;
   proofAttached: boolean;
@@ -114,7 +114,7 @@ export function ManualDiscountFields({ state }: { state: ManualDiscountFooterSta
           )}
           {state.typesStatus === 'unsupported' && (
             <p className="text-xs text-muted-foreground" role="status">
-              Manual discounts aren&apos;t available on this server yet. Use &ldquo;No discount&rdquo; or a statutory discount.
+              Manual discounts aren&apos;t available on this server yet. Only the statutory PWD/Senior Citizen discount can be charged until the server is updated.
             </p>
           )}
           {state.typesStatus === 'error' && (

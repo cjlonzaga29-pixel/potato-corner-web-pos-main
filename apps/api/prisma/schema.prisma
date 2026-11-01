@@ -2156,6 +2156,14 @@ model Transaction {
   // NULL on every other sale, including all sales recorded before P55.
   manualDiscountTypeId        String?                  @map("manual_discount_type_id")
   manualDiscountSnapshot      Json?                    @map("manual_discount_snapshot")
+  // POS-PERF-P55R2 — how the amounts were calculated: 'legacy_vat_v1' (VAT
+  // extracted / PWD-Senior exemption, computeSaleTax) or 'manual_total_v1'
+  // (subtotal − peso discount, VAT NOT calculated: vatAmount/vatExemptAmount
+  // hold 0 as placeholders, never a VAT result). NULL on every sale recorded
+  // before P55R2 (all VAT-calculated) and on sales an older API writes.
+  // CHECK constraint transactions_calculation_mode_check (raw SQL, migration
+  // 20261101130000; the Prisma DSL has no CHECK). Written once at insert.
+  calculationMode             String?                  @map("calculation_mode")
 
   branch                 Branch                 @relation(fields: [branchId], references: [id], onDelete: Cascade)
   shift                  Shift?                 @relation(fields: [shiftId], references: [id])

@@ -148,6 +148,23 @@ export interface SaleTaxBreakdown {
 }
 
 /**
+ * POS-PERF-P55R3 (compatibility release) — the calculation modes a newer API
+ * reports on a sale, so this build can READ a sale recorded by the P55R2
+ * manual-total checkout. This build never writes one.
+ * - 'legacy_vat_v1': computeSaleTax above — VAT-inclusive prices, VAT
+ *   extracted (12/112), PWD/Senior statutory VAT exemption. Every sale this
+ *   build records, and every sale an older API returns (no mode).
+ * - 'manual_total_v1': amount to pay = order subtotal minus the cashier's
+ *   peso discount. VAT is NOT calculated: the API returns vat_amount and
+ *   vat_exempt_amount as null. This is not a VAT-exempt or zero-rated sale
+ *   and not ₱0 VAT; it does not establish what tax, if any, is owed.
+ */
+export const LEGACY_VAT_CALCULATION = 'legacy_vat_v1' as const;
+export const MANUAL_TOTAL_CALCULATION = 'manual_total_v1' as const;
+export const SALE_CALCULATION_MODES = [LEGACY_VAT_CALCULATION, MANUAL_TOTAL_CALCULATION] as const;
+export type SaleCalculationMode = (typeof SALE_CALCULATION_MODES)[number];
+
+/**
  * Display breakdown for a recorded sale, derived only from the amounts stored
  * on that sale — never from current settings — so a receipt or report reads
  * the same no matter what changes later.

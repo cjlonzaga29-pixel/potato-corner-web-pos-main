@@ -26,6 +26,10 @@ interface KpiCardProps {
   href?: string;
   /** Visible call to action under the value when `href` is set, and the link's accessible name suffix. */
   actionLabel?: string;
+  /** POS-PERF-P55R3 — shown instead of the number when there is no figure to show (e.g. "Not calculated"); prefix/suffix are dropped. */
+  valueText?: string;
+  /** POS-PERF-P55R3 — a short visible note under the value (e.g. what a figure leaves out). Unlike `tooltip`, always on screen. */
+  caption?: string;
 }
 
 const TREND_ICONS = { up: ArrowUp, down: ArrowDown, neutral: Minus } as const;
@@ -72,6 +76,8 @@ export function KpiCard({
   emphasize = false,
   href,
   actionLabel = 'View details',
+  valueText,
+  caption,
 }: KpiCardProps) {
   if (isLoading) {
     return (
@@ -122,15 +128,20 @@ export function KpiCard({
       </CardHeader>
       <CardContent className="app-card-padding pt-0">
         <div className={cn('app-kpi-value font-bold', emphasize && 'font-extrabold', TONE_TEXT[tone])}>
-          {prefix}
-          <span className="tabular-nums">
-            {Intl.NumberFormat('en-US', {
-              minimumFractionDigits: Number.isInteger(value) ? 0 : 2,
-              maximumFractionDigits: Number.isInteger(value) ? 0 : 2,
-            }).format(value)}
-          </span>
-          {suffix}
+          {valueText ?? (
+            <>
+              {prefix}
+              <span className="tabular-nums">
+                {Intl.NumberFormat('en-US', {
+                  minimumFractionDigits: Number.isInteger(value) ? 0 : 2,
+                  maximumFractionDigits: Number.isInteger(value) ? 0 : 2,
+                }).format(value)}
+              </span>
+              {suffix}
+            </>
+          )}
         </div>
+        {caption && <p className="mt-1 text-xs text-muted-foreground">{caption}</p>}
         {resolvedTrend && TrendIcon && (
           <div className="mt-1.5 flex items-center gap-1.5">
             <span className={cn('inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-xs font-medium', TREND_BADGE[resolvedTrend])}>

@@ -160,7 +160,13 @@ export function DailySalesDrilldown({ open, onOpenChange, branchId, branchName, 
       cell: ({ row }) => <Badge variant="outline">{humanizeSnake(row.original.payment_method)}</Badge>,
     },
     { id: 'subtotal', header: () => moneyHeader('Subtotal'), cell: ({ row }) => money(row.original.subtotal) },
-    { id: 'vat_amount', header: () => moneyHeader('VAT'), cell: ({ row }) => money(row.original.vat_amount) },
+    {
+      id: 'vat_amount',
+      header: () => moneyHeader('VAT'),
+      // POS-PERF-P55R2 — a manual-total sale has no VAT figure.
+      cell: ({ row }) =>
+        row.original.vat_amount === null ? <div className="whitespace-nowrap text-right text-muted-foreground">Not calculated</div> : money(row.original.vat_amount),
+    },
     {
       id: 'discount_amount',
       header: () => moneyHeader('Discount'),

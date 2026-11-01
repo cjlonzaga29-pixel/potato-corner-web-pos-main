@@ -38,7 +38,10 @@ const DISCOUNT_TYPE_LABEL: Record<string, string> = {
 function discountLabel(transaction: TransactionResponse): string {
   const type = transaction.discount_type;
   if (!type) return 'Discount';
-  const name = DISCOUNT_TYPE_LABEL[type] ?? type;
+  // POS-PERF-P55R3 (compatibility release) — a type this build does not know
+  // (a newer API's manual peso discount) is shown as a plain "Discount".
+  const name = DISCOUNT_TYPE_LABEL[type];
+  if (!name) return 'Discount';
   return transaction.discount_rate_used != null ? `${name} Discount (${transaction.discount_rate_used}%)` : `${name} Discount`;
 }
 

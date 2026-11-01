@@ -142,6 +142,17 @@ export function syncOfflineTransactions(options: SyncOfflineOptions): Promise<Sy
   return run;
 }
 
+/**
+ * POS-PERF-P55R3 (compatibility release) — fields a newer build (P55R2+) may
+ * have queued in this browser before a web rollback. They are forwarded
+ * verbatim so that sale syncs under its own checkout version and calculation
+ * mode (never re-priced under this build's rules); this build never queues them.
+ */
+interface NewerBuildQueuedFields {
+  discount_flow?: string;
+  manual_discount?: unknown;
+}
+
 async function runSync(options: SyncOfflineOptions): Promise<SyncOfflineOutcome> {
   const outcome: SyncOfflineOutcome = { attempted: 0, synced: [], rejected: [], failed: [] };
   if (typeof window === 'undefined') return outcome;
@@ -171,6 +182,7 @@ async function runSync(options: SyncOfflineOptions): Promise<SyncOfflineOutcome>
         body: JSON.stringify({
           branch_id: options.branchId,
           transactions: pending.map((t) => ({
+            ...newerBuildFields(t.payload),
             offline_provisional_number: t.id,
             shift_id: t.payload.shift_id,
             items: t.payload.items,
@@ -235,6 +247,14 @@ async function runSync(options: SyncOfflineOptions): Promise<SyncOfflineOutcome>
     await markAllFailed('SYNC_FAILED', error instanceof Error ? error.message : null);
   }
   return outcome;
+}
+
+function newerBuildFields(payload: OfflineTransaction['payload']): NewerBuildQueuedFields {
+  const queued = payload as OfflineTransaction['payload'] & NewerBuildQueuedFields;
+  return {
+    ...(queued.discount_flow ? { discount_flow: queued.discount_flow } : {}),
+    ...(queued.manual_discount ? { manual_discount: queued.manual_discount } : {}),
+  };
 }
 
 /** P46R3 — the Pending/Done tabs' view of this branch's queue: every unsynced row, plus rows synced in the last 12 hours, newest first. */

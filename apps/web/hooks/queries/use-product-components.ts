@@ -48,6 +48,8 @@ export function useCreateProductComponent(productVariantId: string) {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKey(productVariantId) });
+      // POS-PERF-P57 — a recipe change can create or clear a serving shortage.
+      void queryClient.invalidateQueries({ queryKey: ['branch-inventory-stock'] });
       toast.success('Recipe component added');
     },
     onError: (error: Error) => toast.error(error.message),
@@ -68,6 +70,8 @@ export function useUpdateProductComponent(productVariantId: string, componentId:
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKey(productVariantId) });
+      // POS-PERF-P57 — a recipe change can create or clear a serving shortage.
+      void queryClient.invalidateQueries({ queryKey: ['branch-inventory-stock'] });
       toast.success('Recipe component updated');
     },
     onError: (error: Error) => toast.error(error.message),
@@ -83,6 +87,8 @@ export function useDeleteProductComponent(productVariantId: string) {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKey(productVariantId) });
+      // POS-PERF-P57 — a recipe change can create or clear a serving shortage.
+      void queryClient.invalidateQueries({ queryKey: ['branch-inventory-stock'] });
       toast.success('Recipe component removed');
     },
     onError: (error: Error) => toast.error(error.message),

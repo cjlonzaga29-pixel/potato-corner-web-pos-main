@@ -11,7 +11,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { cn } from '@/lib/utils';
-import { stockBadgeStatus, stockNeeds, stockStateOf } from '@/lib/inventory-stock-status';
+import { affectedLabel, otherChoicesStillSell, recipeShortageLine, stockBadgeStatus, stockNeeds, stockStateOf } from '@/lib/inventory-stock-status';
 
 interface BranchOption {
   id: string;
@@ -38,7 +38,7 @@ function formatQuantity(value: number, unit: string): string {
 
 /**
  * POS-PERF-P48 — left/top pane of the transfer page: the destination's
- * out-of-stock, critical and low items, by the same rule as the Inventory
+ * out-of-stock, insufficient, critical and low items, by the same rule as the Inventory
  * page's "Needs attention" filter (judged on available stock).
  * Choosing a row only pre-fills the form; nothing is submitted from here.
  */
@@ -60,7 +60,7 @@ export function TransferStockNeedsPanel({
 
   let body: ReactNode;
   if (!destinationId) {
-    body = <p className="text-sm text-muted-foreground">Choose the branch that needs stock to see its out-of-stock, critical and low items.</p>;
+    body = <p className="text-sm text-muted-foreground">Choose the branch that needs stock to see the items it is short of.</p>;
   } else if (isError) {
     body = (
       <div role="alert" className="space-y-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm">
@@ -84,7 +84,7 @@ export function TransferStockNeedsPanel({
         compact
         icon={PackageCheck}
         title="No stock needs"
-        description={`Every tracked item at ${destinationName ?? 'this branch'} has stock available and is above its thresholds. An item without thresholds is listed only when it runs out.`}
+        description={`Every tracked item at ${destinationName ?? 'this branch'} has stock available, is above its thresholds and can cover a serving of what the POS offers. An item without thresholds and no recipe shortage is listed only when it runs out.`}
       />
     );
   } else {
@@ -122,6 +122,12 @@ export function TransferStockNeedsPanel({
                   )}
                   <span>Unit: {row.base_unit_code}</span>
                 </span>
+                {row.recipe_shortage && (
+                  <span className="text-xs text-muted-foreground" data-testid="need-shortage-detail">
+                    {recipeShortageLine(row.quantity_available, row.recipe_shortage)}. Affects {affectedLabel(row.recipe_shortage)}.
+                    {otherChoicesStillSell(row.recipe_shortage) && ' Other choices still sell.'}
+                  </span>
+                )}
               </button>
             </li>
           );
@@ -134,7 +140,7 @@ export function TransferStockNeedsPanel({
     <Card className="min-w-0">
       <CardHeader className="app-card-padding space-y-1 pb-3">
         <CardTitle className="text-base">1. Stock needs</CardTitle>
-        <CardDescription>Out-of-stock, critical and low items at the destination — the same list as Inventory › Needs attention.</CardDescription>
+        <CardDescription>Out-of-stock, insufficient, critical and low items at the destination — the same list as Inventory › Needs attention.</CardDescription>
       </CardHeader>
       <CardContent className="app-card-padding space-y-4 pt-0">
         <div className="space-y-2">

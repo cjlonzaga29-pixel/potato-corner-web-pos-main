@@ -336,6 +336,34 @@ export const inventoryStockMovementListResponseSchema = z.object({
   limit: z.number(),
 });
 
+/**
+ * POS-PERF-P57 — why a tracked item can't cover one serving of what the POS
+ * offers at this branch. Every quantity is for ONE serving of one size and one
+ * configuration, in the item's base unit; alternatives are never added up.
+ */
+export const recipeShortageAffectedSchema = z.object({
+  product_id: z.uuid(),
+  product_name: z.string(),
+  variant_id: z.uuid(),
+  variant_name: z.string(),
+  /** The flavor or add-on that needs the item; null when every configuration of the size does. */
+  choice_name: z.string().nullable(),
+  choice_kind: z.enum(['flavor', 'option']).nullable(),
+  required: z.number(),
+  deficit: z.number(),
+  /** True when nothing of this size can be sold; false when another flavor or no add-on still sells. */
+  blocks_size: z.boolean(),
+});
+
+export const recipeShortageSchema = z.object({
+  /** The largest single-serving need among the affected rows. */
+  required: z.number(),
+  /** required minus available: enough for one serving of every affected row. */
+  deficit: z.number(),
+  unit_code: z.string(),
+  affected: z.array(recipeShortageAffectedSchema),
+});
+
 export const branchInventoryStockRowSchema = z.object({
   inventory_item_id: z.uuid(),
   name: z.string(),
@@ -353,11 +381,23 @@ export const branchInventoryStockRowSchema = z.object({
   // Null means "cost not initialized" — never treat as 0.
   avg_unit_cost: z.number().nullable(),
   inventory_value: z.number().nullable(),
+  /** POS-PERF-P57 — absent from older APIs; null when the POS can make a serving of everything using this item. */
+  recipe_shortage: recipeShortageSchema.nullable().optional(),
+});
+
+/** POS-PERF-P57 — a size the POS blocks for a reason that is not a stock shortage. Shown apart: more stock would not fix it. */
+export const recipeSetupIssueSchema = z.object({
+  inventory_item_id: z.uuid(),
+  name: z.string(),
+  reason: z.enum(['not_assigned', 'untracked']),
+  product_name: z.string(),
+  variant_name: z.string(),
 });
 
 export const branchInventoryStockListResponseSchema = z.object({
   branch_id: z.uuid(),
   items: z.array(branchInventoryStockRowSchema),
+  setup_issues: z.array(recipeSetupIssueSchema).optional(),
 });
 
 export const inventoryStockAlertSchema = z.object({
@@ -368,11 +408,20 @@ export const inventoryStockAlertSchema = z.object({
   quantity_available: z.number(),
   threshold: z.number(),
   severity: z.enum(['low', 'critical']),
+  unit_code: z.string().optional(),
+  recipe_shortage: recipeShortageSchema.nullable().optional(),
 });
 
+/**
+ * POS-PERF-P57 — `alerts` keeps its P56 meaning, which older clients match
+ * against their inventory rows. `recipe_shortages` adds items those rows call
+ * healthy: positive stock, no threshold reached, too little for a serving.
+ */
 export const inventoryStockAlertListResponseSchema = z.object({
   branch_id: z.uuid(),
   alerts: z.array(inventoryStockAlertSchema),
+  recipe_shortages: z.array(inventoryStockAlertSchema.omit({ threshold: true, severity: true })).optional(),
+  setup_issues: z.array(recipeSetupIssueSchema).optional(),
 });
 
 export const inventoryStockTransferResponseSchema = z.object({

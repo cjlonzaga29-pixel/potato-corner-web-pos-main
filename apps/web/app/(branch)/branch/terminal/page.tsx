@@ -13,6 +13,8 @@ import {
   MANUAL_DISCOUNT_FLOW,
   computeSaleTax,
   computeManualTotal,
+  fixedDiscountEffectiveAmount,
+  manualDiscountEligibleSubtotal,
   discountRateFor,
   isVatExemptDiscountType,
   MANUAL_TOTAL_CALCULATION,
@@ -39,7 +41,7 @@ import { ProductCard } from '@/components/pos/product-card';
 import { ProductCardSkeleton } from '@/components/pos/product-card-skeleton';
 import { CartLineItem, type CartLine } from '@/components/pos/cart-line-item';
 import type { DiscountChoice } from '@/components/pos/payment-footer';
-import type { ManualDiscountFooterState, ManualDiscountMode, StatutoryDiscountChoice } from '@/components/pos/manual-discount-fields';
+import type { ManualDiscountFooterState, ManualDiscountMode } from '@/components/pos/manual-discount-fields';
 import { CheckoutWorkspace } from '@/components/pos/checkout-workspace';
 import { splitAddOnLines, isAddOnsGroup, chosenQuantity, type AddOnAssignments } from '@/lib/pos/split-add-ons';
 import { cartLineKey, type PosCartItem, type PosCartSelectedOption } from '@/stores/cart.store';
@@ -848,10 +850,15 @@ export default function TerminalPage() {
   // cashier last confirmed the amount against; a cart change after that
   // must be confirmed before Charge is enabled again.
   const [discountModeChoice, setDiscountMode] = useState<ManualDiscountMode>('unset');
-  const discountMode: ManualDiscountMode = discountModeChoice === 'unset' && !requireDiscountChoice ? 'none' : discountModeChoice;
+  // POS-PERF-P57 — with no types to choose from there is nothing to decide, so
+  // the branch's required-choice switch can't hold Charge back.
+  const hasDiscountTypes = (posManualTypesQuery.data?.length ?? 0) > 0;
+  const discountMode: ManualDiscountMode = discountModeChoice === 'unset' && (!requireDiscountChoice || !hasDiscountTypes) ? 'none' : discountModeChoice;
   const [manualTypeId, setManualTypeId] = useState<string | null>(null);
   const [manualAmount, setManualAmount] = useState('');
   const [manualConfirmedSubtotal, setManualConfirmedSubtotal] = useState<number | null>(null);
+  // POS-PERF-P57 — the type version the cashier last confirmed; a newer one on screen must be confirmed before Charge.
+  const [manualConfirmedVersion, setManualConfirmedVersion] = useState<number | null>(null);
   // The server-issued upload id of a required proof (never the storage key).
   const [manualProofUploadId, setManualProofUploadId] = useState<string | null>(null);
   const [manualProofPreviewUrl, setManualProofPreviewUrl] = useState<string | null>(null);
@@ -2050,10 +2057,28 @@ export default function TerminalPage() {
   const posManualTypes = useMemo(() => (isOnline ? (posManualTypesQuery.data ?? []) : []), [isOnline, posManualTypesQuery.data]);
   const manualType = useMemo(() => (manualTypeId ? (posManualTypes.find((t) => t.id === manualTypeId) ?? null) : null), [manualTypeId, posManualTypes]);
   // POS-PERF-P55R2 — a manual discount may be up to the whole subtotal (no VATable cap: VAT is not calculated).
-  const manualEligibleSubtotal = subtotal;
+  // POS-PERF-P57 — or up to the eligible products' lines. A fixed type's amount
+  // comes from its settings and stops at that subtotal. Both are shown here and
+  // recalculated by the server, which refuses a mismatch.
+  const manualEligibleSubtotal = useMemo(
+    () =>
+      manualType
+        ? manualDiscountEligibleSubtotal(
+            cartLines.map((line) => ({ productId: line.item.product_id, lineTotal: line.lineTotal })),
+            manualType.product_scope ?? 'all',
+            manualType.product_ids ?? [],
+          )
+        : subtotal,
+    [cartLines, manualType, subtotal],
+  );
+  const manualFixedAmount = manualType?.amount_mode === 'fixed' ? (manualType.fixed_amount ?? null) : null;
   const isManualSelected = discountMode === 'apply' && manualTypeId !== null;
   const manualParsed = parseManualAmount(manualAmount, manualEligibleSubtotal);
-  const manualAmountValue = isManualSelected && manualType ? manualParsed.value : null;
+  const manualAmountValue = !isManualSelected || !manualType || manualEligibleSubtotal <= 0
+    ? null
+    : manualFixedAmount !== null
+      ? fixedDiscountEffectiveAmount(manualFixedAmount, manualEligibleSubtotal)
+      : manualParsed.value;
   // POS-PERF-P55R2 — this checkout calculates subtotal − peso discount =
   // amount to pay, with no VAT extracted, added or deducted (vatAmount null:
   // not calculated). Only the statutory PWD/Senior discount keeps its VAT
@@ -2070,6 +2095,7 @@ export default function TerminalPage() {
     manualAmountValue !== null && manualConfirmedSubtotal !== null && Math.round(subtotal * 100) !== Math.round(manualConfirmedSubtotal * 100)
       ? { previousSubtotal: manualConfirmedSubtotal, subtotal, totalAmount }
       : null;
+  const manualChangedSettings = isManualSelected && manualType && manualConfirmedVersion !== null && manualType.version !== manualConfirmedVersion ? { totalAmount } : null;
   const tenderedNumber = Number(cashTendered);
   const change = paymentMethod === 'cash' && tenderedNumber >= totalAmount ? round2(tenderedNumber - totalAmount) : 0;
 
@@ -2090,11 +2116,13 @@ export default function TerminalPage() {
     if (discountMode === 'unset') return 'Choose “No discount” or “Apply discount”.';
     if (discountMode === 'apply' && manualTypeId === null && discountType === 'none') return 'Choose the discount type.';
     if (isManualSelected) {
-      if (!isOnline) return 'Manual discounts need a connection. Choose “No discount” or a statutory discount, or wait until you are back online.';
+      if (!isOnline) return 'Discounts need a connection. Choose “No discount”, or wait until you are back online.';
       if (!manualType) return 'The discount type you chose is no longer offered. Choose another discount, or “No discount”.';
-      if (manualParsed.error) return manualParsed.error;
+      if (manualEligibleSubtotal <= 0) return 'No item in this order is eligible for this discount. Choose another discount, or “No discount”.';
+      if (manualFixedAmount === null && manualParsed.error) return manualParsed.error;
       if (manualType.require_proof && !manualProofUploadId) return 'Take or upload the discount proof photo before charging.';
       if (manualChangedTotal) return 'The order changed — confirm the new total before charging.';
+      if (manualChangedSettings) return 'A supervisor changed this discount — confirm the new total before charging.';
     }
     if ((discountType === 'pwd' || discountType === 'senior_citizen') && discountIdReference.trim().length === 0) {
       return 'Enter the PWD/Senior Citizen ID number.';
@@ -2124,7 +2152,6 @@ export default function TerminalPage() {
   const canCharge = Boolean(branchId) && chargeDisabledReason === null;
 
   // POS-PERF-P55 — what the checkout shows for the discount decision.
-  const statutoryAvailable = (['pwd', 'senior_citizen'] as const).filter((type) => !disabledDiscountTypes.includes(type));
   const manualDiscountState: ManualDiscountFooterState = {
     mode: discountMode,
     onModeChange: (mode) => {
@@ -2134,12 +2161,13 @@ export default function TerminalPage() {
         setManualTypeId(null);
         setManualAmount('');
         setManualConfirmedSubtotal(null);
+        setManualConfirmedVersion(null);
         handleClearManualProof();
         setDiscountIdReference('');
         handleClearDiscountProof();
       }
     },
-    types: posManualTypes.map((type) => ({ id: type.id, name: type.name, requireProof: type.require_proof })),
+    types: posManualTypes.map((type) => ({ id: type.id, name: type.name, requireProof: type.require_proof, fixedAmount: type.amount_mode === 'fixed' ? (type.fixed_amount ?? null) : null })),
     typesStatus: !isOnline
       ? 'offline'
       : posManualTypesQuery.error instanceof ManualDiscountsUnsupportedError
@@ -2150,38 +2178,36 @@ export default function TerminalPage() {
             ? 'ready'
             : 'loading',
     onRetryTypes: () => void refetchPosManualTypes(),
-    selection: manualTypeId ? `manual:${manualTypeId}` : discountType === 'pwd' || discountType === 'senior_citizen' ? discountType : null,
-    onSelectionChange: (value) => {
-      if (value.startsWith('manual:')) {
-        setManualTypeId(value.slice('manual:'.length));
-        setDiscountType('none');
-        setDiscountIdReference('');
-        handleClearDiscountProof();
-        setManualConfirmedSubtotal(subtotal);
-      } else {
-        setDiscountType(value as StatutoryDiscountChoice);
-        setManualTypeId(null);
-        setManualAmount('');
-        setManualConfirmedSubtotal(null);
-        handleClearManualProof();
-      }
+    selection: manualTypeId,
+    onSelectionChange: (typeId) => {
+      setManualTypeId(typeId);
+      setManualAmount('');
+      setDiscountType('none');
+      setDiscountIdReference('');
+      handleClearDiscountProof();
+      setManualConfirmedSubtotal(subtotal);
+      setManualConfirmedVersion(posManualTypes.find((type) => type.id === typeId)?.version ?? null);
     },
-    statutoryLabels: { pwd: discountLabels.pwd, senior_citizen: discountLabels.senior_citizen },
-    statutoryAvailable,
     amount: manualAmount,
     onAmountChange: (value) => {
       setManualAmount(value);
       setManualConfirmedSubtotal(subtotal);
     },
-    amountError: manualAmount.trim() === '' ? null : manualParsed.error,
+    amountError: manualFixedAmount !== null || manualAmount.trim() === '' ? null : manualParsed.error,
     maxAmount: manualEligibleSubtotal,
+    fixedAmount: isManualSelected ? manualFixedAmount : null,
+    eligibleSubtotal: manualEligibleSubtotal,
     proofRequired: isManualSelected && manualType?.require_proof === true,
     proofAttached: manualProofUploadId !== null,
     proofPreviewUrl: manualProofPreviewUrl,
     onProofSelected: handleManualProofSelected,
     onClearProof: handleClearManualProof,
     changedTotal: manualChangedTotal,
-    onConfirmChangedTotal: () => setManualConfirmedSubtotal(subtotal),
+    changedSettings: manualChangedSettings,
+    onConfirmChangedTotal: () => {
+      setManualConfirmedSubtotal(subtotal);
+      setManualConfirmedVersion(manualType?.version ?? null);
+    },
     summary: {
       subtotal,
       label:
@@ -2283,6 +2309,7 @@ export default function TerminalPage() {
   function resetPaymentFields() {
     setDiscountType('none');
     setDiscountMode('unset');
+    setManualConfirmedVersion(null);
     setManualTypeId(null);
     setManualAmount('');
     setManualConfirmedSubtotal(null);
@@ -2361,6 +2388,8 @@ export default function TerminalPage() {
               discount_type_id: manualType.id,
               type_version: manualType.version,
               amount: manualAmountValue,
+              // Absent from an older API's list, so never sent to one.
+              ...(manualType.amount_mode ? { amount_mode: manualType.amount_mode } : {}),
               ...(manualProofUploadId ? { proof_upload_id: manualProofUploadId } : {}),
               expected_total_amount: totalAmount,
             },
@@ -2673,7 +2702,7 @@ export default function TerminalPage() {
       // so the cashier reviews the current state before charging again: the
       // branch's types (changed / no longer offered), the proof (re-take it),
       // or the prices (the total the server computes differs from the screen).
-      if (error instanceof TransactionApiError && (error.code === 'MANUAL_DISCOUNT_TYPE_CHANGED' || error.code === 'MANUAL_DISCOUNT_TYPE_UNAVAILABLE')) {
+      if (error instanceof TransactionApiError && (error.code === 'MANUAL_DISCOUNT_TYPE_CHANGED' || error.code === 'MANUAL_DISCOUNT_TYPE_UNAVAILABLE' || error.code === 'MANUAL_DISCOUNT_AMOUNT_MODE_CHANGED' || error.code === 'MANUAL_DISCOUNT_FIXED_AMOUNT_MISMATCH')) {
         void refetchPosManualTypes();
       }
       if (error instanceof TransactionApiError && (error.code === 'MANUAL_DISCOUNT_PROOF_INVALID' || error.code === 'MANUAL_DISCOUNT_PROOF_ALREADY_USED')) {

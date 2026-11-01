@@ -9,8 +9,7 @@ import sharp from 'sharp';
  * photos, through the real Express app against a real Postgres:
  *
  *   - supervisor branch isolation for type management (other branch, forged
- *     JWT branch claim, staff, super_admin), statutory names reserved,
- *     duplicate names, stale saves, audit before/after, deactivate (never
+ *     JWT branch claim, staff, super_admin), duplicate names, stale saves, audit before/after, deactivate (never
  *     delete) and the POS offer list;
  *   - no discount and a manual ₱ discount in the new flow, with the VAT path
  *     unchanged (commercial/taxable) and the statutory PWD formula unchanged;
@@ -217,7 +216,7 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
     return call('POST', '/api/discounts/manual-types', token, { branch_id: branchId, name, apply_to_pos: applyToPos, require_proof: requireProof });
   }
 
-  it('supervisor discount types: branch isolation, forged claims, reserved names, stale saves, audit, deactivate', async () => {
+  it('supervisor discount types: branch isolation, forged claims, unique names, stale saves, audit, deactivate', async () => {
     const created = await createType(tokens.supA, ids.branchA, 'Employee');
     expect(created.status).toBe(201);
     const typeId = created.body.data?.id as string;
@@ -234,12 +233,8 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
     expect((await call('POST', `/api/discounts/manual-types/${typeId}/deactivate`, tokens.supB, { expected_version: 1 })).status).toBe(403);
     expect((await call('GET', `/api/discounts/manual-types?branch_id=${ids.branchA}`, tokens.supB)).status).toBe(403);
 
-    // Statutory names are reserved; names are unique per branch (case-insensitive) but free across branches.
-    for (const name of ['PWD', 'Senior Citizen', 'pwd discount', 'OSCA ID']) {
-      const res = await createType(tokens.supA, ids.branchA, name);
-      expect(res.status).toBe(422);
-      expect(res.body.error?.code).toBe('STATUTORY_DISCOUNT_NAME_RESERVED');
-    }
+    // POS-PERF-P57 — statutory-looking names are ordinary manual types (see the P57 suite).
+    // Names are unique per branch (case-insensitive) but free across branches.
     expect((await createType(tokens.supA, ids.branchA, 'employee')).body.error?.code).toBe('MANUAL_DISCOUNT_TYPE_NAME_TAKEN');
     expect((await createType(tokens.supB, ids.branchB, 'Employee')).status).toBe(201);
     // Concurrent creates of one name (any case): the partial unique index lets exactly one through.

@@ -14,6 +14,8 @@ export interface ProductListFilters {
   branch_id?: string;
   /** POS-PERF-P39 — one of the branch tabs; requires branch_id. */
   view?: ProductBranchView;
+  /** POS-PERF-P57 — Regular / Promotional / Seasonal; counts and pages follow it too. */
+  classification?: ProductClassification;
 }
 
 export interface CreateProductData {

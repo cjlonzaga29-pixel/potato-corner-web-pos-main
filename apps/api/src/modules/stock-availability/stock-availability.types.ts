@@ -29,6 +29,39 @@ export interface StockShortage {
   trackInventory: boolean;
 }
 
+/** POS-PERF-P57 — one size/configuration a tracked item can't cover; quantities are for one serving, never summed across alternatives. */
+export interface RecipeShortageAffected {
+  productId: string;
+  productName: string;
+  variantId: string;
+  variantName: string;
+  choiceName: string | null;
+  choiceKind: 'flavor' | 'option' | null;
+  required: number;
+  deficit: number;
+  blocksSize: boolean;
+}
+
+export interface RecipeShortage {
+  required: number;
+  deficit: number;
+  unitCode: string;
+  affected: RecipeShortageAffected[];
+}
+
+export interface RecipeSetupIssue {
+  inventoryItemId: string;
+  name: string;
+  reason: 'not_assigned' | 'untracked';
+  productName: string;
+  variantName: string;
+}
+
+export interface BranchRecipeShortages {
+  byItem: Map<string, RecipeShortage>;
+  setupIssues: RecipeSetupIssue[];
+}
+
 /** POS-PERF-P24R — one catalog variant's flavors, so evaluateCatalogStock can check every sellable (flavor) configuration rather than just the base recipe. Empty when the variant has no flavors (base recipe is the only configuration). */
 export interface CatalogStockRequest {
   productVariantId: string;

@@ -15,7 +15,18 @@ import {
   useBranchInventoryStockAlerts,
   useInventoryStockRealtimeSync,
 } from '@/hooks/queries/use-universal-inventory';
-import { STOCK_STATUS_FILTERS, matchesStockStatusFilter, parseStockStatusFilter, stockBadgeStatus, stockStateOf } from '@/lib/inventory-stock-status';
+import {
+  STOCK_STATUS_FILTERS,
+  affectedLabel,
+  matchesStockStatusFilter,
+  otherChoicesStillSell,
+  parseStockStatusFilter,
+  recipeShortageLine,
+  stockAlertCounts,
+  stockAlertRows,
+  stockBadgeStatus,
+  stockStateOf,
+} from '@/lib/inventory-stock-status';
 import { transferPrepareHref } from '@/lib/transfer-links';
 
 /**
@@ -42,10 +53,11 @@ export function InventoryList({ basePath }: { basePath: string }) {
   const items = data?.branch_id === activeBranchId ? data.items : undefined;
   const filteredItems = (items ?? []).filter((row) => matchesStockStatusFilter(row, statusFilter));
   const isItemsLoading = isLoading || (data !== undefined && items === undefined);
-  const alerts = alertsData?.branch_id === activeBranchId ? alertsData.alerts : [];
+  const alertsForBranch = alertsData?.branch_id === activeBranchId ? alertsData : undefined;
+  const alerts = stockAlertRows(alertsForBranch);
   const alertCount = alerts.length;
-  const outCount = alerts.filter((a) => a.quantity_available <= 0).length;
-  const criticalCount = alerts.filter((a) => a.severity === 'critical' && a.quantity_available > 0).length;
+  const { out: outCount, insufficient: insufficientCount, critical: criticalCount } = stockAlertCounts(alerts);
+  const setupIssues = alertsForBranch?.setup_issues ?? [];
 
   const columns: ColumnDef<BranchInventoryStockRow>[] = [
     { accessorKey: 'name', header: 'Item' },
@@ -98,7 +110,24 @@ export function InventoryList({ basePath }: { basePath: string }) {
     {
       accessorKey: 'status',
       header: 'Status',
-      cell: ({ row }) => <StatusBadge status={stockBadgeStatus(stockStateOf(row.original))} type="inventory" />,
+      cell: ({ row }) => {
+        const shortage = row.original.recipe_shortage;
+        return (
+          <div className="min-w-[10rem] space-y-1">
+            <StatusBadge status={stockBadgeStatus(stockStateOf(row.original))} type="inventory" />
+            {shortage && (
+              <details className="text-xs text-muted-foreground" data-testid="inventory-shortage-detail">
+                <summary className="cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  {shortage.deficit} {shortage.unit_code} short
+                </summary>
+                <p className="mt-1">{recipeShortageLine(row.original.quantity_available, shortage)}.</p>
+                <p className="mt-1">Affects {affectedLabel(shortage)}.</p>
+                {otherChoicesStillSell(shortage) && <p className="mt-1">Other choices still sell.</p>}
+              </details>
+            )}
+          </div>
+        );
+      },
     },
     {
       id: 'actions',
@@ -186,6 +215,12 @@ export function InventoryList({ basePath }: { basePath: string }) {
                 — <Badge variant="critical">{outCount} out of stock</Badge>
               </>
             )}
+            {insufficientCount > 0 && (
+              <>
+                {' '}
+                — <Badge variant="critical">{insufficientCount} insufficient for a serving</Badge>
+              </>
+            )}
             {criticalCount > 0 && (
               <>
                 {' '}
@@ -194,6 +229,22 @@ export function InventoryList({ basePath }: { basePath: string }) {
             )}
           </span>
         </div>
+      )}
+
+      {/* POS-PERF-P57 — blocked at the POS, but not a stock shortage: receiving more of a tracked item would not explain these. */}
+      {setupIssues.length > 0 && (
+        <details className="rounded-md border px-4 py-3 text-sm" data-testid="inventory-setup-issues">
+          <summary className="cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            {setupIssues.length} size{setupIssues.length === 1 ? ' is' : 's are'} blocked by setup, not stock
+          </summary>
+          <ul className="mt-2 space-y-1 text-muted-foreground">
+            {setupIssues.map((issue) => (
+              <li key={`${issue.inventory_item_id}:${issue.product_name}:${issue.variant_name}`}>
+                {issue.product_name} {issue.variant_name}: {issue.name} {issue.reason === 'not_assigned' ? 'is not assigned to this branch' : 'is not tracked, but its recipe still needs stock here'}.
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
 
       <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Filter by stock status">

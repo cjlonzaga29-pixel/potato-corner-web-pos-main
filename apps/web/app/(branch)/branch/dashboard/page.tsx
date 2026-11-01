@@ -34,6 +34,7 @@ import { useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useTransactions, useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
 import { useDashboardSalesTrendReport, useInventoryAnalyticsRealtimeSync } from '@/hooks/queries/use-reports';
 import { useBranchInventoryStockAlerts, useInventoryStockRealtimeSync } from '@/hooks/queries/use-universal-inventory';
+import { stockAlertRows } from '@/lib/inventory-stock-status';
 import { useExpensesRealtimeSync } from '@/hooks/queries/use-expenses';
 import { MAX_LIST_LIMIT } from '@potato-corner/shared';
 
@@ -121,7 +122,8 @@ export default function BranchDashboardPage() {
   const todayStats = branchStats?.[0];
   const averageOrderValue =
     todayStats && todayStats.todayTransactionCount > 0 ? todayStats.todayGrossSales / todayStats.todayTransactionCount : 0;
-  const alertCount = alertsData?.alerts.length ?? 0;
+  // POS-PERF-P57 — the same unique items as Inventory › Needs attention, recipe shortages included.
+  const alertCount = stockAlertRows(alertsData).length;
 
   return (
     <div className="app-section app-section-gap">
@@ -164,10 +166,10 @@ export default function BranchDashboardPage() {
         <KpiCard title="Staff Clocked In" value={todayStats?.staffTimedInCount ?? 0} isLoading={isLoadingStats} icon={Users} />
         <KpiCard
           title="Items Needing Stock"
-          value={todayStats?.lowStockIngredientCount ?? 0}
+          value={alertsData ? alertCount : (todayStats?.lowStockIngredientCount ?? 0)}
           isLoading={isLoadingStats}
           icon={PackageSearch}
-          tone={(todayStats?.lowStockIngredientCount ?? 0) > 0 ? 'warning' : 'default'}
+          tone={(alertsData ? alertCount : (todayStats?.lowStockIngredientCount ?? 0)) > 0 ? 'warning' : 'default'}
         />
         <KpiCard
           title="Inventory Alerts"

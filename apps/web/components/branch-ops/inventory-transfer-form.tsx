@@ -23,7 +23,7 @@ import {
   useTransferInventoryStock,
   useUploadMovementProof,
 } from '@/hooks/queries/use-universal-inventory';
-import { shortfallToLowThreshold, stockNeeds } from '@/lib/inventory-stock-status';
+import { affectedLabel, shortfallToLowThreshold, stockNeeds, stockStateOf } from '@/lib/inventory-stock-status';
 import { readPrefillId } from '@/lib/transfer-links';
 import { InventoryProofPhotoPicker } from './inventory-proof-photo-picker';
 import { TransferStockNeedsPanel } from './transfer-stock-needs-panel';
@@ -295,7 +295,7 @@ function TransferFormContent({ basePath }: { basePath: string }) {
   }
 
   const sourceOptions = branches.filter((b) => b.id !== toBranchId);
-  const itemOptions = destRows ? [...stockNeeds(destRows), ...destRows.filter((r) => r.status === 'healthy').sort((a, b) => a.name.localeCompare(b.name))] : [];
+  const itemOptions = destRows ? [...stockNeeds(destRows), ...destRows.filter((r) => stockStateOf(r) === 'healthy').sort((a, b) => a.name.localeCompare(b.name))] : [];
   const shortfall = destRow ? shortfallToLowThreshold(destRow) : null;
   const isBusy = transfer.isPending || uploadProof.isPending;
   const noSecondBranch = !branchesQuery.isLoading && branches.length < 2;
@@ -412,6 +412,23 @@ function TransferFormContent({ basePath }: { basePath: string }) {
                         </span>
                       )}
                     </p>
+                    {destRow.recipe_shortage && (
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" data-testid="transfer-shortage-suggestion">
+                        <p className="text-muted-foreground">
+                          Suggestion: {destRow.recipe_shortage.deficit} {destRow.base_unit_code} — the least that lets {branchName(toBranchId)} make one serving of everything affected:{' '}
+                          {affectedLabel(destRow.recipe_shortage)}. It covers one serving only. Not applied until you choose it.
+                        </p>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="shrink-0"
+                          onClick={() => form.setValue('quantity', String(destRow.recipe_shortage?.deficit ?? ''), { shouldValidate: form.formState.isSubmitted })}
+                        >
+                          Use {destRow.recipe_shortage.deficit} {destRow.base_unit_code}
+                        </Button>
+                      </div>
+                    )}
                     {shortfall !== null && (
                       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                         <p className="text-muted-foreground">

@@ -21,10 +21,15 @@ vi.mock('@/hooks/queries/use-manual-discount-types', () => ({
   useCreateManualDiscountType: () => ({ mutate: mockCreate, isPending: false }),
   useUpdateManualDiscountType: () => ({ mutate: mockUpdate, isPending: false }),
   useDeactivateManualDiscountType: () => ({ mutate: mockDeactivate, isPending: false }),
+  useDiscountEligibleProducts: (branchIds: string[]) => ({
+    data: branchIds.length > 0 ? [{ id: 'p1', name: 'Fries' }, { id: 'p2', name: 'Fries Large' }, { id: 'p3', name: 'Water' }] : undefined,
+    isError: false,
+    refetch: vi.fn(),
+  }),
   ManualDiscountTypeSaveError: class extends Error {},
 }));
 vi.mock('@/hooks/use-selected-branch', () => ({
-  useSelectedBranch: () => ({ availableBranches: [{ id: 'branch-1', name: 'North' }] }),
+  useSelectedBranch: () => ({ availableBranches: [{ id: 'branch-1', name: 'North' }, { id: 'branch-2', name: 'South' }] }),
 }));
 vi.mock('@/hooks/use-auth', () => ({ useAuth: () => ({ user: { role: authState.role } }) }));
 
@@ -44,6 +49,11 @@ function type(overrides: Partial<ManualDiscountTypeResponse> = {}): ManualDiscou
     deactivated_at: null,
     sale_count: 2,
     can_edit: true,
+    amount_mode: 'manual',
+    fixed_amount: null,
+    product_scope: 'all',
+    product_ids: [],
+    branch_ids: ['branch-1'],
     ...overrides,
   };
 }
@@ -70,18 +80,66 @@ describe('ManualDiscountTypesSection', () => {
     expect(screen.queryByText(/%/)).not.toBeInTheDocument();
   });
 
-  it('creates a type with name and switches only; a statutory name is refused before saving', () => {
+  it('creates a staff-entered type by default; a statutory-looking name gets a notice, not a refusal', () => {
     render(<ManualDiscountTypesSection />);
     expect(screen.getByTestId('manual-types-empty')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /New discount type/ }));
     const name = screen.getByLabelText('Name');
     fireEvent.change(name, { target: { value: 'Senior Citizen' } });
-    expect(document.getElementById('manual-type-name-error')).toHaveTextContent(/set by law/);
-    expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();
+    expect(document.getElementById('manual-type-name-notice')).toHaveTextContent(/does not apply or verify/);
+    expect(screen.getByRole('button', { name: 'Create' })).toBeEnabled();
     fireEvent.change(name, { target: { value: 'Loyalty card' } });
+    expect(document.getElementById('manual-type-name-notice')).toBeNull();
     fireEvent.click(screen.getByRole('switch', { name: 'Require proof photo' }));
     fireEvent.click(screen.getByRole('button', { name: 'Create' }));
-    expect(mockCreate).toHaveBeenCalledWith({ branch_id: 'branch-1', name: 'Loyalty card', apply_to_pos: true, require_proof: true }, expect.anything());
+    expect(mockCreate).toHaveBeenCalledWith(
+      { branch_ids: ['branch-1'], name: 'Loyalty card', apply_to_pos: true, require_proof: true, amount_mode: 'manual', fixed_amount: null, product_scope: 'all', product_ids: [] },
+      expect.anything(),
+    );
+  });
+
+  it('a fixed amount is required, and saved as entered', () => {
+    render(<ManualDiscountTypesSection />);
+    fireEvent.click(screen.getByRole('button', { name: /New discount type/ }));
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Voucher' } });
+    fireEvent.click(screen.getByRole('radio', { name: 'Fixed peso amount' }));
+    expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Amount (₱)'), { target: { value: '10%' } });
+    expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Amount (₱)'), { target: { value: '25.50' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    expect(mockCreate.mock.calls[0]?.[0]).toMatchObject({ amount_mode: 'fixed', fixed_amount: 25.5 });
+  });
+
+  it('branches: select all, clear, count and partial state', () => {
+    render(<ManualDiscountTypesSection />);
+    fireEvent.click(screen.getByRole('button', { name: /New discount type/ }));
+    expect(screen.getByText('1 of 2 selected')).toBeInTheDocument();
+    const all = screen.getByRole('checkbox', { name: 'Select all 2 branches' });
+    expect(all).toHaveAttribute('aria-checked', 'mixed');
+    fireEvent.click(all);
+    expect(screen.getByText('2 of 2 selected')).toBeInTheDocument();
+    expect(all).toHaveAttribute('aria-checked', 'true');
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Everywhere' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selection' }));
+    expect(screen.getByText('0 of 2 selected')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();
+  });
+
+  it('products: Select all during a search covers those results only; earlier ticks stay', () => {
+    render(<ManualDiscountTypesSection />);
+    fireEvent.click(screen.getByRole('button', { name: /New discount type/ }));
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Limited' } });
+    fireEvent.click(screen.getByRole('radio', { name: 'Only the products I choose' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Water' }));
+    fireEvent.change(screen.getByPlaceholderText('Search products…'), { target: { value: 'fries' } });
+    expect(screen.getByText(/applies to these search results only/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all 2 products shown' }));
+    expect(screen.getByText('3 of 3 selected')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    const sent = mockCreate.mock.calls[0]?.[0] as { product_scope: string; product_ids: string[] };
+    expect(sent.product_scope).toBe('selected');
+    expect([...sent.product_ids].sort()).toEqual(['p1', 'p2', 'p3']);
   });
 
   it('turning a required proof off needs an explicit confirmation, and the save carries the loaded version', () => {
@@ -93,7 +151,10 @@ describe('ManualDiscountTypesSection', () => {
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
     fireEvent.click(screen.getByRole('checkbox', { name: 'Confirm proof photo is no longer required' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    expect(mockUpdate).toHaveBeenCalledWith({ id: '11111111-1111-4111-8111-111111111111', expected_version: 4, require_proof: false }, expect.anything());
+    expect(mockUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ id: '11111111-1111-4111-8111-111111111111', expected_version: 4, require_proof: false, branch_ids: ['branch-1'] }),
+      expect.anything(),
+    );
   });
 
   it('deactivates after a confirmation that says history is kept', () => {

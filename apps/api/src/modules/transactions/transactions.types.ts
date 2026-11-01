@@ -80,6 +80,8 @@ export interface ManualDiscountInput {
   discountTypeId: string;
   typeVersion: number;
   amount: number;
+  /** POS-PERF-P57 — undefined = an older POS, which only knows staff-entered amounts. */
+  amountMode?: 'manual' | 'fixed';
   proofUploadId?: string;
   expectedTotalAmount?: number;
 }

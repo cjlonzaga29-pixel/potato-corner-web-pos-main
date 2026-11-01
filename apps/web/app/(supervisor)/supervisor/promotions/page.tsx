@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import Link from 'next/link';
 import { Pencil, Plus, Power, TicketPercent } from 'lucide-react';
 import { toast } from 'sonner';
 import type { PromotionResponse } from '@potato-corner/shared';
@@ -77,14 +78,17 @@ export default function SupervisorPromotionsPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold">Discounts &amp; Promotions</h1>
+          <h1 className="text-2xl font-semibold">Legacy promotions</h1>
           <p className="text-sm text-muted-foreground">
-            Automatic promotions and cashier-selected discounts at your branches. Checkout always applies the current setting; past sales keep
-            the discount they were charged. PWD, Senior Citizen and Employee rates are in Settings.
+            Promotions for terminals still running an older POS version. Past sales keep the discount they were charged.
           </p>
           {/* POS-PERF-P55 — cutover notice: the current POS no longer applies these. */}
           <p className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200" data-testid="promotions-legacy-notice">
-            The current POS checkout no longer applies promotions. Cashiers apply discounts as a peso amount using the discount types in Settings.
+            The current POS checkout no longer applies promotions. Cashiers use the types under{' '}
+            <Link href="/supervisor/discounts" className="underline">
+              Discounts
+            </Link>
+            .
             Promotions here only affect terminals still running an older version; turn them off once every terminal is updated. Nothing here is
             deleted.
           </p>

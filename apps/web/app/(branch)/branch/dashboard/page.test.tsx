@@ -213,10 +213,10 @@ describe('BranchDashboardPage', () => {
     });
     render(<BranchDashboardPage />);
 
+    // POS-PERF-P57 — both from the alerts response, the same items as Inventory.
     expect(screen.getByText('Items Needing Stock')).toBeInTheDocument();
-    expect(screen.getByText('3')).toBeInTheDocument();
     expect(screen.getByText('Inventory Alerts')).toBeInTheDocument();
-    expect(screen.getByText('5')).toBeInTheDocument();
+    expect(screen.getAllByText('5')).toHaveLength(2);
   });
 
   it('renders the simplified quick actions including Stock Adjustment', () => {

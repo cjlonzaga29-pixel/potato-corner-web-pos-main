@@ -93,10 +93,10 @@ export function PayrollRunView({ branchId, runId, onOpenRun }: Props) {
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4">
-          <Alert>
-            <AlertTitle>Basic time-based pay — not statutory net pay</AlertTitle>
-            <AlertDescription>Not included: {detail.exclusions.join('; ')}.</AlertDescription>
-          </Alert>
+          <details className="rounded-md border p-3 text-sm" data-testid="payroll-exclusions">
+            <summary className="cursor-pointer rounded font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Basic time-based pay — not statutory net pay</summary>
+            <p className="mt-2 text-muted-foreground">Not included: {detail.exclusions.join('; ')}.</p>
+          </details>
 
           {detail.source_changes.length > 0 && (
             <Alert variant="destructive">

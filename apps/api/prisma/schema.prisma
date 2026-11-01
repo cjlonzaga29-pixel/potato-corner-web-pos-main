@@ -849,6 +849,7 @@ model Product {
   transactionItems   TransactionItem[]
   holdOrderItems     HoldOrderItem[]
   promotionProducts  PromotionProduct[]
+  manualDiscountTypeProducts ManualDiscountTypeProduct[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -2249,17 +2250,27 @@ model ManualDiscountType {
   updatedById     String?   @map("updated_by_id")
   deactivatedAt   DateTime? @map("deactivated_at")
   deactivatedById String?   @map("deactivated_by_id")
+  // POS-PERF-P57 — 'manual' (staff enter the amount) or 'fixed' (fixedAmount,
+  // whole order); CHECK constraints in migration 20261102120000.
+  amountMode      String    @default("manual") @map("amount_mode")
+  fixedAmount     Decimal?  @map("fixed_amount") @db.Decimal(10, 2)
+  // 'all' or 'selected' (exactly the rows in `products`).
+  productScope    String    @default("all") @map("product_scope")
+  // Rows created by one supervisor action for several branches share this; null = a type at one branch.
+  groupId         String?   @map("group_id")
 
   branch        Branch        @relation(fields: [branchId], references: [id])
   createdBy     User          @relation("ManualDiscountTypeCreatedBy", fields: [createdById], references: [id])
   updatedBy     User?         @relation("ManualDiscountTypeUpdatedBy", fields: [updatedById], references: [id])
   deactivatedBy User?         @relation("ManualDiscountTypeDeactivatedBy", fields: [deactivatedById], references: [id])
   transactions  Transaction[]
+  products      ManualDiscountTypeProduct[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@index([branchId, isActive])
+  @@index([groupId])
   // One active type per (branch, lower(name)): partial unique index
   // manual_discount_types_branch_active_name_key, raw SQL in migration
   // 20261101120200 (the DSL cannot express WHERE / lower()).
@@ -2290,6 +2301,19 @@ model DiscountProofUpload {
 
   @@index([branchId, createdAt])
   @@map("discount_proof_uploads")
+}
+
+/// POS-PERF-P57 — the products a manual discount type with productScope 'selected' applies to.
+model ManualDiscountTypeProduct {
+  manualDiscountTypeId String @map("manual_discount_type_id")
+  productId            String @map("product_id")
+
+  manualDiscountType ManualDiscountType @relation(fields: [manualDiscountTypeId], references: [id], onDelete: Cascade)
+  product            Product            @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@id([manualDiscountTypeId, productId])
+  @@index([productId])
+  @@map("manual_discount_type_products")
 }
 
 model PromotionProduct {

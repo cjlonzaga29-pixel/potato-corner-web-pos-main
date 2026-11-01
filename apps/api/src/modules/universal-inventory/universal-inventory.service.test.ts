@@ -101,6 +101,11 @@ vi.mock('../../lib/prisma.js', () => ({
   },
 }));
 
+// POS-PERF-P57 — recipe shortages have their own tests; these are about thresholds.
+vi.mock('../stock-availability/stock-availability.service.js', () => ({
+  stockAvailabilityService: { evaluateBranchRecipeShortages: vi.fn().mockResolvedValue({ byItem: new Map(), setupIssues: [] }) },
+}));
+
 vi.mock('../../lib/notify.js', () => ({
   notifyBranch: vi.fn(),
   notifySuperAdmin: vi.fn(),
@@ -558,8 +563,8 @@ describe('universalInventoryService.getBranchStockAlerts — Test I (dashboard a
     const result = await universalInventoryService.getBranchStockAlerts('branch-1');
 
     expect(result.alerts).toEqual([
-      { inventory_item_id: 'item-low', name: 'Sugar', quantity_on_hand: 8, quantity_reserved: 0, quantity_available: 8, threshold: 10, severity: 'low' },
-      { inventory_item_id: 'item-critical', name: 'Cheese Powder', quantity_on_hand: 2, quantity_reserved: 0, quantity_available: 2, threshold: 5, severity: 'critical' },
+      { inventory_item_id: 'item-low', name: 'Sugar', quantity_on_hand: 8, quantity_reserved: 0, quantity_available: 8, threshold: 10, severity: 'low', unit_code: expect.any(String), recipe_shortage: null },
+      { inventory_item_id: 'item-critical', name: 'Cheese Powder', quantity_on_hand: 2, quantity_reserved: 0, quantity_available: 2, threshold: 5, severity: 'critical', unit_code: expect.any(String), recipe_shortage: null },
     ]);
   });
 
@@ -578,7 +583,7 @@ describe('universalInventoryService.getBranchStockAlerts — Test I (dashboard a
     const result = await universalInventoryService.getBranchStockAlerts('branch-1');
 
     expect(result.alerts).toEqual([
-      { inventory_item_id: 'item-mostly-reserved', name: 'Flour', quantity_on_hand: 50, quantity_reserved: 48, quantity_available: 2, threshold: 5, severity: 'critical' },
+      { inventory_item_id: 'item-mostly-reserved', name: 'Flour', quantity_on_hand: 50, quantity_reserved: 48, quantity_available: 2, threshold: 5, severity: 'critical', unit_code: expect.any(String), recipe_shortage: null },
     ]);
   });
 });

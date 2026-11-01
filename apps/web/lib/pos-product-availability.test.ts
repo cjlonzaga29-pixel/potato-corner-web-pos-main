@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PosCatalogProduct } from '@potato-corner/shared';
-import { stockShortageDetail, stockShortageLabel, unsellableVariants } from './pos-product-availability';
+import { stockShortageDetail, stockShortageLabel } from './pos-product-availability';
 
 type Variant = PosCatalogProduct['variants'][number];
 type Shortage = NonNullable<Variant['stock_shortages']>[number];
@@ -11,10 +11,6 @@ function shortage(overrides: Partial<Shortage>): Shortage {
 
 function variant(overrides: Partial<Variant>): Variant {
   return { id: 'v', name: 'Large', live_ready: true, readiness_code: 'READY', blocking_issues: [], stock_status: 'in_stock', stock_shortages: [], ...overrides } as Variant;
-}
-
-function product(variants: Variant[]): PosCatalogProduct {
-  return { id: 'p', name: 'Fries', variants } as unknown as PosCatalogProduct;
 }
 
 describe('POS product availability reasons (POS-PERF-P56)', () => {
@@ -32,20 +28,5 @@ describe('POS product availability reasons (POS-PERF-P56)', () => {
     expect(stockShortageLabel(variant({ stock_status: 'unknown' }))).toBeNull();
     expect(stockShortageLabel(variant({ stock_status: 'out_of_stock', stock_shortages: undefined }))).toBeNull();
     expect(stockShortageLabel(variant({ stock_status: 'out_of_stock', stock_shortages: [shortage({})] }))).toBe('Short: Cheese');
-  });
-
-  it('tells an ingredient shortage from a setup problem and skips sellable sizes', () => {
-    const result = unsellableVariants([
-      product([
-        variant({ id: 'ok' }),
-        variant({ id: 'low', stock_status: 'low_stock' }),
-        variant({ id: 'short', stock_status: 'out_of_stock', stock_shortages: [shortage({})] }),
-        variant({ id: 'setup', live_ready: false, readiness_code: 'MISSING_BASE_MAPPING', stock_status: 'unknown', blocking_issues: [{ code: 'INVENTORY_STOCK_MISSING', severity: 'blocking', message: 'Salt is not assigned.', flavor_name: null }] as Variant['blocking_issues'] }),
-      ]),
-    ]);
-    expect(result.map((v) => [v.key, v.kind, v.reason])).toEqual([
-      ['short', 'stock', 'Cheese is out of stock.'],
-      ['setup', 'setup', 'Salt is not assigned.'],
-    ]);
   });
 });

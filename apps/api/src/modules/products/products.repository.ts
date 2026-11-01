@@ -45,11 +45,12 @@ const detailInclude = {
   },
 } satisfies Prisma.ProductInclude;
 
-function buildWhere(filters: Pick<ProductListFilters, 'status' | 'category' | 'search' | 'is_seasonal'>): Prisma.ProductWhereInput {
+function buildWhere(filters: Pick<ProductListFilters, 'status' | 'category' | 'search' | 'is_seasonal' | 'classification'>): Prisma.ProductWhereInput {
   return {
     ...(filters.status && { status: filters.status }),
     ...(filters.category && { category: { equals: filters.category, mode: 'insensitive' } }),
     ...(filters.is_seasonal !== undefined && { isSeasonal: filters.is_seasonal }),
+    ...(filters.classification && { classification: filters.classification }),
     ...(filters.search && {
       OR: [
         { name: { contains: filters.search, mode: 'insensitive' } },
@@ -800,6 +801,50 @@ export const productsRepository = {
                     },
                   },
                 },
+              },
+            },
+          },
+        },
+      },
+    });
+  },
+
+  /**
+   * POS-PERF-P57 — what the POS offers at this branch, with the same filters
+   * as findCatalogForBranch, reduced to what the recipe shortage check needs.
+   */
+  findRecipeCheckCatalogForBranch(branchId: string) {
+    return prisma.product.findMany({
+      where: {
+        status: 'active',
+        branchAvailability: { some: { branchId, isAvailable: true } },
+      },
+      orderBy: [{ displayOrder: 'asc' }, { name: 'asc' }],
+      select: {
+        id: true,
+        name: true,
+        variants: {
+          where: { isActive: true },
+          orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
+          select: {
+            id: true,
+            name: true,
+            variantFlavors: {
+              where: { isAvailable: true, flavor: { isActive: true } },
+              select: { flavorId: true, flavor: { select: { name: true } } },
+            },
+            optionGroupAssignments: {
+              select: {
+                required: true,
+                optionGroup: {
+                  select: {
+                    required: true,
+                    minSelections: true,
+                    isActive: true,
+                    options: { where: { isActive: true }, select: { id: true, name: true } },
+                  },
+                },
+                allowedOptions: { select: { productOption: { select: { id: true, name: true, isActive: true } } } },
               },
             },
           },

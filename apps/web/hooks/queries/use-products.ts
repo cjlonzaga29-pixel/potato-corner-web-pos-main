@@ -17,6 +17,7 @@ import {
   type ProductDetailResponse,
   type ProductImageResponse,
   type ProductBranchView,
+  type ProductClassification,
   type ProductListResponse,
   type ProductReadiness,
   type ProductStatus,
@@ -43,6 +44,8 @@ export interface ProductFilters {
   branchId?: string;
   /** POS-PERF-P39 — one of the branch tabs; needs branchId. */
   view?: ProductBranchView;
+  /** POS-PERF-P57 — Regular / Promotional / Seasonal. */
+  classification?: ProductClassification;
 }
 
 interface ApiErrorShape {
@@ -153,6 +156,7 @@ function buildQueryString(filters: ProductFilters): string {
   if (filters.sortOrder) params.set('sort_order', filters.sortOrder);
   if (filters.branchId) params.set('branch_id', filters.branchId);
   if (filters.view) params.set('view', filters.view);
+  if (filters.classification) params.set('classification', filters.classification);
   params.set('page', String(filters.page ?? 1));
   params.set('limit', String(filters.limit ?? 25));
   return params.toString();

@@ -30,6 +30,7 @@ const STATUS_MAPS: Record<StatusType, Record<string, BadgeVariant>> = {
     low: 'warning',
     critical: 'critical',
     out_of_stock: 'critical',
+    insufficient_for_serving: 'critical',
   },
   fraud: {
     open: 'critical',

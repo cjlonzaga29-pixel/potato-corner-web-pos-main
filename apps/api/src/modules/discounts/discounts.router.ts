@@ -8,6 +8,7 @@ import {
   updateManualDiscountTypeSchema,
   deactivateManualDiscountTypeSchema,
   manualDiscountTypeListQuerySchema,
+  MANUAL_DISCOUNT_POS_CAPABILITY,
   ROLES,
   type CreateManualDiscountTypeInput,
   type UpdateManualDiscountTypeInput,
@@ -193,7 +194,7 @@ router.get(
         res.status(422).json({ data: null, error: { code: 'BRANCH_REQUIRED', message: 'branch_id is required' }, meta: null });
         return;
       }
-      const types = await manualDiscountTypesService.listForPos(branchId);
+      const types = await manualDiscountTypesService.listForPos(branchId, req.query.capabilities === MANUAL_DISCOUNT_POS_CAPABILITY);
       res.status(200).json({ data: types, error: null, meta: null });
     } catch (error) {
       handleModuleError(error, res, next);

@@ -1,19 +1,19 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
-import type { InventoryStockAlert } from '@potato-corner/shared';
 import { DashboardInventoryAlerts } from './dashboard-inventory-alerts';
+import type { StockAlertRow } from '@/lib/inventory-stock-status';
 
 afterEach(cleanup);
 
-function alert(overrides: Partial<InventoryStockAlert> = {}): InventoryStockAlert {
+function alert(overrides: Partial<StockAlertRow> = {}): StockAlertRow {
   return {
     inventory_item_id: 'item-1',
     name: 'Cheddar Powder',
     quantity_on_hand: 2,
     quantity_reserved: 0,
     quantity_available: 2,
-    threshold: 5,
-    severity: 'low',
+    status: 'low',
+    unit_code: 'g',
     ...overrides,
   };
 }
@@ -32,7 +32,7 @@ describe('DashboardInventoryAlerts', () => {
   it('renders critical alerts before low alerts', () => {
     render(
       <DashboardInventoryAlerts
-        alerts={[alert({ inventory_item_id: 'item-low', name: 'Low Item', severity: 'low' }), alert({ inventory_item_id: 'item-critical', name: 'Critical Item', severity: 'critical' })]}
+        alerts={[alert({ inventory_item_id: 'item-low', name: 'Low Item', status: 'low' }), alert({ inventory_item_id: 'item-critical', name: 'Critical Item', status: 'critical' })]}
         isLoading={false}
       />,
     );
@@ -48,7 +48,7 @@ describe('DashboardInventoryAlerts', () => {
   });
 
   it('renders a critical severity badge', () => {
-    render(<DashboardInventoryAlerts alerts={[alert({ severity: 'critical' })]} isLoading={false} />);
+    render(<DashboardInventoryAlerts alerts={[alert({ status: 'critical' })]} isLoading={false} />);
     expect(screen.getByText('Critical').className).toContain('bg-destructive/15');
   });
 

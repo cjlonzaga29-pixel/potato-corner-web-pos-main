@@ -1,9 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import {
   ROLES,
-  STATUTORY_DISCOUNT_NAME_MESSAGE,
-  isStatutoryDiscountName,
   type JwtPayload,
+  type ManualDiscountAmountMode,
+  type ManualDiscountProductScope,
   type ManualDiscountTypeResponse,
   type PosManualDiscountType,
   type PromotionEligibleProduct,
@@ -12,7 +13,9 @@ import {
 import {
   discountsRepository,
   manualDiscountTypesRepository,
+  ManualDiscountTypeVersionConflict,
   fromDateColumn,
+  type ManualDiscountTypeSettings,
   type ManualDiscountTypeRow,
   type ProductForPromotionRow,
   type PromotionRow,
@@ -438,7 +441,7 @@ export const discountsService = {
 const MANUAL_TYPE_CONFLICT_MESSAGE =
   'This discount type was changed by someone else since you opened it. The latest version is shown now — check it, then make your change again.';
 
-function toManualDiscountTypeResponse(row: ManualDiscountTypeRow, canEdit: boolean): ManualDiscountTypeResponse {
+function toManualDiscountTypeResponse(row: ManualDiscountTypeRow, canEdit: boolean, branchIds: string[] = row.isActive ? [row.branchId] : []): ManualDiscountTypeResponse {
   return {
     id: row.id,
     branch_id: row.branchId,
@@ -452,6 +455,11 @@ function toManualDiscountTypeResponse(row: ManualDiscountTypeRow, canEdit: boole
     deactivated_at: row.deactivatedAt?.toISOString() ?? null,
     sale_count: row._count.transactions,
     can_edit: canEdit && row.isActive,
+    amount_mode: row.amountMode as ManualDiscountAmountMode,
+    fixed_amount: row.fixedAmount?.toNumber() ?? null,
+    product_scope: row.productScope as ManualDiscountProductScope,
+    product_ids: row.products.map((product) => product.productId),
+    branch_ids: branchIds,
   };
 }
 
@@ -464,6 +472,11 @@ function manualTypeAuditState(row: ManualDiscountTypeRow) {
     require_proof: row.requireProof,
     is_active: row.isActive,
     version: row.version,
+    amount_mode: row.amountMode,
+    fixed_amount: row.fixedAmount?.toNumber() ?? null,
+    product_scope: row.productScope,
+    product_ids: row.products.map((product) => product.productId),
+    group_id: row.groupId,
   };
 }
 
@@ -485,10 +498,12 @@ function manualTypeNameTaken(name: string): DiscountError {
   return new DiscountError('MANUAL_DISCOUNT_TYPE_NAME_TAKEN', `This branch already has an active discount type named "${name}".`, 409);
 }
 
+/**
+ * POS-PERF-P57 — a statutory-looking name is allowed and stays an ordinary
+ * manual discount: nothing reads the name to choose a calculation (checkout
+ * dispatches on discount_type only, and these sales are always 'manual').
+ */
 async function assertManualTypeNameAllowed(branchId: string, name: string, excludeId?: string): Promise<void> {
-  if (isStatutoryDiscountName(name)) {
-    throw new DiscountError('STATUTORY_DISCOUNT_NAME_RESERVED', STATUTORY_DISCOUNT_NAME_MESSAGE, 422);
-  }
   if (await manualDiscountTypesRepository.findActiveByName(branchId, name, excludeId)) throw manualTypeNameTaken(name);
 }
 
@@ -503,6 +518,26 @@ function rethrowNameTaken(name: string | undefined) {
     if (name !== undefined && error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') throw manualTypeNameTaken(name);
     throw error;
   };
+}
+
+/** POS-PERF-P57 — a product list naming anything that isn't a current product of these branches is refused whole; nothing is silently dropped. */
+async function assertEligibleProducts(productIds: string[], branchIds: string[]): Promise<void> {
+  const found = await manualDiscountTypesRepository.findEligibleProductIds(productIds, branchIds);
+  if (productIds.some((id) => !found.has(id))) {
+    throw new DiscountError('MANUAL_DISCOUNT_PRODUCT_INVALID', 'One of the chosen products is not available at the selected branches. Refresh the list and choose again.', 422);
+  }
+}
+
+/** What the reader may see of where each row's group is active. */
+async function visibleGroupBranches(rows: ManualDiscountTypeRow[], visible: 'all' | string[]): Promise<Map<string, string[]>> {
+  const groupIds = [...new Set(rows.map((row) => row.groupId).filter((id): id is string => id !== null))];
+  const members = await manualDiscountTypesRepository.findGroupBranches(groupIds);
+  const result = new Map<string, string[]>();
+  for (const member of members) {
+    if (member.groupId === null || (visible !== 'all' && !visible.includes(member.branchId))) continue;
+    result.set(member.groupId, [...(result.get(member.groupId) ?? []), member.branchId]);
+  }
+  return result;
 }
 
 async function loadManualTypeForWrite(actor: JwtPayload, typeId: string): Promise<ManualDiscountTypeRow> {
@@ -525,73 +560,201 @@ async function manualTypeConflict(typeId: string): Promise<DiscountError> {
 
 export const manualDiscountTypesService = {
   async list(actor: JwtPayload, branchId: string | undefined, includeInactive: boolean): Promise<ManualDiscountTypeResponse[]> {
+    const respond = async (rows: ManualDiscountTypeRow[], canEdit: boolean, visible: 'all' | string[]) => {
+      const groups = await visibleGroupBranches(rows, visible);
+      return rows.map((row) => toManualDiscountTypeResponse(row, canEdit, row.groupId ? (groups.get(row.groupId) ?? []) : row.isActive ? [row.branchId] : []));
+    };
     if (actor.role === ROLES.SUPER_ADMIN) {
-      const rows = await manualDiscountTypesRepository.list(branchId ? [branchId] : 'all', includeInactive);
-      return rows.map((row) => toManualDiscountTypeResponse(row, false));
+      return respond(await manualDiscountTypesRepository.list(branchId ? [branchId] : 'all', includeInactive), false, 'all');
     }
     const live = await branchesRepository.findAllActiveBranchIds(actor.user_id);
     if (branchId && !live.includes(branchId)) throw new DiscountError('BRANCH_ACCESS_DENIED', 'You do not have access to this branch', 403);
     const scope = branchId ? [branchId] : live;
     if (scope.length === 0) return [];
-    const rows = await manualDiscountTypesRepository.list(scope, includeInactive);
-    return rows.map((row) => toManualDiscountTypeResponse(row, actor.role === ROLES.SUPERVISOR));
+    return respond(await manualDiscountTypesRepository.list(scope, includeInactive), actor.role === ROLES.SUPERVISOR, live);
   },
 
-  /** The terminal's offer list — only the caller's resolved branch (the router never trusts a staff/branch-sent id). */
-  async listForPos(branchId: string): Promise<PosManualDiscountType[]> {
+  /**
+   * The terminal's offer list — only the caller's resolved branch (the router
+   * never trusts a staff/branch-sent id). POS-PERF-P57 — a POS that doesn't
+   * declare the capability only knows staff-entered, whole-order discounts, so
+   * it is never offered a type it would charge wrongly.
+   */
+  async listForPos(branchId: string, supportsAmountModes: boolean): Promise<PosManualDiscountType[]> {
     const rows = await manualDiscountTypesRepository.findForPos(branchId);
-    return rows.map((row) => ({ id: row.id, name: row.name, require_proof: row.requireProof, version: row.version }));
+    return rows
+      .filter((row) => supportsAmountModes || (row.amountMode === 'manual' && row.productScope === 'all'))
+      .map((row) => ({
+        id: row.id,
+        name: row.name,
+        require_proof: row.requireProof,
+        version: row.version,
+        amount_mode: row.amountMode as ManualDiscountAmountMode,
+        fixed_amount: row.fixedAmount?.toNumber() ?? null,
+        product_scope: row.productScope as ManualDiscountProductScope,
+        product_ids: row.products.map((product) => product.productId),
+      }));
   },
 
   async create(
     actor: JwtPayload,
-    input: { branch_id: string; name: string; apply_to_pos: boolean; require_proof: boolean },
+    input: {
+      branch_id?: string | undefined;
+      branch_ids?: string[] | undefined;
+      name: string;
+      apply_to_pos: boolean;
+      require_proof: boolean;
+      amount_mode: ManualDiscountAmountMode;
+      fixed_amount?: number | null | undefined;
+      product_scope: ManualDiscountProductScope;
+      product_ids?: string[] | undefined;
+    },
     ipAddress: string | null,
   ): Promise<ManualDiscountTypeResponse> {
-    await requireSupervisorBranch(actor, input.branch_id);
-    await assertManualTypeNameAllowed(input.branch_id, input.name);
-    const row = await manualDiscountTypesRepository
-      .create({ branchId: input.branch_id, name: input.name, applyToPos: input.apply_to_pos, requireProof: input.require_proof }, actor.user_id)
+    const branchIds = [...new Set(input.branch_ids ?? (input.branch_id ? [input.branch_id] : []))];
+    await Promise.all(branchIds.map((branchId) => requireSupervisorBranch(actor, branchId)));
+    await Promise.all(branchIds.map((branchId) => assertManualTypeNameAllowed(branchId, input.name)));
+    const productIds = input.product_scope === 'selected' ? [...new Set(input.product_ids ?? [])] : [];
+    await assertEligibleProducts(productIds, branchIds);
+    const rows = await manualDiscountTypesRepository
+      .createForBranches(
+        branchIds,
+        {
+          name: input.name,
+          applyToPos: input.apply_to_pos,
+          requireProof: input.require_proof,
+          amountMode: input.amount_mode,
+          fixedAmount: input.amount_mode === 'fixed' ? (input.fixed_amount ?? null) : null,
+          productScope: input.product_scope,
+          productIds,
+          groupId: branchIds.length > 1 ? randomUUID() : null,
+        },
+        actor.user_id,
+      )
       .catch(rethrowNameTaken(input.name));
-    await recordAuditLog({
-      action: 'MANUAL_DISCOUNT_TYPE_CREATED',
-      entityType: 'manual_discount_type',
-      entityId: row.id,
-      actorId: actor.user_id,
-      actorRole: actor.role,
-      branchId: row.branchId,
-      afterState: manualTypeAuditState(row),
-      ipAddress,
-    });
-    return toManualDiscountTypeResponse(row, true);
+    await Promise.all(
+      rows.map((row) =>
+        recordAuditLog({
+          action: 'MANUAL_DISCOUNT_TYPE_CREATED',
+          entityType: 'manual_discount_type',
+          entityId: row.id,
+          actorId: actor.user_id,
+          actorRole: actor.role,
+          branchId: row.branchId,
+          afterState: manualTypeAuditState(row),
+          ipAddress,
+        }),
+      ),
+    );
+    const first = rows[0];
+    // The schema requires at least one branch, so a create always returns a row.
+    if (!first) throw new DiscountError('BRANCH_REQUIRED', 'Choose at least one branch', 422);
+    return toManualDiscountTypeResponse(first, true, branchIds);
   },
 
+  /**
+   * POS-PERF-P57 — without branch_ids this changes the one row (an older web,
+   * which only knows one branch). With it the same settings go to every row of
+   * the group at branches this supervisor manages; a row at a branch they don't
+   * manage is left alone. Branches added get a new row and branches dropped
+   * deactivate theirs, in one transaction, and each row's version moves, so any
+   * checkout showing the old settings is refused rather than charged.
+   */
   async update(
     actor: JwtPayload,
     typeId: string,
-    input: { name?: string; apply_to_pos?: boolean; require_proof?: boolean; expected_version: number },
+    input: {
+      name?: string | undefined;
+      apply_to_pos?: boolean | undefined;
+      require_proof?: boolean | undefined;
+      amount_mode?: ManualDiscountAmountMode | undefined;
+      fixed_amount?: number | null | undefined;
+      product_scope?: ManualDiscountProductScope | undefined;
+      product_ids?: string[] | undefined;
+      branch_ids?: string[] | undefined;
+      expected_version: number;
+    },
     ipAddress: string | null,
   ): Promise<ManualDiscountTypeResponse> {
     const before = await loadManualTypeForWrite(actor, typeId);
     if (!before.isActive) throw new DiscountError('MANUAL_DISCOUNT_TYPE_INACTIVE', 'This discount type has been deactivated and can no longer be edited.', 409);
     if (before.version !== input.expected_version) throw await manualTypeConflict(typeId);
-    if (input.name !== undefined) await assertManualTypeNameAllowed(before.branchId, input.name, typeId);
-    const row = await manualDiscountTypesRepository
-      .update(typeId, input.expected_version, { name: input.name, applyToPos: input.apply_to_pos, requireProof: input.require_proof }, actor.user_id)
-      .catch(rethrowNameTaken(input.name));
+
+    const requested = input.branch_ids ? [...new Set(input.branch_ids)] : null;
+    if (requested) await Promise.all(requested.map((branchId) => requireSupervisorBranch(actor, branchId)));
+    const live = await branchesRepository.findAllActiveBranchIds(actor.user_id);
+    const groupRows = requested && before.groupId ? await manualDiscountTypesRepository.findActiveGroupRows(before.groupId) : [before];
+    const managed = groupRows.filter((row) => live.includes(row.branchId));
+    const targets = requested ? managed.filter((row) => requested.includes(row.branchId)) : [before];
+    const removed = requested ? managed.filter((row) => !requested.includes(row.branchId)) : [];
+    const addedBranchIds = requested ? requested.filter((branchId) => !groupRows.some((row) => row.branchId === branchId)) : [];
+
+    const name = input.name ?? before.name;
+    if (input.name !== undefined) await Promise.all(targets.map((row) => assertManualTypeNameAllowed(row.branchId, name, row.id)));
+    await Promise.all(addedBranchIds.map((branchId) => assertManualTypeNameAllowed(branchId, name)));
+
+    const productIds = input.product_scope === 'all' ? [] : input.product_ids ? [...new Set(input.product_ids)] : undefined;
+    await assertEligibleProducts(productIds ?? [], requested ?? [before.branchId]);
+
+    const groupId = before.groupId ?? (addedBranchIds.length > 0 ? randomUUID() : undefined);
+    const settings: ManualDiscountTypeSettings = {
+      ...(input.name !== undefined ? { name: input.name } : {}),
+      ...(input.apply_to_pos !== undefined ? { applyToPos: input.apply_to_pos } : {}),
+      ...(input.require_proof !== undefined ? { requireProof: input.require_proof } : {}),
+      ...(input.amount_mode !== undefined ? { amountMode: input.amount_mode, fixedAmount: input.amount_mode === 'fixed' ? (input.fixed_amount ?? null) : null } : {}),
+      ...(input.product_scope !== undefined ? { productScope: input.product_scope } : {}),
+      ...(productIds !== undefined ? { productIds } : {}),
+      ...(groupId !== undefined && before.groupId === null ? { groupId } : {}),
+    };
+    try {
+      await manualDiscountTypesRepository.applySave(
+        targets.map((row) => ({ id: row.id, expectedVersion: row.id === before.id ? input.expected_version : row.version })),
+        settings,
+        addedBranchIds.length > 0
+          ? {
+              branchIds: addedBranchIds,
+              fields: {
+                name,
+                applyToPos: input.apply_to_pos ?? before.applyToPos,
+                requireProof: input.require_proof ?? before.requireProof,
+                amountMode: input.amount_mode ?? before.amountMode,
+                fixedAmount: input.amount_mode !== undefined ? (input.amount_mode === 'fixed' ? (input.fixed_amount ?? null) : null) : (before.fixedAmount?.toNumber() ?? null),
+                productScope: input.product_scope ?? before.productScope,
+                productIds: productIds ?? before.products.map((product) => product.productId),
+                groupId: groupId ?? null,
+              },
+            }
+          : null,
+        removed.map((row) => ({ id: row.id, expectedVersion: row.version })),
+        actor.user_id,
+      );
+    } catch (error) {
+      if (error instanceof ManualDiscountTypeVersionConflict) throw await manualTypeConflict(typeId);
+      return rethrowNameTaken(name)(error);
+    }
+
+    const beforeById = new Map([...groupRows, before].map((row) => [row.id, row]));
+    const afterRows = await manualDiscountTypesRepository.findManyByIds([...targets, ...removed].map((row) => row.id));
+    const addedRows = groupId ? await manualDiscountTypesRepository.findActiveByGroupAndBranches(groupId, addedBranchIds) : [];
+    await Promise.all(
+      [...afterRows, ...addedRows].map((row) => {
+        const prior = beforeById.get(row.id);
+        return recordAuditLog({
+          action: !prior ? 'MANUAL_DISCOUNT_TYPE_CREATED' : row.isActive ? 'MANUAL_DISCOUNT_TYPE_UPDATED' : 'MANUAL_DISCOUNT_TYPE_DEACTIVATED',
+          entityType: 'manual_discount_type',
+          entityId: row.id,
+          actorId: actor.user_id,
+          actorRole: actor.role,
+          branchId: row.branchId,
+          ...(prior ? { beforeState: manualTypeAuditState(prior) } : {}),
+          afterState: manualTypeAuditState(row),
+          ipAddress,
+        });
+      }),
+    );
+    const row = afterRows.find((candidate) => candidate.id === typeId);
     if (!row) throw await manualTypeConflict(typeId);
-    await recordAuditLog({
-      action: 'MANUAL_DISCOUNT_TYPE_UPDATED',
-      entityType: 'manual_discount_type',
-      entityId: row.id,
-      actorId: actor.user_id,
-      actorRole: actor.role,
-      branchId: row.branchId,
-      beforeState: manualTypeAuditState(before),
-      afterState: manualTypeAuditState(row),
-      ipAddress,
-    });
-    return toManualDiscountTypeResponse(row, true);
+    return toManualDiscountTypeResponse(row, true, requested ?? (row.isActive ? [row.branchId] : []));
   },
 
   async deactivate(actor: JwtPayload, typeId: string, input: { expected_version: number }, ipAddress: string | null): Promise<ManualDiscountTypeResponse> {

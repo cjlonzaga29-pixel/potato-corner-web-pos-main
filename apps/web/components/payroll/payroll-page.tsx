@@ -17,12 +17,17 @@ import { PayrollSettingsPanel } from './payroll-settings-panel';
  * POS-PERF-P52 — Reports → Payroll. Supervisors work on the active branch
  * chosen in the sidebar (their current assignments only); Super Admin picks
  * any branch here. The server enforces the same scope on every request.
+ *
+ * POS-PERF-P57 — the main path is branch and cutoff → employees → review. The
+ * Supervisor menu has its own Payroll item, so the Reports tabs are left out of
+ * that view; nothing about calculation or permissions changes.
  */
 export function PayrollPage({ scope }: { scope: 'supervisor' | 'admin' }) {
   const activeBranchId = useBranchStore((s) => s.activeBranchId);
   const [adminBranchId, setAdminBranchId] = useState<string | undefined>(undefined);
   const branches = useBranches({ limit: 100 });
   const branchId = scope === 'supervisor' ? activeBranchId : (adminBranchId ?? null);
+  const activeBranchName = useBranchStore((s) => s.activeBranch?.name) ?? branches.data?.branches.find((b) => b.id === activeBranchId)?.name;
   const [tab, setTab] = useState<'runs' | 'settings'>('runs');
   // POS-PERF-P56 — `?tab=settings` is the Payroll Settings link's destination. Read after mount so the server and first client render agree.
   useEffect(() => {
@@ -42,7 +47,7 @@ export function PayrollPage({ scope }: { scope: 'supervisor' | 'admin' }) {
             Payroll Settings
           </Button>
         </div>
-        <ReportsSectionTabs basePath={scope === 'supervisor' ? '/supervisor/reports' : '/admin/reports'} />
+        {scope === 'admin' && <ReportsSectionTabs basePath="/admin/reports" />}
       </div>
 
       {scope === 'admin' && (
@@ -57,6 +62,12 @@ export function PayrollPage({ scope }: { scope: 'supervisor' | 'admin' }) {
         </div>
       )}
 
+      {scope === 'supervisor' && branchId && (
+        <p className="text-sm" data-testid="payroll-branch">
+          Branch: <span className="font-medium">{activeBranchName ?? 'Selected branch'}</span> <span className="text-muted-foreground">(change it in the branch selector)</span>
+        </p>
+      )}
+
       {!branchId ? (
         <Alert>
           <AlertTitle>Select a branch</AlertTitle>
@@ -68,7 +79,7 @@ export function PayrollPage({ scope }: { scope: 'supervisor' | 'admin' }) {
         <Tabs value={tab} onValueChange={(v) => setTab(v as 'runs' | 'settings')} className="grid gap-4">
           <TabsList className="w-full sm:w-fit">
             <TabsTrigger value="runs" className="min-h-9 flex-1 sm:flex-none">
-              Payroll runs
+              Review payroll
             </TabsTrigger>
             <TabsTrigger value="settings" className="min-h-9 flex-1 sm:flex-none">
               Payroll Settings

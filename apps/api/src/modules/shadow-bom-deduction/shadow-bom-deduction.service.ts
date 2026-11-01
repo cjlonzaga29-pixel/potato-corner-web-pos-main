@@ -118,7 +118,7 @@ export async function computeBomDeduction(
  * table (direct, then inverse); same-unit pairs never reach here (filtered
  * out by the caller before this function is built).
  */
-async function buildBatchConverter(
+export async function buildBatchConverter(
   needs: { inventoryItemId: string; fromUnitId: string; toUnitId: string }[],
 ): Promise<(quantity: Prisma.Decimal, fromUnitId: string, toUnitId: string, inventoryItemId: string) => number> {
   if (needs.length === 0) {

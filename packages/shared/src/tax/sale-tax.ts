@@ -270,3 +270,19 @@ export interface ManualTotalSaleSnapshot {
 }
 
 export type StoredSaleSnapshot = SaleTaxSnapshot | ManualTotalSaleSnapshot;
+
+/**
+ * POS-PERF-P57 — what a manual discount type may come off: the lines of its
+ * eligible products, whole (a line total already includes that line's add-ons),
+ * or the whole order. Shared by the terminal's preview and checkout.
+ */
+export function manualDiscountEligibleSubtotal(lines: readonly { productId: string; lineTotal: number }[], productScope: string, productIds: readonly string[]): number {
+  const eligible = productScope === 'selected' ? new Set(productIds) : null;
+  const cents = lines.reduce((sum, line) => (!eligible || eligible.has(line.productId) ? sum + Math.round(line.lineTotal * 100) : sum), 0);
+  return cents / 100;
+}
+
+/** POS-PERF-P57 — one order-level amount, never per unit, and never more than the eligible subtotal. */
+export function fixedDiscountEffectiveAmount(fixedAmount: number, eligibleSubtotal: number): number {
+  return Math.min(Math.round(fixedAmount * 100), Math.round(eligibleSubtotal * 100)) / 100;
+}

@@ -27,6 +27,14 @@ export const CONNECTION_UNCERTAIN = 'CONNECTION_UNCERTAIN';
 export const STILL_PROCESSING = 'STILL_PROCESSING';
 /** Server confirmed (via resolve, not the original request's own catch) that nothing committed — safe to retry. */
 export const NOT_SAVED_SAFE_TO_RETRY = 'NOT_SAVED_SAFE_TO_RETRY';
+/**
+ * P55 release fix — a pre-P55 API refused a manual-discount sale at
+ * validation (it has no 'manual' discount type), so nothing was written.
+ * Retrying cannot succeed until the API is updated: review-only.
+ */
+export const MANUAL_DISCOUNT_UNSUPPORTED_BY_SERVER = 'MANUAL_DISCOUNT_UNSUPPORTED_BY_SERVER';
+export const MANUAL_DISCOUNT_UNSUPPORTED_MESSAGE =
+  'This server does not support manual discounts yet, so the sale was not charged. Choose “No discount” or a statutory discount, or ask a supervisor to check the system update.';
 
 const CONNECTION_UNCERTAIN_TITLE = 'Connection problem — checking order status';
 
@@ -74,6 +82,8 @@ const TITLES: Record<string, string> = {
   DISCOUNT_NOT_SUPPORTED_IN_MANUAL_FLOW: 'Discount not available here — not charged',
   PROMOTION_NOT_APPLIED_IN_MANUAL_FLOW: 'Promotions not applied — not charged',
   DISCOUNT_PROOF_INVALID: 'Proof photo not accepted — not charged',
+  DISCOUNT_PROOF_ALREADY_USED: 'Proof photo already used — not charged',
+  [MANUAL_DISCOUNT_UNSUPPORTED_BY_SERVER]: 'Manual discounts not available yet — not charged',
 };
 
 /** Real server codes that prove only that THIS request made no progress, not that anything failed or succeeded — the network/uncertain bucket, same as the synthetic codes above. */

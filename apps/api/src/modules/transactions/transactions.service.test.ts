@@ -26,6 +26,9 @@ vi.mock('./transactions.repository.js', () => ({
     findByIdempotencyKey: vi.fn().mockResolvedValue(null),
     // POS-PERF-P55 — the upload registry row.
     createDiscountProofUpload: vi.fn().mockResolvedValue({ id: 'upload-1' }),
+    // P55 release fix — a statutory proof key must be a registered upload. Null (unknown key) by default.
+    findDiscountProofUploadByStorageKey: vi.fn().mockResolvedValue(null),
+    consumeDiscountProofUpload: vi.fn().mockResolvedValue(1),
     listTransactions: vi.fn(),
     voidTransaction: vi.fn(),
     refundTransaction: vi.fn(),
@@ -903,6 +906,11 @@ describe('transactionsService.createTransaction — discount proof linking', () 
   });
 
   it('links the discount proof key/type/uploadedAt exactly once when a PWD/Senior discount includes both proof fields', async () => {
+    const uploadedAt = new Date('2026-11-01T01:00:00Z');
+    vi.mocked(transactionsRepository.findDiscountProofUploadByStorageKey).mockResolvedValueOnce({
+      id: 'upload-1', branchId: 'branch-1', shiftId: 'shift-1', uploadedById: 'user-1', storageKey: 'branch-1/shift-1/user-1-123.webp',
+      proofType: 'live_capture', transactionId: null, consumedAt: null, createdAt: uploadedAt,
+    });
     await transactionsService.createTransaction(
       {
         ...baseInput,
@@ -919,10 +927,28 @@ describe('transactionsService.createTransaction — discount proof linking', () 
       expect.objectContaining({
         discountProofKey: 'branch-1/shift-1/user-1-123.webp',
         discountProofType: 'live_capture',
-        discountProofUploadedAt: expect.any(Date),
+        discountProofUploadedAt: uploadedAt,
       }),
       expect.anything(),
     );
+  });
+
+  it('refuses a statutory proof key the upload registry does not bind to this cashier, branch and shift (P55 release fix)', async () => {
+    const row = {
+      id: 'upload-1', branchId: 'branch-1', shiftId: 'shift-1', uploadedById: 'user-1', storageKey: 'branch-1/shift-1/user-1-123.webp',
+      proofType: 'live_capture' as const, transactionId: null as string | null, consumedAt: null, createdAt: new Date(),
+    };
+    const input = { ...baseInput, discountType: 'pwd' as const, discountIdReference: 'REF-1', discountProofKey: row.storageKey, discountProofType: 'live_capture' as const };
+    for (const [registered, code] of [
+      [null, 'DISCOUNT_PROOF_INVALID'],
+      [{ ...row, uploadedById: 'user-2' }, 'DISCOUNT_PROOF_INVALID'],
+      [{ ...row, shiftId: 'shift-0' }, 'DISCOUNT_PROOF_INVALID'],
+      [{ ...row, transactionId: 'txn-0' }, 'DISCOUNT_PROOF_ALREADY_USED'],
+    ] as const) {
+      vi.mocked(transactionsRepository.findDiscountProofUploadByStorageKey).mockResolvedValueOnce(registered as never);
+      await expect(transactionsService.createTransaction(input, null)).rejects.toMatchObject({ code });
+    }
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
   });
 
   it('drops a partial proof (key without type) back to no-proof rather than persisting an inconsistent pair', async () => {

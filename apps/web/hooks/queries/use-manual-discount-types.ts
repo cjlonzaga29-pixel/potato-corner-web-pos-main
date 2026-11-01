@@ -54,17 +54,32 @@ export function useManualDiscountTypes(branchId: string | null, includeInactive 
  * server). A pre-P55 API answers 404, which the terminal treats as "no
  * manual discount types" rather than an error that blocks selling.
  */
+/**
+ * P55 release fix — a pre-P55 API has no discount-types route (404
+ * NOT_FOUND). That is not a transient failure: Retry cannot help until the
+ * API is updated, so the checkout says so instead of offering Retry.
+ */
+export class ManualDiscountsUnsupportedError extends Error {
+  constructor() {
+    super('Manual discounts are not available on this server yet.');
+    this.name = 'ManualDiscountsUnsupportedError';
+  }
+}
+
 export function usePosManualDiscountTypes(branchId: string | null | undefined) {
   const { accessToken, isLoading } = useAuth();
   return useQuery({
     queryKey: [...KEY, 'pos', branchId],
     queryFn: async () => {
       const response = await apiClient<PosManualDiscountType[]>(`/api/discounts/manual-types/pos?branch_id=${encodeURIComponent(branchId as string)}`);
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to load discount types'));
+      if (!response.data) {
+        if (typeof response.error === 'object' && response.error?.code === 'NOT_FOUND') throw new ManualDiscountsUnsupportedError();
+        throw new Error(errorMessage(response, 'Failed to load discount types'));
+      }
       return response.data;
     },
     enabled: !!accessToken && !isLoading && !!branchId,
-    retry: 1,
+    retry: (failureCount, error) => !(error instanceof ManualDiscountsUnsupportedError) && failureCount < 1,
   });
 }
 

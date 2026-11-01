@@ -21,7 +21,8 @@ export interface ManualDiscountFooterState {
   onModeChange: (mode: 'none' | 'apply') => void;
   /** Active, Apply-to-POS types of this branch (empty offline). */
   types: readonly { id: string; name: string; requireProof: boolean }[];
-  typesStatus: 'loading' | 'ready' | 'error' | 'offline';
+  /** 'unsupported' — the API predates manual discounts (P55 release fix). */
+  typesStatus: 'loading' | 'ready' | 'error' | 'offline' | 'unsupported';
   onRetryTypes: () => void;
   /** `manual:<id>`, a statutory type, or null (nothing chosen yet). */
   selection: `manual:${string}` | StatutoryDiscountChoice | null;
@@ -110,6 +111,11 @@ export function ManualDiscountFields({ state }: { state: ManualDiscountFooterSta
           </Select>
           {state.typesStatus === 'offline' && (
             <p className="text-xs text-muted-foreground">Offline — discount types need a connection. Only the statutory discounts can be applied.</p>
+          )}
+          {state.typesStatus === 'unsupported' && (
+            <p className="text-xs text-muted-foreground" role="status">
+              Manual discounts aren&apos;t available on this server yet. Use &ldquo;No discount&rdquo; or a statutory discount.
+            </p>
           )}
           {state.typesStatus === 'error' && (
             <p className="text-xs text-destructive" role="alert">

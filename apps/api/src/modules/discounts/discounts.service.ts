@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import {
   ROLES,
   STATUTORY_DISCOUNT_NAME_MESSAGE,
@@ -480,13 +481,28 @@ async function requireSupervisorBranch(actor: JwtPayload, branchId: string): Pro
   }
 }
 
+function manualTypeNameTaken(name: string): DiscountError {
+  return new DiscountError('MANUAL_DISCOUNT_TYPE_NAME_TAKEN', `This branch already has an active discount type named "${name}".`, 409);
+}
+
 async function assertManualTypeNameAllowed(branchId: string, name: string, excludeId?: string): Promise<void> {
   if (isStatutoryDiscountName(name)) {
     throw new DiscountError('STATUTORY_DISCOUNT_NAME_RESERVED', STATUTORY_DISCOUNT_NAME_MESSAGE, 422);
   }
-  if (await manualDiscountTypesRepository.findActiveByName(branchId, name, excludeId)) {
-    throw new DiscountError('MANUAL_DISCOUNT_TYPE_NAME_TAKEN', `This branch already has an active discount type named "${name}".`, 409);
-  }
+  if (await manualDiscountTypesRepository.findActiveByName(branchId, name, excludeId)) throw manualTypeNameTaken(name);
+}
+
+/**
+ * P55 release fix — the check above is only the friendly fast path: two
+ * concurrent saves of one name both pass it. The partial unique index
+ * manual_discount_types_branch_active_name_key (branch, lower(name), active
+ * rows only) decides; its violation is reported the same way.
+ */
+function rethrowNameTaken(name: string | undefined) {
+  return (error: unknown): never => {
+    if (name !== undefined && error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') throw manualTypeNameTaken(name);
+    throw error;
+  };
 }
 
 async function loadManualTypeForWrite(actor: JwtPayload, typeId: string): Promise<ManualDiscountTypeRow> {
@@ -534,10 +550,9 @@ export const manualDiscountTypesService = {
   ): Promise<ManualDiscountTypeResponse> {
     await requireSupervisorBranch(actor, input.branch_id);
     await assertManualTypeNameAllowed(input.branch_id, input.name);
-    const row = await manualDiscountTypesRepository.create(
-      { branchId: input.branch_id, name: input.name, applyToPos: input.apply_to_pos, requireProof: input.require_proof },
-      actor.user_id,
-    );
+    const row = await manualDiscountTypesRepository
+      .create({ branchId: input.branch_id, name: input.name, applyToPos: input.apply_to_pos, requireProof: input.require_proof }, actor.user_id)
+      .catch(rethrowNameTaken(input.name));
     await recordAuditLog({
       action: 'MANUAL_DISCOUNT_TYPE_CREATED',
       entityType: 'manual_discount_type',
@@ -561,12 +576,9 @@ export const manualDiscountTypesService = {
     if (!before.isActive) throw new DiscountError('MANUAL_DISCOUNT_TYPE_INACTIVE', 'This discount type has been deactivated and can no longer be edited.', 409);
     if (before.version !== input.expected_version) throw await manualTypeConflict(typeId);
     if (input.name !== undefined) await assertManualTypeNameAllowed(before.branchId, input.name, typeId);
-    const row = await manualDiscountTypesRepository.update(
-      typeId,
-      input.expected_version,
-      { name: input.name, applyToPos: input.apply_to_pos, requireProof: input.require_proof },
-      actor.user_id,
-    );
+    const row = await manualDiscountTypesRepository
+      .update(typeId, input.expected_version, { name: input.name, applyToPos: input.apply_to_pos, requireProof: input.require_proof }, actor.user_id)
+      .catch(rethrowNameTaken(input.name));
     if (!row) throw await manualTypeConflict(typeId);
     await recordAuditLog({
       action: 'MANUAL_DISCOUNT_TYPE_UPDATED',

@@ -444,6 +444,11 @@ export const transactionsRepository = {
     return prisma.discountProofUpload.findUnique({ where: { id } });
   },
 
+  /** P55 release fix — a legacy statutory checkout names its proof by storage key; this is the registry row for it, if the server ever issued it. */
+  async findDiscountProofUploadByStorageKey(storageKey: string) {
+    return prisma.discountProofUpload.findUnique({ where: { storageKey } });
+  },
+
   /**
    * POS-PERF-P55 — attaches the upload to the sale inside the sale's own
    * $transaction. Conditional on it still being unattached, so one proof can

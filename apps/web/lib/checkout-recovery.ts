@@ -118,7 +118,7 @@ const DEFINITE_NO_COMMIT_CODES = new Set([
   // sale's $transaction opens (assertTaxBasisUnchanged), so nothing was written.
   'TAX_SETTINGS_CHANGED',
   // POS-PERF-P55 — manual-discount checks. All run before the sale's
-  // $transaction opens, except MANUAL_DISCOUNT_PROOF_ALREADY_USED, which can
+  // $transaction opens, except the two *PROOF_ALREADY_USED codes, which can
   // also be thrown inside it (the proof claim) — and throwing there rolls the
   // whole sale back, same as INSUFFICIENT_STOCK below.
   'MANUAL_DISCOUNT_FLOW_REQUIRED',
@@ -134,6 +134,7 @@ const DEFINITE_NO_COMMIT_CODES = new Set([
   'DISCOUNT_NOT_COMBINABLE',
   'PROMOTION_NOT_APPLIED_IN_MANUAL_FLOW',
   'DISCOUNT_PROOF_INVALID',
+  'DISCOUNT_PROOF_ALREADY_USED',
   // Thrown inside the $transaction callback itself (stock reservation) —
   // still safe, since throwing there rolls back the whole interactive
   // transaction, including the sale insert.

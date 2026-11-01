@@ -64,7 +64,7 @@ import { useVerifyPosPin } from '@/hooks/queries/use-staff-pin';
 import { useMyActiveShift, useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useCreateTransaction, useUploadPaymentProof, useUploadDiscountProof, TransactionApiError } from '@/hooks/queries/use-transactions';
 import { useDiscountPolicy } from '@/hooks/queries/use-settings';
-import { usePosManualDiscountTypes } from '@/hooks/queries/use-manual-discount-types';
+import { usePosManualDiscountTypes, ManualDiscountsUnsupportedError } from '@/hooks/queries/use-manual-discount-types';
 import { cacheProductCatalog, getCachedProductCatalog } from '@/lib/offline/cache';
 import { enqueueOfflineTransaction } from '@/lib/offline/sync-queue';
 import { getCurrentPosition, type GpsCoords } from '@/lib/geolocation';
@@ -97,6 +97,8 @@ import {
   CONNECTION_UNCERTAIN,
   STILL_PROCESSING,
   NOT_SAVED_SAFE_TO_RETRY,
+  MANUAL_DISCOUNT_UNSUPPORTED_BY_SERVER,
+  MANUAL_DISCOUNT_UNSUPPORTED_MESSAGE,
 } from '@/lib/cashier-error-messages';
 import { OrderTabContent } from '@/components/pos/order-tabs-content';
 import { OfflineSalesList } from '@/components/pos/offline-sales-list';
@@ -2150,7 +2152,15 @@ export default function TerminalPage() {
       }
     },
     types: posManualTypes.map((type) => ({ id: type.id, name: type.name, requireProof: type.require_proof })),
-    typesStatus: !isOnline ? 'offline' : posManualTypesQuery.isError ? 'error' : posManualTypesQuery.data ? 'ready' : 'loading',
+    typesStatus: !isOnline
+      ? 'offline'
+      : posManualTypesQuery.error instanceof ManualDiscountsUnsupportedError
+        ? 'unsupported'
+        : posManualTypesQuery.isError
+          ? 'error'
+          : posManualTypesQuery.data
+            ? 'ready'
+            : 'loading',
     onRetryTypes: () => void refetchPosManualTypes(),
     selection: manualTypeId ? `manual:${manualTypeId}` : discountType === 'pwd' || discountType === 'senior_citizen' ? discountType : null,
     onSelectionChange: (value) => {
@@ -2676,6 +2686,10 @@ export default function TerminalPage() {
       if (error instanceof TransactionApiError && (error.code === 'MANUAL_DISCOUNT_PROOF_INVALID' || error.code === 'MANUAL_DISCOUNT_PROOF_ALREADY_USED')) {
         handleClearManualProof();
       }
+      // The PWD/Senior ID photo was refused (not this cashier's, branch's or shift's upload, or already on a sale): retake it.
+      if (error instanceof TransactionApiError && (error.code === 'DISCOUNT_PROOF_INVALID' || error.code === 'DISCOUNT_PROOF_ALREADY_USED')) {
+        handleClearDiscountProof();
+      }
       if (error instanceof TransactionApiError && error.code === 'MANUAL_DISCOUNT_TOTAL_CHANGED') {
         void confirmCatalog(branchId).catch(() => undefined);
       }
@@ -2693,6 +2707,16 @@ export default function TerminalPage() {
           );
         setSaleErrorMessage(error.message);
         setSaleErrorCode(error.code);
+        setSalePhase('error');
+        return;
+      }
+      // P55 release fix — a pre-P55 API (rolled back, or not deployed yet)
+      // rejects discount_type 'manual' at validation, before anything is
+      // written. Show what to do instead of the raw schema message; the cart,
+      // type and amount stay so the cashier can choose another discount.
+      if (error instanceof TransactionApiError && error.code === 'VALIDATION_ERROR' && payload.discount_type === 'manual') {
+        setSaleErrorMessage(MANUAL_DISCOUNT_UNSUPPORTED_MESSAGE);
+        setSaleErrorCode(MANUAL_DISCOUNT_UNSUPPORTED_BY_SERVER);
         setSalePhase('error');
         return;
       }

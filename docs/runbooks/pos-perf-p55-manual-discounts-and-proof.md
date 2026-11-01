@@ -44,8 +44,9 @@ discounts in the new checkout flow. Local work only — nothing pushed, deployed
 no rate, amount, schedule or product field. Turning a required proof **off** needs an explicit confirmation checkbox
 and is audited, so a proof-required type never silently becomes proof-optional. Statutory names (PWD, Senior, SC,
 OSCA, disability…) are refused in the dialog and by the API (`STATUTORY_DISCOUNT_NAME_RESERVED`). Names are unique per
-branch among active types, case-insensitive (a service check, not a DB constraint: two simultaneous creates of one
-name could both succeed — harmless and visible).
+branch among active types, case-insensitive. The service check is the friendly fast path; the partial unique index
+`manual_discount_types_branch_active_name_key` (`branch_id, lower(name) WHERE is_active`, migration `20261101120200`)
+decides under concurrency, and its violation is reported as the same `409 MANUAL_DISCOUNT_TYPE_NAME_TAKEN` (§12.5).
 
 The old "Discounts & VAT by branch" card is now "Statutory discounts & VAT by branch" on the supervisor page: PWD and
 Senior rows only. The Employee rate and "Cashier must choose a discount" controls are hidden there, and their stored
@@ -145,7 +146,11 @@ group it as its own `manual` discount type, separate from `promotional`, `employ
   (older clients ignore the id).
 - A manual discount never accepts a key at checkout — only the registry id, bound to cashier/branch/shift, single use.
 - **Defect fixed for every sale (legacy too):** a statutory `discount_proof_key` must start with the sale's own branch
-  id (`422 DISCOUNT_PROOF_INVALID`). Every key the upload route issues does, so old clients are unaffected.
+  id (`422 DISCOUNT_PROOF_INVALID`). **Superseded in the release pass (§12.3):** the prefix check alone still accepted
+  a made-up `<branch>/…` key, another cashier's key, an already-attached key and `<branch>/../<other branch>/…`. An
+  attached statutory key must now be a registered upload by this cashier for this branch and shift that no sale uses
+  (`422 DISCOUNT_PROOF_INVALID` / `409 DISCOUNT_PROOF_ALREADY_USED`), consumed inside the sale's `$transaction` like
+  a manual proof. Real uploads through the upload route (old clients included) are registered and still work.
 - Viewing and downloading are unchanged (`GET /:id/discount-proof[?download]`, authenticated, branch-scoped, signed
   URLs on demand, never stored). Responses expose only `has_discount_proof`, type and time — never the key (the
   integration test asserts the key is absent from the checkout response). No new log line contains a key, URL or
@@ -159,7 +164,7 @@ group it as its own `manual` discount type, separate from `promotional`, `employ
 | --- | --- |
 | Old web → new API | No `discount_flow` → exactly the pre-P55 behavior (automatic and cashier-selected promotions, Employee rate, P50R required choice). A proof key must now be own-branch, which real uploads always are. |
 | New web → new API | P55 flow. |
-| New web → old API (API rollback) | `GET /manual-types/pos` 404 → no manual types offered ("Couldn't load … Retry"). A manual sale already on screen sends `discount_type: "manual"` → old API `VALIDATION_ERROR`, nothing written. No-discount sales send `promotion: null` per line; with an active automatic promotion the old API answers `PROMOTION_CHANGED` (visible, nothing charged). A required-proof upload answered by an old API has no upload id → the terminal refuses to attach it. |
+| New web → old API (API rollback) | **Executed in the release pass (§12.2).** `GET /manual-types/pos` 404 → only statutory discounts offered, with "Manual discounts aren't available on this server yet" (no futile Retry). A manual sale already on screen sends `discount_type: "manual"` → old API `VALIDATION_ERROR`, nothing written; the terminal shows "This server does not support manual discounts yet…" (review-only). No-discount sales send `promotion: null` per line; with an active automatic promotion the old API answers `PROMOTION_CHANGED` (visible, nothing charged — but such products cannot be sold until the promotion is disabled or the web is rolled back too). A required-proof upload answered by an old API has no upload id → the terminal refuses to attach it (the object stays in the bucket, unattached). |
 | Queued offline sales | Synced as before; original payload, cashier and idempotency identity untouched; never repriced. New-flow offline sales carry only `discount_flow` + `discount_choice`. A queued sale claiming a manual discount (the terminal never queues one) gets a definitive visible rejection `MANUAL_DISCOUNT_OFFLINE_UNSUPPORTED` ("not recorded … amount collected was not changed"); other rows sync. |
 | Offline terminal | Apply discount offers only the statutory discounts ("discount types need a connection"). A manual type chosen before going offline blocks Charge with a reason; the cart is kept. |
 | Lost responses | Unchanged resolve-before-remint gate. Every P55 refusal code is on the definite-no-commit allowlist and is review-only in the error popup (no Retry). |
@@ -187,6 +192,8 @@ automatic and cashier-selected promotions. Rates are never converted into peso a
 `storage_key`, unique `transaction_id`); two nullable columns on `transactions` (no default, metadata-only); FK
 `transactions.manual_discount_type_id` added `NOT VALID`. `20261101120100_pos_perf_p55_validate_fks`: `VALIDATE
 CONSTRAINT` (SHARE UPDATE EXCLUSIVE, does not block inserts). No backfill, no index on `transactions`.
+`20261101120200_pos_perf_p55_manual_discount_type_unique_name` (release pass): partial unique index on
+`manual_discount_types (branch_id, lower(name)) WHERE is_active` — see §12.5 for its duplicate pre-check.
 
 Rollback: old API + new schema is supported (keep migrate-before-API). Before rolling the API back, check
 `SELECT count(*) FROM manual_discount_types WHERE is_active AND apply_to_pos` (tell cashiers manual discounts stop)
@@ -287,11 +294,9 @@ after I added the rollback fence); product cards still advertised catalog promot
 limiter returning 429 for the phone run — the API was restarted to reset it, a closing-dialog race in S7) were fixed in
 the scratch scripts, not the app; the browser script itself is a session scratch file and is not committed.
 
-**Not verified:** cashier switching and break handoff in a real browser (covered by the terminal unit tests, which
-exercise the existing operator-change reset points, and by the API test's per-cashier proof binding — the browser run
-used a single staff login); real iOS Safari / Android Chrome devices or an installed PWA (emulation only); the old web
-build against this API in a browser (covered by the API legacy-client tests); a new-web → old-API run (reasoned from the
-Zod enum, not executed).
+**Not verified (first pass):** cashier switching / break handoff in a real browser, the old web build against this API,
+and a new-web → old-API run. **All three were executed in the release pass — see §12.** Still not verified: real iOS
+Safari / Android Chrome devices or an installed PWA (emulation only).
 
 ## 10. Unresolved business decisions
 
@@ -311,8 +316,8 @@ Zod enum, not executed).
    receipt compliance).
 
 Known limitations: the legacy picker code path is still in `PaymentFooter` (used only when `manualDiscount` is absent;
-no current caller) — remove once old clients are retired; manual-type name uniqueness is a service check only; unused
-proof uploads are not swept.
+no current caller) — remove once old clients are retired; unused proof uploads are not swept (including a photo an old
+API stored for a manual discount it could not attach). Manual-type name uniqueness is now a DB constraint (§12.5).
 
 ## 11. State
 
@@ -321,5 +326,192 @@ proof uploads are not swept.
 | Repository | `C:/Users/kaile/Downloads/potato-corner-web-pos-main` (origin `cjlonzaga29-pixel/potato-corner-web-pos-main`); not the `-1` clone |
 | Starting SHA | `042a700b9da51bd41f1dc244f209055c16fdb1e7` (= reported deployed SHA = `origin/main`), `main` clean at start |
 | Worktree / branch | `C:/Users/kaile/Downloads/pc-p55-manual-discounts-worktree`, `feat/pos-perf-p55-manual-discounts` (created from `042a700`; the main checkout and the P51–P54 worktrees were not modified) |
-| Final SHA | the local commit that adds this runbook (reported in the handoff) |
-| Git status after commit | clean worktree; branch 1 commit ahead of `origin/main`. Not pushed, not deployed, no production access |
+| Final SHA | first pass `ab35dd1`; release pass: the local commit on top of it that updates this runbook (reported in the handoff) |
+| Git status after commit | clean worktree; branch 2 commits ahead of `origin/main`. Not pushed, not merged, not deployed, no production access |
+
+## 12. Release-readiness verification (release pass, 2026-11-01)
+
+Started from `ab35dd1` (parent `042a700`), clean tree. One session, no subagents. The statutory PWD/Senior formula,
+VAT rules and historical tax/proof data were not changed. No smoke accounts were provisioned, no terminal queue was
+cleared, no promotion was disabled except in a disposable local database, and nothing touched production.
+
+### 12.1 Environment
+
+- A new embedded Postgres 18 cluster on `127.0.0.1:46575` (data directory in this session's scratch folder), databases
+  `p55c_1101` (direct-API probes), `p55c_1102` (browser), `p55o_1101` (old-API compatibility), `p55t_1101` (API test
+  suites). Every `prisma migrate` command used and printed `127.0.0.1:46575/<db>`; `PRODUCTION_DATABASE_URL_DIRECT` was
+  unset. Seeded with `prisma/seed.ts`, `seed-pos-demo-inventory.ts` and `scripts/p55-browser-fixtures.ts`, which now
+  also (opt-in: `P55_FIXTURE_PASSWORD` + `P55_PIN_ANA/BEN/CARL`) creates PIN cashiers Ana and Ben at MAIN01, a second
+  branch `P55S01` with its own Branch Account, supervisor and cashier Carl, and open attendance for each. The random
+  PINs and password lived in a scratch file only.
+- Real local Supabase **Storage** (the repository's already-running local stack; only Storage was used). Every object
+  this pass created was under a disposable branch UUID; all were deleted at the end (53 deleted, 0 left).
+- Final builds: API `tsc` (`dist/`), web `next build`, served with `next start`. P55 web on `127.0.0.1:3575`, the
+  042a700 web on `3576`, the API on `API_PORT=4575` (both webs proxy `/api` to it). The **actual 042a700 API and web**
+  were built from a detached scratch worktree at `042a700` (`pnpm install --frozen-lockfile`, its own Prisma client).
+- Chromium (Playwright 1.61.1), desktop 1440 × 900, fake camera device. The API was restarted between runs to reset
+  the in-memory select-employee limiter (429 after ~10 selections in 15 minutes).
+
+### 12.2 Results
+
+| Run | Result |
+| --- | --- |
+| Cashier switching / break isolation, real browser, final builds (S1–S7) | **21 / 21** |
+| Direct API: proof reuse across cashier, branch, shift and sale + idempotent replay (final API) | **25 / 25** (on `ab35dd1`: 4 legacy-key checks failed, §12.3) |
+| New web (P55) → actual 042a700 API (A–G) | **9 / 9** (before §12.4 the two wording checks failed) |
+| Old web (042a700) → P55 API (O1–O5) | **5 / 5** |
+| Legacy calculations: identical payloads through the 042a700 API and the P55 API (none / PWD / Senior / Employee, ₱70) | **byte-identical**: ₱70 VAT 7.50; PWD ₱50 VAT 0; Senior ₱50 VAT 0; Employee 20% ₱56 VAT 6.00 |
+| Concurrent discount-type names (8 creates incl. case/whitespace variants; 2 concurrent renames) | before: **8 active duplicates; 2 after the rename race**. After the constraint: 1 created + 7 × 409; rename 1 ok + 1 × 409 |
+| API suites, real Postgres, serial: transactions, reports, discounts, receipts | **21 files, 683 / 683** |
+| API affected suites incl. the new tests (P55 integration, transactions.service, discounts) | **309 / 309** |
+| Web affected suites (terminal page, components/pos, lib, hooks) | 664 tests: **663 passed, 1 failed** — `use-cart-stock-validation` "times out a check that never answers" (timing under parallel load; file not touched by P55; **21 / 21 when run alone, twice**) |
+| Shared package | 48 / 48 |
+| `turbo type-check lint --force` (api, shared, web) | 0 errors; API 358 warnings (same as the first pass) |
+| New migration on a DB that already held active duplicates | fails `P3018 … is duplicated` as designed; after deactivating the extras: applied, `migrate diff --exit-code`: **no drift** |
+
+**Cashier switching (S1–S7), Branch Account terminal, cashiers Ana and Ben, types "Loyalty card" (proof required)
+and "Staff meal".** S1: Ana picks Loyalty card, enters ₱20 and cash ₱100 → Charge disabled with "Take or upload the
+discount proof photo before charging."; gallery upload → attached, Charge ₱50.00 enabled, the registry row is Ana's and
+unattached. S2: Ana empties the cart (Switch Cashier refuses a non-empty cart) → Switch Cashier → Ben. S3: Ben sees
+"No discount", no amount field, Charge ₱70.00; Apply discount → no type preselected; Loyalty card → empty amount,
+Upload offered, Charge disabled with the proof reason even after amount + cash — Ana's photo is never offered; Ben's
+no-discount sale is Ben's, with no discount and no proof; Ana's upload is still unattached. S4: back to Ana — "No
+discount", no amount, the earlier photo not re-offered. S5: Ana charges ₱20 with a new photo; the server commits and the
+response is dropped → Retry / Edit Cart → Retry resolves the same sale: one sale, Ana, ₱20 once, the proof consumed by
+it, one attempt row. S6: Ana charges Staff meal ₱15 with the response held, taps Next Customer while it is saving
+(detached to Pending), starts another sale with Staff meal ₱12, empties the cart and taps **Start Break**; Ben signs in
+and taps Retry on "Pending (1)" → still one sale, **cashier Ana**, snapshot `name: Staff meal`, `entered_by_id` Ana,
+₱55 — resolution never re-posts as Ben. Ben's next sale shows "No discount" with no amount (Ana's ₱12 not carried) and
+is recorded as Ben. S7: Ana → **Resume Work** → "No discount", Staff meal amount empty; Staff meal ₱10 → ₱60, VAT ₱6.43
+(= 12/112), cashier Ana; the break is closed on her same open attendance record. Browser DB afterwards (all
+iterations): 37 sales / 37 distinct idempotency keys; 22 uploads, 10 consumed, **0 consumed by a cashier other than the
+uploader**; 20 manual sales, **0 with VAT ≠ 12/112 of the amount paid**; Ben: 13 sales, all without a discount.
+
+**Direct API (Branch Account → PIN → employee tokens; Carl at South).** Cashier B naming A's manual upload id → 422
+`MANUAL_DISCOUNT_PROOF_INVALID`; another branch's id → 422; a random id → 422; a storage key instead of the id → 422
+`VALIDATION_ERROR`; A's own id → 201 (the key never appears in the response); the same idempotency key again → the same
+sale, nothing written; a new key reusing the consumed id → 409 `MANUAL_DISCOUNT_PROOF_ALREADY_USED`; three concurrent
+sales on one fresh id → exactly one 201 and two 409, one sale and one consumed proof added; a photo uploaded before the
+branch's shift was closed, used in the next shift → 422. Legacy statutory key (the old-web path): A's own fresh key →
+201; a same-key replay after it is consumed → the same sale; the key on a second sale → 409
+`DISCOUNT_PROOF_ALREADY_USED`; B with A's key → 422; made-up `<branch>/made-up/…` → 422; another branch's key → 422;
+`<branch>/../<other>/x.webp` → 422; A afterwards still uses her own key → 201. Every refusal: no sale, no committed
+attempt, no deduction job, no reservation, no proof attachment (a refused checkout leaves only its `failed` fencing
+row in `checkout_attempts`, by design).
+
+**New web → actual 042a700 API** (`p55o_1101`, migrated with every migration = the API-rollback case). A: the P55 API
+loads the types; Staff meal ₱10 on screen (Charge ₱60.00). B: the API is swapped to 042a700 (same port and DB; the
+session stays valid) → Charge → old API `422 VALIDATION_ERROR` (the rollback fence), **nothing written**; the dialog
+says "Manual discounts not available yet — not charged / This server does not support manual discounts yet…", no
+Retry; Review → cart, type and ₱10 kept. C: Loyalty card + gallery upload → the old API stores the photo but returns
+no upload id → "cannot attach a proof photo to a manual discount" with Retry Upload, Charge disabled, nothing attached.
+D: "No discount" → ₱70.00, VAT ₱7.50, Ana — recorded correctly. E: after a reload only PWD / Senior are offered, with
+"Manual discounts aren't available on this server yet. Use “No discount” or a statutory discount." F: PWD on ₱35 →
+₱25.00, VAT ₱0. G: with an enabled automatic promotion on the product, a no-discount sale → `PROMOTION_CHANGED`
+("was no promotion, now ₱5.00 off"), nothing written — never silently repriced.
+
+**Old web (042a700) → P55 API.** O1: PWD with ID number and a real gallery upload → ₱25.00, VAT ₱0, proof attached; its
+registry row is Ana's and consumed by that sale. O2: Senior ₱70 → ₱50, VAT ₱0. O3: Employee 20% → ₱56, VAT ₱6.00. O4: no
+discount ₱70, VAT ₱7.50. O5: all recorded as legacy (`tax_snapshot.discount_flow` null, no manual type).
+
+### 12.3 Defect fixed: legacy statutory proof keys (security)
+
+Demonstrated on `ab35dd1` (all 201): an own-branch-prefixed made-up key, cashier B attaching A's key, an
+already-attached key on a second sale, and `<branch>/../<other branch>/…`. Fix (`resolveStatutoryProof` in
+`transactions.service.ts`, `findDiscountProofUploadByStorageKey` in the repository): a PWD/Senior key that will be
+attached must be a `discount_proof_uploads` row with the sale's branch, shift and cashier and no transaction
+(`422 DISCOUNT_PROOF_INVALID`, `409 DISCOUNT_PROOF_ALREADY_USED`). The row is claimed inside the sale's `$transaction`
+exactly like a manual proof (0 rows → the sale rolls back), and the stored proof type and time now come from the
+registry. The idempotent fast-path replay still runs first, so a valid retry is unaffected. Web: both codes are on the
+definite-no-commit list, review-only, and clear the ID photo so the cashier retakes it. Cutover consequence: a photo
+uploaded through a **pre-P55** API is not registered, so a PWD/Senior sale started before the API cutover and charged
+after it is refused once ("Take or upload the photo again") — a retake, never a wrong charge.
+
+### 12.4 Defects fixed: new web against an old API (usability, no data risk)
+
+1. The rollback fence's refusal showed the raw schema text (`discount_type: Invalid option: expected one of
+   "pwd"|…`) with a Retry that can never succeed. `VALIDATION_ERROR` on a payload with `discount_type: "manual"` now
+   shows `MANUAL_DISCOUNT_UNSUPPORTED_BY_SERVER` ("Manual discounts not available yet — not charged"), review-only.
+2. A missing types route (`404 NOT_FOUND`) showed "Couldn't load … Retry". It is now `ManualDiscountsUnsupportedError`
+   (not retried) → "Manual discounts aren't available on this server yet. Use “No discount” or a statutory discount."
+
+### 12.5 Settings integrity: discount-type names
+
+Uniqueness per branch among active types, case-insensitive, is the intended invariant (service check, its 409 code,
+§3). It was proven broken under real concurrency (8 concurrent creates → 8 active rows; 2 concurrent renames → 2).
+Migration `20261101120200_pos_perf_p55_manual_discount_type_unique_name` adds `CREATE UNIQUE INDEX
+manual_discount_types_branch_active_name_key ON manual_discount_types (branch_id, LOWER(name)) WHERE is_active`. It is
+raw SQL like `inventory_items_sku_ci_key` (the Prisma DSL has no partial or expression index; documented on the model).
+Branch scope is kept (the same name at another branch: 201), a deactivated name is reusable (201), and names are stored
+trimmed by Zod, so `lower(name)` matches the service's case-insensitive compare. `discounts.service.ts` maps P2002 on
+create and rename to `409 MANUAL_DISCOUNT_TYPE_NAME_TAKEN`. The table is new in P55 (never in production) and small,
+so a plain build is fine. The migration **fails on a database that already holds active duplicates**, which is only
+possible where `ab35dd1` ran. Pre-check: `SELECT branch_id, lower(name), count(*) FROM manual_discount_types WHERE
+is_active GROUP BY 1, 2 HAVING count(*) > 1;` — a supervisor deactivates the extras first. Wildcard characters are not
+an issue (`W_1` and `WX1` are both allowed).
+
+### 12.6 Cutover
+
+**Order (unchanged, now verified):** (1) **migrate** — three P55 migrations, all additive; the old API runs on the new
+schema (every old-API run in §12.2 was on it). (2) **API** — old webs keep working (O1–O5): legacy discounts, rates,
+the P50R choice and promotions are unchanged; real old-client proof uploads work. (3) Supervisors create the branch
+discount types. (4) **Web**. (5) **Every terminal must reload** (close and reopen the POS / PWA, or reload the tab): the
+service worker keeps serving the old build until it updates, and an old build never offers manual discounts. Promoting
+the web does **not** retire old clients by itself — a terminal that is not reloaded keeps the old checkout (legacy
+discounts, Employee rate, promotions) against the new API, which stays supported.
+
+**Old-client and offline sales that remain valid after the API cutover.** Online old-web sales: all legacy discounts
+(none, PWD, Senior, Employee, cashier-selected and automatic promotions) exactly as before. A PWD/Senior proof is
+accepted when it was uploaded through the new API by the same cashier in the same shift; a photo uploaded through the
+old API just before the cutover must be retaken once. Queued offline sales (old or new web) sync as before: they never
+carry a proof and never apply promotions (a queued line claiming one is refused, `PROMOTION_OFFLINE_UNSUPPORTED`, as
+before P55). An offline Employee-rate sale is accepted while its `tax_basis` matches the current rate (otherwise
+`TAX_SETTINGS_CHANGED`, visible). A queued manual discount is refused visibly (`MANUAL_DISCOUNT_OFFLINE_UNSUPPORTED`; the
+P55 terminal never queues one).
+
+**When legacy promotions can be disabled:** only after every terminal runs the P55 build. Check per branch that no
+recent online sale has `tax_snapshot->>'discount_flow' IS NULL`. Disabling (not deleting) does **not** change
+queued-sale acceptance, because offline sales never use promotions. An online old-web sale whose line still
+acknowledges a promotion gets `PROMOTION_CHANGED` and is re-priced on review (visible, nothing charged). Keep the
+organization Employee rate unchanged until old terminals and their queues are gone (old offline Employee sales are
+checked against it). The read-only inventory query in §7 was **not** run against production.
+
+**API rollback prerequisites (manual-discount sales and bound proofs).** Keep the schema: never roll the migrations back
+while `discount_type = 'manual'` sales or consumed `discount_proof_uploads` rows exist — the snapshot, type FK and proof
+binding live there; export first if it is ever needed. Before rolling the API back: (a) tell cashiers that manual
+discounts stop — the P55 web then refuses them visibly and offers statutory or no discount (verified); (b) **disable the
+automatic promotions or roll the web back too** — the P55 web always acknowledges "no promotion", so a 042a700 API
+refuses every sale of a product with an enabled automatic promotion (`PROMOTION_CHANGED`, verified in G — safe, but
+those products cannot be sold); (c) expect required-proof manual types to be unusable (no upload id), and PWD/Senior
+photos to be accepted by prefix only again (the pre-P55 weakness returns while the old API runs); (d) stored manual
+sales stay readable with their stored amounts (nothing recomputes). Rolling forward again needs no data repair; photos
+uploaded through the old API in the meantime are not registered (retake).
+
+### 12.7 Distinctions
+
+- **Manual custom discounts:** supervisor-named per branch, a peso amount per sale, an optional required proof bound to
+  cashier/branch/shift and single use; taxable commercial treatment (VAT = 12/112 of the amount paid); online only.
+- **Statutory PWD / Senior:** unchanged formula, rates, ID requirement and VAT exemption (verified identical through
+  the old and new API); offered under "Statutory · VAT-exempt"; never combinable with a manual discount; the proof photo
+  is now bound like a manual proof.
+- **Backend VAT:** unchanged. Server-authoritative `computeSaleTax`; manual discounts use its existing commercial
+  arithmetic; no exemption can be created from a discount type.
+- **Verified vs unverified compatibility:** verified in a real browser on final builds — P55 web ↔ P55 API, P55 web →
+  042a700 API, 042a700 web → P55 API, and legacy calculations old vs new. Not verified: real devices and installed-PWA
+  update behavior (emulation only), the production promotion inventory, and production data shapes.
+
+### 12.8 Owner decisions and release actions
+
+The owner/accountant decisions in §10 are unchanged: statutory discounts as pesos, VAT on manual discounts, optional
+proof, default "No discount", the promotion retirement date, and a per-type report. Release actions:
+
+1. Run the duplicate-name pre-check (§12.5) on any database where `ab35dd1` was applied.
+2. Migrate → API → web.
+3. Reload every terminal.
+4. Supervisors create the discount types.
+5. Watch for online `discount_flow IS NULL` sales before disabling promotions.
+6. Keep the Employee rate until old queues drain.
+7. A rollback follows §12.6.
+
+**Release blockers:** none found in code. Open before go-live: the real-device / installed-PWA reload check, and the
+owner's promotion-retirement decision (not a code change).

@@ -118,7 +118,8 @@ export function SaleStatusModal({ phase, snapshot, errorMessage, errorCode, onRe
       errorCode.startsWith('DISCOUNT_CHOICE_') ||
       errorCode.startsWith('MANUAL_DISCOUNT_') ||
       errorCode.startsWith('DISCOUNT_NOT_') ||
-      errorCode === 'DISCOUNT_PROOF_INVALID');
+      errorCode === 'DISCOUNT_PROOF_INVALID' ||
+      errorCode === 'DISCOUNT_PROOF_ALREADY_USED');
   return (
     <Dialog
       open

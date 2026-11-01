@@ -1226,6 +1226,31 @@ async function resolveManualDiscount(data: CreateTransactionData, manual: NonNul
   return { type, proof };
 }
 
+/**
+ * P55 release fix — the PWD/Senior proof key an older terminal sends is
+ * accepted only as a registered upload (discount_proof_uploads) made by this
+ * cashier for this branch and shift that no sale uses yet: the same binding
+ * as a manual proof. Before this, any string under the sale's branch prefix
+ * was attached — a made-up key, another cashier's photo, one already on
+ * another sale, or "<branch>/../<other branch>/…" — and became viewable
+ * through this sale's proof viewer. Every key the upload route has issued
+ * since P55 is registered, so a real upload from an old client still works.
+ */
+async function resolveStatutoryProof(data: CreateTransactionData, storageKey: string) {
+  const proof = await transactionsRepository.findDiscountProofUploadByStorageKey(storageKey);
+  if (!proof || proof.branchId !== data.branchId || proof.shiftId !== data.shiftId || proof.uploadedById !== data.cashierId) {
+    throw new TransactionError(
+      'DISCOUNT_PROOF_INVALID',
+      'The discount proof photo was not uploaded by this cashier for this branch and shift. Take or upload the photo again.',
+      422,
+    );
+  }
+  if (proof.transactionId) {
+    throw new TransactionError('DISCOUNT_PROOF_ALREADY_USED', 'This proof photo is already attached to another sale. Take or upload a new photo.', 409);
+  }
+  return proof;
+}
+
 export interface DiscountRates {
   pwd: number;
   senior_citizen: number;
@@ -2486,6 +2511,8 @@ export const transactionsService = {
     // settings-driven policy would gate on the same discountType check.
     isPwdOrSeniorDiscount = data.discountType === DISCOUNT_TYPE.PWD || data.discountType === DISCOUNT_TYPE.SENIOR_CITIZEN;
     hasDiscountProof = isPwdOrSeniorDiscount && Boolean(data.discountProofKey && data.discountProofType);
+    // P55 release fix — a key that will be attached must be a registered upload bound to this cashier/branch/shift.
+    const statutoryProof = hasDiscountProof ? await resolveStatutoryProof(data, data.discountProofKey as string) : null;
 
     // Task 209.xx — server-authoritative discount rate. The client only ever
     // sends the discount TYPE (createTransactionSchema has no percentage
@@ -2622,6 +2649,7 @@ export const transactionsService = {
     };
 
     const manualProof = manualResolution?.proof ?? null;
+    const claimedProof = manualProof ?? statutoryProof;
 
     let changeGiven: number | null = null;
     if (data.paymentMethod === 'cash') {
@@ -2695,11 +2723,11 @@ export const transactionsService = {
             paymentProofKey: requiresProof ? (data.paymentProofKey as string) : null,
             paymentProofType: requiresProof ? (data.paymentProofType as ImageProofType) : null,
             paymentProofUploadedAt: requiresProof ? new Date() : null,
-            // POS-PERF-P55 — a manual discount's proof comes from the
-            // server's own upload registry (never a client-sent key).
-            discountProofKey: manualProof ? manualProof.storageKey : hasDiscountProof ? (data.discountProofKey as string) : null,
-            discountProofType: manualProof ? manualProof.proofType : hasDiscountProof ? (data.discountProofType as ImageProofType) : null,
-            discountProofUploadedAt: manualProof ? manualProof.createdAt : hasDiscountProof ? new Date() : null,
+            // POS-PERF-P55 — every attached discount proof (manual or
+            // statutory) comes from the server's own upload registry.
+            discountProofKey: claimedProof ? claimedProof.storageKey : null,
+            discountProofType: claimedProof ? claimedProof.proofType : null,
+            discountProofUploadedAt: claimedProof ? claimedProof.createdAt : null,
             manualDiscountTypeId: manualSnapshot?.discount_type_id ?? null,
             manualDiscountSnapshot: manualSnapshot as unknown as Prisma.InputJsonValue | null,
             isOfflineTransaction: data.isOfflineTransaction,
@@ -2758,10 +2786,14 @@ export const transactionsService = {
 
         // POS-PERF-P55 — claim the proof for this sale atomically with it.
         // A concurrent sale that already claimed it makes this one roll back.
-        if (manualProof) {
-          const claimed = await transactionsRepository.consumeDiscountProofUpload(tx, manualProof.id, txCreated.id);
+        if (claimedProof) {
+          const claimed = await transactionsRepository.consumeDiscountProofUpload(tx, claimedProof.id, txCreated.id);
           if (claimed === 0) {
-            throw new TransactionError('MANUAL_DISCOUNT_PROOF_ALREADY_USED', 'This proof photo is already attached to another sale. Take or upload a new photo.', 409);
+            throw new TransactionError(
+              manualProof ? 'MANUAL_DISCOUNT_PROOF_ALREADY_USED' : 'DISCOUNT_PROOF_ALREADY_USED',
+              'This proof photo is already attached to another sale. Take or upload a new photo.',
+              409,
+            );
           }
         }
 

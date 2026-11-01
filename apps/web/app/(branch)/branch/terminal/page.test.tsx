@@ -301,14 +301,21 @@ vi.mock('@/hooks/queries/use-settings', () => ({
 }));
 
 // POS-PERF-P55 — the branch's manual discount types offered at the POS.
-const { manualTypesState } = vi.hoisted(() => ({
+const { manualTypesState, ManualDiscountsUnsupportedError } = vi.hoisted(() => ({
   manualTypesState: {
     types: [] as { id: string; name: string; require_proof: boolean; version: number }[],
     refetch: vi.fn(async () => ({ isError: false, error: null })),
+    // P55 release fix — set to simulate a pre-P55 API (no discount-types route).
+    unsupported: false,
   },
+  ManualDiscountsUnsupportedError: class ManualDiscountsUnsupportedError extends Error {},
 }));
 vi.mock('@/hooks/queries/use-manual-discount-types', () => ({
-  usePosManualDiscountTypes: () => ({ data: manualTypesState.types, isError: false, isLoading: false, refetch: manualTypesState.refetch }),
+  ManualDiscountsUnsupportedError,
+  usePosManualDiscountTypes: () =>
+    manualTypesState.unsupported
+      ? { data: undefined, error: new ManualDiscountsUnsupportedError(), isError: true, isLoading: false, refetch: manualTypesState.refetch }
+      : { data: manualTypesState.types, error: null, isError: false, isLoading: false, refetch: manualTypesState.refetch },
 }));
 
 vi.mock('@/lib/offline/cache', () => ({
@@ -4173,6 +4180,40 @@ describe('TerminalPage — P55 manual peso discounts', () => {
     expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
     expect(manualTypesState.refetch).toHaveBeenCalled();
     expect(mockClearCart).not.toHaveBeenCalled();
+  });
+
+  it('a pre-P55 API refusing discount_type "manual" shows what to do, review-only, cart and amount kept (P55 release fix)', async () => {
+    const { TransactionApiError } = await import('@/hooks/queries/use-transactions');
+    mockCreateTransactionMutateAsync.mockRejectedValueOnce(
+      new TransactionApiError('discount_type: Invalid option: expected one of "pwd"|"senior_citizen"|"employee"|"manager_override"|"promotional"', 'VALIDATION_ERROR', {}),
+    );
+    render(<TerminalPage />);
+    openCheckout();
+    applyType('Employee');
+    fireEvent.change(screen.getByLabelText('Discount amount (₱)'), { target: { value: '50' } });
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '500' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Charge/ }));
+    await waitFor(() => expect(screen.getByText('Manual discounts not available yet — not charged')).toBeInTheDocument());
+    expect(screen.getByText(/This server does not support manual discounts yet/)).toBeInTheDocument();
+    expect(screen.queryByText(/Invalid option/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+    expect(mockClearCart).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Review updated prices' }));
+    expect(screen.getByLabelText('Discount amount (₱)')).toHaveValue('50');
+  });
+
+  it('a pre-P55 API without the discount-types route: only statutory discounts, an explanation and no Retry (P55 release fix)', () => {
+    manualTypesState.unsupported = true;
+    try {
+      render(<TerminalPage />);
+      openCheckout();
+      fireEvent.click(screen.getByRole('radio', { name: 'Apply discount' }));
+      expect(screen.getByText(/Manual discounts aren.t available on this server yet/)).toBeInTheDocument();
+      expect(screen.queryByText(/Couldn.t load this branch.s discount types/)).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'PWD (20%)' })).toBeInTheDocument();
+    } finally {
+      manualTypesState.unsupported = false;
+    }
   });
 
   it('a type that is no longer offered blocks Charge with a reason instead of charging', () => {

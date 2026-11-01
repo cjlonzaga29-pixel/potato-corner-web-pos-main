@@ -233,6 +233,11 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
     }
     expect((await createType(tokens.supA, ids.branchA, 'employee')).body.error?.code).toBe('MANUAL_DISCOUNT_TYPE_NAME_TAKEN');
     expect((await createType(tokens.supB, ids.branchB, 'Employee')).status).toBe(201);
+    // Concurrent creates of one name (any case): the partial unique index lets exactly one through.
+    const raced = await Promise.all(['Rush', 'rush', 'RUSH', 'Rush', 'Rush'].map((name) => createType(tokens.supA, ids.branchA, name, false, false)));
+    expect(raced.filter((res) => res.status === 201)).toHaveLength(1);
+    expect(raced.filter((res) => res.body.error?.code === 'MANUAL_DISCOUNT_TYPE_NAME_TAKEN')).toHaveLength(4);
+    expect(await prisma.manualDiscountType.count({ where: { branchId: ids.branchA, isActive: true, name: { equals: 'rush', mode: 'insensitive' } } })).toBe(1);
     // An empty name is refused by validation.
     expect((await createType(tokens.supA, ids.branchA, '')).status).toBe(422);
 
@@ -409,6 +414,34 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
       discount_type: 'senior_citizen', discount_id_reference: 'SC-1', discount_proof_key: `${ids.branchB}/x/y.webp`, discount_proof_type: 'live_capture',
     });
     expect(legacyForged.body.error?.code).toBe('DISCOUNT_PROOF_INVALID');
+  });
+
+  it('legacy statutory proof keys: only a registered, unused upload by this cashier/branch/shift; real old-client uploads still work', async () => {
+    const legacySale = (token: string, key: string, idempotencyKey: string = randomUUID()) =>
+      call('POST', '/api/transactions', token, {
+        branch_id: ids.branchA, items: [item(1)], payment_method: 'cash', cash_tendered: 1000, is_offline_transaction: false, idempotency_key: idempotencyKey,
+        discount_type: 'pwd', discount_id_reference: 'PWD-LEGACY', discount_proof_key: key, discount_proof_type: 'live_capture',
+      });
+    const before = await saleCount();
+    // Made up under the sale's own branch prefix, and a traversal out of it: refused (both were attached before this fix).
+    expect((await legacySale(tokens.ana, `${ids.branchA}/made-up/anything.webp`)).body.error?.code).toBe('DISCOUNT_PROOF_INVALID');
+    expect((await legacySale(tokens.ana, `${ids.branchA}/../${ids.branchB}/x.webp`)).body.error?.code).toBe('DISCOUNT_PROOF_INVALID');
+    // Ana's real upload: Ben cannot attach it; Ana can, exactly once; a same-key retry replays the sale.
+    const upload = await uploadProof(tokens.ana, ids.branchA);
+    const key = upload.body.data?.discount_proof_key as string;
+    expect((await legacySale(tokens.ben, key)).body.error?.code).toBe('DISCOUNT_PROOF_INVALID');
+    const idempotencyKey = randomUUID();
+    const ok = await legacySale(tokens.ana, key, idempotencyKey);
+    expect(ok.status).toBe(201);
+    // Legacy PWD formula unchanged: ₱250 → base 223.21, 20% off → ₱178.57, VAT ₱0.
+    expect(ok.body.data).toMatchObject({ discount_type: 'pwd', has_discount_proof: true, total_amount: 178.57, vat_amount: 0 });
+    const replay = await legacySale(tokens.ana, key, idempotencyKey);
+    expect(replay.body.data?.id).toBe(ok.body.data?.id);
+    const second = await legacySale(tokens.ana, key);
+    expect(second.status).toBe(409);
+    expect(second.body.error?.code).toBe('DISCOUNT_PROOF_ALREADY_USED');
+    expect((await prisma.discountProofUpload.findUniqueOrThrow({ where: { storageKey: key } })).transactionId).toBe(ok.body.data?.id);
+    expect(await saleCount()).toBe(before + 1);
   });
 
   it('idempotency: same-key retry and lost-response resolve never apply the amount twice; a changed discount under the same key is refused', async () => {

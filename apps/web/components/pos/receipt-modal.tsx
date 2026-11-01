@@ -40,7 +40,10 @@ function discountLabel(transaction: TransactionResponse): string {
   if (!type) return 'Discount';
   // POS-PERF-P55 — the type name frozen on the sale, never the live type.
   if (type === 'manual') return transaction.manual_discount ? `${transaction.manual_discount.name} discount` : 'Discount';
-  const name = DISCOUNT_TYPE_LABEL[type] ?? type;
+  // POS-PERF-P55R3 (Release 1) — a type this build does not know (a newer
+  // API's) is shown as a plain "Discount", never as its raw code.
+  const name = DISCOUNT_TYPE_LABEL[type];
+  if (!name) return 'Discount';
   return transaction.discount_rate_used != null ? `${name} Discount (${transaction.discount_rate_used}%)` : `${name} Discount`;
 }
 

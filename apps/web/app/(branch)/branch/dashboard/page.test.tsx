@@ -213,7 +213,7 @@ describe('BranchDashboardPage', () => {
     });
     render(<BranchDashboardPage />);
 
-    expect(screen.getByText('Low Stock Items')).toBeInTheDocument();
+    expect(screen.getByText('Items Needing Stock')).toBeInTheDocument();
     expect(screen.getByText('3')).toBeInTheDocument();
     expect(screen.getByText('Inventory Alerts')).toBeInTheDocument();
     expect(screen.getByText('5')).toBeInTheDocument();

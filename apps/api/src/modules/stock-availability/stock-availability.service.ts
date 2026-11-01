@@ -1,11 +1,12 @@
 import { prisma } from '../../lib/prisma.js';
 import { convertQuantity } from '../product-components/unit-conversion.util.js';
 import { computeBomDeductionBatch } from '../shadow-bom-deduction/shadow-bom-deduction.service.js';
-import { classifyStockStatus } from '../universal-inventory/universal-inventory.service.js';
+import { availableStock, classifyStockStatus } from '../universal-inventory/stock-classification.js';
 import type {
   CartAvailabilityLineInput,
   CartAvailabilityResult,
   CatalogStockRequest,
+  StockShortage,
   StockStatus,
   VariantStockResult,
 } from './stock-availability.types.js';
@@ -30,7 +31,25 @@ async function fetchStockByItem(branchId: string, inventoryItemIds: string[]): P
 
 function availableQuantity(stock: StockRow | undefined): number {
   if (!stock) return 0;
-  return Math.max(0, stock.quantityOnHand.toNumber() - stock.quantityReserved.toNumber());
+  return availableStock(stock.quantityOnHand.toNumber(), stock.quantityReserved.toNumber());
+}
+
+/** Names, units and tracking for the items actually short — one query, and only when something is out of stock. */
+async function nameShortages(results: Map<string, VariantStockResult>): Promise<void> {
+  const shortages = [...results.values()].flatMap((result) => result.shortages);
+  if (shortages.length === 0) return;
+  const items = await prisma.inventoryItem.findMany({
+    where: { id: { in: [...new Set(shortages.map((s) => s.inventoryItemId))] } },
+    select: { id: true, name: true, trackInventory: true, baseUnit: { select: { code: true } } },
+  });
+  const byId = new Map(items.map((item) => [item.id, item]));
+  for (const shortage of shortages) {
+    const item = byId.get(shortage.inventoryItemId);
+    if (!item) continue;
+    shortage.name = item.name;
+    shortage.unitCode = item.baseUnit.code;
+    shortage.trackInventory = item.trackInventory;
+  }
 }
 
 export const stockAvailabilityService = {
@@ -72,6 +91,7 @@ export const stockAvailabilityService = {
       const subResults = subs.map(() => evaluateLines(bomLinesByRequest[cursor++] ?? [], stockByItem));
       results.set(productVariantId, { ...aggregateVariantStock(subResults), productVariantId });
     }
+    await nameShortages(results);
     return results;
   },
 
@@ -184,16 +204,18 @@ async function optionRequirements(lines: CartAvailabilityLineInput[]): Promise<{
 
 function evaluateLines(lines: { inventoryItemId: string; quantity: number }[], stockByItem: Map<string, StockRow>): VariantStockResult {
   if (lines.length === 0) {
-    return { productVariantId: '', status: 'unknown', maxSellableUnits: null };
+    return { productVariantId: '', status: 'unknown', maxSellableUnits: null, shortages: [] };
   }
 
   let maxUnits = Infinity;
   let anyLow = false;
+  const shortages: StockShortage[] = [];
   for (const line of lines) {
     const stock = stockByItem.get(line.inventoryItemId);
     const available = availableQuantity(stock);
     const sellableFromThisItem = line.quantity > 0 ? Math.floor(available / line.quantity) : Infinity;
     maxUnits = Math.min(maxUnits, sellableFromThisItem);
+    if (sellableFromThisItem < 1) shortages.push(toShortage(line, stock, available));
 
     const itemStatus = classifyStockStatus(available, stock?.lowStockThreshold?.toNumber() ?? null, stock?.criticalThreshold?.toNumber() ?? null);
     if (itemStatus !== 'healthy') anyLow = true;
@@ -201,7 +223,14 @@ function evaluateLines(lines: { inventoryItemId: string; quantity: number }[], s
   if (!Number.isFinite(maxUnits)) maxUnits = 0;
 
   const status: StockStatus = maxUnits < 1 ? 'out_of_stock' : anyLow ? 'low_stock' : 'in_stock';
-  return { productVariantId: '', status, maxSellableUnits: status === 'out_of_stock' ? 0 : maxUnits };
+  return { productVariantId: '', status, maxSellableUnits: status === 'out_of_stock' ? 0 : maxUnits, shortages };
+}
+
+function toShortage(line: { inventoryItemId: string; quantity: number }, stock: StockRow | undefined, available: number): StockShortage {
+  const onHand = stock?.quantityOnHand.toNumber() ?? 0;
+  const reason: StockShortage['reason'] = !stock ? 'not_assigned' : onHand <= 0 ? 'no_stock' : available <= 0 ? 'fully_reserved' : 'below_recipe_quantity';
+  // name/unit/tracking are filled in by nameShortages, once per catalog read.
+  return { inventoryItemId: line.inventoryItemId, name: 'Ingredient', reason, available, required: line.quantity, unitCode: null, trackInventory: true };
 }
 
 /**
@@ -216,15 +245,19 @@ function evaluateLines(lines: { inventoryItemId: string; quantity: number }[], s
  * lines) and none is confirmed sellable — it must never be reported as
  * sellable itself.
  */
-function aggregateVariantStock(subResults: Pick<VariantStockResult, 'status' | 'maxSellableUnits'>[]): Pick<VariantStockResult, 'status' | 'maxSellableUnits'> {
+function aggregateVariantStock(subResults: Omit<VariantStockResult, 'productVariantId'>[]): Omit<VariantStockResult, 'productVariantId'> {
   const sellable = subResults.filter((r) => r.status === 'in_stock' || r.status === 'low_stock');
   if (sellable.length > 0) {
     const anyInStock = sellable.some((r) => r.status === 'in_stock');
     const maxUnits = Math.max(...sellable.map((r) => r.maxSellableUnits ?? 0));
-    return { status: anyInStock ? 'in_stock' : 'low_stock', maxSellableUnits: maxUnits };
+    return { status: anyInStock ? 'in_stock' : 'low_stock', maxSellableUnits: maxUnits, shortages: [] };
   }
   if (subResults.some((r) => r.status === 'unknown')) {
-    return { status: 'unknown', maxSellableUnits: null };
+    return { status: 'unknown', maxSellableUnits: null, shortages: [] };
   }
-  return { status: 'out_of_stock', maxSellableUnits: 0 };
+  const byItem = new Map<string, StockShortage>();
+  for (const shortage of subResults.flatMap((r) => r.shortages)) {
+    if (!byItem.has(shortage.inventoryItemId)) byItem.set(shortage.inventoryItemId, shortage);
+  }
+  return { status: 'out_of_stock', maxSellableUnits: 0, shortages: [...byItem.values()] };
 }

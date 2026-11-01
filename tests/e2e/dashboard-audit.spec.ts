@@ -9,7 +9,7 @@ const ADMIN_PAGES = [
 ];
 const SUPERVISOR_PAGES = [
   '/supervisor/dashboard', '/supervisor/inventory', '/supervisor/attendance',
-  '/supervisor/cash', '/supervisor/employees', '/supervisor/reports',
+  '/supervisor/employees', '/supervisor/reports',
   '/supervisor/recipes',
 ];
 const STAFF_PAGES = ['/terminal', '/shift', '/receipts'];

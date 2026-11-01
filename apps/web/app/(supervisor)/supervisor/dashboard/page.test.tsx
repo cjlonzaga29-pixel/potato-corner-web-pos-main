@@ -33,6 +33,12 @@ const {
   mockUseDashboardSalesTrendReport: vi.fn(),
 }));
 
+const { mockUseCatalog } = vi.hoisted(() => ({ mockUseCatalog: vi.fn() }));
+
+vi.mock('@/hooks/queries/use-products', () => ({
+  useCatalog: mockUseCatalog,
+}));
+
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: mockPush }),
 }));
@@ -221,6 +227,7 @@ const CLOCKED_IN = {
 };
 
 beforeEach(() => {
+  mockUseCatalog.mockReturnValue({ data: { products: [] }, isLoading: false, isError: false });
   mockBranchState({ activeBranchId: 'branch-1', activeBranch: { id: 'branch-1', name: 'Main Branch' } });
   mockSocketState({ isConnected: true, isReconnecting: false });
   mockUseShiftsRealtimeSync.mockReturnValue(undefined);
@@ -344,6 +351,43 @@ describe('SupervisorDashboardPage', () => {
     expect(screen.getByRole('link', { name: /View all 3/ })).toHaveAttribute('href', '/supervisor/inventory?status=alerts');
   });
 
+  it('POS-PERF-P56 — counts out-of-stock items apart from critical and low, and labels product sizes apart from inventory items', () => {
+    mockUseBranchInventoryAlerts.mockReturnValue({
+      data: {
+        branch_id: 'branch-1',
+        alerts: [
+          inventoryAlert({ inventory_item_id: 'o1', severity: 'critical', quantity_available: 0 }),
+          inventoryAlert({ inventory_item_id: 'c1', severity: 'critical', quantity_available: 2 }),
+          inventoryAlert({ inventory_item_id: 'l1', severity: 'low', quantity_available: 5 }),
+        ],
+      },
+      isLoading: false,
+    });
+    mockUseCatalog.mockReturnValue({
+      data: {
+        products: [
+          {
+            name: 'Fries',
+            variants: [
+              { id: 'v1', name: 'Large', live_ready: true, blocking_issues: [], stock_status: 'out_of_stock', stock_shortages: [{ inventory_item_id: 'o1', name: 'Cheese', reason: 'no_stock', available: 0, required: 1, unit_code: 'g', track_inventory: true }] },
+              { id: 'v2', name: 'Small', live_ready: true, blocking_issues: [], stock_status: 'in_stock', stock_shortages: [] },
+            ],
+          },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+    });
+    render(<SupervisorDashboardPage />);
+    expect(screen.getByTestId('kpi-Low Stock Items')).toHaveTextContent('1');
+    expect(screen.getByTestId('kpi-Inventory Alerts')).toHaveTextContent('3');
+    expect(screen.getByText("POS product sizes that can't be sold (1)")).toBeInTheDocument();
+    expect(screen.getByText('Cheese is out of stock.')).toBeInTheDocument();
+    expect(screen.getByText('Ingredient shortage')).toBeInTheDocument();
+    expect(screen.getByText('Inventory item alerts')).toBeInTheDocument();
+    expect(screen.getByText('Out Of Stock')).toBeInTheDocument();
+  });
+
   it('counts Staff Clocked In from attendance records (the summary), not from logins or branch stats', () => {
     mockUseAllBranchStats.mockReturnValue({ data: [branchStats({ staffTimedInCount: 9 })], isLoading: false });
     mockUseAttendanceSummary.mockReturnValue({ data: attendanceSummary({ clocked_in: [CLOCKED_IN] }), isLoading: false, isError: false });
@@ -391,7 +435,7 @@ describe('SupervisorDashboardPage', () => {
   it('renders the healthy-stock empty state when there are no alerts', () => {
     mockUseBranchInventoryAlerts.mockReturnValue({ data: { branch_id: 'branch-1', alerts: [] }, isLoading: false });
     render(<SupervisorDashboardPage />);
-    expect(screen.getByText('All stock levels are healthy')).toBeInTheDocument();
+    expect(screen.getByText('All tracked items have stock')).toBeInTheDocument();
   });
 
   it('renders the attendance overview from the summary: clocked in now vs clocked out today', () => {

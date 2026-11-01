@@ -29,8 +29,9 @@ export function BranchWorkHoursSection() {
       <CardHeader>
         <CardTitle>Work Hours</CardTitle>
         <CardDescription>
-          Regular hours per shift before overtime, for each of your branches. A change applies to clock-outs and corrections saved after it; past
-          attendance keeps the overtime it was recorded with.
+          Regular attendance hours per shift before overtime is recorded. This is not pay: employee rates are in Payroll Settings. Each branch uses
+          the organization default, set by a Super Admin, unless you save a branch override here; you can change only the branches you are assigned
+          to. A change applies to clock-outs and corrections saved after it; past attendance keeps the overtime it was recorded with.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -81,8 +82,8 @@ function BranchWorkHoursRow({ branchId, branchName }: { branchId: string; branch
           </Label>
           <p className="text-xs text-muted-foreground">
             {data.source === 'branch'
-              ? `Branch setting · default for other branches is ${data.globalHours}h`
-              : `Using the default (${data.globalHours}h)`}
+              ? `Branch override · organization default is ${data.globalHours}h`
+              : `Using the organization default (${data.globalHours}h)`}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -104,7 +105,7 @@ function BranchWorkHoursRow({ branchId, branchName }: { branchId: string; branch
           </Button>
           {data.source === 'branch' && (
             <Button size="sm" variant="ghost" disabled={clear.isPending} onClick={() => setConfirmReset(true)}>
-              Use default
+              Use organization default
             </Button>
           )}
         </div>

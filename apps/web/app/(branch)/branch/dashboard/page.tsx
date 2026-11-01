@@ -163,7 +163,7 @@ export default function BranchDashboardPage() {
         />
         <KpiCard title="Staff Clocked In" value={todayStats?.staffTimedInCount ?? 0} isLoading={isLoadingStats} icon={Users} />
         <KpiCard
-          title="Low Stock Items"
+          title="Items Needing Stock"
           value={todayStats?.lowStockIngredientCount ?? 0}
           isLoading={isLoadingStats}
           icon={PackageSearch}

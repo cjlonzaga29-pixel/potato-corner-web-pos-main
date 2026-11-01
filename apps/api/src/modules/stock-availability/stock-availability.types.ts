@@ -14,6 +14,19 @@ export interface VariantStockResult {
   status: StockStatus;
   /** Null when status is 'unknown' or 'out_of_stock' (0), or not reliably calculable. */
   maxSellableUnits: number | null;
+  /** POS-PERF-P56 — what is short across every configuration; empty unless status is 'out_of_stock'. */
+  shortages: StockShortage[];
+}
+
+/** POS-PERF-P56 — one ingredient that can't cover a single unit: on hand, reservations and recipe quantity are told apart so the POS can say which it is. */
+export interface StockShortage {
+  inventoryItemId: string;
+  name: string;
+  reason: 'no_stock' | 'fully_reserved' | 'below_recipe_quantity' | 'not_assigned';
+  available: number;
+  required: number;
+  unitCode: string | null;
+  trackInventory: boolean;
 }
 
 /** POS-PERF-P24R — one catalog variant's flavors, so evaluateCatalogStock can check every sellable (flavor) configuration rather than just the base recipe. Empty when the variant has no flavors (base recipe is the only configuration). */

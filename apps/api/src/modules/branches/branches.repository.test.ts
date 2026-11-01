@@ -227,11 +227,11 @@ describe('branchesRepository.findAllStatsGrouped', () => {
     expect(rows[0]).toMatchObject({ todayGrossSales: 1234.56, todayTransactionCount: 9 });
   });
 
-  it('lowStockIngredientCount reflects InventoryStock rows where quantityOnHand <= threshold (Phase 4: canonical source, not legacy Ingredient)', async () => {
+  it('lowStockIngredientCount reflects InventoryStock rows needing attention (Phase 4: canonical source, not legacy Ingredient)', async () => {
     vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'branch-1' }] as never);
     vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
-      { branchId: 'branch-1', quantityOnHand: decimal(5), lowStockThreshold: decimal(10) }, // 5 <= 10 -> counts as low stock
-      { branchId: 'branch-1', quantityOnHand: decimal(50), lowStockThreshold: decimal(10) }, // 50 > 10 -> does not count
+      { branchId: 'branch-1', quantityOnHand: decimal(5), quantityReserved: decimal(0), lowStockThreshold: decimal(10), criticalThreshold: null }, // 5 <= 10 -> counts
+      { branchId: 'branch-1', quantityOnHand: decimal(50), quantityReserved: decimal(0), lowStockThreshold: decimal(10), criticalThreshold: null }, // 50 > 10 -> does not count
     ] as never);
 
     const rows = await branchesRepository.findAllStatsGrouped();
@@ -242,18 +242,19 @@ describe('branchesRepository.findAllStatsGrouped', () => {
     expect(inventoryRepository.getCurrentStockMap).not.toHaveBeenCalled();
   });
 
-  it('lowStockIngredientCount excludes InventoryStock rows with no threshold configured', async () => {
+  it('POS-PERF-P56 — lowStockIngredientCount counts tracked items with nothing available, thresholds or not; positive stock without thresholds never counts', async () => {
     vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'branch-1' }] as never);
-    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([]);
-    // The repository query itself filters lowStockThreshold: { not: null } —
-    // asserting the call shape here since a mocked findMany would otherwise
-    // happily return rows the real query could never produce.
-    await branchesRepository.findAllStatsGrouped();
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
+      { branchId: 'branch-1', quantityOnHand: decimal(0), quantityReserved: decimal(0), lowStockThreshold: null, criticalThreshold: null },
+      { branchId: 'branch-1', quantityOnHand: decimal(4), quantityReserved: decimal(4), lowStockThreshold: null, criticalThreshold: null },
+      { branchId: 'branch-1', quantityOnHand: decimal(3), quantityReserved: decimal(0), lowStockThreshold: null, criticalThreshold: null },
+    ] as never);
 
+    const rows = await branchesRepository.findAllStatsGrouped();
+
+    expect(rows[0]).toMatchObject({ lowStockIngredientCount: 2 });
     expect(prisma.inventoryStock.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ lowStockThreshold: { not: null }, inventoryItem: { deletedAt: null } }),
-      }),
+      expect.objectContaining({ where: expect.objectContaining({ inventoryItem: { deletedAt: null, trackInventory: true } }) }),
     );
   });
 
@@ -477,12 +478,9 @@ describe('branchesRepository.branchStats', () => {
   });
 
   it('lowStockIngredientCount is sourced from InventoryStock, not the legacy Ingredient ledger (Phase 4)', async () => {
-    // The real query filters lowStockThreshold: { not: null } at the DB
-    // level (asserted below) — a mocked resolved row list can only ever
-    // contain what a null-filtered query would actually return.
     vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
-      { quantityOnHand: decimal(2), lowStockThreshold: decimal(10) }, // 2 <= 10 -> low stock
-      { quantityOnHand: decimal(50), lowStockThreshold: decimal(10) }, // 50 > 10 -> not low stock
+      { quantityOnHand: decimal(2), quantityReserved: decimal(0), lowStockThreshold: decimal(10), criticalThreshold: null }, // 2 <= 10 -> low stock
+      { quantityOnHand: decimal(50), quantityReserved: decimal(0), lowStockThreshold: decimal(10), criticalThreshold: null }, // 50 > 10 -> not low stock
     ] as never);
 
     const stats = await branchesRepository.branchStats('branch-1');
@@ -490,7 +488,7 @@ describe('branchesRepository.branchStats', () => {
     expect(stats.lowStockIngredientCount).toBe(1);
     expect(prisma.inventoryStock.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ branchId: 'branch-1', lowStockThreshold: { not: null }, inventoryItem: { deletedAt: null } }),
+        where: expect.objectContaining({ branchId: 'branch-1', inventoryItem: { deletedAt: null, trackInventory: true } }),
       }),
     );
     expect(prisma.ingredient.findMany).not.toHaveBeenCalled();

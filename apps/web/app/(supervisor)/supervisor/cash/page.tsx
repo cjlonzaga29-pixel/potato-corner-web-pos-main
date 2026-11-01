@@ -1,7 +1,5 @@
-'use client';
-
-import { CashShiftsList } from '@/components/branch-ops/cash-shifts-list';
+import { CashManagementRemoved } from '@/components/supervisor/cash-management-removed';
 
 export default function SupervisorCashPage() {
-  return <CashShiftsList basePath="/supervisor" />;
+  return <CashManagementRemoved />;
 }

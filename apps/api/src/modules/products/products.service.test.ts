@@ -2724,7 +2724,7 @@ describe('productsService.getPosCatalog — stock_status (POS-PERF-P24, delegate
     ] as never);
     vi.mocked(productReadinessService.evaluateProductVariantReadinessBatch).mockResolvedValue([readyResult('branch-1', 'variant-1')]);
     vi.mocked(stockAvailabilityService.evaluateCatalogStock).mockResolvedValue(
-      new Map([['variant-1', { productVariantId: 'variant-1', status: 'low_stock', maxSellableUnits: 3 }]]),
+      new Map([['variant-1', { productVariantId: 'variant-1', status: 'low_stock', maxSellableUnits: 3, shortages: [] }]]),
     );
 
     const result = await productsService.getPosCatalog('branch-1');

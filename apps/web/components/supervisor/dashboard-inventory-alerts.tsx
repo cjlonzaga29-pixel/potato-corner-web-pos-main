@@ -5,9 +5,11 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
+import { stockBadgeStatus, stockStateOf, type StockState } from '@/lib/inventory-stock-status';
 
 const MAX_VISIBLE_ALERTS = 10;
-const SEVERITY_ORDER: Record<InventoryStockAlert['severity'], number> = { critical: 0, low: 1 };
+const STATE_ORDER: Record<StockState, number> = { out: 0, critical: 1, low: 2, healthy: 3 };
+const stateOf = (alert: InventoryStockAlert) => stockStateOf({ quantity_available: alert.quantity_available, status: alert.severity });
 
 interface DashboardInventoryAlertsProps {
   alerts: InventoryStockAlert[] | undefined;
@@ -18,11 +20,11 @@ interface DashboardInventoryAlertsProps {
   prepareTransferHref?: (alert: InventoryStockAlert) => string;
 }
 
-/** Panel 3 of the supervisor dashboard — low/critical stock alerts for the active branch, sourced from InventoryStock (branch inventory cutover). Pure display, no data fetching. */
+/** Panel 3 of the supervisor dashboard — out-of-stock, critical and low inventory items at the active branch, sourced from InventoryStock (branch inventory cutover). Items, not products: see DashboardProductAvailability. Pure display, no data fetching. */
 export function DashboardInventoryAlerts({ alerts, isLoading, href, prepareTransferHref }: DashboardInventoryAlertsProps) {
   const header = (
     <CardHeader className="app-card-padding flex flex-row items-center justify-between space-y-0 pb-2">
-      <CardTitle className="text-sm font-medium">Inventory Alerts</CardTitle>
+      <CardTitle className="text-sm font-medium">Inventory item alerts</CardTitle>
       {href && (alerts?.length ?? 0) > 0 && (
         <Link
           href={href}
@@ -48,7 +50,7 @@ export function DashboardInventoryAlerts({ alerts, isLoading, href, prepareTrans
     );
   }
 
-  const sorted = [...(alerts ?? [])].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
+  const sorted = [...(alerts ?? [])].sort((a, b) => STATE_ORDER[stateOf(a)] - STATE_ORDER[stateOf(b)]);
   const visible = sorted.slice(0, MAX_VISIBLE_ALERTS);
   const remaining = sorted.length - visible.length;
 
@@ -57,7 +59,7 @@ export function DashboardInventoryAlerts({ alerts, isLoading, href, prepareTrans
       {header}
       <CardContent className="app-card-padding pt-0">
         {sorted.length === 0 ? (
-          <EmptyState compact icon={PackageCheck} title="All stock levels are healthy" description="No item is at or below its low or critical threshold." />
+          <EmptyState compact icon={PackageCheck} title="All tracked items have stock" description="No tracked item is out of stock or at its low or critical threshold." />
         ) : (
           <div className="divide-y divide-border/60">
             {visible.map((alert) => (
@@ -69,7 +71,7 @@ export function DashboardInventoryAlerts({ alerts, isLoading, href, prepareTrans
                 <span className="shrink-0 tabular-nums text-muted-foreground" title={`${alert.quantity_on_hand} on hand, ${alert.quantity_reserved} reserved`}>
                   {alert.quantity_available} avail.
                 </span>
-                <StatusBadge status={alert.severity} type="inventory" />
+                <StatusBadge status={stockBadgeStatus(stateOf(alert))} type="inventory" />
                 {prepareTransferHref && (
                   <Link
                     href={prepareTransferHref(alert)}

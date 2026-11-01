@@ -25,6 +25,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { AddOnsDialog, groupPickLimit, multiGroupTarget, servingCountGroup, type AddOnsDialogGroup, type AddOnSelections } from '@/components/pos/add-ons-dialog';
 import { PinKeypad } from '@/components/pos/pin-keypad';
+import { readinessMessage, stockShortageDetail, stockShortageLabel } from '@/lib/pos-product-availability';
 import { OptionChoiceCard } from '@/components/pos/option-choice-card';
 import {
   CUSTOMIZATION_CHOICE_GRID,
@@ -261,28 +262,6 @@ function dialogGroupsFor(variant: PosCatalogProduct['variants'][number]): AddOns
     maxSelections: group.max_selections,
     options: group.options.map((option) => ({ id: option.id, name: option.name, price_adjustment: option.price_adjustment })),
   }));
-}
-
-function readinessMessage(variant: PosCatalogProduct['variants'][number]): string | null {
-  if (variant.live_ready) return null;
-  if (variant.readiness_code === 'MISSING_FLAVOR_MAPPING') {
-    const flavorNames = variant.blocking_issues.map((issue) => issue.flavor_name).filter((name): name is string => Boolean(name));
-    if (flavorNames.length > 0) return `Not ready: missing setup for ${flavorNames.join(', ')}.`;
-    return 'Flavor inventory mapping incomplete.';
-  }
-  switch (variant.readiness_code) {
-    case 'NOT_AVAILABLE_IN_BRANCH':
-      return 'Not available at this branch.';
-    case 'INACTIVE':
-      return 'Currently unavailable.';
-    case 'PRICE_MISSING':
-      return 'Price not set.';
-    case 'MIX_MAX_INCOMPLETE':
-      return 'Mix & Max setup incomplete.';
-    case 'MISSING_BASE_MAPPING':
-    default:
-      return 'Inventory setup incomplete.';
-  }
 }
 
 /** Live-configured percentages (Discount Settings), or the same 20/20/20 defaults the server falls back to before any supervisor has saved a change — see settings.types.ts DEFAULT_DISCOUNT_POLICY. */
@@ -1651,7 +1630,7 @@ export default function TerminalPage() {
       rememberCustomizationOpener();
       if (variant.stock_status === 'out_of_stock') {
         toast.error("Can't add — out of stock", {
-          description: `${product.name} (${variant.name}) is out of stock right now. Try again shortly or ask a supervisor to restock.`,
+          description: stockShortageDetail(variant) ?? `${product.name} (${variant.name}) is out of stock right now. Try again shortly or ask a supervisor to restock.`,
         });
         return;
       }
@@ -3145,14 +3124,15 @@ export default function TerminalPage() {
             ? 'Clock In & Open POS'
             : 'Continue';
 
-    // P46 — an integrated terminal screen rather than a small boxed card: a
-    // status panel (branch, terminal state, identified employee) beside a
+    // P46 — status (branch, terminal state, identified employee) beside a
     // full-width keypad from `md` up, stacked into one compact column on a
     // phone. Every handler, label and verification rule above is unchanged.
     // P46R — on a phone the status rows are one label/value line each and
     // the gaps are tighter, so the keypad and Continue fit a 360×640 screen;
     // the bottom padding clears a home-indicator safe area. A shorter screen
     // or enlarged text still scrolls (the branch layout's <main>).
+    // POS-PERF-P56 — flat on the page: no enclosing card, panel background,
+    // divider or icon tile. Only the keypad's own keys keep their outlines.
     const lockedReason =
       lockContext?.reason === 'idle'
         ? 'Locked after inactivity'
@@ -3177,13 +3157,12 @@ export default function TerminalPage() {
       <div className="flex min-h-full w-full items-stretch justify-center sm:items-center sm:p-6">
         <section
           aria-labelledby="pos-lock-title"
-          className="grid w-full max-w-5xl content-start overflow-hidden bg-card sm:rounded-2xl sm:border sm:shadow-sm md:min-h-[min(36rem,calc(100dvh-8rem))] md:grid-cols-[minmax(0,5fr)_minmax(0,6fr)] md:content-stretch"
+          data-testid="pos-lock-screen"
+          className="grid w-full max-w-5xl content-start md:grid-cols-[minmax(0,5fr)_minmax(0,6fr)] md:items-center md:gap-8"
         >
-          <div className="flex flex-col gap-2 border-b bg-primary/5 px-4 py-3 sm:gap-4 sm:p-6 md:justify-between md:border-b-0 md:border-r md:p-8">
+          <div className="flex flex-col gap-2 px-4 py-3 sm:gap-4 sm:p-6 md:gap-6 md:p-8">
             <div className="flex items-center gap-3 md:flex-col md:items-start md:gap-4">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary sm:h-11 sm:w-11 md:h-14 md:w-14">
-                <LockKeyhole className="h-6 w-6 md:h-7 md:w-7" aria-hidden="true" />
-              </div>
+              <LockKeyhole className="h-7 w-7 shrink-0 text-primary md:h-9 md:w-9" aria-hidden="true" />
               <div className="min-w-0 space-y-1">
                 <h1 id="pos-lock-title" className="app-title font-bold">
                   Open POS Terminal
@@ -3199,11 +3178,9 @@ export default function TerminalPage() {
               </div>
               <div className="flex min-w-0 items-center justify-between gap-3 min-[420px]:block">
                 <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Terminal</dt>
-                <dd className="flex flex-wrap items-center gap-1.5 min-[420px]:mt-0.5">
-                  <Badge variant="secondary" className="gap-1">
-                    <Lock className="h-3 w-3" aria-hidden="true" />
-                    Terminal Locked
-                  </Badge>
+                <dd className="flex flex-wrap items-center gap-1.5 font-semibold min-[420px]:mt-0.5">
+                  <Lock className="h-3.5 w-3.5" aria-hidden="true" />
+                  Terminal Locked
                 </dd>
               </div>
               <div className="flex min-w-0 items-center justify-between gap-3 min-[420px]:block">
@@ -3812,7 +3789,7 @@ export default function TerminalPage() {
               {/* POS-PERF-P55 — promotions are not applied in this checkout, so cards never advertise one. */}
               {visibleProducts.map((product) =>
                 product.variants.map((variant) => (
-                  <ProductCard key={variant.id} product={product} variant={variant} message={readinessMessage(variant)} onTap={handleProductTap} promotionsAvailable={false} />
+                  <ProductCard key={variant.id} product={product} variant={variant} message={readinessMessage(variant) ?? stockShortageLabel(variant)} onTap={handleProductTap} promotionsAvailable={false} />
                 )),
               )}
             </div>

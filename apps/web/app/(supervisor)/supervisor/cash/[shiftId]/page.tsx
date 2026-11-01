@@ -1,7 +1,5 @@
-'use client';
-
-import { ShiftDetailView } from '@/components/admin/shifts/shift-detail-view';
+import { CashManagementRemoved } from '@/components/supervisor/cash-management-removed';
 
 export default function SupervisorCashDetailPage() {
-  return <ShiftDetailView />;
+  return <CashManagementRemoved />;
 }

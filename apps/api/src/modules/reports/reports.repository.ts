@@ -8,7 +8,7 @@ import {
 } from '@potato-corner/shared';
 import { prisma } from '../../lib/prisma.js';
 import { manilaDateKey, dayBounds, monthBounds } from '../../lib/manila-time.js';
-import { classifyStockStatus } from '../universal-inventory/universal-inventory.service.js';
+import { availableStock, classifyStockStatus } from '../universal-inventory/stock-classification.js';
 import { universalInventoryRepository } from '../universal-inventory/universal-inventory.repository.js';
 import { convertQuantity, UnitConversionError } from '../product-components/unit-conversion.util.js';
 import { computeFinancialMetrics } from '../../lib/financial-metrics.js';
@@ -1143,10 +1143,11 @@ export const reportsRepository = {
         branchId: true,
         inventoryItemId: true,
         quantityOnHand: true,
+        quantityReserved: true,
         lowStockThreshold: true,
         criticalThreshold: true,
         unitCost: true,
-        inventoryItem: { select: { name: true, unitCost: true, baseUnit: { select: { code: true } } } },
+        inventoryItem: { select: { name: true, unitCost: true, trackInventory: true, baseUnit: { select: { code: true } } } },
       },
     });
 
@@ -1156,7 +1157,8 @@ export const reportsRepository = {
         const lowThreshold = stock.lowStockThreshold?.toNumber() ?? null;
         const criticalThreshold = stock.criticalThreshold?.toNumber() ?? null;
         const unitCost = stock.unitCost?.toNumber() ?? stock.inventoryItem.unitCost?.toNumber() ?? null;
-        const status = classifyStockStatus(currentStock, lowThreshold, criticalThreshold);
+        // POS-PERF-P56 — same rule as the inventory page: judged on available stock, and an untracked item is never flagged.
+        const status = stock.inventoryItem.trackInventory ? classifyStockStatus(availableStock(currentStock, stock.quantityReserved.toNumber()), lowThreshold, criticalThreshold) : 'healthy';
         return {
           ingredient_id: stock.inventoryItemId,
           ingredient_name: stock.inventoryItem.name,
@@ -1190,10 +1192,11 @@ export const reportsRepository = {
         select: {
           branchId: true,
           quantityOnHand: true,
+          quantityReserved: true,
           lowStockThreshold: true,
           criticalThreshold: true,
           unitCost: true,
-          inventoryItem: { select: { unitCost: true } },
+          inventoryItem: { select: { unitCost: true, trackInventory: true } },
         },
       }),
       prisma.inventoryItem.count({ where: { deletedAt: null, trackInventory: true } }),
@@ -1217,7 +1220,8 @@ export const reportsRepository = {
       const lowThreshold = row.lowStockThreshold?.toNumber() ?? null;
       const criticalThreshold = row.criticalThreshold?.toNumber() ?? null;
       const effectiveUnitCost = row.unitCost?.toNumber() ?? row.inventoryItem.unitCost?.toNumber() ?? null;
-      const status = classifyStockStatus(quantity, lowThreshold, criticalThreshold);
+      const available = availableStock(quantity, row.quantityReserved.toNumber());
+      const status = classifyStockStatus(available, lowThreshold, criticalThreshold);
 
       acc.itemCount += 1;
       acc.totalValue += effectiveUnitCost !== null ? quantity * effectiveUnitCost : 0;
@@ -1226,22 +1230,18 @@ export const reportsRepository = {
       // priority over critical/low, mirroring notification.queue.ts's
       // existing severity ternary for the same InventoryStock data.
       //
-      // Cross-Dashboard Correctness audit: out-of-stock must go through
-      // classifyStockStatus's null-threshold-safe check first, same as
-      // critical/low already do — a row with quantityOnHand=0 but no
-      // low/critical threshold configured is an un-configured/never-
-      // populated InventoryStock projection row (see the model's "Empty/
-      // zero-row in Phase A" comment), not a real alert, exactly like
-      // notifyIfLowStock treats "null threshold" as "no alerting
-      // configured" rather than "always alert". Previously this branch
-      // ran before classifyStockStatus and ignored that null-threshold
-      // convention, inflating the KPI with unconfigured placeholder rows.
-      if (status !== 'healthy' && quantity <= 0) {
-        acc.outOfStockCount += 1;
-      } else if (status === 'critical') {
-        acc.criticalStockCount += 1;
-      } else if (status === 'low') {
-        acc.lowStockCount += 1;
+      // POS-PERF-P56 — replaces the Cross-Dashboard Correctness rule that
+      // treated zero stock without thresholds as an unconfigured placeholder:
+      // the POS refuses to sell those items, so this count now agrees with it.
+      // Untracked items still add to value and item count, never to an alert.
+      if (row.inventoryItem.trackInventory) {
+        if (available <= 0) {
+          acc.outOfStockCount += 1;
+        } else if (status === 'critical') {
+          acc.criticalStockCount += 1;
+        } else if (status === 'low') {
+          acc.lowStockCount += 1;
+        }
       }
 
       accByBranch.set(row.branchId, acc);

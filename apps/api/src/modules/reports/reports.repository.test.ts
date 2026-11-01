@@ -607,11 +607,11 @@ describe('reportsRepository.getInventoryConsumptionSummary', () => {
     vi.mocked(prisma.inventoryStockMovement.findMany).mockResolvedValue([
       {
         branchId: 'b1', inventoryItemId: 'item-1', quantityChange: decimal(-5), unitCost: decimal(10), totalCost: decimal(-50),
-        branch: { name: 'SM North' }, inventoryItem: { name: 'Potato', unitCost: null, baseUnit: { code: 'g' } },
+        branch: { name: 'SM North' }, inventoryItem: { name: 'Potato', unitCost: null, trackInventory: true, baseUnit: { code: 'g' } },
       },
       {
         branchId: 'b1', inventoryItemId: 'item-1', quantityChange: decimal(-3), unitCost: decimal(10), totalCost: decimal(-30),
-        branch: { name: 'SM North' }, inventoryItem: { name: 'Potato', unitCost: null, baseUnit: { code: 'g' } },
+        branch: { name: 'SM North' }, inventoryItem: { name: 'Potato', unitCost: null, trackInventory: true, baseUnit: { code: 'g' } },
       },
     ] as never);
 
@@ -627,7 +627,7 @@ describe('reportsRepository.getInventoryConsumptionSummary', () => {
     vi.mocked(prisma.inventoryStockMovement.findMany).mockResolvedValue([
       {
         branchId: 'b1', inventoryItemId: 'item-1', quantityChange: decimal(-5), unitCost: null, totalCost: null,
-        branch: { name: 'SM North' }, inventoryItem: { name: 'Potato', unitCost: null, baseUnit: { code: 'g' } },
+        branch: { name: 'SM North' }, inventoryItem: { name: 'Potato', unitCost: null, trackInventory: true, baseUnit: { code: 'g' } },
       },
     ] as never);
 
@@ -643,11 +643,11 @@ describe('reportsRepository.getInventoryConsumptionSummary', () => {
     vi.mocked(prisma.inventoryStockMovement.findMany).mockResolvedValue([
       {
         branchId: 'b1', inventoryItemId: 'item-1', quantityChange: decimal(-5), unitCost: decimal(10), totalCost: decimal(-50),
-        branch: { name: 'SM North' }, inventoryItem: { name: 'Potato', unitCost: null, baseUnit: { code: 'g' } },
+        branch: { name: 'SM North' }, inventoryItem: { name: 'Potato', unitCost: null, trackInventory: true, baseUnit: { code: 'g' } },
       },
       {
         branchId: 'b1', inventoryItemId: 'item-1', quantityChange: decimal(-3), unitCost: null, totalCost: null,
-        branch: { name: 'SM North' }, inventoryItem: { name: 'Potato', unitCost: null, baseUnit: { code: 'g' } },
+        branch: { name: 'SM North' }, inventoryItem: { name: 'Potato', unitCost: null, trackInventory: true, baseUnit: { code: 'g' } },
       },
     ] as never);
 
@@ -1115,10 +1115,11 @@ describe('reportsRepository.getInventoryValuation', () => {
         branchId: 'b1',
         inventoryItemId: 'item-1',
         quantityOnHand: decimal(20),
+        quantityReserved: decimal(0),
         lowStockThreshold: decimal(10),
         criticalThreshold: decimal(5),
         unitCost: decimal(50),
-        inventoryItem: { name: 'Potato', unitCost: null, baseUnit: { code: 'kg' } },
+        inventoryItem: { name: 'Potato', unitCost: null, trackInventory: true, baseUnit: { code: 'kg' } },
       },
     ] as never);
 
@@ -1131,8 +1132,8 @@ describe('reportsRepository.getInventoryValuation', () => {
 
   it('maps low/critical InventoryStock thresholds to the ok/low/critical status literal', async () => {
     vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
-      { branchId: 'b1', inventoryItemId: 'item-low', quantityOnHand: decimal(8), lowStockThreshold: decimal(10), criticalThreshold: decimal(5), unitCost: decimal(1), inventoryItem: { name: 'Cheese', unitCost: null, baseUnit: { code: 'kg' } } },
-      { branchId: 'b1', inventoryItemId: 'item-crit', quantityOnHand: decimal(2), lowStockThreshold: decimal(10), criticalThreshold: decimal(5), unitCost: decimal(1), inventoryItem: { name: 'Ketchup', unitCost: null, baseUnit: { code: 'L' } } },
+      { branchId: 'b1', inventoryItemId: 'item-low', quantityOnHand: decimal(8), quantityReserved: decimal(0), lowStockThreshold: decimal(10), criticalThreshold: decimal(5), unitCost: decimal(1), inventoryItem: { name: 'Cheese', unitCost: null, trackInventory: true, baseUnit: { code: 'kg' } } },
+      { branchId: 'b1', inventoryItemId: 'item-crit', quantityOnHand: decimal(2), quantityReserved: decimal(0), lowStockThreshold: decimal(10), criticalThreshold: decimal(5), unitCost: decimal(1), inventoryItem: { name: 'Ketchup', unitCost: null, trackInventory: true, baseUnit: { code: 'L' } } },
     ] as never);
 
     const rows = await reportsRepository.getInventoryValuation({ page: 1, limit: 25 });
@@ -1150,14 +1151,17 @@ describe('reportsRepository.getInventoryValuationRollup', () => {
     itemUnitCost?: number | null;
     lowStockThreshold?: number | null;
     criticalThreshold?: number | null;
+    quantityReserved?: number;
+    trackInventory?: boolean;
   }) {
     return {
       branchId: overrides.branchId,
       quantityOnHand: decimal(overrides.quantityOnHand),
+      quantityReserved: decimal(overrides.quantityReserved ?? 0),
       lowStockThreshold: overrides.lowStockThreshold != null ? decimal(overrides.lowStockThreshold) : null,
       criticalThreshold: overrides.criticalThreshold != null ? decimal(overrides.criticalThreshold) : null,
       unitCost: overrides.stockUnitCost != null ? decimal(overrides.stockUnitCost) : null,
-      inventoryItem: { unitCost: overrides.itemUnitCost != null ? decimal(overrides.itemUnitCost) : null },
+      inventoryItem: { unitCost: overrides.itemUnitCost != null ? decimal(overrides.itemUnitCost) : null, trackInventory: overrides.trackInventory ?? true },
     };
   }
 
@@ -1212,7 +1216,7 @@ describe('reportsRepository.getInventoryValuationRollup', () => {
     );
   });
 
-  it('TEST C2 (Cross-Dashboard Correctness audit): a zero-quantity stock row with NO threshold configured is an un-configured/never-populated projection row, not a real alert — it must not inflate out_of_stock_count', async () => {
+  it('TEST C2 (POS-PERF-P56, replaces the Cross-Dashboard audit rule): zero stock with no threshold is out of stock, because the POS refuses to sell it', async () => {
     vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
     vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
       stockRow({ branchId: 'b1', quantityOnHand: 0, itemUnitCost: 5 }),
@@ -1221,9 +1225,24 @@ describe('reportsRepository.getInventoryValuationRollup', () => {
     const result = await reportsRepository.getInventoryValuationRollup();
 
     expect(result.branches[0]).toEqual(
-      expect.objectContaining({ branch_id: 'b1', inventory_item_count: 1, total_inventory_value: 0, low_stock_count: 0, critical_stock_count: 0, out_of_stock_count: 0 }),
+      expect.objectContaining({ branch_id: 'b1', inventory_item_count: 1, total_inventory_value: 0, low_stock_count: 0, critical_stock_count: 0, out_of_stock_count: 1 }),
     );
-    expect(result.summary.total_out_of_stock_rows).toBe(0);
+    expect(result.summary.total_out_of_stock_rows).toBe(1);
+  });
+
+  it('TEST C3 (POS-PERF-P56): stock fully reserved is out of stock but keeps its physical value; positive stock with no threshold and untracked items raise no alert', async () => {
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([
+      stockRow({ branchId: 'b1', quantityOnHand: 10, quantityReserved: 10, itemUnitCost: 1 }),
+      stockRow({ branchId: 'b1', quantityOnHand: 3, itemUnitCost: 1 }),
+      stockRow({ branchId: 'b1', quantityOnHand: 0, itemUnitCost: 1, trackInventory: false }),
+    ] as never);
+
+    const result = await reportsRepository.getInventoryValuationRollup();
+
+    expect(result.branches[0]).toEqual(
+      expect.objectContaining({ inventory_item_count: 3, total_inventory_value: 13, low_stock_count: 0, critical_stock_count: 0, out_of_stock_count: 1 }),
+    );
   });
 
   it('TEST D: healthy/low/critical/out-of-stock counts match the InventoryStock alert threshold rule, mutually exclusive (Phase 4: no double-count)', async () => {

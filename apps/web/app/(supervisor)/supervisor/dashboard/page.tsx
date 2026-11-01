@@ -22,6 +22,9 @@ import { useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useTransactions, useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
 import { useDashboardSalesTrendReport, useInventoryAnalyticsRealtimeSync } from '@/hooks/queries/use-reports';
 import { useBranchInventoryStockAlerts, useInventoryStockRealtimeSync } from '@/hooks/queries/use-universal-inventory';
+import { useCatalog } from '@/hooks/queries/use-products';
+import { unsellableVariants } from '@/lib/pos-product-availability';
+import { DashboardProductAvailability } from '@/components/supervisor/dashboard-product-availability';
 import { useAttendanceSummary, useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
 import { useExpensesRealtimeSync } from '@/hooks/queries/use-expenses';
 import { MAX_LIST_LIMIT } from '@potato-corner/shared';
@@ -64,6 +67,9 @@ export default function SupervisorDashboardPage() {
     limit: RECENT_TRANSACTIONS_LIMIT,
   });
   const alertsQuery = useBranchInventoryStockAlerts(activeBranchId);
+  // POS-PERF-P56 — the POS's own catalog read, keyed per branch, so this panel
+  // can never disagree with what the cashier sees or show another branch's.
+  const catalogQuery = useCatalog(activeBranchId);
   // POS-PERF-P47 — attendance from clock-in/out records only (never logins
   // or socket presence); same rule as the Staff Clocked In KPI.
   const attendanceQuery = useAttendanceSummary(activeBranchId);
@@ -131,8 +137,10 @@ export default function SupervisorDashboardPage() {
   const alerts = alertsQuery.data?.branch_id === activeBranchId ? alertsQuery.data.alerts : undefined;
   const isAlertsLoading = alertsQuery.isLoading || (alertsQuery.data !== undefined && alerts === undefined);
   const alertCount = alerts?.length ?? 0;
-  const criticalCount = alerts?.filter((a) => a.severity === 'critical').length ?? 0;
-  const lowCount = alertCount - criticalCount;
+  const outCount = alerts?.filter((a) => a.quantity_available <= 0).length ?? 0;
+  const criticalCount = alerts?.filter((a) => a.severity === 'critical' && a.quantity_available > 0).length ?? 0;
+  const lowCount = alertCount - outCount - criticalCount;
+  const attentionLabel = [outCount > 0 && `${outCount} out of stock`, criticalCount > 0 && `${criticalCount} critical`].filter(Boolean).join(', ');
   const attendanceSummary = attendanceQuery.data?.branch_id === activeBranchId ? attendanceQuery.data : undefined;
   const isAttendanceLoading = attendanceQuery.isLoading || (attendanceQuery.data !== undefined && attendanceSummary === undefined);
   const isTodayStatsLoading = isStatsLoading || (branchStats !== undefined && todayStats === undefined);
@@ -195,17 +203,17 @@ export default function SupervisorDashboardPage() {
           tone={lowCount > 0 ? 'warning' : 'default'}
           href={INVENTORY_LOW_HREF}
           actionLabel="View low stock"
-          tooltip="Items at or below their low-stock threshold but above the critical threshold."
+          tooltip="Inventory items at or below their low-stock threshold but above the critical threshold. Items without thresholds are never low; they alert only when they run out."
         />
         <KpiCard
           title="Inventory Alerts"
           value={alertCount}
           isLoading={isAlertsLoading}
           icon={BellRing}
-          tone={criticalCount > 0 ? 'danger' : alertCount > 0 ? 'warning' : 'default'}
+          tone={outCount + criticalCount > 0 ? 'danger' : alertCount > 0 ? 'warning' : 'default'}
           href={INVENTORY_ALERTS_HREF}
-          actionLabel={criticalCount > 0 ? `View alerts (${criticalCount} critical)` : 'View alerts'}
-          tooltip="Every item needing attention: low stock plus critical stock."
+          actionLabel={attentionLabel ? `View alerts (${attentionLabel})` : 'View alerts'}
+          tooltip="Tracked inventory items needing attention: out of stock (nothing available, thresholds or not), critical and low. Counts items, not products."
         />
       </div>
 
@@ -220,11 +228,17 @@ export default function SupervisorDashboardPage() {
         <DashboardTransactionsFeed
           transactions={transactionsData?.transactions}
           isLoading={isTransactionsLoading}
-          onRowClick={() => router.push('/supervisor/cash')}
+          onRowClick={() => router.push('/supervisor/reports')}
         />
       </div>
 
       <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-2">
+        <DashboardProductAvailability
+          variants={catalogQuery.data ? unsellableVariants(catalogQuery.data.products) : undefined}
+          isLoading={catalogQuery.isLoading}
+          isError={catalogQuery.isError}
+          href="/supervisor/products"
+        />
         <DashboardInventoryAlerts
           alerts={alerts}
           isLoading={isAlertsLoading}

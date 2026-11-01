@@ -49,7 +49,12 @@ import { BranchSelector } from './branch-selector';
  * server-side checks now live entirely behind the Simple Product Builder's
  * Review step / Add to POS gate (productReadinessService, unchanged), so
  * there is no separate technical-lifecycle page to navigate to anymore.
+ *
+ * POS-PERF-P56 — Cash Management is gone from this console (its pages now
+ * explain where to go); Payroll has its own item, still at its Reports route.
  */
+const PAYROLL_HREF = '/supervisor/reports/payroll';
+
 export const SUPERVISOR_NAV_ITEMS: ReadonlyArray<NavItem> = [
   { label: 'Dashboard', href: '/supervisor/dashboard', icon: LayoutDashboard },
   { label: 'Inventory', href: '/supervisor/inventory', icon: Package },
@@ -68,12 +73,20 @@ export const SUPERVISOR_NAV_ITEMS: ReadonlyArray<NavItem> = [
     ],
   },
   { label: 'Attendance', href: '/supervisor/attendance', icon: Clock },
-  { label: 'Cash Management', href: '/supervisor/cash', icon: Banknote },
+  { label: 'Payroll', href: PAYROLL_HREF, icon: Banknote },
   { label: 'Expenses', href: '/supervisor/expenses', icon: Receipt },
   { label: 'Employees', href: '/supervisor/employees', icon: Users },
   { label: 'Reports', href: '/supervisor/reports', icon: BarChart3 },
   { label: 'Settings', href: '/supervisor/settings', icon: Settings },
 ];
+
+/** Payroll's route sits under Reports; only one of the two items lights up. */
+function isTopLevelActive(pathname: string | null, href: string | undefined): boolean {
+  if (!pathname || !href) return false;
+  const onPayroll = pathname === PAYROLL_HREF || pathname.startsWith(`${PAYROLL_HREF}/`);
+  if (href === '/supervisor/reports' && onPayroll) return false;
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
 
 export function SupervisorSidebar() {
   const pathname = usePathname();
@@ -208,7 +221,7 @@ export function SupervisorSidebar() {
               );
             }
 
-            const isActive = pathname === item.href || pathname?.startsWith(`${item.href}/`);
+            const isActive = isTopLevelActive(pathname, item.href);
             const link = (
               <Link
                 href={item.href as string}
@@ -322,7 +335,7 @@ export function SupervisorSidebar() {
               );
             }
 
-            const isActive = pathname === item.href || pathname?.startsWith(`${item.href}/`);
+            const isActive = isTopLevelActive(pathname, item.href);
             return (
               <Link
                 key={item.href}

@@ -19,8 +19,9 @@ export function WorkHoursOverviewSection() {
       <CardHeader>
         <CardTitle>Work Hours</CardTitle>
         <CardDescription>
-          Read-only. Supervisors set regular hours for their own branches in the Supervisor console. Branches without their own setting use the
-          default. Changes apply to clock-outs saved afterwards; past attendance is never recalculated.
+          Oversight view. Regular attendance hours per shift before overtime is recorded; this is not pay, and employee rates are in Payroll. Assigned
+          supervisors set branch overrides in the Supervisor console; a branch without one uses the organization default. Changes apply to clock-outs
+          saved afterwards; past attendance is never recalculated.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -29,7 +30,7 @@ export function WorkHoursOverviewSection() {
         {data && (
           <>
             <p className="text-sm">
-              Default: <span className="font-semibold">{data.global.regularHours} hours</span>
+              Organization default: <span className="font-semibold">{data.global.regularHours} hours</span>
               {data.global.updatedAt && <span className="text-muted-foreground"> · set {formatManilaDateTime(data.global.updatedAt)}</span>}
             </p>
             <div className="overflow-x-auto rounded-md border">
@@ -48,7 +49,7 @@ export function WorkHoursOverviewSection() {
                     <tr key={branch.branchId} className="border-t">
                       <td className="px-3 py-2">{branch.branchName}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{branch.regularHours}</td>
-                      <td className="px-3 py-2">{branch.source === 'branch' ? 'Branch setting' : 'Default'}</td>
+                      <td className="px-3 py-2">{branch.source === 'branch' ? 'Branch override' : 'Organization default'}</td>
                       <td className="whitespace-nowrap px-3 py-2 text-muted-foreground">
                         {branch.source === 'branch' && branch.updatedAt ? formatManilaDateTime(branch.updatedAt) : '—'}
                       </td>

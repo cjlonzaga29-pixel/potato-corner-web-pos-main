@@ -15,7 +15,7 @@ import {
   useBranchInventoryStockAlerts,
   useInventoryStockRealtimeSync,
 } from '@/hooks/queries/use-universal-inventory';
-import { STOCK_STATUS_FILTERS, matchesStockStatusFilter, parseStockStatusFilter } from '@/lib/inventory-stock-status';
+import { STOCK_STATUS_FILTERS, matchesStockStatusFilter, parseStockStatusFilter, stockBadgeStatus, stockStateOf } from '@/lib/inventory-stock-status';
 import { transferPrepareHref } from '@/lib/transfer-links';
 
 /**
@@ -42,8 +42,10 @@ export function InventoryList({ basePath }: { basePath: string }) {
   const items = data?.branch_id === activeBranchId ? data.items : undefined;
   const filteredItems = (items ?? []).filter((row) => matchesStockStatusFilter(row, statusFilter));
   const isItemsLoading = isLoading || (data !== undefined && items === undefined);
-  const alertCount = alertsData?.alerts.length ?? 0;
-  const criticalCount = alertsData?.alerts.filter((a) => a.severity === 'critical').length ?? 0;
+  const alerts = alertsData?.branch_id === activeBranchId ? alertsData.alerts : [];
+  const alertCount = alerts.length;
+  const outCount = alerts.filter((a) => a.quantity_available <= 0).length;
+  const criticalCount = alerts.filter((a) => a.severity === 'critical' && a.quantity_available > 0).length;
 
   const columns: ColumnDef<BranchInventoryStockRow>[] = [
     { accessorKey: 'name', header: 'Item' },
@@ -96,7 +98,7 @@ export function InventoryList({ basePath }: { basePath: string }) {
     {
       accessorKey: 'status',
       header: 'Status',
-      cell: ({ row }) => <StatusBadge status={row.original.status} type="inventory" />,
+      cell: ({ row }) => <StatusBadge status={stockBadgeStatus(stockStateOf(row.original))} type="inventory" />,
     },
     {
       id: 'actions',
@@ -104,7 +106,7 @@ export function InventoryList({ basePath }: { basePath: string }) {
       cell: ({ row }) => (
         <div className="flex justify-end gap-1">
           {/* POS-PERF-P48 — this branch as the destination; the transfer page re-checks access and the server re-authorizes. */}
-          {row.original.status !== 'healthy' && activeBranchId && (
+          {stockStateOf(row.original) !== 'healthy' && activeBranchId && (
             <Button
               variant="ghost"
               size="sm"
@@ -177,7 +179,13 @@ export function InventoryList({ basePath }: { basePath: string }) {
         <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm">
           <TriangleAlert className="h-4 w-4 shrink-0 text-destructive" />
           <span>
-            {alertCount} item{alertCount === 1 ? '' : 's'} at or below the low-stock threshold
+            {alertCount} item{alertCount === 1 ? '' : 's'} need{alertCount === 1 ? 's' : ''} attention
+            {outCount > 0 && (
+              <>
+                {' '}
+                — <Badge variant="critical">{outCount} out of stock</Badge>
+              </>
+            )}
             {criticalCount > 0 && (
               <>
                 {' '}
@@ -229,7 +237,7 @@ export function InventoryList({ basePath }: { basePath: string }) {
             <EmptyState
               compact
               title="No items match this filter"
-              description="Every item at this branch is above its alert thresholds."
+              description="No tracked item at this branch is in this stock state."
               action={
                 <Button type="button" variant="outline" size="sm" onClick={() => router.replace(`${basePath}/inventory`)}>
                   Show all items

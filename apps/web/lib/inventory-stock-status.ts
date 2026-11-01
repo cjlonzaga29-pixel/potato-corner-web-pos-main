@@ -6,14 +6,31 @@ import type { BranchInventoryStockRow } from '@potato-corner/shared';
  * alerts endpoint uses), so a card's count always equals the rows shown.
  * POS-PERF-P48 — shared with the transfer page's stock-needs list so both
  * screens apply the one rule.
+ *
+ * POS-PERF-P56 — the server reports no-stock items as `status: 'critical'`
+ * so older clients keep working; these helpers split out "out" from the
+ * available figure, giving three buckets that never overlap. Only tracked
+ * items reach these lists: the server leaves untracked items out.
  */
 export const STOCK_STATUS_FILTERS = [
   { value: 'all', label: 'All items' },
   { value: 'alerts', label: 'Needs attention' },
-  { value: 'low', label: 'Low stock' },
+  { value: 'out', label: 'Out of stock' },
   { value: 'critical', label: 'Critical' },
+  { value: 'low', label: 'Low stock' },
 ] as const;
 export type StockStatusFilter = (typeof STOCK_STATUS_FILTERS)[number]['value'];
+
+export type StockState = 'out' | 'critical' | 'low' | 'healthy';
+
+export function stockStateOf(row: Pick<BranchInventoryStockRow, 'quantity_available' | 'status'>): StockState {
+  return row.quantity_available <= 0 ? 'out' : row.status;
+}
+
+/** StatusBadge value for a stock state (its inventory map knows `out_of_stock`). */
+export function stockBadgeStatus(state: StockState): string {
+  return state === 'out' ? 'out_of_stock' : state;
+}
 
 export function parseStockStatusFilter(raw: string | null): StockStatusFilter {
   return STOCK_STATUS_FILTERS.some((f) => f.value === raw) ? (raw as StockStatusFilter) : 'all';
@@ -21,17 +38,18 @@ export function parseStockStatusFilter(raw: string | null): StockStatusFilter {
 
 export function matchesStockStatusFilter(row: BranchInventoryStockRow, filter: StockStatusFilter): boolean {
   if (filter === 'all') return true;
-  if (filter === 'alerts') return row.status !== 'healthy';
-  return row.status === filter;
+  const state = stockStateOf(row);
+  if (filter === 'alerts') return state !== 'healthy';
+  return state === filter;
 }
 
-const NEED_ORDER: Record<BranchInventoryStockRow['status'], number> = { critical: 0, low: 1, healthy: 2 };
+const NEED_ORDER: Record<StockState, number> = { out: 0, critical: 1, low: 2, healthy: 3 };
 
-/** Low + critical rows (the "Needs attention" filter), critical first, then least available, then name. */
+/** Out-of-stock, critical and low rows (the "Needs attention" filter), emptiest first, then least available, then name. */
 export function stockNeeds(rows: BranchInventoryStockRow[]): BranchInventoryStockRow[] {
   return rows
     .filter((row) => matchesStockStatusFilter(row, 'alerts'))
-    .sort((a, b) => NEED_ORDER[a.status] - NEED_ORDER[b.status] || a.quantity_available - b.quantity_available || a.name.localeCompare(b.name));
+    .sort((a, b) => NEED_ORDER[stockStateOf(a)] - NEED_ORDER[stockStateOf(b)] || a.quantity_available - b.quantity_available || a.name.localeCompare(b.name));
 }
 
 /**

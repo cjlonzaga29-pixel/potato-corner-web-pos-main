@@ -26,7 +26,7 @@ describe('DashboardInventoryAlerts', () => {
 
   it('renders the healthy-stock empty state when there are no alerts', () => {
     render(<DashboardInventoryAlerts alerts={[]} isLoading={false} />);
-    expect(screen.getByText('All stock levels are healthy')).toBeInTheDocument();
+    expect(screen.getByText('All tracked items have stock')).toBeInTheDocument();
   });
 
   it('renders critical alerts before low alerts', () => {

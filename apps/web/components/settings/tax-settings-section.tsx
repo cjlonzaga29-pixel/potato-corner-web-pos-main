@@ -92,16 +92,16 @@ export function TaxSettingsSection() {
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
-          VAT &amp; Tax
+          VAT calculation reference
           <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-normal text-muted-foreground">
             <Lock className="h-3 w-3" aria-hidden="true" />
-            Statutory values
+            Read-only
           </span>
         </CardTitle>
         <CardDescription>
-          How checkout calculates VAT, for checkout totals, receipts and reports. The VAT rate, VAT-inclusive pricing and the PWD/Senior
-          Citizen exemption are set by law or by how the POS works, so they change only with a software update. Discount rates and each
-          branch&apos;s VAT registration are shown per branch below. Past sales always keep the amounts they were rung with.
+          Not how an ordinary sale is totaled today: manual checkout is subtotal − discount = amount to pay, with no VAT calculated. This
+          applies to PWD and Senior Citizen sales, to sales rung before manual checkout, and to older app versions. Past sales always keep the
+          amounts they were rung with.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

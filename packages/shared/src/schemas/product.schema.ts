@@ -483,6 +483,18 @@ export const posCatalogReadinessIssueSchema = z.object({
 export const POS_STOCK_STATUSES = ['in_stock', 'low_stock', 'out_of_stock', 'unknown'] as const;
 export type PosStockStatus = (typeof POS_STOCK_STATUSES)[number];
 
+export const POS_STOCK_SHORTAGE_REASONS = ['no_stock', 'fully_reserved', 'below_recipe_quantity', 'not_assigned'] as const;
+
+export const posCatalogStockShortageSchema = z.object({
+  inventory_item_id: z.uuid(),
+  name: z.string(),
+  reason: z.enum(POS_STOCK_SHORTAGE_REASONS),
+  available: z.number(),
+  required: z.number(),
+  unit_code: z.string().nullable(),
+  track_inventory: z.boolean(),
+});
+
 export const posCatalogVariantSchema = z.object({
   id: z.uuid(),
   name: z.string(),
@@ -504,6 +516,10 @@ export const posCatalogVariantSchema = z.object({
   // Only populated (non-null) when status is 'in_stock' or 'low_stock' and the
   // figure is reliably calculable — never shown to the cashier otherwise.
   max_sellable_units: z.number().int().nullable(),
+  // POS-PERF-P56 — why a confirmed out_of_stock size can't be made: the
+  // ingredients short across every sellable configuration. Empty otherwise.
+  // Optional so an older API (no field) simply means "no reason given".
+  stock_shortages: z.array(posCatalogStockShortageSchema).optional(),
   // POS-PERF-P49 — the one promotion currently applicable to this size at
   // this branch (server-resolved, overlap rule applied), or null. Display and
   // checkout acknowledgement only: checkout recomputes it from current

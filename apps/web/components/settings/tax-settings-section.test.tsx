@@ -26,7 +26,7 @@ describe('TaxSettingsSection (P50)', () => {
     mockUseTaxConfiguration.mockReturnValue({ data: CONFIG, isLoading: false, isError: false });
     render(<TaxSettingsSection />);
 
-    expect(screen.getByText('Statutory values')).toBeInTheDocument();
+    expect(screen.getByText('Read-only')).toBeInTheDocument();
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
     expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
@@ -39,7 +39,7 @@ describe('TaxSettingsSection (P50)', () => {
     expect(within(rows).getByText(/At least 20%: it may be raised per branch/)).toBeInTheDocument();
     expect(within(rows).getAllByText(/Set by law/)).toHaveLength(3);
     expect(within(rows).getByText(/^Business choice\.$/)).toBeInTheDocument();
-    expect(screen.getByText(/shown per branch below/)).toBeInTheDocument();
+    expect(screen.getByText(/manual checkout is subtotal − discount = amount to pay/)).toBeInTheDocument();
   });
 
   it('works the ₱112 example with the same calculation checkout uses', () => {

@@ -7,6 +7,7 @@ vi.mock('../shadow-bom-deduction/shadow-bom-deduction.service.js', () => ({
 vi.mock('../../lib/prisma.js', () => ({
   prisma: {
     inventoryStock: { findMany: vi.fn() },
+    inventoryItem: { findMany: vi.fn() },
     productOptionInventoryMapping: { findMany: vi.fn() },
   },
 }));
@@ -38,6 +39,10 @@ function stockRow(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(prisma.inventoryItem.findMany).mockResolvedValue([
+    { id: 'item-potato', name: 'Potato', trackInventory: true, baseUnit: { code: 'g' } },
+    { id: 'item-salt', name: 'Salt', trackInventory: false, baseUnit: { code: 'g' } },
+  ] as never);
 });
 
 describe('stockAvailabilityService.evaluateCatalogStock', () => {
@@ -47,7 +52,7 @@ describe('stockAvailabilityService.evaluateCatalogStock', () => {
 
     const result = await stockAvailabilityService.evaluateCatalogStock('branch-1', [{ productVariantId: 'variant-1', flavorIds: [] }]);
 
-    expect(result.get('variant-1')).toEqual({ productVariantId: 'variant-1', status: 'in_stock', maxSellableUnits: 10 });
+    expect(result.get('variant-1')).toEqual({ productVariantId: 'variant-1', status: 'in_stock', maxSellableUnits: 10, shortages: [] });
   });
 
   it('returns out_of_stock when available stock cannot cover one unit', async () => {
@@ -56,7 +61,49 @@ describe('stockAvailabilityService.evaluateCatalogStock', () => {
 
     const result = await stockAvailabilityService.evaluateCatalogStock('branch-1', [{ productVariantId: 'variant-1', flavorIds: [] }]);
 
-    expect(result.get('variant-1')).toEqual({ productVariantId: 'variant-1', status: 'out_of_stock', maxSellableUnits: 0 });
+    expect(result.get('variant-1')).toEqual({
+      productVariantId: 'variant-1',
+      status: 'out_of_stock',
+      maxSellableUnits: 0,
+      shortages: [{ inventoryItemId: 'item-potato', name: 'Potato', reason: 'below_recipe_quantity', available: 10, required: 50, unitCode: 'g', trackInventory: true }],
+    });
+  });
+
+  it('POS-PERF-P56 — says which kind of shortage: no stock, fully reserved, not assigned to the branch, or an untracked item', async () => {
+    vi.mocked(computeBomDeductionBatch).mockResolvedValueOnce([
+      [{ inventoryItemId: 'item-potato', baseUnitId: 'unit-g', quantity: 1 }],
+      [{ inventoryItemId: 'item-reserved', baseUnitId: 'unit-g', quantity: 1 }],
+      [{ inventoryItemId: 'item-missing', baseUnitId: 'unit-g', quantity: 1 }],
+      [{ inventoryItemId: 'item-salt', baseUnitId: 'unit-g', quantity: 1 }],
+    ]);
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValueOnce([
+      stockRow({ quantityOnHand: decimal(0) }),
+      stockRow({ inventoryItemId: 'item-reserved', quantityOnHand: decimal(4), quantityReserved: decimal(4) }),
+      stockRow({ inventoryItemId: 'item-salt', quantityOnHand: decimal(0) }),
+    ] as never);
+
+    const result = await stockAvailabilityService.evaluateCatalogStock('branch-1', [
+      { productVariantId: 'zero', flavorIds: [] },
+      { productVariantId: 'reserved', flavorIds: [] },
+      { productVariantId: 'missing', flavorIds: [] },
+      { productVariantId: 'untracked', flavorIds: [] },
+    ]);
+
+    expect(result.get('zero')?.shortages[0]?.reason).toBe('no_stock');
+    expect(result.get('reserved')?.shortages[0]?.reason).toBe('fully_reserved');
+    expect(result.get('missing')?.shortages[0]?.reason).toBe('not_assigned');
+    expect(result.get('untracked')?.shortages[0]).toMatchObject({ reason: 'no_stock', name: 'Salt', trackInventory: false });
+    expect(prisma.inventoryItem.findMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('POS-PERF-P56 — positive stock without thresholds stays in_stock, with no invented low-stock state and no extra query', async () => {
+    vi.mocked(computeBomDeductionBatch).mockResolvedValueOnce([[{ inventoryItemId: 'item-potato', baseUnitId: 'unit-g', quantity: 1 }]]);
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValueOnce([stockRow({ quantityOnHand: decimal(2) })] as never);
+
+    const result = await stockAvailabilityService.evaluateCatalogStock('branch-1', [{ productVariantId: 'variant-1', flavorIds: [] }]);
+
+    expect(result.get('variant-1')).toMatchObject({ status: 'in_stock', maxSellableUnits: 2, shortages: [] });
+    expect(prisma.inventoryItem.findMany).not.toHaveBeenCalled();
   });
 
   it('accounts for quantity already reserved by pending sales', async () => {
@@ -79,7 +126,7 @@ describe('stockAvailabilityService.evaluateCatalogStock', () => {
 
     const result = await stockAvailabilityService.evaluateCatalogStock('branch-1', [{ productVariantId: 'variant-1', flavorIds: [] }]);
 
-    expect(result.get('variant-1')).toEqual({ productVariantId: 'variant-1', status: 'low_stock', maxSellableUnits: 5 });
+    expect(result.get('variant-1')).toEqual({ productVariantId: 'variant-1', status: 'low_stock', maxSellableUnits: 5, shortages: [] });
   });
 
   it('returns unknown (not out_of_stock) for a variant with no BOM components', async () => {
@@ -87,7 +134,7 @@ describe('stockAvailabilityService.evaluateCatalogStock', () => {
 
     const result = await stockAvailabilityService.evaluateCatalogStock('branch-1', [{ productVariantId: 'variant-1', flavorIds: [] }]);
 
-    expect(result.get('variant-1')).toEqual({ productVariantId: 'variant-1', status: 'unknown', maxSellableUnits: null });
+    expect(result.get('variant-1')).toEqual({ productVariantId: 'variant-1', status: 'unknown', maxSellableUnits: null, shortages: [] });
   });
 
   it('never equates raw ingredient quantity with sellable product units — divides by per-unit requirement', async () => {
@@ -134,7 +181,7 @@ describe('stockAvailabilityService.evaluateCatalogStock', () => {
       { productVariantId: 'variant-1', flavorIds: ['flavor-a', 'flavor-b'] },
     ]);
 
-    expect(result.get('variant-1')).toEqual({ productVariantId: 'variant-1', status: 'in_stock', maxSellableUnits: 20 });
+    expect(result.get('variant-1')).toEqual({ productVariantId: 'variant-1', status: 'in_stock', maxSellableUnits: 20, shortages: [] });
   });
 
   it('reports out_of_stock only once every flavor configuration is confirmed out of stock', async () => {
@@ -150,7 +197,7 @@ describe('stockAvailabilityService.evaluateCatalogStock', () => {
       { productVariantId: 'variant-1', flavorIds: ['flavor-a', 'flavor-b'] },
     ]);
 
-    expect(result.get('variant-1')).toEqual({ productVariantId: 'variant-1', status: 'out_of_stock', maxSellableUnits: 0 });
+    expect(result.get('variant-1')).toMatchObject({ productVariantId: 'variant-1', status: 'out_of_stock', maxSellableUnits: 0 });
   });
 });
 

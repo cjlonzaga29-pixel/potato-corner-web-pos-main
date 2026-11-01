@@ -4,6 +4,7 @@ import { prisma } from '../../lib/prisma.js';
 import { nextCounterValue } from '../../lib/id-counter.js';
 import { dayBounds } from '../../lib/manila-time.js';
 import { computeFinancialMetrics } from '../../lib/financial-metrics.js';
+import { availableStock, classifyStockStatus } from '../universal-inventory/stock-classification.js';
 import type { BranchListFilters, CreateBranchData, UpdateBranchData } from './branches.types.js';
 
 function emptyPaymentBreakdown(): Record<PaymentMethod, { total: number; count: number }> {
@@ -39,31 +40,39 @@ function vatCoverage(groups: CalculationModeGroup[]) {
 }
 
 /**
- * Canonical low-stock count for one branch, sourced from InventoryStock
- * (Phase 4 dashboard KPI reconciliation) instead of the legacy
- * Ingredient/InventoryMovement ledger: a row counts as low stock when its
- * lowStockThreshold is set and quantityOnHand <= that threshold, scoped to
- * non-deleted InventoryItems. Rows with no threshold configured are excluded
- * (nothing to compare against), same as an Ingredient with no matching
- * InventoryStock row contributes nothing.
+ * Canonical count of items needing attention at one branch, sourced from
+ * InventoryStock (Phase 4 dashboard KPI reconciliation) instead of the legacy
+ * Ingredient/InventoryMovement ledger. POS-PERF-P56 — the same rule as the
+ * Inventory page's "Needs attention" filter (classifyStockStatus on available
+ * stock, tracked items only), so a zero-stock item without thresholds counts.
  */
+function needsAttention(row: {
+  quantityOnHand: { toNumber(): number };
+  quantityReserved: { toNumber(): number };
+  lowStockThreshold: { toNumber(): number } | null;
+  criticalThreshold: { toNumber(): number } | null;
+}): boolean {
+  const available = availableStock(row.quantityOnHand.toNumber(), row.quantityReserved.toNumber());
+  return classifyStockStatus(available, row.lowStockThreshold?.toNumber() ?? null, row.criticalThreshold?.toNumber() ?? null) !== 'healthy';
+}
+
 async function countLowStock(branchId: string): Promise<number> {
   const rows = await prisma.inventoryStock.findMany({
-    where: { branchId, lowStockThreshold: { not: null }, inventoryItem: { deletedAt: null } },
-    select: { quantityOnHand: true, lowStockThreshold: true },
+    where: { branchId, inventoryItem: { deletedAt: null, trackInventory: true } },
+    select: { quantityOnHand: true, quantityReserved: true, lowStockThreshold: true, criticalThreshold: true },
   });
-  return rows.filter((row) => row.quantityOnHand.toNumber() <= (row.lowStockThreshold?.toNumber() ?? Infinity)).length;
+  return rows.filter(needsAttention).length;
 }
 
 /** Same rule as countLowStock, grouped across every active branch in one query — used by findAllStatsGrouped. */
 async function countLowStockByBranch(branchIds: string[]): Promise<Map<string, number>> {
   const rows = await prisma.inventoryStock.findMany({
-    where: { branchId: { in: branchIds }, lowStockThreshold: { not: null }, inventoryItem: { deletedAt: null } },
-    select: { branchId: true, quantityOnHand: true, lowStockThreshold: true },
+    where: { branchId: { in: branchIds }, inventoryItem: { deletedAt: null, trackInventory: true } },
+    select: { branchId: true, quantityOnHand: true, quantityReserved: true, lowStockThreshold: true, criticalThreshold: true },
   });
   const byBranch = new Map<string, number>();
   for (const row of rows) {
-    if (row.quantityOnHand.toNumber() <= (row.lowStockThreshold?.toNumber() ?? Infinity)) {
+    if (needsAttention(row)) {
       byBranch.set(row.branchId, (byBranch.get(row.branchId) ?? 0) + 1);
     }
   }

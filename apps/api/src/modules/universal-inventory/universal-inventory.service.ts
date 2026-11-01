@@ -6,6 +6,7 @@ import { prisma } from '../../lib/prisma.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { universalInventoryRepository as repo } from './universal-inventory.repository.js';
 import { UniversalInventoryError } from './universal-inventory.types.js';
+import { availableStock, classifyStockStatus } from './stock-classification.js';
 import { branchesRepository } from '../branches/branches.repository.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { hasSharedCatalogAuthority } from '../../lib/catalog-authority.js';
@@ -374,12 +375,7 @@ function toCostCorrectionResponse(row: CostCorrectionRow, enrichment: { correcte
   };
 }
 
-/** Mirrors legacy inventory.service.ts's classifyStatus, but "healthy" (not "ok") per the brief's own wording, and threshold-null-safe since InventoryStock thresholds are nullable (brief §8). Exported so other InventoryStock-sourced reports (e.g. reports.repository.ts's valuation rollup) reuse the same rule instead of duplicating it. */
-export function classifyStockStatus(quantityOnHand: number, lowThreshold: number | null, criticalThreshold: number | null): 'healthy' | 'low' | 'critical' {
-  if (criticalThreshold !== null && quantityOnHand <= criticalThreshold) return 'critical';
-  if (lowThreshold !== null && quantityOnHand <= lowThreshold) return 'low';
-  return 'healthy';
-}
+export { classifyStockStatus };
 
 interface StockRow {
   inventoryItemId: string;
@@ -408,7 +404,7 @@ function toStockRowResponse(row: StockRow) {
   // inventory_value stay the full physical/accounting count — reservations
   // never get subtracted from valuation or the physical-stock figure itself,
   // only from the "is this low?" judgment.
-  const available = Math.max(0, quantity - reserved);
+  const available = availableStock(quantity, reserved);
   const lowThreshold = row.lowStockThreshold?.toNumber() ?? null;
   const criticalThreshold = row.criticalThreshold?.toNumber() ?? null;
   // Branch-specific InventoryStock.unitCost overrides InventoryItem.unitCost

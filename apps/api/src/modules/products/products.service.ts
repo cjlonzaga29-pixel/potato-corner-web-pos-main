@@ -1186,6 +1186,15 @@ function toStockStatusFields(stock: VariantStockResult | undefined) {
   return {
     stock_status: stock?.status ?? 'unknown',
     max_sellable_units: stock?.maxSellableUnits ?? null,
+    stock_shortages: (stock?.shortages ?? []).map((shortage) => ({
+      inventory_item_id: shortage.inventoryItemId,
+      name: shortage.name,
+      reason: shortage.reason,
+      available: shortage.available,
+      required: shortage.required,
+      unit_code: shortage.unitCode,
+      track_inventory: shortage.trackInventory,
+    })),
   };
 }
 

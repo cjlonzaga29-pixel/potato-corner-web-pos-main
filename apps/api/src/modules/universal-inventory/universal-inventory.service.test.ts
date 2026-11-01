@@ -459,7 +459,7 @@ describe('universalInventoryService.getBranchStock — Test I (Branch Inventory 
       { id: 'item-healthy', status: 'healthy' },
       { id: 'item-low', status: 'low' },
       { id: 'item-critical', status: 'critical' },
-      { id: 'item-no-threshold', status: 'healthy' },
+      { id: 'item-no-threshold', status: 'critical' }, // POS-PERF-P56: zero available is out of stock, thresholds or not
     ]);
   });
 

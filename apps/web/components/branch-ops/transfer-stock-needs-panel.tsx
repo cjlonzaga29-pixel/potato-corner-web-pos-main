@@ -11,7 +11,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { cn } from '@/lib/utils';
-import { stockNeeds } from '@/lib/inventory-stock-status';
+import { stockBadgeStatus, stockNeeds, stockStateOf } from '@/lib/inventory-stock-status';
 
 interface BranchOption {
   id: string;
@@ -37,9 +37,9 @@ function formatQuantity(value: number, unit: string): string {
 }
 
 /**
- * POS-PERF-P48 — left/top pane of the transfer page: the destination's low
- * and critical items, by the same rule as the Inventory page's "Needs
- * attention" filter (server-computed status, judged on available stock).
+ * POS-PERF-P48 — left/top pane of the transfer page: the destination's
+ * out-of-stock, critical and low items, by the same rule as the Inventory
+ * page's "Needs attention" filter (judged on available stock).
  * Choosing a row only pre-fills the form; nothing is submitted from here.
  */
 export function TransferStockNeedsPanel({
@@ -60,7 +60,7 @@ export function TransferStockNeedsPanel({
 
   let body: ReactNode;
   if (!destinationId) {
-    body = <p className="text-sm text-muted-foreground">Choose the branch that needs stock to see its low and critical items.</p>;
+    body = <p className="text-sm text-muted-foreground">Choose the branch that needs stock to see its out-of-stock, critical and low items.</p>;
   } else if (isError) {
     body = (
       <div role="alert" className="space-y-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm">
@@ -84,7 +84,7 @@ export function TransferStockNeedsPanel({
         compact
         icon={PackageCheck}
         title="No stock needs"
-        description={`Every item at ${destinationName ?? 'this branch'} is above its low and critical thresholds. Items without thresholds are never listed here.`}
+        description={`Every tracked item at ${destinationName ?? 'this branch'} has stock available and is above its thresholds. An item without thresholds is listed only when it runs out.`}
       />
     );
   } else {
@@ -92,7 +92,8 @@ export function TransferStockNeedsPanel({
       <ul className="space-y-2" aria-label={`Stock needs at ${destinationName ?? 'destination'}`}>
         {needs.map((row) => {
           const selected = row.inventory_item_id === selectedItemId;
-          const threshold = row.status === 'critical' ? row.critical_threshold : row.low_stock_threshold;
+          const state = stockStateOf(row);
+          const threshold = state === 'low' ? row.low_stock_threshold : row.critical_threshold;
           return (
             <li key={row.inventory_item_id}>
               <button
@@ -107,16 +108,18 @@ export function TransferStockNeedsPanel({
               >
                 <span className="flex min-w-0 items-center justify-between gap-2">
                   <span className="min-w-0 truncate font-medium">{row.name}</span>
-                  <StatusBadge status={row.status} type="inventory" />
+                  <StatusBadge status={stockBadgeStatus(state)} type="inventory" />
                 </span>
                 <span className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground tabular-nums">
                   <span className={cn(row.quantity_available <= 0 && 'font-medium text-destructive')}>
                     {row.quantity_available <= 0 ? 'Out of stock' : `${formatQuantity(row.quantity_available, row.base_unit_code)} available`}
                   </span>
                   {row.quantity_reserved > 0 && <span>{formatQuantity(row.quantity_reserved, row.base_unit_code)} reserved</span>}
-                  <span>
-                    {row.status === 'critical' ? 'Critical' : 'Low'} at {threshold ?? '—'} {row.base_unit_code}
-                  </span>
+                  {threshold !== null && (
+                    <span>
+                      {state === 'low' ? 'Low' : 'Critical'} at {threshold} {row.base_unit_code}
+                    </span>
+                  )}
                   <span>Unit: {row.base_unit_code}</span>
                 </span>
               </button>
@@ -131,7 +134,7 @@ export function TransferStockNeedsPanel({
     <Card className="min-w-0">
       <CardHeader className="app-card-padding space-y-1 pb-3">
         <CardTitle className="text-base">1. Stock needs</CardTitle>
-        <CardDescription>Low and critical items at the destination — the same list as Inventory › Needs attention.</CardDescription>
+        <CardDescription>Out-of-stock, critical and low items at the destination — the same list as Inventory › Needs attention.</CardDescription>
       </CardHeader>
       <CardContent className="app-card-padding space-y-4 pt-0">
         <div className="space-y-2">

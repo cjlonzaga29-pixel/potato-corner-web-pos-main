@@ -81,7 +81,7 @@ describe('SettingsPage', () => {
     render(<SettingsPage />);
 
     expect(screen.getByRole('tab', { name: 'Notifications' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'VAT & Discounts' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Discounts' })).toBeInTheDocument();
   });
 
   it('default tab is Notifications', () => {
@@ -93,7 +93,7 @@ describe('SettingsPage', () => {
   it('tab change updates URL search param', () => {
     render(<SettingsPage />);
 
-    fireEvent.click(screen.getByRole('tab', { name: 'VAT & Discounts' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Discounts' }));
 
     expect(mockPush).toHaveBeenCalledWith('/admin/settings?tab=discounts', { scroll: false });
   });

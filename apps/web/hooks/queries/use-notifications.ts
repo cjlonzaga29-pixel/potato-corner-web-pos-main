@@ -103,6 +103,8 @@ export function hrefFor(type: string, role: string | undefined, branchId?: strin
     case 'expense_created':
       return `${base}/expenses`;
     case 'cash_variance_flagged':
+      // POS-PERF-P56 — Supervisors no longer have a Cash Management page; shift review is under Admin → Shifts.
+      if (base === '/supervisor') return `${base}/reports`;
       return base === '/admin' ? `${base}/shifts` : `${base}/cash`;
     case 'eod_summary':
       return base === '/admin' ? `${base}/reports` : undefined;

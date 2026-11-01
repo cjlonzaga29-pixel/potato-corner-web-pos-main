@@ -1,7 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { Settings } from 'lucide-react';
 import { BranchCombobox } from '@/components/shared/branch-combobox';
+import { Button } from '@/components/ui/button';
 import { ReportsSectionTabs } from '@/components/reports/reports-section-tabs';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Label } from '@/components/ui/label';
@@ -22,13 +24,23 @@ export function PayrollPage({ scope }: { scope: 'supervisor' | 'admin' }) {
   const branches = useBranches({ limit: 100 });
   const branchId = scope === 'supervisor' ? activeBranchId : (adminBranchId ?? null);
   const [tab, setTab] = useState<'runs' | 'settings'>('runs');
+  // POS-PERF-P56 — `?tab=settings` is the Payroll Settings link's destination. Read after mount so the server and first client render agree.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('tab') === 'settings') setTab('settings');
+  }, []);
 
   return (
     <div className="app-section app-section-gap space-y-4">
       <div className="grid gap-3">
-        <div className="min-w-0">
-          <h1 className="app-title font-semibold">Payroll</h1>
-          <p className="app-subtitle text-muted-foreground">Attendance-based basic pay. Not statutory net pay — contributions and taxes are not included.</p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="app-title font-semibold">Payroll</h1>
+            <p className="app-subtitle text-muted-foreground">Attendance-based basic pay. Not statutory net pay — contributions and taxes are not included.</p>
+          </div>
+          <Button type="button" variant="outline" className="min-h-10 w-full gap-2 sm:w-auto" onClick={() => setTab('settings')} disabled={!branchId}>
+            <Settings className="h-4 w-4" aria-hidden="true" />
+            Payroll Settings
+          </Button>
         </div>
         <ReportsSectionTabs basePath={scope === 'supervisor' ? '/supervisor/reports' : '/admin/reports'} />
       </div>
@@ -59,7 +71,7 @@ export function PayrollPage({ scope }: { scope: 'supervisor' | 'admin' }) {
               Payroll runs
             </TabsTrigger>
             <TabsTrigger value="settings" className="min-h-9 flex-1 sm:flex-none">
-              Pay settings
+              Payroll Settings
             </TabsTrigger>
           </TabsList>
           <TabsContent value="runs" className="mt-0">

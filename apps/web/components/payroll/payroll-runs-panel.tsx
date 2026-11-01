@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { PayrollApiError, useCreatePayrollRun, usePayrollPeriods } from '@/hooks/queries/use-payroll';
+import { PayrollApiError, useCreatePayrollRun, usePayRates, usePayrollPeriods } from '@/hooks/queries/use-payroll';
 import { RUN_STATUS_LABELS, formatPeso } from '@/lib/payroll-format';
 import { PayrollRunView } from './payroll-run-view';
 
@@ -21,6 +21,7 @@ interface Props {
 /** select period → generate draft → review → finalize → export. */
 export function PayrollRunsPanel({ branchId, onConfigure }: Props) {
   const periods = usePayrollPeriods(branchId);
+  const rates = usePayRates(branchId);
   const create = useCreatePayrollRun(branchId);
   const [periodKey, setPeriodKey] = useState<string | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
@@ -51,8 +52,9 @@ export function PayrollRunsPanel({ branchId, onConfigure }: Props) {
         <AlertTitle>Payroll is not configured for this branch</AlertTitle>
         <AlertDescription className="grid gap-3">
           <span>Set the business timezone, pay period and break treatment first. Nothing is assumed.</span>
+          <span>After that, add an hourly rate for each employee. Regular work hours in Settings are attendance only; they do not set pay.</span>
           <Button variant="outline" className="w-full sm:w-fit" onClick={onConfigure}>
-            Open pay settings
+            Open Payroll Settings
           </Button>
         </AlertDescription>
       </Alert>
@@ -63,9 +65,23 @@ export function PayrollRunsPanel({ branchId, onConfigure }: Props) {
   const selected = options.find((p) => `${p.period_start}|${p.period_end}` === periodKey) ?? options[1] ?? options[0];
   const key = selected ? `${selected.period_start}|${selected.period_end}` : '';
   const live = selected?.runs.find((r) => r.status === 'draft' || r.status === 'finalized');
+  const missingRates = rates.data?.employees.filter((e) => e.assignment === 'current' && e.employee_active && e.current_rate === null) ?? [];
 
   return (
     <div className="grid gap-4">
+      {missingRates.length > 0 && (
+        <Alert data-testid="payroll-missing-rates">
+          <AlertTitle>
+            {missingRates.length} current employee{missingRates.length === 1 ? ' has' : 's have'} no hourly rate in effect
+          </AlertTitle>
+          <AlertDescription className="grid gap-3">
+            <span className="break-words">{missingRates.map((e) => e.name).join(', ')}. Payroll can&apos;t be finalized for a period they worked until a rate covers it; there is no default rate.</span>
+            <Button variant="outline" className="w-full sm:w-fit" onClick={onConfigure}>
+              Add rates in Payroll Settings
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
       <Card>
         <CardHeader className="gap-1">
           <CardTitle className="text-base">Pay period</CardTitle>

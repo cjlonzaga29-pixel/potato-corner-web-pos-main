@@ -31,10 +31,14 @@ export interface PublicReceipt {
   subtotal: number;
   discount_amount: number;
   discount_type: string | null;
+  /** POS-PERF-P55 — frozen manual discount type name; absent from a pre-P55 API. */
+  manual_discount_name?: string | null;
   discount_rate_used?: number | null;
-  vat_amount: number;
+  /** POS-PERF-P55R2 — 'manual_total_v1': VAT not calculated (both VAT fields null). Absent from an older API (VAT-calculated). */
+  calculation_mode?: 'legacy_vat_v1' | 'manual_total_v1';
+  vat_amount: number | null;
   /** POS-PERF-P50 — absent from an older API. */
-  vat_exempt_amount?: number;
+  vat_exempt_amount?: number | null;
   total_amount: number;
   payment_method: string;
   cash_tendered: number | null;

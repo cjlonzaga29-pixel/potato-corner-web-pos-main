@@ -92,10 +92,11 @@ vi.mock('@/hooks/queries/use-reports', () => ({
 
 /** Swaps Framer Motion's async NumberTicker for a synchronous text node — same approach as the supervisor/admin reports page tests. */
 vi.mock('@/components/shared/charts/kpi-card', () => ({
-  KpiCard: ({ title, value, isLoading }: { title: string; value: number; isLoading?: boolean }) => (
-    <div>
+  KpiCard: ({ title, value, isLoading, valueText, caption }: { title: string; value: number; isLoading?: boolean; valueText?: string; caption?: string }) => (
+    <div className="app-kpi-card">
       <span>{title}</span>
-      <span>{isLoading ? 'loading' : String(value)}</span>
+      <span>{isLoading ? 'loading' : (valueText ?? String(value))}</span>
+      {caption && <span>{caption}</span>}
     </div>
   ),
 }));
@@ -792,5 +793,44 @@ describe('ReportsView — Daily Sales tab Customer ID / Reference and cashier na
 
     const row = screen.getByText('PC-0101').closest('tr');
     expect(within(row as HTMLElement).getByText('08f7750e-027c-41f6-88de-f49d3a48b8d8')).toBeInTheDocument();
+  });
+});
+
+describe('ReportsView — Daily Sales VAT coverage (POS-PERF-P55R3)', () => {
+  const legacy = (id: string, vat: number) => transaction({ id, receipt_number: id, total_amount: 500, vat_amount: vat, discount_type: null, discount_amount: 0 });
+  const manual = (id: string, total: number) =>
+    transaction({ id, receipt_number: id, total_amount: total, calculation_mode: 'manual_total_v1', vat_amount: null, vat_exempt_amount: null, discount_type: null, discount_amount: 0 });
+  function mockPeriod(transactions: TransactionResponse[]) {
+    mockUseTransactions.mockReturnValue({ data: { transactions, total: transactions.length, page: 1, limit: 100 }, isLoading: false, isError: false, refetch: vi.fn() });
+    mockUseDiscountAuditTrail.mockReturnValue({ data: { data: [] }, isLoading: false });
+  }
+  const card = (title: string) => screen.getByText(title).closest('.app-kpi-card') as HTMLElement;
+
+  it('a legacy-only period shows the VAT total with no exclusion note and no manual-total card', () => {
+    mockPeriod([legacy('L1', 53.57), legacy('L2', 53.57)]);
+    render(<ReportsView />);
+    expect(within(card('VAT Collected')).getByText('107.14')).toBeInTheDocument();
+    expect(screen.queryByText(/excludes/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('Without VAT Calculation')).not.toBeInTheDocument();
+  });
+
+  it('a manual-only period never shows ₱0 VAT: "Not calculated", and the manual-total sales are shown with their amount', () => {
+    mockPeriod([manual('M1', 500), manual('M2', 450)]);
+    render(<ReportsView />);
+    const vat = card('VAT Collected');
+    expect(within(vat).getByText('Not calculated')).toBeInTheDocument();
+    expect(within(vat).queryByText('0')).not.toBeInTheDocument();
+    const without = card('Without VAT Calculation');
+    expect(within(without).getByText('950')).toBeInTheDocument();
+    expect(within(without).getByText(/2 manual-total sales/)).toBeInTheDocument();
+  });
+
+  it('a mixed period says, visibly, that its VAT figure excludes the manual-total sales', () => {
+    mockPeriod([legacy('L1', 53.57), manual('M1', 500)]);
+    render(<ReportsView />);
+    const vat = card('VAT Collected');
+    expect(within(vat).getByText('53.57')).toBeInTheDocument();
+    expect(within(vat).getByText('VAT-calculated sales only — excludes 1 manual-total sale')).toBeInTheDocument();
+    expect(within(card('Without VAT Calculation')).getByText('500')).toBeInTheDocument();
   });
 });

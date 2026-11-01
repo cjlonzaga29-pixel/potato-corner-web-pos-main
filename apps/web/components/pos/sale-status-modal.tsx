@@ -49,7 +49,8 @@ export interface SaleSnapshot {
   subtotal: number;
   discountAmount: number;
   discountType: string | null;
-  vatAmount: number;
+  /** POS-PERF-P55R3 (compatibility release) — null when a newer API reports a manual-total sale (VAT not calculated). */
+  vatAmount: number | null;
   totalAmount: number;
   paymentMethod: TransactionResponse['payment_method'];
   cashTendered: number | null;

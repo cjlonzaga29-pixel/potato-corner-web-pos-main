@@ -2,6 +2,7 @@
 import { z } from 'zod';
 import { REPORT_TYPE, TRANSACTION_STATUS, PAYMENT_METHOD, type ReportType, type TransactionStatus, type PaymentMethod } from '../constants/status.js';
 import { MAX_LIST_LIMIT } from '../constants/pagination.js';
+import { SALE_CALCULATION_MODES } from '../tax/sale-tax.js';
 
 const reportTypeValues = Object.values(REPORT_TYPE) as [ReportType, ...ReportType[]];
 const transactionStatusValues = Object.values(TRANSACTION_STATUS) as [TransactionStatus, ...TransactionStatus[]];
@@ -72,6 +73,7 @@ export const DailySalesReportRowSchema = z.object({
   gross_sales: z.number(),
   discount_total: z.number(),
   refund_total: z.number(),
+  /** VAT of the VAT-calculated sales only. A newer API's manual-total sale (P55R2) has no VAT figure and adds nothing here. */
   vat_total: z.number(),
   net_sales: z.number(),
   expense_total: z.number(),
@@ -86,6 +88,14 @@ export const DailySalesReportRowSchema = z.object({
   completed_count: z.number().int(),
   voided_count: z.number().int(),
   refunded_count: z.number().int(),
+  /**
+   * POS-PERF-P55R3 (compatibility release) — a newer API's completed sales
+   * whose VAT was NOT calculated (manual total): their count and amount paid.
+   * Unknown tax, not zero VAT; also inside gross_sales/net_sales. Absent from
+   * this release's own API.
+   */
+  tax_not_calculated_count: z.number().int().optional(),
+  tax_not_calculated_sales: z.number().optional(),
 });
 export type DailySalesReportRow = z.infer<typeof DailySalesReportRowSchema>;
 
@@ -148,14 +158,16 @@ export const DiscountComplianceReportRowSchema = z.object({
   discount_type: z.string(),
   transaction_count: z.number().int(),
   total_discount_amount: z.number(),
-  /** Non-VATable portion (VAT-cap overflow) — Transaction.vatExemptAmount summed. Not the VAT-exempt sales of PWD/Senior sales. */
-  total_vat_exempt_amount: z.number(),
+  /** POS-PERF-P55R3 — a newer API splits rows by calculation; 'manual_total_v1' rows have no VAT figures (null). */
+  calculation_mode: z.enum(SALE_CALCULATION_MODES).optional(),
+  /** Non-VATable portion (VAT-cap overflow) — Transaction.vatExemptAmount summed. Not the VAT-exempt sales of PWD/Senior sales. Null: VAT not calculated. */
+  total_vat_exempt_amount: z.number().nullable(),
   /**
    * POS-PERF-P50 — VAT-exempt sales: the stored total of each PWD/Senior
    * Citizen sale (the whole sale is VAT-exempt by statute), 0 for other
    * discount types. Optional only because an older API omits it.
    */
-  total_vat_exempt_sales: z.number().optional(),
+  total_vat_exempt_sales: z.number().nullable().optional(),
 });
 export type DiscountComplianceReportRow = z.infer<typeof DiscountComplianceReportRowSchema>;
 

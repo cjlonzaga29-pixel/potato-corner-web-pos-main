@@ -10,6 +10,7 @@ import {
   type ImageProofType,
 } from '../constants/status.js';
 import { cartItemPromotionAckSchema, selectedDiscountAckSchema } from './promotion.schema.js';
+import { SALE_CALCULATION_MODES } from '../tax/sale-tax.js';
 
 const paymentMethodValues = Object.values(PAYMENT_METHOD) as [PaymentMethod, ...PaymentMethod[]];
 const discountTypeValues = Object.values(DISCOUNT_TYPE) as [DiscountType, ...DiscountType[]];
@@ -322,8 +323,13 @@ export const transactionResponseSchema = z.object({
   // historical receipts/reports must keep showing the rate that was live
   // when the sale happened, not whatever a supervisor has since changed it to.
   discount_rate_used: z.number().nullable().optional(),
-  vat_amount: z.number(),
-  vat_exempt_amount: z.number(),
+  // POS-PERF-P55R3 (compatibility release) — how a newer API says the amounts
+  // were calculated. 'manual_total_v1': VAT was not calculated, so vat_amount
+  // and vat_exempt_amount are null (unknown — never a confirmed ₱0). Absent
+  // from this release's own API (every sale it records is VAT-calculated).
+  calculation_mode: z.enum(SALE_CALCULATION_MODES).optional(),
+  vat_amount: z.number().nullable(),
+  vat_exempt_amount: z.number().nullable(),
   total_amount: z.number(),
   cash_tendered: z.number().nullable(),
   change_given: z.number().nullable(),

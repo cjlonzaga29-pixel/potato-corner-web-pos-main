@@ -22,7 +22,7 @@ import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { useAuthStore } from '@/stores/auth.store';
 import { useVoidTransaction, useRefundTransaction, useRetryInventoryDeduction } from '@/hooks/queries/use-transactions';
-import { formatCurrency } from '@/lib/utils';
+import { formatCurrency, formatVatAmount } from '@/lib/utils';
 
 const MIN_VOID_REASON_LENGTH = 10;
 const VOID_ALLOWED_ROLES = [ROLES.SUPER_ADMIN, ROLES.SUPERVISOR, ROLES.BRANCH] as const;
@@ -221,7 +221,7 @@ export function ViewTransactionDetailDialog({ transaction, onClose, branchName, 
               </div>
               <div className="flex justify-between">
                 <span>VAT</span>
-                <span className="tabular-nums">{formatCurrency(transaction.vat_amount)}</span>
+                <span className="tabular-nums">{formatVatAmount(transaction.vat_amount)}</span>
               </div>
               <div className="flex justify-between">
                 <span>Discount{transaction.discount_type ? ` (${transaction.discount_type})` : ''}</span>

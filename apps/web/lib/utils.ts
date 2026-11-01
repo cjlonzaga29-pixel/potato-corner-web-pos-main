@@ -16,6 +16,11 @@ export function formatCurrency(amount: number): string {
   }).format(amount);
 }
 
+/** POS-PERF-P55R2 — a sale's VAT: null means VAT was not calculated (manual total), never ₱0.00. */
+export function formatVatAmount(amount: number | null): string {
+  return amount === null ? 'Not calculated' : formatCurrency(amount);
+}
+
 /** Jan 15, 2025 */
 export function formatDate(date: string | Date): string {
   const parsed = typeof date === 'string' ? new Date(date) : date;

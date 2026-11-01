@@ -28,6 +28,12 @@ describe('ReceiptTaxLines (P50)', () => {
     expect(screen.queryByText('VATable sales')).not.toBeInTheDocument();
   });
 
+  it('P55R3 — a calculated ₱0 VAT (PWD/Senior, legacy mode) is not mistaken for a manual total', () => {
+    render(<ReceiptTaxLines sale={{ discount_type: 'pwd', calculation_mode: 'legacy_vat_v1', vat_amount: 0, vat_exempt_amount: 0, total_amount: 80 }} />);
+    expect(screen.getByText('VAT-exempt sale (PWD/Senior)')).toBeInTheDocument();
+    expect(screen.queryByText('VAT not calculated by this checkout')).not.toBeInTheDocument();
+  });
+
   it('older API without vat_exempt_amount: only the VAT line, never a guessed breakdown', () => {
     render(<ReceiptTaxLines sale={{ discount_type: null, vat_amount: 12, total_amount: 112 }} />);
     expect(screen.getByText('VAT (12%)')).toBeInTheDocument();

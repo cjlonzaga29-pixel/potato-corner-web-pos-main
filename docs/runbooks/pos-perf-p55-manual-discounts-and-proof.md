@@ -907,4 +907,110 @@ unit tests only).
 | --- | --- |
 | Release 1 | `release/pos-perf-p55r3-compat-readers` at `6d1fd93` (worktree `pc-p55r3-compat-worktree`), 2 commits on `042a700` |
 | Release 2 | `feat/pos-perf-p55-manual-discounts`: `f5a5691`, merge `5b7320d`, then this runbook commit |
-| Pushed / merged to main / deployed | none |
+| Pushed / merged to main / deployed | none (superseded by §15: Release 1 is deployed as `44c2099`) |
+
+## 15. Release 2 preparation — Release 1 integrated, rollback-sync closed (2026-11-01)
+
+### 15.1 Integration
+
+Release 1 is deployed: `origin/main` = `44c2099`, a true merge of `release/pos-perf-p55r3-compat-readers`
+(`a414bf1`, `6d1fd93`, `6939503`) onto `042a700`. Ancestry was preserved, so this branch already held the Release 1
+code commits; the merge brought in only `6939503` (Release 1 runbook corrections + three tests). One conflict
+(`sync-queue.test.ts`): kept Release 2's typed `discount_choice` payload and added Release 1's offline-number and
+per-cashier assertions. The final PR diff against `origin/main` was reviewed for files both releases touch
+(`receipt-modal`, `sale-status-modal`, `sync-queue`, `sale-tax`, `reports.schema`, `transaction.schema`): constants and
+the queue forwarding were moved into Release 2's typed form, not duplicated. One semantic regression was found and fixed:
+
+- **Receipt discount label.** Release 2 had replaced Release 1's guard ("a discount type this build does not know →
+  plain *Discount*") with a raw-code fallback, so an unknown future type would print its code. Restored; a test
+  (manual type name + unknown type) fails on the unfixed code and passes on the fix.
+
+### 15.2 Pending migrations (production is at Release 1, last migration `20261030190000_pos_perf_p52_payroll`)
+
+In order, all applied by one `prisma migrate deploy`:
+
+1. `20261101120000_pos_perf_p55_manual_discounts` — two new tables, two nullable `transactions` columns, FK `NOT VALID`
+2. `20261101120100_pos_perf_p55_validate_fks`
+3. `20261101120200_pos_perf_p55_manual_discount_type_unique_name` — partial unique `(branch_id, lower(name)) WHERE is_active`
+4. `20261101130000_pos_perf_p55r2_calculation_mode` — nullable `calculation_mode` + CHECK `NOT VALID`
+5. `20261101130100_pos_perf_p55r2_validate_calculation_mode`
+
+`scripts/test-p55-release2-migrations-on-populated-data.ts` rehearses exactly this set from the Release 1 state (the
+older `test-p55-…` / `test-p55r2-…` scripts each cover a subset from intermediate states production never had; the
+`test-p55-…` one now fails its own "pending set" assertion on this tree). Result, 20 000 sales: **PASS** — all five
+applied in order; 80 pre-existing tables byte-identical; no sale gains a mode or a manual discount; FK and CHECK
+validated; the index present and enforced (a second active "EMPLOYEE" refused; another branch and inactive duplicates
+allowed); no drift; ~3 s. **Duplicate names** (only possible where the first P55 migrations ran without #3; production's
+`manual_discount_types` is created empty in the same deploy): the §12.5 pre-check finds the pair, #3 fails `P3018` and
+#4–#5 do not run; after deactivating the extra and `migrate resolve --rolled-back`, the deploy applies with no drift and
+keeps every row. Production pre-checks and migrations were not run.
+
+### 15.3 Rollback-sync B0–B4 — root cause and result
+
+Why the earlier rerun aborted (§14.6, "B2–B4 not evaluated"): `next.config.ts` sets `reloadOnOnline: true`, so going
+online makes the app reload itself **and** its `online` handler start a sync. The harness's own `page.reload()` raced
+that reload (`net::ERR_ABORTED`) and cancelled the intercepted sync inside `route.fetch()`, whose rejection was
+unhandled. The application's reconnect/update behavior was **not** changed. The new harness (`v-rollback-sync.mjs`,
+scratch): one browser context and origin throughout (service worker + IndexedDB kept); the Release 2 page is closed
+while offline, the server swapped to Release 1, the context goes online with no page open, and a fresh page loads
+Release 1; every navigation tolerates the app's own reloads and waits, bounded (60 s), for 4 s without navigation; the
+lost-response route lives on the context and never throws; every step is logged with a timestamp. Assertions use stable
+ids: the cashier by fixture `employee_id = 'P55-ANA'`, the product by variant id, the sale by this run's `device_id` +
+offline number.
+
+Run once, **9 / 9 passed** (Release 2 web `hvamss7423FXXZqMd1qZ7` → actual Release 1 web `7pfurZk70xNswCHKgiP13`, both
+against the Release 2 API):
+
+| # | Result |
+| --- | --- |
+| B0 | Release 2 build, service worker in control |
+| B1 | offline: ₱750 sale queued `manual_v1` / `manual_total_v1` / `none_applicable`, cashier P55-ANA, Water variant × 3, no options |
+| B2 | after reconnecting, the same origin runs Release 1; Ana pins in |
+| B3 | the first sync, sent by the Release 1 page, committed (200) and its response was dropped; the local row stays pending (`NETWORK_ERROR`) |
+| B4a–e | no automatic retry within 15 s, so one reload (the cashier action); the retry reconciled: **exactly one sale** for (device, offline number) and one new sale overall; ₱750, `manual_total_v1`, flow `manual_v1`, choice `none_applicable`, no manual discount; one line Water × 3 by variant id, no options; no proof (manual discounts are online-only); cashier P55-ANA; the local row marked synced with official number `MAIN01-20261101-000001` |
+
+Scope: one cashier was on the terminal throughout. The "sent only under the original cashier's token" rule with a
+second cashier is covered by `sync-queue.test.ts`, not by this browser run.
+
+### 15.4 Final verification (final integrated code)
+
+Environment: a **new** embedded Postgres 18.4 cluster on `127.0.0.1:46855` in this session's scratchpad (fresh
+password, throwaway base64 32-byte keys), DBs `p55b_741101` (browser) and `p55r2_api` (API suites); the rehearsal used
+its own cluster on 470xx. Every `migrate deploy` printed and checked its `127.0.0.1:46855/<db>` target;
+`PRODUCTION_DATABASE_URL_DIRECT` unset; worktree `.env` DB URLs still `127.0.0.1:1`. `API_PORT=4855`; webs: Release 2
+on 3855, the actual Release 1 (`git archive 44c2099`, built outside every worktree) on 3856, and 3860 for the
+same-origin swap. Storage: the in-memory stand-in on 54855. **No proof code changed in this pass**, so real Storage was
+not needed (proof evidence: §12, §13.4). Chromium (Playwright 1.61.1).
+
+| Check | Result |
+| --- | --- |
+| API suites, real Postgres, serial (transactions incl. P55/P50/P53 integration, receipts, reports, branches, discounts, report renderers, middleware) | **34 files, 1000 / 1000**. P55 integration 10 / 10: no discount + manual ₱50 + statutory PWD, amounts, proof binding (cashier/branch/shift, single use, legacy keys), idempotency/lost response, promotions, type changes, offline refusal, reports/refunds |
+| Shared · web full suite | 49 / 49 · **171 files, 1586 / 1586** |
+| `turbo type-check lint` (api, shared, web) | 7 / 7 tasks, 0 errors |
+| Builds | shared, API `tsc` and web `next build` for Release 2 and for the 44c2099 tree: pass |
+| Rollback-sync B0–B4 | **9 / 9** (§15.3) |
+| Actual Release 1 web → Release 2 API | no-discount ₱500 `legacy_vat_v1`, VAT ₱53.57; PWD ₱357.14, VAT ₱0, `legacy_vat_v1`: **2 / 2** |
+| Release 2 web → Release 1 API | manual-total sale refused "…not charged", no row, nothing queued; the statutory PWD sale still charges (₱357.14, mode NULL as Release 1 records it): **3 / 3** |
+| Readers, mixed periods (D-2 legacy-only, D-1 manual-only, today mixed, whole range), 3 layouts | Release 1 web **18 / 18**; Release 2 web **18 / 18** |
+| Migrations, populated | §15.2 PASS |
+
+Earlier failures in this pass, all on the harness side, recorded as they happened: the Release 2 `next build` first
+failed `EPERM` renaming the Prisma engine DLL (held by other node processes; the generated client already matched the
+schema, so the build ran without `generate`); the reader seed's backdate cast a TEXT id to `uuid` (fixed, applied by
+hand); the cross harness first drove Release 2's radio on Release 1's select (fixed); the reports part needs a
+legacy-only day (a harness-only backdate of one legacy sale, as in §14.6); one Release 2 reader run hit the public
+receipt limiter (20 per 10 min per IP, `429`) after back-to-back runs, and the rerun after the API restart gave 18 / 18.
+
+### 15.5 Release prerequisites (none confirmed in this pass)
+
+- The owner confirms that **every POS and back-office browser completed an ONLINE reload and an existing-receipt check
+  on Release 1**. This confirmation has **not** been provided.
+- Old automatic promotions are not disabled until terminals run the new checkout.
+- Once manual-total sales exist, do not roll the API below the compatible version; the web rollback target is Release 1.
+- Order: §12.5 duplicate pre-check → migrations (§15.2) → API → web → terminal reloads.
+
+### 15.6 Remaining limits
+
+Desktop Chromium only (no real iOS/Android devices or installed PWA); a second cashier was not exercised in the browser
+rollback-sync run; the B4 retry came from a reload, not an automatic background retry; production data shapes and
+counts were not read.

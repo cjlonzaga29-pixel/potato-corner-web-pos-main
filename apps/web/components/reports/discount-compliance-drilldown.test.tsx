@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 
 const mockUseDiscountAuditTrail = vi.fn();
 const mockUseDiscountProof = vi.fn();
@@ -152,6 +152,39 @@ describe('DiscountComplianceDrilldown', () => {
       expect.objectContaining({ branchId: 'branch-1', discountType: 'pwd', dateFrom: '2026-07-01', dateTo: '2026-07-31' }),
       true,
     );
+  });
+
+  it('P59 — pages through the server, so sales past the first 100 are reachable and the pager shows the true total', () => {
+    mockUseDiscountAuditTrail.mockReturnValue({
+      data: { data: [PWD_ROW, SENIOR_ROW], total: 101, page: 1, limit: 10 },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    render(
+      <DiscountComplianceDrilldown open branchId="branch-1" branchName="Puregold GMA" discountType="pwd" dateFrom="2026-07-01" dateTo="2026-07-31" onOpenChange={vi.fn()} />,
+    );
+    expect(mockUseDiscountAuditTrail).toHaveBeenLastCalledWith(expect.objectContaining({ page: 1, limit: 10 }), true);
+    expect(screen.getByText(/101 rows total/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /next/i }));
+    expect(mockUseDiscountAuditTrail).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2, limit: 10 }), true);
+  });
+
+  it('P59 — returns to the first page when another summary row opens the sheet', () => {
+    mockUseDiscountAuditTrail.mockReturnValue({
+      data: { data: [PWD_ROW], total: 25, page: 1, limit: 10 },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    const props = { open: true, branchId: 'branch-1', branchName: 'Puregold GMA', dateFrom: '2026-07-01', dateTo: '2026-07-31', onOpenChange: vi.fn() };
+    const { rerender } = render(<DiscountComplianceDrilldown {...props} discountType="pwd" />);
+    fireEvent.click(screen.getByRole('button', { name: /next/i }));
+    expect(mockUseDiscountAuditTrail).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2 }), true);
+
+    rerender(<DiscountComplianceDrilldown {...props} discountType="senior_citizen" />);
+    expect(mockUseDiscountAuditTrail).toHaveBeenLastCalledWith(expect.objectContaining({ discountType: 'senior_citizen', page: 1 }), true);
   });
 
   it('shows a legitimate "No discount transactions" empty state when none match the filter, not a crash', () => {

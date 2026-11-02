@@ -30,6 +30,7 @@ import { ReportsSectionTabs } from '@/components/reports/reports-section-tabs';
 import { ReportLastUpdated } from '@/components/reports/report-last-updated';
 import { DailySalesDrilldown } from '@/components/reports/daily-sales-drilldown';
 import { DiscountComplianceDrilldown } from '@/components/reports/discount-compliance-drilldown';
+import { DiscountCoverageNotice } from '@/components/reports/discount-coverage-notice';
 import { DiscountProofSummary } from '@/components/reports/discount-proof-summary';
 import { ALL_DISCOUNT_TYPES, DiscountTypeFilter } from '@/components/reports/discount-type-filter';
 import { getDiscountBreakdownColumns } from '@/components/reports/discount-type-breakdown-columns';
@@ -667,6 +668,13 @@ function AdminReportsPageContent() {
               <ReportLastUpdated timestamp={discountCompliance.data?.generated_at} isLoading={discountCompliance.isLoading} />
               <div className="my-4 space-y-4">
                 <DiscountTypeFilter options={discountOptions} value={discountTypeFilter} onChange={setDiscountTypeFilter} />
+                {discountCompliance.data && (
+                  <DiscountCoverageNotice
+                    rowsReturned={discountCompliance.data.data.length}
+                    rowsTotal={discountCompliance.data.total}
+                    transactionCount={visibleDiscountRows.reduce((sum, r) => sum + r.transaction_count, 0)}
+                  />
+                )}
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                   <KpiCard
                     title="Total Discounted Transactions"

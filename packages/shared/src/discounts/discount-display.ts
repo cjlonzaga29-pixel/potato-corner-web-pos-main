@@ -113,3 +113,9 @@ export function proofCompletionPercent(requiredCount: number, availableCount: nu
   if (requiredCount <= 0) return null;
   return Math.round((availableCount / requiredCount) * 1000) / 10;
 }
+
+/** Most rows one downloaded report file holds. PDF is far lower because rendering it runs inside the request. */
+export const REPORT_EXPORT_ROW_LIMITS = { csv: 10_000, pdf: 2_000 } as const;
+
+/** In the name of a downloaded file that holds only part of the matching rows. */
+export const PARTIAL_EXPORT_FILENAME_MARKER = '_PARTIAL';

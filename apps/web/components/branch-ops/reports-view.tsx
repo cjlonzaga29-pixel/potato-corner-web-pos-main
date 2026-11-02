@@ -28,6 +28,7 @@ import { ViewPaymentProofDialog } from '@/components/shared/transactions/view-pa
 import { ViewDiscountProofDialog } from '@/components/shared/transactions/view-discount-proof-dialog';
 import { ViewTransactionItemsDialog } from '@/components/shared/transactions/view-transaction-items-dialog';
 import { ViewTransactionDetailDialog } from '@/components/shared/transactions/view-transaction-detail-dialog';
+import { DiscountCoverageNotice } from '@/components/reports/discount-coverage-notice';
 import { DiscountProofSummary } from '@/components/reports/discount-proof-summary';
 import { ALL_DISCOUNT_TYPES, DiscountTypeFilter } from '@/components/reports/discount-type-filter';
 import { getDiscountBreakdownColumns } from '@/components/reports/discount-type-breakdown-columns';
@@ -1043,6 +1044,14 @@ export function ReportsView() {
                   setDiscountPagination((p) => ({ ...p, pageIndex: 0 }));
                 }}
               />
+              {discountComplianceQuery.data && (
+                <DiscountCoverageNotice
+                  rowsReturned={discountComplianceQuery.data.data.length}
+                  rowsTotal={discountComplianceQuery.data.total}
+                  transactionCount={totalDiscountedTransactions}
+                  showExportLimits
+                />
+              )}
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 <KpiCard title="Total Discounted Transactions" value={totalDiscountedTransactions} valueText={discountComplianceQuery.isError ? 'Unavailable' : undefined} isLoading={discountComplianceQuery.isLoading} />
                 <KpiCard title="Total Discount Amount" value={totalDiscountAmount} prefix="₱" valueText={discountComplianceQuery.isError ? 'Unavailable' : undefined} isLoading={discountComplianceQuery.isLoading} />

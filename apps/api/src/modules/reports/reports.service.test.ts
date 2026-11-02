@@ -490,7 +490,7 @@ describe('reportsService.requestExport', () => {
       expect(reportsRepository.countRows).not.toHaveBeenCalled();
       expect(getReportRows).not.toHaveBeenCalled();
       const expectedRows = transactionRows;
-      expect(generatePdf).toHaveBeenCalledWith('DISCOUNT_COMPLIANCE', expect.any(Object), expectedRows, expect.anything(), 'SM North');
+      expect(generatePdf).toHaveBeenCalledWith('DISCOUNT_COMPLIANCE', expect.any(Object), expectedRows, expect.anything(), 'SM North', expect.objectContaining({ partial: false }));
       expect(result).toEqual({ kind: 'file', buffer: pdfBuffer, filename: expect.stringMatching(/\.pdf$/), contentType: 'application/pdf' });
       expect(recordAuditLog).toHaveBeenCalledWith(
         expect.objectContaining({ action: 'REPORT_EXPORTED', afterState: expect.objectContaining({ async: false, rowCount: 2 }) }),
@@ -572,10 +572,44 @@ describe('reportsService.requestExport', () => {
       vi.mocked(generatePdf).mockResolvedValue(Buffer.from('%PDF-1.4 fake'));
 
       await reportsService.requestExport('DISCOUNT_COMPLIANCE', { branchId: 'b1', page: 1, limit: 100, discountKey: 'type:pwd' }, 'csv', 'user-1', 'supervisor', 'b1');
-      expect(reportsRepository.getDailySalesTransactions).toHaveBeenLastCalledWith(expect.objectContaining({ discountedOnly: true, discountKey: 'type:pwd', limit: 10_000 }));
+      expect(reportsRepository.getDailySalesTransactions).toHaveBeenLastCalledWith(expect.objectContaining({ discountedOnly: true, discountKey: 'type:pwd', limit: 10_001 }));
 
       await reportsService.requestExport('DISCOUNT_COMPLIANCE', { branchId: 'b1', page: 1, limit: 100 }, 'pdf', 'user-1', 'supervisor', 'b1');
-      expect(reportsRepository.getDailySalesTransactions).toHaveBeenLastCalledWith(expect.objectContaining({ discountedOnly: true, limit: 2_000 }));
+      expect(reportsRepository.getDailySalesTransactions).toHaveBeenLastCalledWith(expect.objectContaining({ discountedOnly: true, limit: 2_001 }));
+    });
+
+    it.each([
+      ['csv', 10_000],
+      ['pdf', 2_000],
+    ] as const)('P59 — %s: exactly the limit is complete, one row past it is partial and never exported', async (format, limit) => {
+      const makeRows = (n: number) => Array.from({ length: n }, (_, i) => ({ ...transactionRows[0], receipt_number: `R-${i}` }));
+      const { generatePdf } = await import('../../lib/reports/pdf.js');
+      vi.mocked(generatePdf).mockResolvedValue(Buffer.from('%PDF-1.4 fake'));
+      const { prisma } = await import('../../lib/prisma.js');
+      vi.mocked(prisma.branch.findUnique).mockResolvedValue({ name: 'SM North' } as never);
+      const run = () => reportsService.requestExport('DISCOUNT_COMPLIANCE', { branchId: 'b1', page: 1, limit: 100 }, format, 'user-1', 'supervisor', 'b1');
+
+      vi.mocked(reportsRepository.getDailySalesTransactions).mockResolvedValue(makeRows(limit) as never);
+      const exact = await run();
+      if (exact.kind !== 'file') throw new Error('expected file result');
+      expect(exact.filename).not.toContain('PARTIAL');
+      expect(recordAuditLog).toHaveBeenLastCalledWith(expect.objectContaining({ afterState: expect.objectContaining({ rowCount: limit, partial: false }) }));
+
+      vi.mocked(reportsRepository.getDailySalesTransactions).mockResolvedValue(makeRows(limit + 1) as never);
+      const above = await run();
+      if (above.kind !== 'file') throw new Error('expected file result');
+      expect(above.filename).toContain('_PARTIAL.');
+      expect(recordAuditLog).toHaveBeenLastCalledWith(expect.objectContaining({ afterState: expect.objectContaining({ rowCount: limit, partial: true }) }));
+      if (format === 'csv') {
+        const lines = above.buffer.toString('utf-8').split('\n');
+        expect(lines[0]).toContain('PARTIAL EXPORT');
+        expect(lines).toHaveLength(limit + 2);
+        expect(above.buffer.toString('utf-8')).not.toContain(`R-${limit}`);
+      } else {
+        const lastCall = vi.mocked(generatePdf).mock.lastCall;
+        expect(lastCall?.[2]).toHaveLength(limit);
+        expect(lastCall?.[5]).toEqual(expect.objectContaining({ partial: true }));
+      }
     });
 
     it('forwards branch and date-range filters to getDailySalesTransactions for the Supervisor CSV export', async () => {
@@ -608,7 +642,7 @@ describe('reportsService.requestExport', () => {
       const result = await reportsService.requestExport('DISCOUNT_COMPLIANCE', { branchId: 'b1', page: 1, limit: 100 }, 'pdf', 'user-1', 'supervisor', 'b1');
 
       const expectedRows = transactionRows;
-      expect(generatePdf).toHaveBeenCalledWith('DISCOUNT_COMPLIANCE', expect.any(Object), expectedRows, expect.anything(), 'SM North');
+      expect(generatePdf).toHaveBeenCalledWith('DISCOUNT_COMPLIANCE', expect.any(Object), expectedRows, expect.anything(), 'SM North', expect.objectContaining({ partial: false }));
       expect(result).toEqual({ kind: 'file', buffer: pdfBuffer, filename: expect.stringMatching(/\.pdf$/), contentType: 'application/pdf' });
     });
   });

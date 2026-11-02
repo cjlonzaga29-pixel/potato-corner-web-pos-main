@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ColumnDef, PaginationState } from '@tanstack/react-table';
 import { DISCOUNT_PROOF_REQUIREMENT_LABELS, discountDisplayName, type DiscountAuditTransactionRow } from '@potato-corner/shared';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
@@ -38,7 +38,9 @@ interface DiscountComplianceDrilldownProps {
  * super_admin/supervisor — this just wires it into the Admin Reports UI,
  * which previously had no per-transaction view of discount transactions at
  * all (only the branch/discount_type aggregate table). Same Sheet
- * drill-down pattern as DailySalesDrilldown.
+ * drill-down pattern as DailySalesDrilldown. POS-PERF-P59 — one server page at
+ * a time, so every sale behind the row is reachable and the pager's count is
+ * the true total.
  */
 export function DiscountComplianceDrilldown({
   open,
@@ -55,9 +57,13 @@ export function DiscountComplianceDrilldown({
   const [proofTransactionId, setProofTransactionId] = useState<string | null>(null);
 
   const { data, isLoading, isError, refetch } = useDiscountAuditTrail(
-    { branchId: branchId ?? undefined, discountType: discountType ?? undefined, discountKey: discountKey ?? undefined, dateFrom, dateTo, page: 1, limit: 100 },
+    { branchId: branchId ?? undefined, discountType: discountType ?? undefined, discountKey: discountKey ?? undefined, dateFrom, dateTo, page: pagination.pageIndex + 1, limit: pagination.pageSize },
     open,
   );
+  // Back to the first page when another summary row opens this same sheet.
+  useEffect(() => {
+    setPagination((p) => (p.pageIndex === 0 ? p : { ...p, pageIndex: 0 }));
+  }, [branchId, discountType, discountKey, dateFrom, dateTo]);
 
   const employeesQuery = useEmployees({ branchId: branchId ?? undefined, limit: 100 }, { enabled: open && Boolean(branchId) });
   const employeeNames = new Map((employeesQuery.data?.employees ?? []).map((e) => [e.id, `${e.first_name} ${e.last_name}`]));
@@ -132,6 +138,7 @@ export function DiscountComplianceDrilldown({
               onRetry={() => void refetch()}
               pagination={pagination}
               onPaginationChange={setPagination}
+              rowCount={data?.total ?? 0}
               emptyState={<EmptyState title="No discount transactions" description="No discount transactions match this filter." />}
             />
           </div>

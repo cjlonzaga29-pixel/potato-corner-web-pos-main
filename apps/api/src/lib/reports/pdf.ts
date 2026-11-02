@@ -13,6 +13,7 @@ const styles = StyleSheet.create({
   brand: { fontSize: 14, fontWeight: 700 },
   title: { fontSize: 11, marginTop: 2 },
   meta: { fontSize: 8, color: '#444444', marginTop: 2 },
+  partialNotice: { fontSize: 9, fontWeight: 700, marginTop: 6, padding: 6, border: '1.5px solid #000000' },
   table: { display: 'flex', width: '100%', borderTop: '1px solid #000000' },
   row: { flexDirection: 'row', borderBottom: '1px solid #cccccc' },
   headerRow: { flexDirection: 'row', borderBottom: '1px solid #000000', fontWeight: 700 },
@@ -44,6 +45,15 @@ const A4_WIDTH_PT = 595.28;
 const A4_HEIGHT_PT = 841.89;
 const MAX_IDEAL_COLUMN_PT = 260; // caps how much one free-text column (e.g. a long "reason") can claim before it's expected to wrap
 const FONT_SIZE_CANDIDATES = [9, 8, 7] as const;
+// POS-PERF-P59 — react-pdf's page breaking grows far faster than the row count
+// when one Page holds everything, and rendering blocks the event loop, so every
+// branch's checkout waits: measured about 52s for 500 rows and 154s for 1,000.
+// Rows split across Pages stay linear (about 22s for 2,000). Reports up to the
+// threshold keep their exact one-Page layout. A Page element that overflows just
+// continues on the next sheet, so a group ends on a part-empty sheet at worst and
+// no row is lost; 24 is three full sheets of the Discount Report's wrapped rows.
+const ONE_PAGE_ROW_THRESHOLD = 100;
+const ROWS_PER_SPLIT_PAGE = 24;
 
 /**
  * Rough Helvetica glyph widths (em units — multiply by font size for pt),
@@ -155,6 +165,8 @@ export function computeColumnLayout<T extends Record<string, unknown>>(
  * needed for reports." Header: brand name (logo placeholder), report title,
  * branch, date range, generated timestamp. Footer: "Page X of Y" via
  * @react-pdf/renderer's `render` prop, which re-runs per rendered page.
+ * `coverage`, when given, sits under the header, and a partial file also says
+ * so in every page's footer, so a single printed page can't pass as complete.
  */
 export async function generatePdf<T extends Record<string, unknown>>(
   reportType: ReportType,
@@ -162,6 +174,7 @@ export async function generatePdf<T extends Record<string, unknown>>(
   data: T[],
   columns: Array<ReportColumn<T>>,
   branchName: string | null,
+  coverage?: { partial: boolean; note: string },
 ): Promise<Buffer> {
   const visibleColumns = columnsForRows(columns, data).filter((c) => !c.isAudit);
   const generatedAt = new Date().toISOString();
@@ -193,32 +206,37 @@ export async function generatePdf<T extends Record<string, unknown>>(
     ),
   );
 
-  const doc = e(
-    Document,
-    null,
+  const rowGroups: React.ReactElement[][] = [];
+  const rowsPerGroup = bodyRows.length > ONE_PAGE_ROW_THRESHOLD ? ROWS_PER_SPLIT_PAGE : Math.max(bodyRows.length, 1);
+  for (let start = 0; start === 0 || start < bodyRows.length; start += rowsPerGroup) {
+    rowGroups.push(bodyRows.slice(start, start + rowsPerGroup));
+  }
+
+  const pages = rowGroups.map((group, groupIndex) =>
     e(
       Page,
-      { size: 'A4', style: [styles.page, { fontSize: bodyFontSize }], orientation },
-      e(
+      { key: groupIndex, size: 'A4', style: [styles.page, { fontSize: bodyFontSize }], orientation },
+      groupIndex > 0 ? null : e(
         View,
         { style: styles.header },
         e(Text, { style: styles.brand }, 'POTATO CORNER'),
         e(Text, { style: styles.title }, reportTypeDisplayName(reportType)),
         e(Text, { style: styles.meta }, `Branch: ${branchName ?? 'All Branches'} | Date range: ${dateRangeLabel} | Generated: ${generatedAt}`),
+        ...(coverage ? [e(Text, { style: coverage.partial ? styles.partialNotice : styles.meta }, coverage.note)] : []),
       ),
       e(
         View,
         { style: styles.table },
         e(View, { style: styles.headerRow, fixed: true }, ...headerCells),
-        ...bodyRows,
+        ...group,
       ),
       e(Text, {
         style: styles.footer,
         fixed: true,
-        render: ({ pageNumber, totalPages }: { pageNumber: number; totalPages: number }) => `Page ${pageNumber} of ${totalPages}`,
+        render: ({ pageNumber, totalPages }: { pageNumber: number; totalPages: number }) => `${coverage?.partial ? 'PARTIAL EXPORT | ' : ''}Page ${pageNumber} of ${totalPages}`,
       }),
     ),
   );
 
-  return renderToBuffer(doc as never);
+  return renderToBuffer(e(Document, null, ...pages) as never);
 }

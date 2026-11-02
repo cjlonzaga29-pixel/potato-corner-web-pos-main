@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
+  PARTIAL_EXPORT_FILENAME_MARKER,
   SOCKET_EVENTS,
   type ReportType,
   type ReportResponse,
@@ -279,7 +280,14 @@ export function useRequestExport() {
         // a toast that fires first and a download that silently fails
         // would tell the user something happened when nothing did.
         triggerBrowserDownload(outcome.file.blob, outcome.file.filename);
-        toast.success(`${formatLabel(variables.format)} downloaded`);
+        if (outcome.file.filename.includes(PARTIAL_EXPORT_FILENAME_MARKER)) {
+          toast.warning(`Partial ${formatLabel(variables.format)} downloaded`, {
+            description: 'More sales match these filters than this file can hold. The file says which rows it covers.',
+            duration: 15_000,
+          });
+        } else {
+          toast.success(`${formatLabel(variables.format)} downloaded`);
+        }
       } else {
         toast.success(outcome.message || "Generating your report… you'll be notified when it's ready");
       }

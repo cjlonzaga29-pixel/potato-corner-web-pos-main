@@ -1,4 +1,4 @@
-import type { ReportType } from '@potato-corner/shared';
+import { PARTIAL_EXPORT_FILENAME_MARKER, type ReportType } from '@potato-corner/shared';
 import type { ReportFilters } from '../../modules/reports/reports.types.js';
 import { manilaDateKey } from '../manila-time.js';
 
@@ -37,15 +37,17 @@ function toDateStamp(date: Date | undefined): string {
  * known, falling back to a single date stamp (or today) when one or both are
  * missing. Distinct from the Supabase Storage object path
  * (`reports/{userId}/{timestamp}-{type}.{ext}`, still used by the async/
- * large-report path), which only needs to be unique, not readable.
+ * large-report path), which only needs to be unique, not readable. A file
+ * holding only part of the matching rows says so in its name.
  */
-export function buildExportFilename(reportType: ReportType, format: 'csv' | 'pdf', filters: ReportFilters): string {
+export function buildExportFilename(reportType: ReportType, format: 'csv' | 'pdf', filters: ReportFilters, options: { partial?: boolean } = {}): string {
   const name = pascalCase(reportType);
+  const ending = `${options.partial ? PARTIAL_EXPORT_FILENAME_MARKER : ''}.${format}`;
   if (filters.dateFrom && filters.dateTo) {
     const from = toDateStamp(filters.dateFrom);
     const to = toDateStamp(filters.dateTo);
-    return from === to ? `${name}_${from}.${format}` : `${name}_${from}_to_${to}.${format}`;
+    return from === to ? `${name}_${from}${ending}` : `${name}_${from}_to_${to}${ending}`;
   }
   const dateStamp = toDateStamp(filters.dateTo ?? filters.dateFrom);
-  return `${name}_${dateStamp}.${format}`;
+  return `${name}_${dateStamp}${ending}`;
 }

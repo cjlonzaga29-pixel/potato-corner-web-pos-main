@@ -1,4 +1,4 @@
-import { ROLES } from '@potato-corner/shared';
+import { REPORT_EXPORT_ROW_LIMITS, ROLES } from '@potato-corner/shared';
 import type { ReportType, InventorySummaryResponse } from '@potato-corner/shared';
 import type { $Enums } from '@prisma/client';
 import { reportsRepository } from './reports.repository.js';
@@ -11,6 +11,7 @@ import { generatePdf } from '../../lib/reports/pdf.js';
 import { generateInventorySummaryCsv, generateInventorySummaryPdf } from '../../lib/reports/inventory-summary-export.js';
 import { generateExpensesPdf, formatPhp, type ExpensesExportRow } from '../../lib/reports/expenses-export.js';
 import { buildExportFilename } from '../../lib/reports/export-filename.js';
+import { discountExportCoverage } from '../../lib/reports/export-coverage.js';
 import { prisma } from '../../lib/prisma.js';
 import { enqueueGenerateExport, enqueueRefreshSnapshot } from '../../queues/report.queue.js';
 import { expensesRepository } from '../expenses/expenses.repository.js';
@@ -173,7 +174,7 @@ async function precomputedReport<T>(
 // limit fall back to the existing async job + Supabase signed URL +
 // Socket.io notification flow — that path is for oversized exports only, not
 // the normal Export CSV/PDF buttons a user hits from the Reports page.
-const SYNC_ROW_LIMIT: Record<'csv' | 'pdf', number> = { csv: 10_000, pdf: 2_000 };
+const SYNC_ROW_LIMIT: Record<'csv' | 'pdf', number> = REPORT_EXPORT_ROW_LIMITS;
 const SUPER_ADMIN_ONLY_TYPES = new Set<ReportType>(['FRAUD_ALERT_SUMMARY', 'BRANCH_COMPARISON', 'AUDIT_LOG']);
 const PRECOMPUTED_TYPES = new Set<ReportType>(['PRODUCT_PERFORMANCE', 'FLAVOR_PERFORMANCE', 'EMPLOYEE_PERFORMANCE', 'INVENTORY_VALUATION', 'BRANCH_COMPARISON']);
 
@@ -417,19 +418,24 @@ export const reportsService = {
       // POS-PERF-P59 — filtered in the query, not after it: taking the newest
       // sales first and filtering afterwards could leave exported rows short of
       // the totals on screen. The limit is this format's sync ceiling, not the
-      // screen's page size.
-      const rows = await reportsRepository.getDailySalesTransactions({ ...resolvedFilters, discountedOnly: true, limit: SYNC_ROW_LIMIT[format] });
-      const filename = buildExportFilename(reportType, format, resolvedFilters);
+      // screen's page size. One row past it tells a file that stopped at the
+      // limit from one that merely holds exactly that many.
+      const rowLimit = SYNC_ROW_LIMIT[format];
+      const fetched = await reportsRepository.getDailySalesTransactions({ ...resolvedFilters, discountedOnly: true, limit: rowLimit + 1 });
+      const rows = fetched.slice(0, rowLimit);
+      const coverage = discountExportCoverage(rows, fetched.length > rowLimit);
+      const filename = buildExportFilename(reportType, format, resolvedFilters, { partial: coverage.partial });
       const columns = scopeDiscountIdColumn(DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS, requesterRole);
 
       let buffer: Buffer;
       let contentType: 'text/csv' | 'application/pdf';
       if (format === 'csv') {
-        buffer = generateCsv(rows, columns);
+        // A complete CSV stays exactly as it was: a first line would only shift the headers of a file nothing is missing from.
+        buffer = generateCsv(rows, columns, coverage.partial ? coverage.note : undefined);
         contentType = 'text/csv';
       } else {
         const branch = branchId ? await prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } }) : null;
-        buffer = await generatePdf(reportType, resolvedFilters, rows, columns, branch?.name ?? null);
+        buffer = await generatePdf(reportType, resolvedFilters, rows, columns, branch?.name ?? null, coverage);
         contentType = 'application/pdf';
       }
 
@@ -440,7 +446,7 @@ export const reportsService = {
         actorId: requesterId,
         actorRole: requesterRole,
         branchId,
-        afterState: { reportType, format, async: false, rowCount: rows.length },
+        afterState: { reportType, format, async: false, rowCount: rows.length, partial: coverage.partial },
       });
       return { kind: 'file', buffer, filename, contentType };
     }

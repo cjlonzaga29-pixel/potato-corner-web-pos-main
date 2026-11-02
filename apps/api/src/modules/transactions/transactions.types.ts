@@ -115,6 +115,10 @@ export interface TransactionListFilters {
   /** POS-PERF-P59 — Discount Report's detail table. */
   discountedOnly?: boolean;
   discountKey?: string;
+  /** POS-PERF-P59 — Sold Product Transactions and Void/Refund tabs. */
+  cashierId?: string;
+  productName?: string;
+  statusGroup?: 'void_refund';
   page: number;
   limit: number;
 }
@@ -125,6 +129,8 @@ export interface DiscountAuditFilters {
   dateFrom?: string;
   dateTo?: string;
   discountKey?: string;
+  /** POS-PERF-P59 — exactly the discounted sales on one page of another report. */
+  transactionIds?: string[];
   page: number;
   limit: number;
 }

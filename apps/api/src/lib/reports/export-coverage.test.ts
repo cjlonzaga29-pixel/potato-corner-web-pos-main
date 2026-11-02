@@ -2,12 +2,42 @@ import { describe, expect, it } from 'vitest';
 import { generateCsv } from './csv.js';
 import { generatePdf } from './pdf.js';
 import { buildExportFilename } from './export-filename.js';
-import { discountExportCoverage } from './export-coverage.js';
+import { dailySalesExportCoverage, discountExportCoverage, exportCoverage, soldProductsExportCoverage, voidRefundExportCoverage } from './export-coverage.js';
 
 const rows = [
   { discount_amount: 0.1, created_at: '2026-07-02T02:00:00.000Z' },
   { discount_amount: 0.2, created_at: '2026-07-01T02:00:00.000Z' },
 ];
+
+describe('other report files', () => {
+  const sale = { total_amount: 100.1, discount_amount: 10, created_at: '2026-07-02T02:00:00.000Z' };
+
+  it('Daily Sales names both totals for all rows when complete, and for its rows only when partial', () => {
+    expect(dailySalesExportCoverage([sale, sale], false).note).toBe('Coverage: all 2 matching completed sales. Total Sales for all of them: PHP 200.20. Total Discounts for all of them: PHP 20.00.');
+    const partial = dailySalesExportCoverage([sale, sale], true);
+    expect(partial.note).toContain('Sales for these exported rows only: PHP 200.20.');
+    expect(partial.note).toContain('Discounts for these exported rows only: PHP 20.00.');
+    expect(partial.note).not.toContain('Total Sales');
+    expect(partial.note).toContain('Daily Sales Report screen');
+  });
+
+  it('a voided sale in a Sold Product file never counts toward its completed total', () => {
+    const rows = [{ ...sale, status: 'completed' }, { ...sale, status: 'voided' }];
+    expect(soldProductsExportCoverage(rows, false).note).toContain('Total Completed Sales for all of them: PHP 100.10.');
+  });
+
+  it('Void/Refund keeps voided and refunded amounts apart', () => {
+    const rows = [{ ...sale, status: 'voided' }, { ...sale, status: 'refunded' }, { ...sale, status: 'refunded' }];
+    const note = voidRefundExportCoverage(rows, true).note;
+    expect(note).toContain('Voided Amount for these exported rows only: PHP 100.10.');
+    expect(note).toContain('Refunded Amount for these exported rows only: PHP 200.20.');
+  });
+
+  it('a report with no dates or money still says what it holds, without inventing a span', () => {
+    const coverage = exportCoverage(100, true, { noun: 'closed shifts', screen: 'Cash Reconciliation', newestAt: undefined, oldestAt: undefined });
+    expect(coverage.note).toContain('only the newest 100 matching closed shifts. More match');
+  });
+});
 
 describe('discountExportCoverage', () => {
   it('a complete file names every matching sale and a total for all of them, with no floating-point drift', () => {

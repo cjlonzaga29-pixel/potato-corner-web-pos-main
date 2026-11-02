@@ -58,6 +58,8 @@ function parseFilters(query: unknown): { ok: true; filters: ReportFilters } | { 
       status: parsed.data.status,
       search: parsed.data.search,
       discountKey: parsed.data.discount_key,
+      reportView: parsed.data.report_view,
+      productName: parsed.data.product_name,
     },
   };
 }
@@ -81,6 +83,7 @@ function realtimeRoute(path: string, handler: (filters: ReportFilters, actorId: 
   });
 }
 
+realtimeRoute('/period-summary', (f, id, role) => reportsService.getReportPeriodSummary(f, id, role));
 realtimeRoute('/daily-sales', (f, id, role) => reportsService.getDailySalesReport(f, id, role));
 realtimeRoute('/shift-summary', (f, id, role) => reportsService.getShiftSummaryReport(f, id, role));
 realtimeRoute('/cash-reconciliation', (f, id, role) => reportsService.getCashReconciliationReport(f, id, role));
@@ -230,6 +233,8 @@ router.post('/export', authenticate, adminSupervisorOrBranch, requirePasswordCha
       status: body.filters.status,
       search: body.filters.search,
       discountKey: body.filters.discount_key,
+      reportView: body.filters.report_view,
+      productName: body.filters.product_name,
     };
     const branchId = filters.branchId ?? null;
     const result = await reportsService.requestExport(body.report_type as ReportType, filters, body.format, req.user.user_id, req.user.role, branchId);

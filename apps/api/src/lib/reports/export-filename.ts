@@ -40,8 +40,8 @@ function toDateStamp(date: Date | undefined): string {
  * large-report path), which only needs to be unique, not readable. A file
  * holding only part of the matching rows says so in its name.
  */
-export function buildExportFilename(reportType: ReportType, format: 'csv' | 'pdf', filters: ReportFilters, options: { partial?: boolean } = {}): string {
-  const name = pascalCase(reportType);
+export function buildExportFilename(reportType: ReportType, format: 'csv' | 'pdf', filters: ReportFilters, options: { partial?: boolean; name?: string } = {}): string {
+  const name = options.name ?? pascalCase(reportType);
   const ending = `${options.partial ? PARTIAL_EXPORT_FILENAME_MARKER : ''}.${format}`;
   if (filters.dateFrom && filters.dateTo) {
     const from = toDateStamp(filters.dateFrom);

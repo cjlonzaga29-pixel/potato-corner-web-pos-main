@@ -167,6 +167,7 @@ export function computeColumnLayout<T extends Record<string, unknown>>(
  * @react-pdf/renderer's `render` prop, which re-runs per rendered page.
  * `coverage`, when given, sits under the header, and a partial file also says
  * so in every page's footer, so a single printed page can't pass as complete.
+ * `title` replaces the report type's name for a view that shares its type.
  */
 export async function generatePdf<T extends Record<string, unknown>>(
   reportType: ReportType,
@@ -175,6 +176,7 @@ export async function generatePdf<T extends Record<string, unknown>>(
   columns: Array<ReportColumn<T>>,
   branchName: string | null,
   coverage?: { partial: boolean; note: string },
+  title?: string,
 ): Promise<Buffer> {
   const visibleColumns = columnsForRows(columns, data).filter((c) => !c.isAudit);
   const generatedAt = new Date().toISOString();
@@ -220,7 +222,7 @@ export async function generatePdf<T extends Record<string, unknown>>(
         View,
         { style: styles.header },
         e(Text, { style: styles.brand }, 'POTATO CORNER'),
-        e(Text, { style: styles.title }, reportTypeDisplayName(reportType)),
+        e(Text, { style: styles.title }, title ?? reportTypeDisplayName(reportType)),
         e(Text, { style: styles.meta }, `Branch: ${branchName ?? 'All Branches'} | Date range: ${dateRangeLabel} | Generated: ${generatedAt}`),
         ...(coverage ? [e(Text, { style: coverage.partial ? styles.partialNotice : styles.meta }, coverage.note)] : []),
       ),

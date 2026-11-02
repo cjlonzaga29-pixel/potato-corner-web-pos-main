@@ -11,6 +11,7 @@ import {
   MANUAL_DISCOUNT_TYPE,
   MANUAL_TOTAL_CALCULATION,
   TAX_NOT_CALCULATED_LABEL,
+  type ReportPeriodSummary,
   type SaleCalculationMode,
 } from '@potato-corner/shared';
 import { prisma } from '../../lib/prisma.js';
@@ -102,6 +103,7 @@ function mapVoidRefundRow(tx: VoidRefundTransaction): VoidRefundReportRow {
     reason: isVoided ? tx.voidReason : tx.refundReason,
     actioned_by_name: actionedBy ? `${actionedBy.firstName} ${actionedBy.lastName}` : null,
     actioned_at: (isVoided ? tx.voidedAt : tx.refundedAt)?.toISOString() ?? null,
+    created_at: tx.createdAt.toISOString(),
   };
 }
 
@@ -385,7 +387,8 @@ export const reportsRepository = {
     const createdAt = dateRangeFilter(filters);
     const rows = await prisma.transaction.findMany({
       where: {
-        status: filters.status ?? 'completed',
+        ...(filters.status ? { status: filters.status } : filters.anyStatus ? {} : { status: 'completed' as const }),
+        ...(filters.productName && { items: { some: { productNameSnapshot: filters.productName } } }),
         ...(filters.branchId && { branchId: filters.branchId }),
         ...(createdAt && { createdAt }),
         ...(filters.cashierId && { cashierId: filters.cashierId }),
@@ -397,6 +400,7 @@ export const reportsRepository = {
       select: {
         id: true,
         transactionNumber: true,
+        status: true,
         paymentMethod: true,
         totalAmount: true,
         vatAmount: true,
@@ -422,7 +426,7 @@ export const reportsRepository = {
         // Discount Compliance exports that read from this function.
         discountCustomerIdEncrypted: true,
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: filters.limit,
     });
     return rows.map((row) => {
@@ -445,6 +449,7 @@ export const reportsRepository = {
       return {
         transaction_id: row.id,
         receipt_number: row.transactionNumber,
+        status: row.status,
         payment_method: row.paymentMethod,
         total_amount: row.totalAmount.toNumber(),
         vat_amount: isManualTotal ? null : row.vatAmount.toNumber(),
@@ -547,39 +552,23 @@ export const reportsRepository = {
     return transactions.map(mapVoidRefundRow);
   },
 
-  // PDF-export-only counterpart to getVoidRefund, used exclusively by
-  // reports.service.ts's VOID_REFUND PDF branch. The Supervisor/Branch
-  // Reports page's Void/Refund tab (branch-ops/reports-view.tsx) does NOT
-  // render getVoidRefund's combined, interleaved-by-date rows — it composes
-  // its table from two independent status-filtered transaction queries
-  // (voided, then refunded), each capped at the page's own limit. Mirrors
-  // that exact composition (two separate queries, voided rows first, each
-  // ordered desc by createdAt and capped at filters.limit) so the exported
-  // PDF's rows, order, and row count match what the screen and its KPI
-  // totals (Total Voided/Refunded, Voided/Refunded Amount) actually show.
+  // Supervisor/Branch Void/Refund export. POS-PERF-P59 — one newest-first query,
+  // matching that tab's table, which now pages through the same combined rows.
+  // getVoidRefund above stays for Admin. filters.limit is the caller's bound.
   async getVoidRefundForExport(filters: ReportFilters): Promise<VoidRefundReportRow[]> {
     const range = dateRangeFilter(filters);
-    const include = {
-      branch: { select: { name: true } },
-      cashier: { select: { firstName: true, lastName: true } },
-      voidedBy: { select: { firstName: true, lastName: true } },
-      refundedBy: { select: { firstName: true, lastName: true } },
-    } as const;
-    const [voided, refunded] = await Promise.all([
-      prisma.transaction.findMany({
-        where: { status: 'voided', ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) },
-        include,
-        orderBy: { createdAt: 'desc' },
-        take: filters.limit,
-      }),
-      prisma.transaction.findMany({
-        where: { status: 'refunded', ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) },
-        include,
-        orderBy: { createdAt: 'desc' },
-        take: filters.limit,
-      }),
-    ]);
-    return [...voided.map(mapVoidRefundRow), ...refunded.map(mapVoidRefundRow)];
+    const rows = await prisma.transaction.findMany({
+      where: { status: { in: ['voided', 'refunded'] }, ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) },
+      include: {
+        branch: { select: { name: true } },
+        cashier: { select: { firstName: true, lastName: true } },
+        voidedBy: { select: { firstName: true, lastName: true } },
+        refundedBy: { select: { firstName: true, lastName: true } },
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: filters.limit,
+    });
+    return rows.map(mapVoidRefundRow);
   },
 
   async getDiscountCompliance(filters: ReportFilters): Promise<Array<DiscountComplianceReportRow & { proof_completion_label: string }>> {
@@ -706,7 +695,7 @@ export const reportsRepository = {
     const movements = await prisma.inventoryStockMovement.findMany({
       where: { ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) },
       include: { branch: { select: { name: true } }, inventoryItem: { select: { name: true } }, unit: { select: { code: true } } },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       skip: (filters.page - 1) * filters.limit,
       take: filters.limit,
     });
@@ -762,6 +751,59 @@ export const reportsRepository = {
       proof_available: m.proofKey || (m.referenceId && referenceIdsWithProof.has(m.referenceId)) ? 'Yes' : 'No',
       created_at: m.createdAt.toISOString(),
     }));
+  },
+
+  // POS-PERF-P59 — the Supervisor/Branch Reports figures, as database aggregates
+  // over every matching record, however many rows a table is showing. Same
+  // filters as those tables and their exports. Product names are bounded: they
+  // only fill a filter menu.
+  async getReportPeriodSummary(filters: ReportFilters): Promise<ReportPeriodSummary> {
+    const range = dateRangeFilter(filters);
+    const branchWhere = filters.branchId ? { branchId: filters.branchId } : {};
+    const createdWhere = { ...branchWhere, ...(range && { createdAt: range }) };
+    const attendanceWhere = { deletedAt: null, ...branchWhere, ...(range && { clockInServerTime: range }) };
+
+    const [sales, movements, attendance, openCount, products] = await Promise.all([
+      prisma.transaction.groupBy({ by: ['status'], where: createdWhere, _count: { _all: true }, _sum: { totalAmount: true, discountAmount: true } }),
+      prisma.inventoryStockMovement.groupBy({ by: ['movementType'], where: createdWhere, _count: { _all: true } }),
+      prisma.attendanceRecord.aggregate({ where: attendanceWhere, _count: { _all: true }, _sum: { actualWorkMinutes: true, overtimeMinutes: true } }),
+      prisma.attendanceRecord.count({ where: { ...attendanceWhere, clockOutServerTime: null } }),
+      prisma.transactionItem.findMany({
+        where: { transaction: createdWhere },
+        distinct: ['productNameSnapshot'],
+        select: { productNameSnapshot: true },
+        orderBy: { productNameSnapshot: 'asc' },
+        take: 500,
+      }),
+    ]);
+
+    const sale = (status: string) => sales.find((row) => row.status === status);
+    const movementCount = (...types: string[]) => movements.filter((row) => types.includes(row.movementType)).reduce((sum, row) => sum + row._count._all, 0);
+    return {
+      sales: {
+        completed_count: sale('completed')?._count._all ?? 0,
+        completed_total_amount: sale('completed')?._sum.totalAmount?.toNumber() ?? 0,
+        completed_discount_amount: sale('completed')?._sum.discountAmount?.toNumber() ?? 0,
+        voided_count: sale('voided')?._count._all ?? 0,
+        voided_total_amount: sale('voided')?._sum.totalAmount?.toNumber() ?? 0,
+        refunded_count: sale('refunded')?._count._all ?? 0,
+        refunded_total_amount: sale('refunded')?._sum.totalAmount?.toNumber() ?? 0,
+      },
+      movements: {
+        total_count: movements.reduce((sum, row) => sum + row._count._all, 0),
+        receiving_count: movementCount('RECEIVING'),
+        waste_count: movementCount('WASTE'),
+        adjustment_count: movementCount('ADJUSTMENT_IN', 'ADJUSTMENT_OUT'),
+        sale_count: movementCount('SALE'),
+      },
+      attendance: {
+        record_count: attendance._count._all,
+        open_count: openCount,
+        work_minutes: attendance._sum.actualWorkMinutes ?? 0,
+        overtime_minutes: attendance._sum.overtimeMinutes ?? 0,
+      },
+      sold_product_names: products.map((row) => row.productNameSnapshot),
+    };
   },
 
   // Value-based summary cards for the Inventory Activity/Audit hub (Business
@@ -1043,7 +1085,7 @@ export const reportsRepository = {
     const records = await prisma.attendanceRecord.findMany({
       where: { deletedAt: null, ...(filters.branchId && { branchId: filters.branchId }), ...(range && { clockInServerTime: range }) },
       include: { employee: { select: { firstName: true, lastName: true } }, branch: { select: { name: true } } },
-      orderBy: { clockInServerTime: 'desc' },
+      orderBy: [{ clockInServerTime: 'desc' }, { id: 'desc' }],
       skip: (filters.page - 1) * filters.limit,
       take: filters.limit,
     });

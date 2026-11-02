@@ -316,8 +316,8 @@ describe.skipIf(!isLocalDatabase)('P59 Discount Report PDF limit (real Express +
     if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
-  it('below and exactly at 2,000 rows reads complete; one above is labelled partial', async () => {
-    for (const target of [1_999, 2_000]) {
+  it('below and exactly at 100 rows reads complete; one above is labelled partial', async () => {
+    for (const target of [99, 100]) {
       await copySale(target - count);
       count = target;
       const file = await exportPdf();
@@ -331,9 +331,9 @@ describe.skipIf(!isLocalDatabase)('P59 Discount Report PDF limit (real Express +
     await copySale(1);
     const file = await exportPdf();
     expect(file.disposition).toContain('_PARTIAL.pdf');
-    expect(pdfCalls.rowCounts.at(-1)).toBe(2_000);
+    expect(pdfCalls.rowCounts.at(-1)).toBe(100);
     expect(pdfCalls.coverage.at(-1)?.partial).toBe(true);
-    expect(pdfCalls.coverage.at(-1)?.note).toContain('newest 2,000 matching');
-    expect(pdfCalls.coverage.at(-1)?.note).toContain('these exported rows only: PHP 5,000.00');
+    expect(pdfCalls.coverage.at(-1)?.note).toContain('newest 100 matching');
+    expect(pdfCalls.coverage.at(-1)?.note).toContain('these exported rows only: PHP 250.00');
   }, 300_000);
 });

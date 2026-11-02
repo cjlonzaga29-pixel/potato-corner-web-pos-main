@@ -518,7 +518,7 @@ describe('reportsRepository.getInventoryMovement', () => {
           branchId: 'b1',
           createdAt: { gte: new Date('2026-07-01T00:00:00.000Z'), lte: new Date('2026-07-31T23:59:59.999Z') },
         }),
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         skip: 10,
         take: 10,
       }),

@@ -47,6 +47,7 @@ vi.mock('./reports.columns.js', () => ({
       { key: 'total_discount_amount', header: 'Total Discount' },
     ],
   },
+  SOLD_PRODUCT_TRANSACTION_COLUMNS: [{ key: 'receipt_number', header: 'Receipt #' }, { key: 'status', header: 'Status' }],
   DAILY_SALES_TRANSACTION_COLUMNS: [
     { key: 'receipt_number', header: 'Receipt #' },
     { key: 'payment_method', header: 'Payment' },
@@ -446,7 +447,7 @@ describe('reportsService.requestExport', () => {
     expect(reportsRepository.getDailySalesTransactions).toHaveBeenCalledWith(expect.objectContaining({ branchId: 'b1' }));
     expect(reportsRepository.countRows).not.toHaveBeenCalled();
     expect(getReportRows).not.toHaveBeenCalled();
-    expect(generatePdf).toHaveBeenCalledWith('DAILY_SALES', expect.any(Object), rows, expect.anything(), 'SM North');
+    expect(generatePdf).toHaveBeenCalledWith('DAILY_SALES', expect.any(Object), rows, expect.anything(), 'SM North', expect.objectContaining({ partial: false }), undefined);
     expect(result).toEqual({ kind: 'file', buffer: pdfBuffer, filename: expect.stringMatching(/\.pdf$/), contentType: 'application/pdf' });
     expect(recordAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'REPORT_EXPORTED', afterState: expect.objectContaining({ async: false, rowCount: 1 }) }),
@@ -490,7 +491,7 @@ describe('reportsService.requestExport', () => {
       expect(reportsRepository.countRows).not.toHaveBeenCalled();
       expect(getReportRows).not.toHaveBeenCalled();
       const expectedRows = transactionRows;
-      expect(generatePdf).toHaveBeenCalledWith('DISCOUNT_COMPLIANCE', expect.any(Object), expectedRows, expect.anything(), 'SM North', expect.objectContaining({ partial: false }));
+      expect(generatePdf).toHaveBeenCalledWith('DISCOUNT_COMPLIANCE', expect.any(Object), expectedRows, expect.anything(), 'SM North', expect.objectContaining({ partial: false }), undefined);
       expect(result).toEqual({ kind: 'file', buffer: pdfBuffer, filename: expect.stringMatching(/\.pdf$/), contentType: 'application/pdf' });
       expect(recordAuditLog).toHaveBeenCalledWith(
         expect.objectContaining({ action: 'REPORT_EXPORTED', afterState: expect.objectContaining({ async: false, rowCount: 2 }) }),
@@ -575,12 +576,12 @@ describe('reportsService.requestExport', () => {
       expect(reportsRepository.getDailySalesTransactions).toHaveBeenLastCalledWith(expect.objectContaining({ discountedOnly: true, discountKey: 'type:pwd', limit: 10_001 }));
 
       await reportsService.requestExport('DISCOUNT_COMPLIANCE', { branchId: 'b1', page: 1, limit: 100 }, 'pdf', 'user-1', 'supervisor', 'b1');
-      expect(reportsRepository.getDailySalesTransactions).toHaveBeenLastCalledWith(expect.objectContaining({ discountedOnly: true, limit: 2_001 }));
+      expect(reportsRepository.getDailySalesTransactions).toHaveBeenLastCalledWith(expect.objectContaining({ discountedOnly: true, limit: 101 }));
     });
 
     it.each([
       ['csv', 10_000],
-      ['pdf', 2_000],
+      ['pdf', 100],
     ] as const)('P59 — %s: exactly the limit is complete, one row past it is partial and never exported', async (format, limit) => {
       const makeRows = (n: number) => Array.from({ length: n }, (_, i) => ({ ...transactionRows[0], receipt_number: `R-${i}` }));
       const { generatePdf } = await import('../../lib/reports/pdf.js');
@@ -642,7 +643,7 @@ describe('reportsService.requestExport', () => {
       const result = await reportsService.requestExport('DISCOUNT_COMPLIANCE', { branchId: 'b1', page: 1, limit: 100 }, 'pdf', 'user-1', 'supervisor', 'b1');
 
       const expectedRows = transactionRows;
-      expect(generatePdf).toHaveBeenCalledWith('DISCOUNT_COMPLIANCE', expect.any(Object), expectedRows, expect.anything(), 'SM North', expect.objectContaining({ partial: false }));
+      expect(generatePdf).toHaveBeenCalledWith('DISCOUNT_COMPLIANCE', expect.any(Object), expectedRows, expect.anything(), 'SM North', expect.objectContaining({ partial: false }), undefined);
       expect(result).toEqual({ kind: 'file', buffer: pdfBuffer, filename: expect.stringMatching(/\.pdf$/), contentType: 'application/pdf' });
     });
   });
@@ -713,7 +714,7 @@ describe('reportsService.requestExport', () => {
       const result = await reportsService.requestExport('VOID_REFUND', { branchId: 'b1', page: 1, limit: 25 }, 'pdf', 'user-1', 'supervisor', 'b1');
 
       expect(reportsRepository.getVoidRefundForExport).toHaveBeenCalledWith(expect.objectContaining({ branchId: 'b1' }));
-      expect(generatePdf).toHaveBeenCalledWith('VOID_REFUND', expect.any(Object), voidRefundRows, expect.anything(), 'SM North');
+      expect(generatePdf).toHaveBeenCalledWith('VOID_REFUND', expect.any(Object), voidRefundRows, expect.anything(), 'SM North', expect.objectContaining({ partial: false }), undefined);
       expect(result).toEqual({ kind: 'file', buffer: pdfBuffer, filename: expect.stringMatching(/\.pdf$/), contentType: 'application/pdf' });
     });
 
@@ -744,6 +745,72 @@ describe('reportsService.requestExport', () => {
     expect(enqueueGenerateExport).toHaveBeenCalled();
     expect(generatePdf).not.toHaveBeenCalled();
     expect(result).toEqual({ kind: 'job', job_id: 'job-2', message: expect.any(String), estimated_seconds: 30 });
+  });
+
+  it('P59 — an async job gets every row, not the page size of the request that started it', async () => {
+    vi.mocked(reportsRepository.countRows).mockResolvedValue(12_000);
+    const { enqueueGenerateExport } = await import('../../queues/report.queue.js');
+    vi.mocked(enqueueGenerateExport).mockResolvedValue({ id: 'job-3' } as never);
+
+    await reportsService.requestExport('INVENTORY_MOVEMENT', { branchId: 'b1', page: 3, limit: 100 }, 'csv', 'admin-1', 'super_admin', 'b1');
+
+    expect(enqueueGenerateExport).toHaveBeenCalledWith(expect.objectContaining({ filters: expect.objectContaining({ page: 1, limit: 12_000 }) }));
+  });
+
+  describe('P59 — Supervisor record-level exports stop at the format limit whatever the request asked', () => {
+    const cases = [
+      ['DAILY_SALES', 'getDailySalesTransactions'],
+      ['VOID_REFUND', 'getVoidRefundForExport'],
+      ['INVENTORY_MOVEMENT', 'getInventoryMovement'],
+      ['ATTENDANCE_SUMMARY', 'getAttendanceSummary'],
+      ['SHIFT_SUMMARY', 'getShiftSummary'],
+      ['CASH_RECONCILIATION', 'getCashReconciliation'],
+    ] as const;
+
+    it.each(cases)('%s PDF: asks for one row past 100, keeps 100 and labels the file partial', async (reportType, method) => {
+      const { generatePdf } = await import('../../lib/reports/pdf.js');
+      vi.mocked(generatePdf).mockResolvedValue(Buffer.from('%PDF-1.4 fake'));
+      const { prisma } = await import('../../lib/prisma.js');
+      vi.mocked(prisma.branch.findUnique).mockResolvedValue({ name: 'SM North' } as never);
+      const row = { total_amount: 1, discount_amount: 0, status: 'voided', created_at: '2026-07-01T02:00:00.000Z' };
+      const repository = reportsRepository as unknown as Record<string, ReturnType<typeof vi.fn>>;
+      repository[method]?.mockResolvedValue(Array.from({ length: 101 }, () => row));
+
+      const result = await reportsService.requestExport(reportType, { branchId: 'b1', page: 7, limit: 1 }, 'pdf', 'user-1', 'supervisor', 'b1');
+
+      if (result.kind !== 'file') throw new Error('expected file result');
+      expect(result.filename).toContain('_PARTIAL.pdf');
+      expect(repository[method]).toHaveBeenCalledWith(expect.objectContaining({ limit: 101 }));
+      const call = vi.mocked(generatePdf).mock.lastCall;
+      expect(call?.[2]).toHaveLength(100);
+      expect(call?.[5]).toEqual(expect.objectContaining({ partial: true, note: expect.stringContaining('newest 100 matching') }));
+    });
+
+    it('Admin keeps the existing complete path for the same report', async () => {
+      vi.mocked(reportsRepository.countRows).mockResolvedValue(150);
+      const { getReportRows } = await import('./reports.columns.js');
+      vi.mocked(getReportRows).mockResolvedValue([]);
+      const { generatePdf } = await import('../../lib/reports/pdf.js');
+      vi.mocked(generatePdf).mockResolvedValue(Buffer.from('%PDF-1.4 fake'));
+
+      const result = await reportsService.requestExport('INVENTORY_MOVEMENT', { branchId: 'b1', page: 1, limit: 100 }, 'pdf', 'admin-1', 'super_admin', 'b1');
+
+      expect(result.kind).toBe('file');
+      expect(getReportRows).toHaveBeenCalledWith('INVENTORY_MOVEMENT', expect.objectContaining({ limit: 150 }));
+    });
+
+    it('Sold Product Transactions exports every status under its own name and title', async () => {
+      const { generatePdf } = await import('../../lib/reports/pdf.js');
+      vi.mocked(generatePdf).mockResolvedValue(Buffer.from('%PDF-1.4 fake'));
+      vi.mocked(reportsRepository.getDailySalesTransactions).mockResolvedValue([] as never);
+
+      const result = await reportsService.requestExport('DAILY_SALES', { branchId: 'b1', page: 1, limit: 100, reportView: 'sold_product_transactions', productName: 'Fries' }, 'pdf', 'user-1', 'supervisor', 'b1');
+
+      if (result.kind !== 'file') throw new Error('expected file result');
+      expect(result.filename).toMatch(/^SoldProductTransactions_/);
+      expect(reportsRepository.getDailySalesTransactions).toHaveBeenLastCalledWith(expect.objectContaining({ anyStatus: true, productName: 'Fries' }));
+      expect(vi.mocked(generatePdf).mock.lastCall?.[6]).toBe('Sold Product Transactions');
+    });
   });
 
   it('rejects a supervisor exporting a super-admin-only report type with 403', async () => {

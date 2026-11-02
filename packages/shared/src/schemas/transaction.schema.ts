@@ -236,6 +236,10 @@ export const transactionListQuerySchema = z.object({
   // POS-PERF-P59 — Discount Report's detail table, so it covers every page rather than the newest rows only.
   discounted_only: z.enum(['true', 'false']).optional(),
   discount_key: discountKeySchema.optional(),
+  // POS-PERF-P59 — Sold Product Transactions and Void/Refund tabs, so their filters cover every page.
+  cashier_id: z.uuid().optional(),
+  product_name: z.string().trim().min(1).max(200).optional(),
+  status_group: z.enum(['void_refund']).optional(),
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(25),
 });
@@ -264,6 +268,12 @@ export const discountAuditQuerySchema = z.object({
   date_from: z.iso.date().optional(),
   date_to: z.iso.date().optional(),
   discount_key: discountKeySchema.optional(),
+  // POS-PERF-P59 — exactly the discounted sales on one page of another report, comma separated.
+  transaction_ids: z
+    .string()
+    .transform((value) => value.split(',').filter(Boolean))
+    .pipe(z.array(z.uuid()).max(100))
+    .optional(),
   page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(100).default(25),
 });

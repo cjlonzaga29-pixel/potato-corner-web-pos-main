@@ -71,6 +71,10 @@ export interface ReportFilters {
   // POS-PERF-P59 — Discount Report's type filter, plus its transaction-level export's discounted-only scope.
   discountKey?: string;
   discountedOnly?: boolean;
+  // POS-PERF-P59 — Sold Product Transactions export: every status unless one is chosen, and its product filter.
+  reportView?: 'sold_product_transactions';
+  anyStatus?: boolean;
+  productName?: string;
 }
 
 export interface ExportRequest {
@@ -115,6 +119,7 @@ export function columnsForRows<T extends Record<string, unknown>>(columns: Array
  */
 export type DailySalesTransactionRow = {
   receipt_number: string;
+  status: string;
   payment_method: string;
   total_amount: number;
   /** POS-PERF-P55R2 — null for a manual-total sale (VAT not calculated). */

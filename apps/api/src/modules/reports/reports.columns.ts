@@ -22,6 +22,12 @@ export const DAILY_SALES_TRANSACTION_COLUMNS: ReportColumn<DailySalesTransaction
   { key: 'cashier_name', header: 'Cashier' },
 ];
 
+/** POS-PERF-P59 — this tab's file can hold voided and refunded sales, so each row says which. */
+export const SOLD_PRODUCT_TRANSACTION_COLUMNS: ReportColumn<DailySalesTransactionRow>[] = [
+  ...DAILY_SALES_TRANSACTION_COLUMNS,
+  { key: 'status', header: 'Status' },
+];
+
 /**
  * Task 209.5 — the Discount Report's own column set for the Supervisor/
  * Branch CSV/PDF export (see reports.service.ts's DISCOUNT_COMPLIANCE

@@ -584,7 +584,7 @@ export const universalInventoryRepository = {
       prisma.inventoryStockMovement.findMany({
         where,
         include: stockMovementInclude,
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         skip: (filters.page - 1) * filters.limit,
         take: filters.limit,
       }),

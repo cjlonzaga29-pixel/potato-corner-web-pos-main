@@ -33,6 +33,11 @@ export const ReportFiltersSchema = z.object({
   search: z.string().max(100).optional(),
   // POS-PERF-P59 — Discount Report's type filter (see discountIdentityKey). Other reports ignore it.
   discount_key: discountKeySchema.optional(),
+  // POS-PERF-P59 — the Sold Product Transactions tab shares DAILY_SALES's report_type.
+  // This tells its export apart, so it holds every status unless one is chosen, and
+  // carries the tab's product filter, its own title and its own file name.
+  report_view: z.enum(['sold_product_transactions']).optional(),
+  product_name: z.string().trim().min(1).max(200).optional(),
 });
 export type ReportFiltersInput = z.infer<typeof ReportFiltersSchema>;
 
@@ -154,6 +159,37 @@ export const CashReconciliationReportRowSchema = z.object({
 });
 export type CashReconciliationReportRow = z.infer<typeof CashReconciliationReportRowSchema>;
 
+/**
+ * POS-PERF-P59 — figures for one branch and period across every matching record,
+ * independent of the page of rows a report table is showing.
+ */
+export const ReportPeriodSummarySchema = z.object({
+  sales: z.object({
+    completed_count: z.number().int(),
+    completed_total_amount: z.number(),
+    completed_discount_amount: z.number(),
+    voided_count: z.number().int(),
+    voided_total_amount: z.number(),
+    refunded_count: z.number().int(),
+    refunded_total_amount: z.number(),
+  }),
+  movements: z.object({
+    total_count: z.number().int(),
+    receiving_count: z.number().int(),
+    waste_count: z.number().int(),
+    adjustment_count: z.number().int(),
+    sale_count: z.number().int(),
+  }),
+  attendance: z.object({
+    record_count: z.number().int(),
+    open_count: z.number().int(),
+    work_minutes: z.number().int(),
+    overtime_minutes: z.number().int(),
+  }),
+  sold_product_names: z.array(z.string()),
+});
+export type ReportPeriodSummary = z.infer<typeof ReportPeriodSummarySchema>;
+
 export const VoidRefundReportRowSchema = z.object({
   transaction_id: z.uuid(),
   transaction_number: z.string(),
@@ -165,6 +201,7 @@ export const VoidRefundReportRowSchema = z.object({
   reason: z.string().nullable(),
   actioned_by_name: z.string().nullable(),
   actioned_at: z.iso.datetime().nullable(),
+  created_at: z.string(),
 });
 export type VoidRefundReportRow = z.infer<typeof VoidRefundReportRowSchema>;
 

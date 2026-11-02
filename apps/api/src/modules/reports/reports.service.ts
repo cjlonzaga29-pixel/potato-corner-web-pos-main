@@ -1,17 +1,17 @@
 import { REPORT_EXPORT_ROW_LIMITS, ROLES } from '@potato-corner/shared';
-import type { ReportType, InventorySummaryResponse } from '@potato-corner/shared';
+import type { ReportType, InventorySummaryResponse, ReportPeriodSummary } from '@potato-corner/shared';
 import type { $Enums } from '@prisma/client';
 import { reportsRepository } from './reports.repository.js';
-import type { ReportFilters, ReportResponse, SnapshotResponse } from './reports.types.js';
+import type { ReportColumn, ReportFilters, ReportResponse, SnapshotResponse } from './reports.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
-import { getReportRows, REPORT_COLUMNS, DAILY_SALES_TRANSACTION_COLUMNS, DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS } from './reports.columns.js';
+import { getReportRows, REPORT_COLUMNS, DAILY_SALES_TRANSACTION_COLUMNS, DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS, SOLD_PRODUCT_TRANSACTION_COLUMNS } from './reports.columns.js';
 import { ReportError } from './reports.types.js';
 import { generateCsv } from '../../lib/reports/csv.js';
 import { generatePdf } from '../../lib/reports/pdf.js';
 import { generateInventorySummaryCsv, generateInventorySummaryPdf } from '../../lib/reports/inventory-summary-export.js';
 import { generateExpensesPdf, formatPhp, type ExpensesExportRow } from '../../lib/reports/expenses-export.js';
 import { buildExportFilename } from '../../lib/reports/export-filename.js';
-import { discountExportCoverage } from '../../lib/reports/export-coverage.js';
+import { dailySalesExportCoverage, discountExportCoverage, exportCoverage, soldProductsExportCoverage, voidRefundExportCoverage, type ExportCoverage } from '../../lib/reports/export-coverage.js';
 import { prisma } from '../../lib/prisma.js';
 import { enqueueGenerateExport, enqueueRefreshSnapshot } from '../../queues/report.queue.js';
 import { expensesRepository } from '../expenses/expenses.repository.js';
@@ -165,16 +165,135 @@ async function precomputedReport<T>(
   return { report_type: reportType, computed_at: existing.computedAt.toISOString(), branch_id: branchId, data: existing.payload as T[] };
 }
 
-// Reports under this row count are generated and returned synchronously (the
-// browser gets real CSV/PDF bytes in the same response, no job/notification
-// round-trip). PDF's limit is far lower than CSV's — react-pdf's
-// renderToBuffer is much more expensive per row than string-joining CSV
-// lines, and it runs synchronously inside the request handler, so a huge PDF
-// would block the event loop for other requests. Reports at or above the
-// limit fall back to the existing async job + Supabase signed URL +
-// Socket.io notification flow — that path is for oversized exports only, not
-// the normal Export CSV/PDF buttons a user hits from the Reports page.
+// POS-PERF-P59 — the row limit of every record-level export below. Rendering a PDF
+// blocks the event loop, so a larger file makes every branch's checkout wait.
 const SYNC_ROW_LIMIT: Record<'csv' | 'pdf', number> = REPORT_EXPORT_ROW_LIMITS;
+
+// Admin's reports and the summary reports stay complete. At or above this they fall
+// back to the async job + Supabase signed URL + Socket.io notification flow, which
+// still renders in this process. Their row counts are normally small.
+const ASYNC_EXPORT_THRESHOLD: Record<'csv' | 'pdf', number> = { csv: 10_000, pdf: 2_000 };
+
+type ExportRow = Record<string, unknown>;
+
+interface BoundedExportPlan {
+  fetchRows: (limit: number) => Promise<ExportRow[]>;
+  columns: ReportColumn<ExportRow>[];
+  coverage: (rows: ExportRow[], hasMore: boolean) => ExportCoverage;
+  filenameName?: string;
+  title?: string;
+}
+
+function timestampSpan(rows: ExportRow[], key: string): { newestAt: string | undefined; oldestAt: string | undefined } {
+  const read = (row: ExportRow | undefined) => {
+    const value = row?.[key];
+    return typeof value === 'string' ? value : undefined;
+  };
+  return { newestAt: read(rows[0]), oldestAt: read(rows[rows.length - 1]) };
+}
+
+/** The Supervisor/Branch export for this report, or null when it is not record-level. */
+function boundedExportPlan(reportType: ReportType, filters: ReportFilters, requesterRole: string): BoundedExportPlan | null {
+  // The row and column types differ by report; the renderers only read rows by column key.
+  const typed = <T,>(coverage: (rows: T[], hasMore: boolean) => ExportCoverage) => coverage as unknown as BoundedExportPlan['coverage'];
+  const asColumns = <T,>(columns: T[]) => columns as unknown as BoundedExportPlan['columns'];
+  const resolved = defaultRealtimeFilters(filters);
+
+  switch (reportType) {
+    case 'DAILY_SALES': {
+      // Daily Sales and Sold Product Transactions list each sale, unlike Admin's per-day summary of this type.
+      const isSoldView = resolved.reportView === 'sold_product_transactions';
+      return {
+        fetchRows: (limit) => reportsRepository.getDailySalesTransactions({ ...resolved, anyStatus: isSoldView, limit }) as Promise<ExportRow[]>,
+        columns: asColumns(scopeDiscountIdColumn(isSoldView ? SOLD_PRODUCT_TRANSACTION_COLUMNS : DAILY_SALES_TRANSACTION_COLUMNS, requesterRole)),
+        coverage: isSoldView ? typed(soldProductsExportCoverage) : typed(dailySalesExportCoverage),
+        ...(isSoldView && { filenameName: 'SoldProductTransactions', title: 'Sold Product Transactions' }),
+      };
+    }
+    case 'VOID_REFUND':
+      return {
+        fetchRows: (limit) => reportsRepository.getVoidRefundForExport({ ...resolved, limit }) as Promise<ExportRow[]>,
+        columns: REPORT_COLUMNS[reportType],
+        coverage: typed(voidRefundExportCoverage),
+      };
+    case 'DISCOUNT_COMPLIANCE':
+      // Filtered in the query, not after it: taking the newest sales first and
+      // filtering afterwards could leave exported rows short of the screen's totals.
+      return {
+        fetchRows: (limit) => reportsRepository.getDailySalesTransactions({ ...resolved, discountedOnly: true, limit }) as Promise<ExportRow[]>,
+        columns: asColumns(scopeDiscountIdColumn(DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS, requesterRole)),
+        coverage: typed(discountExportCoverage),
+      };
+    case 'INVENTORY_MOVEMENT':
+      return {
+        fetchRows: (limit) => reportsRepository.getInventoryMovement({ ...resolved, page: 1, limit }) as Promise<ExportRow[]>,
+        columns: REPORT_COLUMNS[reportType],
+        coverage: (rows, hasMore) => exportCoverage(rows.length, hasMore, { noun: 'stock movements', screen: 'Inventory Movement', ...timestampSpan(rows, 'created_at') }),
+      };
+    case 'ATTENDANCE_SUMMARY':
+      return {
+        fetchRows: (limit) => reportsRepository.getAttendanceSummary({ ...resolved, page: 1, limit }) as Promise<ExportRow[]>,
+        columns: REPORT_COLUMNS[reportType],
+        coverage: (rows, hasMore) => exportCoverage(rows.length, hasMore, { noun: 'attendance records', screen: 'Attendance Summary', ...timestampSpan(rows, 'clock_in') }),
+      };
+    // No Supervisor screen exports these two; a direct request still may not exceed the PDF limit.
+    case 'SHIFT_SUMMARY':
+      return {
+        fetchRows: (limit) => reportsRepository.getShiftSummary({ ...resolved, page: 1, limit }) as Promise<ExportRow[]>,
+        columns: REPORT_COLUMNS[reportType],
+        coverage: (rows, hasMore) => exportCoverage(rows.length, hasMore, { noun: 'shifts', screen: 'Shift Summary', ...timestampSpan(rows, 'started_at') }),
+      };
+    case 'CASH_RECONCILIATION':
+      return {
+        fetchRows: (limit) => reportsRepository.getCashReconciliation({ ...resolved, page: 1, limit }) as Promise<ExportRow[]>,
+        columns: REPORT_COLUMNS[reportType],
+        coverage: (rows, hasMore) => exportCoverage(rows.length, hasMore, { noun: 'closed shifts', screen: 'Cash Reconciliation', newestAt: undefined, oldestAt: undefined }),
+      };
+    default:
+      return null;
+  }
+}
+
+async function runBoundedExport(
+  reportType: ReportType,
+  filters: ReportFilters,
+  format: 'csv' | 'pdf',
+  requesterId: string,
+  requesterRole: string,
+  branchId: string | null,
+  plan: BoundedExportPlan,
+): Promise<ExportResult> {
+  // One row past the limit tells a file that stopped at the limit from one that merely holds exactly that many.
+  const rowLimit = SYNC_ROW_LIMIT[format];
+  const fetched = await plan.fetchRows(rowLimit + 1);
+  const rows = fetched.slice(0, rowLimit);
+  const coverage = plan.coverage(rows, fetched.length > rowLimit);
+  const filename = buildExportFilename(reportType, format, filters, { partial: coverage.partial, name: plan.filenameName });
+
+  let buffer: Buffer;
+  let contentType: 'text/csv' | 'application/pdf';
+  if (format === 'csv') {
+    // A complete CSV stays exactly as it was: a first line would only shift the headers of a file nothing is missing from.
+    buffer = generateCsv(rows, plan.columns, coverage.partial ? coverage.note : undefined);
+    contentType = 'text/csv';
+  } else {
+    const branch = branchId ? await prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } }) : null;
+    buffer = await generatePdf(reportType, filters, rows, plan.columns, branch?.name ?? null, coverage, plan.title);
+    contentType = 'application/pdf';
+  }
+
+  await recordAuditLog({
+    action: 'REPORT_EXPORTED',
+    entityType: 'report',
+    entityId: reportType,
+    actorId: requesterId,
+    actorRole: requesterRole,
+    branchId,
+    afterState: { reportType, format, async: false, rowCount: rows.length, partial: coverage.partial },
+  });
+  return { kind: 'file', buffer, filename, contentType };
+}
+
 const SUPER_ADMIN_ONLY_TYPES = new Set<ReportType>(['FRAUD_ALERT_SUMMARY', 'BRANCH_COMPARISON', 'AUDIT_LOG']);
 const PRECOMPUTED_TYPES = new Set<ReportType>(['PRODUCT_PERFORMANCE', 'FLAVOR_PERFORMANCE', 'EMPLOYEE_PERFORMANCE', 'INVENTORY_VALUATION', 'BRANCH_COMPARISON']);
 
@@ -197,6 +316,22 @@ export const reportsService = {
     realtimeReport('INVENTORY_MOVEMENT', filters, actorId, actorRole, (f) => reportsRepository.getInventoryMovement(f)),
   getInventoryConsumptionSummaryReport: (filters: ReportFilters, actorId: string, actorRole: string) =>
     realtimeReport('INVENTORY_CONSUMPTION_SUMMARY', filters, actorId, actorRole, (f) => reportsRepository.getInventoryConsumptionSummary(f)),
+  // POS-PERF-P59 — bespoke for the same reason as the summary below. branchGuard
+  // has already verified access to filters.branchId at the router.
+  async getReportPeriodSummary(filters: ReportFilters, actorId: string, actorRole: string): Promise<ReportPeriodSummary> {
+    const resolved = defaultRealtimeFilters(filters);
+    const summary = await reportsRepository.getReportPeriodSummary(resolved);
+    await recordAuditLog({
+      action: 'REPORT_ACCESSED',
+      entityType: 'report',
+      entityId: 'REPORT_PERIOD_SUMMARY',
+      actorId,
+      actorRole,
+      branchId: resolved.branchId ?? null,
+      afterState: { reportType: 'REPORT_PERIOD_SUMMARY', filters: toWireFilters(resolved) },
+    });
+    return summary;
+  },
   // Bespoke rather than realtimeReport -- this returns one summary object,
   // not a data[]/total page, so it doesn't fit ReportResponse<T>. Mirrors
   // getInventoryAnalyticsReport's shape below. branchGuard (applied at the
@@ -321,134 +456,12 @@ export const reportsService = {
       throw new ReportError('FORBIDDEN_REPORT_TYPE', `${reportType} can only be exported by a super admin`, 403);
     }
 
-    // The Supervisor/Branch Reports page's Daily Sales tab (branch-ops/
-    // reports-view.tsx) exports DAILY_SALES as its report_type but renders
-    // one row per completed transaction — not the aggregated per-day/branch
-    // summary DAILY_SALES returns everywhere else (Admin's Daily Sales
-    // report and Admin's DAILY_SALES CSV export, both unchanged below).
-    // Without this branch the exported CSV/PDF rows and totals can never
-    // match that screen, since they'd come from an unrelated aggregate.
-    if (reportType === 'DAILY_SALES' && requesterRole !== ROLES.SUPER_ADMIN) {
-      const resolvedFilters = defaultRealtimeFilters(filters);
-      const rows = await reportsRepository.getDailySalesTransactions(resolvedFilters);
-      const filename = buildExportFilename(reportType, format, resolvedFilters);
-      const columns = scopeDiscountIdColumn(DAILY_SALES_TRANSACTION_COLUMNS, requesterRole);
-
-      let buffer: Buffer;
-      let contentType: 'text/csv' | 'application/pdf';
-      if (format === 'csv') {
-        buffer = generateCsv(rows, columns);
-        contentType = 'text/csv';
-      } else {
-        const branch = branchId ? await prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } }) : null;
-        buffer = await generatePdf(reportType, resolvedFilters, rows, columns, branch?.name ?? null);
-        contentType = 'application/pdf';
-      }
-
-      await recordAuditLog({
-        action: 'REPORT_EXPORTED',
-        entityType: 'report',
-        entityId: reportType,
-        actorId: requesterId,
-        actorRole: requesterRole,
-        branchId,
-        afterState: { reportType, format, async: false, rowCount: rows.length },
-      });
-      return { kind: 'file', buffer, filename, contentType };
-    }
-
-    // The Supervisor/Branch Reports page's Void/Refund tab (branch-ops/
-    // reports-view.tsx) does not render getVoidRefund's output — it composes
-    // its table (and KPI totals) from two independent status-filtered
-    // transaction queries (voided, then refunded), each capped at the
-    // page's own limit. getVoidRefund instead returns every matching voided
-    // OR refunded row, interleaved together by date and re-sliced by
-    // page/limit below — a different row set, order, and count than the
-    // screen. Gated to non-super_admin: the Admin Reports page's Void/Refund
-    // tab (app/(admin)/admin/reports/page.tsx) uses useVoidRefundReport,
-    // which IS backed by getVoidRefund — its export already matches its
-    // screen via the generic path below, so it must not be redirected here.
-    // Both CSV and PDF are redirected to getVoidRefundForExport, which
-    // mirrors the Supervisor/Branch screen's exact composition (voided rows
-    // then refunded rows, each capped at the screen limit) so both exported
-    // formats match what the screen shows.
-    if (reportType === 'VOID_REFUND' && requesterRole !== ROLES.SUPER_ADMIN) {
-      const resolvedFilters = defaultRealtimeFilters(filters);
-      const rows = await reportsRepository.getVoidRefundForExport(resolvedFilters);
-      const filename = buildExportFilename(reportType, format, resolvedFilters);
-      const columns = REPORT_COLUMNS[reportType];
-
-      let buffer: Buffer;
-      let contentType: 'text/csv' | 'application/pdf';
-      if (format === 'csv') {
-        buffer = generateCsv(rows, columns);
-        contentType = 'text/csv';
-      } else {
-        const branch = branchId ? await prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } }) : null;
-        buffer = await generatePdf(reportType, resolvedFilters, rows, columns, branch?.name ?? null);
-        contentType = 'application/pdf';
-      }
-
-      await recordAuditLog({
-        action: 'REPORT_EXPORTED',
-        entityType: 'report',
-        entityId: reportType,
-        actorId: requesterId,
-        actorRole: requesterRole,
-        branchId,
-        afterState: { reportType, format, async: false, rowCount: rows.length },
-      });
-      return { kind: 'file', buffer, filename, contentType };
-    }
-
-    // The Supervisor/Branch Reports page's Discount Report tab
-    // (branch-ops/reports-view.tsx) does not render getDiscountCompliance's
-    // output — it filters the same per-transaction rows the Daily Sales tab
-    // uses (completedTransactions.filter(t => t.discount_type !== null)) to
-    // one row per discounted transaction. getDiscountCompliance instead
-    // returns a groupBy aggregate (one row per branch+discount_type with
-    // summed totals) — a different grain than the screen entirely. Both CSV
-    // and PDF are redirected here: reuses getDailySalesTransactions (already
-    // powers the Daily Sales PDF/CSV above) and DAILY_SALES_TRANSACTION_COLUMNS,
-    // filtered to discounted rows, so no new repository query, report type, or
-    // column set is introduced. Gated to non-super_admin: Admin's Discount
-    // Report CSV/PDF stay on the generic aggregate path below/unchanged.
-    if (reportType === 'DISCOUNT_COMPLIANCE' && requesterRole !== ROLES.SUPER_ADMIN) {
-      const resolvedFilters = defaultRealtimeFilters(filters);
-      // POS-PERF-P59 — filtered in the query, not after it: taking the newest
-      // sales first and filtering afterwards could leave exported rows short of
-      // the totals on screen. The limit is this format's sync ceiling, not the
-      // screen's page size. One row past it tells a file that stopped at the
-      // limit from one that merely holds exactly that many.
-      const rowLimit = SYNC_ROW_LIMIT[format];
-      const fetched = await reportsRepository.getDailySalesTransactions({ ...resolvedFilters, discountedOnly: true, limit: rowLimit + 1 });
-      const rows = fetched.slice(0, rowLimit);
-      const coverage = discountExportCoverage(rows, fetched.length > rowLimit);
-      const filename = buildExportFilename(reportType, format, resolvedFilters, { partial: coverage.partial });
-      const columns = scopeDiscountIdColumn(DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS, requesterRole);
-
-      let buffer: Buffer;
-      let contentType: 'text/csv' | 'application/pdf';
-      if (format === 'csv') {
-        // A complete CSV stays exactly as it was: a first line would only shift the headers of a file nothing is missing from.
-        buffer = generateCsv(rows, columns, coverage.partial ? coverage.note : undefined);
-        contentType = 'text/csv';
-      } else {
-        const branch = branchId ? await prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } }) : null;
-        buffer = await generatePdf(reportType, resolvedFilters, rows, columns, branch?.name ?? null, coverage);
-        contentType = 'application/pdf';
-      }
-
-      await recordAuditLog({
-        action: 'REPORT_EXPORTED',
-        entityType: 'report',
-        entityId: reportType,
-        actorId: requesterId,
-        actorRole: requesterRole,
-        branchId,
-        afterState: { reportType, format, async: false, rowCount: rows.length, partial: coverage.partial },
-      });
-      return { kind: 'file', buffer, filename, contentType };
+    // The Supervisor/Branch Reports page exports one row per record, never the
+    // aggregates Admin's reports export, so its files can match its tables. Those
+    // all stop at a fixed row limit and say so, whatever the request's own limit.
+    if (requesterRole !== ROLES.SUPER_ADMIN) {
+      const plan = boundedExportPlan(reportType, filters, requesterRole);
+      if (plan) return runBoundedExport(reportType, defaultRealtimeFilters(filters), format, requesterId, requesterRole, branchId, plan);
     }
 
     // EXPENSES has no ReportSnapshot-backed data source and, before this
@@ -537,7 +550,7 @@ export const reportsService = {
     const resolvedFilters = PRECOMPUTED_TYPES.has(reportType) ? precomputedWindowFilters(branchId) : defaultRealtimeFilters(filters);
     const count = await reportsRepository.countRows(reportType, resolvedFilters);
 
-    if (count < SYNC_ROW_LIMIT[format]) {
+    if (count < ASYNC_EXPORT_THRESHOLD[format]) {
       const rows = await getReportRows(reportType, { ...resolvedFilters, page: 1, limit: count || 1 });
       const columns = REPORT_COLUMNS[reportType];
       const filename = buildExportFilename(reportType, format, resolvedFilters);
@@ -565,7 +578,8 @@ export const reportsService = {
       return { kind: 'file', buffer, filename, contentType };
     }
 
-    const job = await enqueueGenerateExport({ reportType, filters: resolvedFilters, format, requesterId, branchId });
+    // POS-PERF-P59 — every row: with the request's own limit, a paginated report's job silently wrote just that page.
+    const job = await enqueueGenerateExport({ reportType, filters: { ...resolvedFilters, page: 1, limit: count }, format, requesterId, branchId });
     await recordAuditLog({
       action: 'REPORT_EXPORTED',
       entityType: 'report',

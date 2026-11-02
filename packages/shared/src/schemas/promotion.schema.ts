@@ -122,6 +122,8 @@ export const promotionEligibleProductSchema = z.object({
   id: z.uuid(),
   name: z.string(),
   classification: z.string(),
+  // POS-PERF-P58 — the type to display; classification alone decides eligibility. An older API doesn't send it.
+  product_type_name: z.string().optional(),
   status: z.string(),
   branch_ids: z.array(z.uuid()),
   /** null when selectable; otherwise why it can't be selected. */

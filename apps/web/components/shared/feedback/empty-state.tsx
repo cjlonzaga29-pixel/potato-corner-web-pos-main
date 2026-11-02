@@ -38,7 +38,7 @@ export function EmptyState({ icon: Icon = Inbox, title, description, action, com
       >
         <Icon className={compact ? 'h-4 w-4' : 'h-6 w-6'} aria-hidden="true" />
       </div>
-      <div className={compact ? 'space-y-0.5' : 'space-y-1'}>
+      <div className={compact ? 'max-w-full space-y-0.5 [overflow-wrap:anywhere]' : 'max-w-full space-y-1 [overflow-wrap:anywhere]'}>
         <p className="text-sm font-medium">{title}</p>
         {description && <p className={compact ? 'text-xs text-muted-foreground' : 'text-sm text-muted-foreground'}>{description}</p>}
       </div>

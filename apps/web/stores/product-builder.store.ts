@@ -14,9 +14,12 @@ interface ProductBuilderState {
    * are the selection of record and this is no longer read.
    */
   draftBranchIds: string[];
+  /** POS-PERF-P58 — Step 1's type if it was changed before the Product exists; otherwise the URL's ?type= is the selection. */
+  draftProductType: string | null;
   setProductId: (id: string) => void;
   setStep: (step: BuilderStep) => void;
   setDraftBranchIds: (branchIds: string[]) => void;
+  setDraftProductType: (key: string) => void;
   /** Starts a brand-new draft, discarding any in-progress one — distinct from resuming an existing product (see loadExisting). */
   reset: () => void;
   /** Resumes the builder against an already-existing product (Edit Product entry point). */
@@ -43,11 +46,13 @@ export const useProductBuilderStore = create<ProductBuilderState>()(
       productId: null,
       step: 'details',
       draftBranchIds: [],
+      draftProductType: null,
       setProductId: (id) => set({ productId: id }),
       setStep: (step) => set({ step }),
       setDraftBranchIds: (branchIds) => set({ draftBranchIds: branchIds }),
-      reset: () => set({ productId: null, step: 'details', draftBranchIds: [] }),
-      loadExisting: (productId) => set({ productId, step: 'details', draftBranchIds: [] }),
+      setDraftProductType: (key) => set({ draftProductType: key }),
+      reset: () => set({ productId: null, step: 'details', draftBranchIds: [], draftProductType: null }),
+      loadExisting: (productId) => set({ productId, step: 'details', draftBranchIds: [], draftProductType: null }),
     }),
     {
       name: 'potato-corner:product-builder-draft',

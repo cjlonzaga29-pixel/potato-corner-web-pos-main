@@ -20,6 +20,7 @@ const { mockUpdate, MockProductApiError } = vi.hoisted(() => {
   return { mockUpdate: vi.fn(), MockProductApiError };
 });
 
+vi.mock('@/hooks/queries/use-product-types', () => ({ useProductTypes: () => ({ data: undefined }) }));
 vi.mock('@/hooks/queries/use-products', () => ({
   ProductApiError: MockProductApiError,
   useUpdateProduct: () => ({ mutateAsync: mockUpdate, isPending: false }),
@@ -125,8 +126,8 @@ describe('ProductDetailsForm (POS-PERF-P39)', () => {
   it('shows the saved classification and saves it without any status or legacy is_seasonal field', async () => {
     mockUpdate.mockResolvedValue(product({ classification: 'promotional', version: 5 }));
     render(<ProductDetailsForm product={product({ classification: 'promotional' })} disabled={false} onDirtyChange={vi.fn()} />);
-    expect(screen.getByRole('combobox', { name: 'Classification' })).toHaveTextContent('Promotional');
-    expect(screen.getByText(/Classification alone never changes the price/)).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Product type' })).toHaveTextContent('Promotional');
+    expect(screen.getByText(/The type alone never changes the price/)).toBeInTheDocument();
 
     fireEvent.change(nameInput(), { target: { value: 'Promo Fries' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
@@ -135,6 +136,21 @@ describe('ProductDetailsForm (POS-PERF-P39)', () => {
     expect(sent).toMatchObject({ classification: 'promotional', seasonal_start_date: null, seasonal_end_date: null, expected_version: 4 });
     expect(sent).not.toHaveProperty('status');
     expect(sent).not.toHaveProperty('is_seasonal');
+  });
+
+  // POS-PERF-P58 — an inactive custom type stays selected and isn't resent, so an unrelated edit saves.
+  it('saves an unrelated edit to a product whose custom type is inactive, without sending any type', async () => {
+    const type = { key: 'b6f0a7de-5b0c-4e8b-9a43-0d2b7f3f1c11', id: 'b6f0a7de-5b0c-4e8b-9a43-0d2b7f3f1c11', name: 'Marketing', is_builtin: false, is_active: false };
+    mockUpdate.mockResolvedValue(product({ product_type: type, version: 5 }));
+    render(<ProductDetailsForm product={product({ product_type: type, classification: 'regular' })} disabled={false} onDirtyChange={vi.fn()} />);
+    expect(screen.getByRole('combobox', { name: 'Product type' })).toHaveTextContent('Marketing (inactive)');
+
+    fireEvent.change(nameInput(), { target: { value: 'Campaign Fries' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    const sent = mockUpdate.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(sent).toMatchObject({ name: 'Campaign Fries', expected_version: 4 });
+    for (const field of ['product_type', 'classification', 'seasonal_start_date', 'seasonal_end_date']) expect(sent).not.toHaveProperty(field);
   });
 
   it('keeps typed values and shows the reason inline when a save fails for another reason', async () => {

@@ -1,6 +1,6 @@
 import type { Prisma, ProductStatus as PrismaProductStatus } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
-import type { ProductBranchView } from '@potato-corner/shared';
+import { isBuiltInProductTypeKey, type ProductBranchView, type ProductClassification, type ProductTypeKey } from '@potato-corner/shared';
 import type {
   CreateProductData,
   CreateVariantData,
@@ -15,6 +15,7 @@ const creatorInclude = {
   creator: { select: { id: true, firstName: true, lastName: true, email: true } },
   exclusiveBranch: { select: { id: true, name: true } },
   productCategory: { select: { id: true, name: true } },
+  productType: { select: { id: true, name: true, isActive: true, branches: { select: { branchId: true } } } },
 } satisfies Prisma.ProductInclude;
 
 const publicationItemSelect = {
@@ -86,6 +87,15 @@ type BranchScopedProduct = {
   branchAvailability: { branchId: string; isAvailable: boolean }[];
 };
 
+/** POS-PERF-P58 — a custom type wins; no custom type means the built-in named by classification. */
+function productTypeKeyOf(product: { classification: ProductClassification; productTypeId: string | null }): ProductTypeKey {
+  return product.productTypeId ?? product.classification;
+}
+
+function productTypeWhere(key: ProductTypeKey): Prisma.ProductWhereInput {
+  return isBuiltInProductTypeKey(key) ? { classification: key, productTypeId: null } : { productTypeId: key };
+}
+
 const SORT_FIELD_MAP: Record<NonNullable<ProductListFilters['sort_by']>, string> = {
   name: 'name',
   created_at: 'createdAt',
@@ -100,7 +110,9 @@ const SORT_FIELD_MAP: Record<NonNullable<ProductListFilters['sort_by']>, string>
  */
 export const productsRepository = {
   async findAll(filters: ProductListFilters) {
-    const base = buildWhere(filters);
+    // POS-PERF-P58 — product_type supersedes classification, which keeps its
+    // old meaning (the column alone) for older clients.
+    const base = buildWhere(filters.product_type ? { ...filters, classification: undefined } : filters);
     const sortField = SORT_FIELD_MAP[filters.sort_by ?? 'created_at'];
     const sortOrder = filters.sort_order ?? 'desc';
 
@@ -110,18 +122,27 @@ export const productsRepository = {
     // always agree), then loads only the requested page. A handful of
     // sequential queries rather than one per count, so it never holds
     // several pool connections at once.
-    let where: Prisma.ProductWhereInput = base;
+    let where: Prisma.ProductWhereInput = filters.product_type ? { AND: [base, productTypeWhere(filters.product_type)] } : base;
     let counts: Record<ProductBranchView, number> | undefined;
+    let typeCounts: Record<string, number> | undefined;
     if (filters.branch_id) {
       const branchId = filters.branch_id;
       const scoped = await prisma.product.findMany({
         where: { AND: [base, { branchAvailability: { some: { branchId } } }] },
-        select: { id: true, status: true, everPublished: true, branchAvailability: { select: { branchId: true, isAvailable: true } } },
+        select: { id: true, status: true, everPublished: true, classification: true, productTypeId: true, branchAvailability: { select: { branchId: true, isAvailable: true } } },
       });
+      // POS-PERF-P58 — the tab counts follow the selected type; the type counts
+      // follow the selected tab. One read, so neither can disagree with the list.
       const idsByView: Record<ProductBranchView, string[]> = { active: [], drafts: [], inactive: [] };
-      for (const product of scoped) idsByView[branchViewOf(product, branchId)].push(product.id);
+      typeCounts = {};
+      for (const product of scoped) {
+        const view = branchViewOf(product, branchId);
+        const typeKey = productTypeKeyOf(product);
+        if (!filters.view || filters.view === view) typeCounts[typeKey] = (typeCounts[typeKey] ?? 0) + 1;
+        if (!filters.product_type || filters.product_type === typeKey) idsByView[view].push(product.id);
+      }
       counts = { active: idsByView.active.length, drafts: idsByView.drafts.length, inactive: idsByView.inactive.length };
-      where = { id: { in: filters.view ? idsByView[filters.view] : scoped.map((product) => product.id) } };
+      where = { id: { in: filters.view ? idsByView[filters.view] : [...idsByView.active, ...idsByView.drafts, ...idsByView.inactive] } };
     }
 
     const products = await prisma.product.findMany({
@@ -136,11 +157,12 @@ export const productsRepository = {
         branchAvailability: { select: { isAvailable: true, branchId: true, branch: { select: { name: true } } } },
         exclusiveBranch: { select: { id: true, name: true } },
         productCategory: { select: { id: true, name: true } },
+        productType: { select: { id: true, name: true, isActive: true } },
       },
     });
     const total = counts && filters.view ? counts[filters.view] : await prisma.product.count({ where });
 
-    return { products, total, counts };
+    return { products, total, counts, typeCounts };
   },
 
   /**
@@ -184,8 +206,9 @@ export const productsRepository = {
    * branch_exclusive true seeds only exclusiveBranchId; false seeds every
    * currently-active branch.
    */
-  async createWithCascade(data: CreateProductData, createdBy: string) {
+  async createWithCascade(data: CreateProductData, createdBy: string, beforeWrite?: (tx: Prisma.TransactionClient) => Promise<void>) {
     return prisma.$transaction(async (tx) => {
+      await beforeWrite?.(tx);
       const product = await tx.product.create({
         data: {
           name: data.name,
@@ -196,6 +219,7 @@ export const productsRepository = {
           displayOrder: data.displayOrder,
           isSeasonal: data.isSeasonal,
           classification: data.classification,
+          productTypeId: data.productTypeId,
           seasonalStartDate: data.seasonalStartDate ? new Date(data.seasonalStartDate) : undefined,
           seasonalEndDate: data.seasonalEndDate ? new Date(data.seasonalEndDate) : undefined,
           branchExclusive: data.branchExclusive,
@@ -274,7 +298,15 @@ export const productsRepository = {
    * final create, and the caller (products.service.ts's forkProductForBranch)
    * falls back to findForkCopy to return the winner's row rather than erroring.
    */
-  async forkProductCascade(sourceProductId: string, branchId: string, actorId: string) {
+  async forkProductCascade(
+    sourceProductId: string,
+    branchId: string,
+    actorId: string,
+    productType?: {
+      write?: { productTypeId?: string | null; classification?: ProductClassification; isSeasonal?: boolean };
+      beforeWrite?: (tx: Prisma.TransactionClient) => Promise<void>;
+    },
+  ) {
     const source = await prisma.product.findUnique({
       where: { id: sourceProductId },
       include: {
@@ -291,6 +323,7 @@ export const productsRepository = {
     if (!source) return null;
 
     return prisma.$transaction(async (tx) => {
+      await productType?.beforeWrite?.(tx);
       const forked = await tx.product.create({
         data: {
           name: source.name,
@@ -299,9 +332,12 @@ export const productsRepository = {
           categoryId: source.categoryId,
           status: 'draft',
           displayOrder: source.displayOrder,
-          isSeasonal: source.isSeasonal,
+          isSeasonal: productType?.write?.isSeasonal ?? source.isSeasonal,
           // POS-PERF-P49 — the branch copy keeps the source's classification.
-          classification: source.classification,
+          classification: productType?.write?.classification ?? source.classification,
+          // POS-PERF-P58 — and its custom type, once the caller has checked that
+          // this branch may use it, unless the supervisor chose another.
+          productTypeId: productType?.write?.productTypeId !== undefined ? productType.write.productTypeId : source.productTypeId,
           seasonalStartDate: source.seasonalStartDate,
           seasonalEndDate: source.seasonalEndDate,
           branchExclusive: true,
@@ -420,8 +456,8 @@ export const productsRepository = {
    * and its own write is what invalidates the other's.  Returns the updated
    * row's id, or null if the predicate matched zero rows (stale version).
    */
-  async update(productId: string, data: UpdateProductData, expectedVersion?: number) {
-    const { count } = await prisma.product.updateMany({
+  async update(productId: string, data: UpdateProductData, expectedVersion?: number, client: Prisma.TransactionClient | typeof prisma = prisma) {
+    const { count } = await client.product.updateMany({
       where: { id: productId, ...(expectedVersion !== undefined && { version: expectedVersion }) },
       data: {
         name: data.name,
@@ -431,6 +467,7 @@ export const productsRepository = {
         displayOrder: data.displayOrder,
         isSeasonal: data.isSeasonal,
         classification: data.classification,
+        ...(data.productTypeId !== undefined && { productTypeId: data.productTypeId }),
         ...(data.seasonalStartDate !== undefined && {
           seasonalStartDate: data.seasonalStartDate ? new Date(data.seasonalStartDate) : null,
         }),
@@ -441,7 +478,13 @@ export const productsRepository = {
       },
     });
     if (count === 0) return null;
-    return prisma.product.findUniqueOrThrow({ where: { id: productId }, include: detailInclude });
+    return client.product.findUniqueOrThrow({ where: { id: productId }, include: detailInclude });
+  },
+
+  /** POS-PERF-P58 — every branch this product is configured at, read under its catalog lock before assigning a custom type. */
+  async findConfiguredBranchIds(productId: string, client: Prisma.TransactionClient | typeof prisma = prisma) {
+    const rows = await client.branchProductAvailability.findMany({ where: { productId }, select: { branchId: true } });
+    return rows.map((row) => row.branchId);
   },
 
   updateStatus(productId: string, status: PrismaProductStatus, client: Prisma.TransactionClient | typeof prisma = prisma) {
@@ -680,6 +723,7 @@ export const productsRepository = {
         exclusiveBranchId: true,
         branchSelectionScoped: true,
         branchAvailability: { select: { branchId: true, isAvailable: true } },
+        productType: { select: { name: true, branches: { select: { branchId: true } } } },
       },
     });
   },

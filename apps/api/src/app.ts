@@ -35,6 +35,7 @@ import { productComponentsRouter } from './modules/product-components/product-co
 import { recipeReadinessRouter } from './modules/recipe-readiness/recipe-readiness.router.js';
 import { shadowBomDeductionRouter } from './modules/shadow-bom-deduction/shadow-bom-deduction.router.js';
 import { productCategoriesRouter } from './modules/product-categories/product-categories.router.js';
+import { productTypesRouter } from './modules/product-types/product-types.router.js';
 import { productOptionsRouter } from './modules/product-options/product-options.router.js';
 import { catalogAssignmentRouter } from './modules/catalog-assignment/catalog-assignment.router.js';
 import { AuthError } from './modules/auth/auth.types.js';
@@ -106,6 +107,7 @@ app.use('/api/product-components', productComponentsRouter);
 app.use('/api/recipe-readiness', recipeReadinessRouter);
 app.use('/api/shadow-bom-deduction', shadowBomDeductionRouter);
 app.use('/api/product-categories', productCategoriesRouter);
+app.use('/api/product-types', productTypesRouter);
 app.use('/api/product-options', productOptionsRouter);
 app.use('/api/inventory-approvals', inventoryApprovalRouter);
 app.use('/api/staff-pin', staffPinRouter);

@@ -7,7 +7,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { AlertTriangle, ArrowLeft, Check, Loader2 } from 'lucide-react';
-import { PRODUCT_CLASSIFICATIONS, type ProductDetailResponse, type PublicationCheckResponse, type PublicationIssue } from '@potato-corner/shared';
+import type { ProductDetailResponse, PublicationCheckResponse, PublicationIssue } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Form } from '@/components/ui/form';
@@ -34,6 +34,7 @@ import { useProductCategories } from '@/hooks/queries/use-product-categories';
 import {
   useProduct,
   useCreateProduct,
+  useUpdateProduct,
   useUploadProductImage,
   usePublicationCheck,
   usePublishProductToBranches,
@@ -44,7 +45,9 @@ import { RecipeBomPanel } from '@/components/products/recipe-bom-panel';
 import { ProductWriteError } from '@/components/products/product-write-error';
 import { ProductSizesPanel } from '@/components/products/product-sizes-panel';
 import { VariantChoicesCard } from '@/components/products/variant-choices-card';
-import { ProductClassificationSelect } from '@/components/supervisor/products/product-classification-select';
+import { ProductTypeSelect } from '@/components/supervisor/products/product-type-select';
+import { useProductTypes } from '@/hooks/queries/use-product-types';
+import { BUILT_IN_PRODUCT_TYPES, parseProductTypeKey, productTypeCoversBranches, productTypeOptionsFor, productTypeRequestFields } from '@/lib/product-types';
 import {
   BUILDER_STEPS,
   useProductBuilderStore,
@@ -62,6 +65,7 @@ const STEP_LABELS: Record<BuilderStep, string> = {
 function BuilderPageInner() {
   const searchParams = useSearchParams();
   const editProductId = searchParams.get('product_id');
+  const listType = parseProductTypeKey(searchParams.get('type'));
   const { productId, step, setStep, setProductId, reset, loadExisting } = useProductBuilderStore();
 
   // Entering with ?product_id= (Edit Product) always takes over the draft,
@@ -94,7 +98,7 @@ function BuilderPageInner() {
     <div className="app-section app-section-gap">
       <div className="flex items-center justify-between gap-3">
         <Button variant="ghost" size="sm" asChild className="-ml-2 self-start">
-          <Link href="/supervisor/products">
+          <Link href={listType ? `/supervisor/products?type=${listType}` : '/supervisor/products'}>
             <ArrowLeft className="mr-2 h-4 w-4" />
             Back to products
           </Link>
@@ -198,8 +202,8 @@ const detailsFormSchema = z.object({
   name: z.string().min(2, 'Minimum 2 characters').max(100),
   description: z.string().max(500).optional(),
   category_id: z.string().optional(),
-  // POS-PERF-P49 — Regular/Promotional/Seasonal; never changes a price on its own.
-  classification: z.enum(PRODUCT_CLASSIFICATIONS),
+  // POS-PERF-P58 — a built-in or custom type; never changes a price on its own.
+  product_type: z.string().min(1),
   branch_ids: z.array(z.string()).min(1, 'Select at least one branch'),
 });
 type DetailsFormValues = z.input<typeof detailsFormSchema>;
@@ -227,6 +231,44 @@ function builderBranches(product: ProductDetailResponse): BuilderBranch[] {
       .map((row) => ({ id: row.branch_id, name: row.branch_name }));
   }
   return [];
+}
+
+/**
+ * POS-PERF-P58 — a saved product's type in the builder. Saves when changed, with
+ * the version it was loaded from; the server has the final say on whether the
+ * type is valid at all of the product's branches.
+ */
+function SavedProductTypeField({ product }: { product: ProductDetailResponse }) {
+  const update = useUpdateProduct(product.id);
+  const { data: types } = useProductTypes({ includeInactive: false });
+  const [error, setError] = useState<string | null>(null);
+
+  async function change(key: string) {
+    setError(null);
+    try {
+      await update.mutateAsync({ ...productTypeRequestFields(key), expected_version: product.version });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Failed to change the type.');
+    }
+  }
+
+  return (
+    <div className="space-y-2" data-testid="builder-product-type">
+      <ProductTypeSelect
+        id="builder-saved-type"
+        value={product.product_type?.key ?? product.classification ?? 'regular'}
+        options={productTypeOptionsFor(product, types ?? BUILT_IN_PRODUCT_TYPES)}
+        onChange={(key) => void change(key)}
+        disabled={update.isPending}
+        savedClassification={product.classification}
+      />
+      {error && (
+        <p className="text-destructive text-sm font-medium" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
 }
 
 function DetailsStep({
@@ -258,6 +300,7 @@ function DetailsStep({
               {branches.map((b) => b.name).join(', ')}
             </p>
           )}
+          {existingProduct && <SavedProductTypeField product={existingProduct} />}
           <Button onClick={onContinue}>Continue to Sizes &amp; Prices</Button>
         </CardContent>
       </Card>
@@ -268,9 +311,9 @@ function DetailsStep({
 }
 
 function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) => void }) {
-  // POS-PERF-P57 — the type chosen on Create Product, when it is a real one; still editable below.
-  const typeParam = useSearchParams().get('type');
-  const initialClassification = PRODUCT_CLASSIFICATIONS.find((classification) => classification === typeParam) ?? 'regular';
+  // POS-PERF-P57 — the type chosen on Create Product; still editable below.
+  // POS-PERF-P58 — a change made here survives a reload through the draft store.
+  const typeParam = parseProductTypeKey(useSearchParams().get('type'));
   const { user } = useAuth();
   const createProduct = useCreateProduct();
   const uploadImage = useUploadProductImage();
@@ -283,7 +326,8 @@ function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) =
     limit: 100,
   });
 
-  const { draftBranchIds, setDraftBranchIds } = useProductBuilderStore();
+  const { draftBranchIds, setDraftBranchIds, draftProductType, setDraftProductType } = useProductBuilderStore();
+  const { data: typeData, isLoading: typesLoading } = useProductTypes({ includeInactive: false });
 
   // "Assigned branches" = active branches this supervisor is assigned to
   // right now — never every branch in the organization. The server re-checks
@@ -300,7 +344,7 @@ function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) =
       name: '',
       description: '',
       category_id: '',
-      classification: initialClassification,
+      product_type: draftProductType ?? typeParam ?? 'regular',
       branch_ids: [],
     },
   });
@@ -308,6 +352,19 @@ function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) =
   const [createdProductId, setCreatedProductId] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<Error | null>(null);
   const selectedBranchIds = form.watch('branch_ids');
+  const selectedTypeKey = form.watch('product_type');
+  const allTypes = typeData ?? BUILT_IN_PRODUCT_TYPES;
+  const selectedType = allTypes.find((type) => type.key === selectedTypeKey);
+  const typeOptions = allTypes.filter((type) => type.key === selectedTypeKey || productTypeCoversBranches(type, selectedBranchIds));
+  // A type outside these branches, or one that isn't ours to use, is refused here
+  // and never swapped for another: the server would refuse it too.
+  const typeProblem = typesLoading
+    ? null
+    : !selectedType
+      ? 'That product type isn\u2019t available. Choose another.'
+      : !productTypeCoversBranches(selectedType, selectedBranchIds)
+        ? `${selectedType.name} isn\u2019t available at every selected branch. Choose another type or change the branches.`
+        : null;
 
   // Once assigned branches resolve: restore a persisted draft selection
   // (dropping any branch no longer assigned), or preselect the only branch.
@@ -361,7 +418,7 @@ function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) =
         description: values.description || undefined,
         category_id: values.category_id || undefined,
         status: 'active',
-        classification: values.classification,
+        ...productTypeRequestFields(values.product_type),
         branch_exclusive: false,
         branch_ids: values.branch_ids,
       });
@@ -418,11 +475,20 @@ function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) =
               </Select>
             </div>
 
-            <ProductClassificationSelect
-              id="builder-classification"
-              value={form.watch('classification')}
-              onChange={(value) => form.setValue('classification', value)}
+            <ProductTypeSelect
+              id="builder-type"
+              value={selectedTypeKey}
+              options={typeOptions}
+              onChange={(value) => {
+                form.setValue('product_type', value);
+                setDraftProductType(value);
+              }}
             />
+            {typeProblem && (
+              <p className="text-destructive text-sm font-medium" role="alert" data-testid="builder-type-problem">
+                {typeProblem}
+              </p>
+            )}
 
             <fieldset className="space-y-2" aria-describedby="builder-branches-summary">
               <legend className="text-sm font-medium leading-none">Available at branches</legend>
@@ -479,7 +545,7 @@ function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) =
               <ProductWriteError error={submitError} failedTitle="Couldn't save this product" pausedTitle="Saving is paused for maintenance" testId="builder-write-error" />
             )}
 
-            <Button type="submit" disabled={isSubmitting || branchesLoading || selectedBranchIds.length === 0}>
+            <Button type="submit" disabled={isSubmitting || branchesLoading || typesLoading || selectedBranchIds.length === 0 || typeProblem !== null}>
               {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Continue to Sizes &amp; Prices
             </Button>

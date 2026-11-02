@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { AlertTriangle, CheckCircle2, ImageIcon, Loader2, Trash2 } from 'lucide-react';
-import { PRODUCT_CLASSIFICATIONS, type ProductClassification, type ProductDetailResponse } from '@potato-corner/shared';
+import type { ProductDetailResponse } from '@potato-corner/shared';
 import { Form } from '@/components/ui/form';
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { Input } from '@/components/ui/input';
@@ -15,9 +15,11 @@ import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ImageUpload } from '@/components/shared/forms/image-upload';
-import { ProductClassificationSelect } from './product-classification-select';
+import { ProductTypeSelect } from './product-type-select';
 import { useProductCategories } from '@/hooks/queries/use-product-categories';
 import { ProductApiError, useDeleteProductImage, useProductImage, useUpdateProduct, useUploadProductImage } from '@/hooks/queries/use-products';
+import { useProductTypes } from '@/hooks/queries/use-product-types';
+import { BUILT_IN_PRODUCT_TYPES, productTypeOptionsFor, productTypeSaveFields } from '@/lib/product-types';
 
 const NO_CATEGORY = '__none__';
 
@@ -27,13 +29,13 @@ const formSchema = z
     description: z.string().max(500),
     category_id: z.string(),
     display_order: z.string().regex(/^\d*$/, 'Use a whole number'),
-    // POS-PERF-P49 — Regular/Promotional/Seasonal; the season window is optional information.
-    classification: z.enum(PRODUCT_CLASSIFICATIONS),
+    // POS-PERF-P58 — a built-in or custom type; a Seasonal window is optional information.
+    product_type: z.string(),
     seasonal_start_date: z.string(),
     seasonal_end_date: z.string(),
   })
   .superRefine((data, ctx) => {
-    if (data.classification !== 'seasonal') return;
+    if (data.product_type !== 'seasonal') return;
     if (Boolean(data.seasonal_start_date) !== Boolean(data.seasonal_end_date)) {
       ctx.addIssue({ code: 'custom', path: ['seasonal_start_date'], message: 'Enter both dates, or leave both empty' });
       return;
@@ -51,7 +53,7 @@ function valuesFromProduct(product: ProductDetailResponse): FormValues {
     description: product.description ?? '',
     category_id: product.category_id ?? NO_CATEGORY,
     display_order: product.display_order === null ? '' : String(product.display_order),
-    classification: product.classification ?? (product.is_seasonal ? 'seasonal' : 'regular'),
+    product_type: product.product_type?.key ?? product.classification ?? (product.is_seasonal ? 'seasonal' : 'regular'),
     seasonal_start_date: product.seasonal_start_date ?? '',
     seasonal_end_date: product.seasonal_end_date ?? '',
   };
@@ -80,8 +82,10 @@ export function ProductDetailsForm({ product, disabled, onDirtyChange }: Product
   const { data: categoryData, isLoading: categoriesLoading } = useProductCategories({ isActive: true, limit: 100 });
   const form = useForm<FormValues>({ resolver: zodResolver(formSchema), defaultValues: valuesFromProduct(product) });
   const isDirty = form.formState.isDirty;
-  const classification = form.watch('classification');
-  const isSeasonal = classification === 'seasonal';
+  const productType = form.watch('product_type');
+  const isSeasonal = productType === 'seasonal';
+  const { data: types } = useProductTypes({ includeInactive: false });
+  const typeOptions = productTypeOptionsFor(product, types ?? BUILT_IN_PRODUCT_TYPES);
   // The version these fields were loaded from — what Save details claims to be editing.
   const baseVersion = useRef(product.version);
   const [conflict, setConflict] = useState(false);
@@ -123,9 +127,7 @@ export function ProductDetailsForm({ product, disabled, onDirtyChange }: Product
         description: values.description || undefined,
         category_id: values.category_id === NO_CATEGORY ? null : values.category_id,
         ...(values.display_order !== '' && { display_order: Number(values.display_order) }),
-        classification: values.classification,
-        seasonal_start_date: values.classification === 'seasonal' && values.seasonal_start_date ? values.seasonal_start_date : null,
-        seasonal_end_date: values.classification === 'seasonal' && values.seasonal_end_date ? values.seasonal_end_date : null,
+        ...productTypeSaveFields(values.product_type, product.product_type?.key, values.seasonal_start_date, values.seasonal_end_date),
         expected_version: baseVersion.current,
       });
       baseVersion.current = saved.version;
@@ -190,11 +192,13 @@ export function ProductDetailsForm({ product, disabled, onDirtyChange }: Product
               </FormFieldWrapper>
             </div>
 
-            <ProductClassificationSelect
-              id="product-editor-classification"
-              value={classification}
-              onChange={(value: ProductClassification) => form.setValue('classification', value, { shouldDirty: true })}
+            <ProductTypeSelect
+              id="product-editor-type"
+              value={productType}
+              options={typeOptions}
+              onChange={(value) => form.setValue('product_type', value, { shouldDirty: true })}
               disabled={disabled}
+              savedClassification={product.classification}
             />
 
             {isSeasonal && (

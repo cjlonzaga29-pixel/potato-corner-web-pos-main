@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { ImageIcon, Loader2, Trash2 } from 'lucide-react';
-import { PRODUCT_CLASSIFICATIONS, type ProductResponse } from '@potato-corner/shared';
+import type { ProductResponse } from '@potato-corner/shared';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Form } from '@/components/ui/form';
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
@@ -13,7 +13,9 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { ImageUpload } from '@/components/shared/forms/image-upload';
-import { ProductClassificationSelect } from '@/components/supervisor/products/product-classification-select';
+import { ProductTypeSelect } from '@/components/supervisor/products/product-type-select';
+import { useProductTypes } from '@/hooks/queries/use-product-types';
+import { BUILT_IN_PRODUCT_TYPES, productTypeOptionsFor, productTypeSaveFields } from '@/lib/product-types';
 import { useUpdateProduct, useProductImage, useUploadProductImage, useDeleteProductImage } from '@/hooks/queries/use-products';
 
 function optionalCoercedNumber(min: number) {
@@ -29,13 +31,13 @@ const formSchema = z
     description: z.string().max(500).optional(),
     category: z.string().max(50).optional(),
     display_order: optionalCoercedNumber(0),
-    // POS-PERF-P49 — Regular/Promotional/Seasonal; the season window is optional information.
-    classification: z.enum(PRODUCT_CLASSIFICATIONS),
+    // POS-PERF-P58 — a built-in or custom type; a Seasonal window is optional information.
+    product_type: z.string(),
     seasonal_start_date: z.string().optional(),
     seasonal_end_date: z.string().optional(),
   })
   .superRefine((data, ctx) => {
-    if (data.classification !== 'seasonal') return;
+    if (data.product_type !== 'seasonal') return;
     if (Boolean(data.seasonal_start_date) !== Boolean(data.seasonal_end_date)) {
       ctx.addIssue({ code: 'custom', path: ['seasonal_start_date'], message: 'Enter both dates, or leave both empty' });
       return;
@@ -53,7 +55,7 @@ function valuesFromProduct(product: ProductResponse): FormValues {
     description: product.description ?? '',
     category: product.category ?? '',
     display_order: product.display_order ?? '',
-    classification: product.classification ?? (product.is_seasonal ? 'seasonal' : 'regular'),
+    product_type: product.product_type?.key ?? product.classification ?? (product.is_seasonal ? 'seasonal' : 'regular'),
     seasonal_start_date: product.seasonal_start_date ?? '',
     seasonal_end_date: product.seasonal_end_date ?? '',
   };
@@ -68,8 +70,9 @@ interface EditProductDialogProps {
 export function EditProductDialog({ open, onOpenChange, product }: EditProductDialogProps) {
   const updateProduct = useUpdateProduct(product.id);
   const form = useForm<FormValues>({ resolver: zodResolver(formSchema), defaultValues: valuesFromProduct(product) });
-  const classification = form.watch('classification');
-  const isSeasonal = classification === 'seasonal';
+  const productType = form.watch('product_type');
+  const isSeasonal = productType === 'seasonal';
+  const { data: types } = useProductTypes({ includeInactive: false }, { enabled: open });
 
   // Task 209.6 — image management is deliberately independent of the
   // name/description/etc. form above: its own queries, its own mutations,
@@ -103,9 +106,7 @@ export function EditProductDialog({ open, onOpenChange, product }: EditProductDi
       description: parsed.description || undefined,
       category: parsed.category || undefined,
       display_order: parsed.display_order,
-      classification: parsed.classification,
-      seasonal_start_date: parsed.classification === 'seasonal' && parsed.seasonal_start_date ? parsed.seasonal_start_date : null,
-      seasonal_end_date: parsed.classification === 'seasonal' && parsed.seasonal_end_date ? parsed.seasonal_end_date : null,
+      ...productTypeSaveFields(parsed.product_type, product.product_type?.key, parsed.seasonal_start_date, parsed.seasonal_end_date),
       expected_version: product.version,
     });
     handleOpenChange(false);
@@ -183,10 +184,12 @@ export function EditProductDialog({ open, onOpenChange, product }: EditProductDi
               </FormFieldWrapper>
             </div>
 
-            <ProductClassificationSelect
-              id="edit-product-classification"
-              value={classification}
-              onChange={(value) => form.setValue('classification', value, { shouldDirty: true })}
+            <ProductTypeSelect
+              id="edit-product-type"
+              value={productType}
+              options={productTypeOptionsFor(product, types ?? BUILT_IN_PRODUCT_TYPES)}
+              savedClassification={product.classification}
+              onChange={(value) => form.setValue('product_type', value, { shouldDirty: true })}
             />
 
             {isSeasonal && (

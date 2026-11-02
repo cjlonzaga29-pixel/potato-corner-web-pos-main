@@ -9,6 +9,7 @@ import {
   type PosManualDiscountType,
   type PromotionEligibleProduct,
   type PromotionResponse,
+  PRODUCT_CLASSIFICATION_LABELS,
 } from '@potato-corner/shared';
 import {
   discountsRepository,
@@ -96,6 +97,7 @@ function toEligibleProduct(row: ProductForPromotionRow, visibleBranchIds: Set<st
     id: row.id,
     name: row.name,
     classification: row.classification,
+    product_type_name: row.productType?.name ?? PRODUCT_CLASSIFICATION_LABELS[row.classification],
     status: row.status,
     branch_ids: row.branchAvailability.map((a) => a.branchId).filter((id) => visibleBranchIds.has(id)),
     ineligible_reason: reasonFor('automatic'),

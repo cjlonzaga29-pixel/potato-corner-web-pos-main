@@ -54,7 +54,7 @@ export function productIneligibilityReason(
   applicationMode: 'automatic' | 'cashier_selected' = 'automatic',
 ): string | null {
   if (applicationMode === 'automatic' && !PROMOTABLE_CLASSIFICATIONS.includes(product.classification)) {
-    return 'Only Promotional or Seasonal products can have a promotion. Change the classification in the product editor first.';
+    return 'Only Promotional or Seasonal products can have a promotion. Change the product type in the product editor first.';
   }
   if (NON_PROMOTABLE_STATUSES.includes(product.status)) {
     return 'Archived and discontinued products cannot have a discount.';

@@ -27,14 +27,14 @@ and "Managed by Super Admin" removed. Presentation only, with no migration. See
 
 1. The runbook's owner decisions, then §8 for limits and §9 for rollout
 2. `packages/shared/src/discounts/discount-display.ts` for the name, identity and proof rules
-3. [`PROJECT_MAP.md`](PROJECT_MAP.md), "Manual discounts and proof uploads" and "Reports and exports"
+3. [`PROJECT_MAP.md`](PROJECT_MAP.md), "Manual discounts and proof uploads" and "Dashboards, reports and stock alerts"
 
 ## Verification evidence
 
 On a disposable local database, at `e6a4d1a`, run sequentially.
 
 | Check | Result |
-|---|---|
+| --- | --- |
 | Full API suite | 3,666 passed, 5 skipped, 0 failed |
 | Shared suite | 73 passed |
 | Full web suite | 1,633 passed, 0 failed |

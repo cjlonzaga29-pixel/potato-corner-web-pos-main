@@ -92,13 +92,11 @@ Playwright config at `tests/e2e/playwright.config.ts`.
   in `API/transactions/transactions.router.ts`; storage client in `apps/api/src/lib/supabase.ts`
 - **Promotions:** `WEB/app/(supervisor)/supervisor/promotions/page.tsx`, `API/discounts/promotion-pricing.ts`,
   `SHARED/promotion.schema.ts`
-- **Schema:** `SHARED/manual-discount.schema.ts`; models `ManualDiscountType`, `ManualDiscountTypeProduct`
-- **Saved name, identity and proof rules:** `packages/shared/src/discounts/discount-display.ts`, `WEB/lib/discount-report.ts`
+- **Schema:** `SHARED/manual-discount.schema.ts`; models `ManualDiscountType`, `ManualDiscountTypeProduct`; display rules `packages/shared/src/discounts/discount-display.ts`
 - **Tests:** `API/transactions/p55-manual-discounts.integration.test.ts`,
   `API/transactions/p57-shortages-and-discount-modes.integration.test.ts`, `API/discounts/p49-promotions.integration.test.ts`
 - **Runbooks:** `RUN/pos-perf-p55-manual-discounts-and-proof.md` (P55R2 note at the top supersedes parts of it),
-  `RUN/pos-perf-p55r3-compat-readers.md`, `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§4–7),
-  `RUN/pos-perf-p59-reports-and-ui-cleanup.md`
+  `RUN/pos-perf-p55r3-compat-readers.md`, `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§4–7), `RUN/pos-perf-p59-reports-and-ui-cleanup.md`
 
 ## Attendance, PIN, breaks, cashier sessions
 
@@ -127,28 +125,17 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 - **Runbooks:** `RUN/pos-perf-p52-payroll-settings-and-reports.md`, `RUN/pos-perf-p54-payroll-discounts-breaks-integration.md`,
   `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§3)
 
-## Dashboards and stock alerts
+## Dashboards, reports and stock alerts
 
 - **UI:** `WEB/app/(admin)/admin/dashboard/page.tsx`, `WEB/app/(supervisor)/supervisor/dashboard/page.tsx`,
   `WEB/app/(branch)/branch/dashboard/page.tsx`, `WEB/components/admin/dashboard-low-stock-summary.tsx`,
-  `WEB/components/supervisor/dashboard-inventory-alerts.tsx`
-- **API:** `API/reports/reports.router.ts`, `API/reports/reports.service.ts`; shortage counts in
+  `WEB/components/supervisor/dashboard-inventory-alerts.tsx`, `WEB/app/(admin)/admin/reports/page.tsx`, `WEB/components/branch-ops/reports-view.tsx`, `WEB/components/reports/`
+- **API:** `API/reports/` (exports in `apps/api/src/lib/reports/`); shortage counts in
   `API/stock-availability/stock-availability.service.ts`
 - **Schema:** `SHARED/reports.schema.ts`
 - **Tests:** `WEB/components/admin/dashboard-low-stock-summary.test.tsx`,
-  `WEB/components/supervisor/dashboard-inventory-alerts.test.tsx`, `API/reports/reports.service.test.ts`
-- **Runbooks:** `RUN/pos-perf-p47-dashboard-and-management.md`, `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§2)
-
-## Reports and exports
-
-- **UI:** `WEB/app/(admin)/admin/reports/page.tsx`, `WEB/components/branch-ops/reports-view.tsx` (Supervisor and staff),
-  `WEB/components/reports/` (Discount Report filter, proof summary, breakdown, drill-downs)
-- **API:** `API/reports/reports.repository.ts`, `API/reports/reports.columns.ts`, `API/reports/reports.service.ts`;
-  generators in `apps/api/src/lib/reports/`; type filter in `apps/api/src/lib/discount-key-where.ts`
-- **Schema:** `SHARED/reports.schema.ts`. The Discount Report keeps the `DISCOUNT_COMPLIANCE` code and URL
-- **Tests:** `API/reports/p59-discount-report.integration.test.ts`, `API/reports/reports.repository.test.ts`,
-  `WEB/components/branch-ops/reports-view.test.tsx`
-- **Runbooks:** `RUN/pos-perf-p59-reports-and-ui-cleanup.md`
+  `WEB/components/supervisor/dashboard-inventory-alerts.test.tsx`, `API/reports/reports.service.test.ts`, `API/reports/p59-discount-report.integration.test.ts`
+- **Runbooks:** `RUN/pos-perf-p47-dashboard-and-management.md`, `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§2), `RUN/pos-perf-p59-reports-and-ui-cleanup.md`
 
 ## Stock transfers
 

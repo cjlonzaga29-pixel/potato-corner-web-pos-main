@@ -2,7 +2,7 @@
 
 Navigation only, not proof of what the code does today. Rules live in [`.claude/CLAUDE.md`](../.claude/CLAUDE.md), architecture in [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md), and
 the current state of work in [`CURRENT_HANDOFF.md`](CURRENT_HANDOFF.md). Paths were checked against the working tree on
-2026-11-02. Update the affected entries when files move. Keep this file under 180 lines and link runbooks, not details.
+2026-11-03. Update the affected entries when files move. Keep this file under 180 lines and link runbooks, not details.
 
 Shorthand: `API/` = `apps/api/src/modules/`, `WEB/` = `apps/web/`, `SHARED/` = `packages/shared/src/schemas/`,
 `RUN/` = `docs/runbooks/`.
@@ -93,10 +93,12 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 - **Promotions:** `WEB/app/(supervisor)/supervisor/promotions/page.tsx`, `API/discounts/promotion-pricing.ts`,
   `SHARED/promotion.schema.ts`
 - **Schema:** `SHARED/manual-discount.schema.ts`; models `ManualDiscountType`, `ManualDiscountTypeProduct`
+- **Saved name, identity and proof rules:** `packages/shared/src/discounts/discount-display.ts`, `WEB/lib/discount-report.ts`
 - **Tests:** `API/transactions/p55-manual-discounts.integration.test.ts`,
   `API/transactions/p57-shortages-and-discount-modes.integration.test.ts`, `API/discounts/p49-promotions.integration.test.ts`
 - **Runbooks:** `RUN/pos-perf-p55-manual-discounts-and-proof.md` (P55R2 note at the top supersedes parts of it),
-  `RUN/pos-perf-p55r3-compat-readers.md`, `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§4–7)
+  `RUN/pos-perf-p55r3-compat-readers.md`, `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§4–7),
+  `RUN/pos-perf-p59-reports-and-ui-cleanup.md`
 
 ## Attendance, PIN, breaks, cashier sessions
 
@@ -136,6 +138,17 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 - **Tests:** `WEB/components/admin/dashboard-low-stock-summary.test.tsx`,
   `WEB/components/supervisor/dashboard-inventory-alerts.test.tsx`, `API/reports/reports.service.test.ts`
 - **Runbooks:** `RUN/pos-perf-p47-dashboard-and-management.md`, `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§2)
+
+## Reports and exports
+
+- **UI:** `WEB/app/(admin)/admin/reports/page.tsx`, `WEB/components/branch-ops/reports-view.tsx` (Supervisor and staff),
+  `WEB/components/reports/` (Discount Report filter, proof summary, breakdown, drill-downs)
+- **API:** `API/reports/reports.repository.ts`, `API/reports/reports.columns.ts`, `API/reports/reports.service.ts`;
+  generators in `apps/api/src/lib/reports/`; type filter in `apps/api/src/lib/discount-key-where.ts`
+- **Schema:** `SHARED/reports.schema.ts`. The Discount Report keeps the `DISCOUNT_COMPLIANCE` code and URL
+- **Tests:** `API/reports/p59-discount-report.integration.test.ts`, `API/reports/reports.repository.test.ts`,
+  `WEB/components/branch-ops/reports-view.test.tsx`
+- **Runbooks:** `RUN/pos-perf-p59-reports-and-ui-cleanup.md`
 
 ## Stock transfers
 

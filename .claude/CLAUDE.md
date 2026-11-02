@@ -47,6 +47,8 @@ Discounted base = VATable base - discount
 Total = discounted base (no VAT added — fully exempt)
 ```
 
+This formula still applies to statutory PWD/Senior sales (`calculation_mode: legacy_vat_v1`). It is not how the current checkout totals other sales: since P55R2, those use `manual_total_v1`, which is subtotal − manual peso discount with no VAT calculated (`vatAmount` and `vatExemptAmount` are stored as 0 placeholders). See `assertCalculationMode` and `computeManualTotal` in `apps/api/src/modules/transactions/transactions.service.ts` before touching tax logic.
+
 **Transaction Number**
 `transaction_number` IS the receipt number. Same field. Same value everywhere. No separate receipt number exists.
 
@@ -96,6 +98,18 @@ Data from the database → TanStack Query. Data that lives in the browser only (
 - Use raw SQL instead of Prisma
 - Store secrets in code
 - Create API routes in Next.js — all API logic lives in the Express backend (`apps/web/app/api/health` is the sole exception, a liveness probe)
+
+## Targeted Context Loading
+
+1. Read `docs/CURRENT_HANDOFF.md` first.
+2. Read only the relevant section of `docs/PROJECT_MAP.md`.
+3. Verify branch, HEAD and working-tree status.
+4. Start with the mapped files; expand searches only when needed.
+5. Treat maps and handoffs as navigation, not proof that code is unchanged.
+6. Follow the critical rules above and run the checks appropriate to the change.
+7. Before finishing, update the handoff and any affected map entries.
+
+`CURRENT_HANDOFF.md` describes the current branch/session, not every worktree. Concurrent sessions must not overwrite another session's handoff. When concurrency is observed, keep separate branch-specific handoffs and link them from the main handoff. Never fabricate another session's status.
 
 ## Task Completion Handoff Protocol
 

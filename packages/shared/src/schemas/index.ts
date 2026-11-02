@@ -3,6 +3,7 @@ export * from './user.schema.js';
 export * from './employee.schema.js';
 export * from './branch.schema.js';
 export * from './product.schema.js';
+export * from './product-type.schema.js';
 export * from './flavor.schema.js';
 export * from './inventory.schema.js';
 export * from './recipe-override.schema.js';

@@ -377,7 +377,7 @@ export function PromotionEditorDialog({ open, onOpenChange, promotion, allPromot
                       <span className="min-w-0">
                         <span className="font-medium">{product.name}</span>{' '}
                         <span className="text-xs text-muted-foreground">
-                          ({PRODUCT_CLASSIFICATION_LABELS[product.classification as ProductClassification] ?? product.classification})
+                          ({product.product_type_name ?? PRODUCT_CLASSIFICATION_LABELS[product.classification as ProductClassification] ?? product.classification})
                         </span>
                         {reason && (
                           <span id={`promotion-product-${product.id}-reason`} className="block text-xs text-muted-foreground">

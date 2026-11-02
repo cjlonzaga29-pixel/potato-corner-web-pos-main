@@ -9,14 +9,21 @@ import type { ProductResponse, ProductListResponse } from '@potato-corner/shared
  * reason shown when one is missing), Continue Setup reopening the saved
  * builder draft, and Deactivate naming the one branch it changes.
  */
-const { mockUseProducts, mockPush, mockLoadExisting, mockUnpublish } = vi.hoisted(() => ({
+const { mockUseProducts, mockPush, mockReplace, mockLoadExisting, mockUnpublish } = vi.hoisted(() => ({
   mockUseProducts: vi.fn(),
   mockPush: vi.fn(),
+  mockReplace: vi.fn(),
   mockLoadExisting: vi.fn(),
   mockUnpublish: vi.fn(),
 }));
 
-vi.mock('next/navigation', () => ({ useRouter: () => ({ push: mockPush }) }));
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: mockPush, replace: mockReplace }), useSearchParams: () => new URLSearchParams() }));
+vi.mock('@/hooks/queries/use-product-types', () => ({
+  useProductTypes: () => ({ data: undefined, isSuccess: false }),
+  useCreateProductType: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useUpdateProductType: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useSetProductTypeActive: () => ({ mutateAsync: vi.fn(), isPending: false }),
+}));
 
 vi.mock('@/components/ui/tabs', () => {
   const TabsContext = React.createContext<{ value?: string; onValueChange?: (value: string) => void }>({});

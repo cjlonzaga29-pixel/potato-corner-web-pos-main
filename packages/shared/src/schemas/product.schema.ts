@@ -30,6 +30,33 @@ export const PRODUCT_CLASSIFICATION_LABELS: Record<ProductClassification, string
   seasonal: 'Seasonal',
 };
 
+/**
+ * POS-PERF-P58 — a product type: a built-in's classification, or a custom
+ * type's id. A type is a label: a custom name never discounts, publishes or
+ * changes stock. See docs/runbooks/pos-perf-p58-custom-product-types.md.
+ */
+export const productTypeKeySchema = z.union([z.enum(PRODUCT_CLASSIFICATIONS), z.uuid()]);
+export type ProductTypeKey = z.infer<typeof productTypeKeySchema>;
+
+export function isBuiltInProductTypeKey(key: string): key is ProductClassification {
+  return (PRODUCT_CLASSIFICATIONS as readonly string[]).includes(key);
+}
+
+/** P58 — product_type is authoritative; a client may repeat a built-in as classification (older APIs only read that), but nothing may contradict it. */
+function validateProductTypeFields(
+  data: { product_type?: string; is_seasonal?: boolean; classification?: ProductClassification },
+  ctx: z.RefinementCtx,
+): void {
+  if (data.product_type === undefined) return;
+  const builtIn = isBuiltInProductTypeKey(data.product_type) ? data.product_type : null;
+  if (data.classification !== undefined && data.classification !== builtIn) {
+    ctx.addIssue({ code: 'custom', path: ['classification'], message: 'classification contradicts product_type — send product_type only' });
+  }
+  if (data.is_seasonal !== undefined && (builtIn === null || data.is_seasonal !== (builtIn === 'seasonal'))) {
+    ctx.addIssue({ code: 'custom', path: ['is_seasonal'], message: 'is_seasonal contradicts product_type — send product_type only' });
+  }
+}
+
 /** P49 — legacy is_seasonal and classification must not contradict each other when both are sent. */
 function validateClassificationFields(
   data: { is_seasonal?: boolean; classification?: ProductClassification },
@@ -98,6 +125,8 @@ export const createProductSchema = z
     // POS-PERF-P49 — optional; omitted = derived from is_seasonal (seasonal
     // when true, otherwise regular), so older clients keep their behavior.
     classification: z.enum(PRODUCT_CLASSIFICATIONS).optional(),
+    // POS-PERF-P58 — optional; omitted = the two legacy fields above decide.
+    product_type: productTypeKeySchema.optional(),
     seasonal_start_date: z.iso.date().optional(),
     seasonal_end_date: z.iso.date().optional(),
     // CR-001: cascade default is "all active branches"; branch_exclusive flips
@@ -142,6 +171,7 @@ export const createProductSchema = z
     }
     validateSeasonalFields(data, ctx);
     validateClassificationFields(data, ctx);
+    validateProductTypeFields(data, ctx);
   });
 
 /** status is deliberately absent — lifecycle transitions go through changeProductStatusSchema, not this generic update. */
@@ -156,6 +186,10 @@ export const updateProductSchema = z
     // POS-PERF-P49 — Regular/Promotional/Seasonal. Same authority as every
     // other product field (full coverage, P36R4); never touches status.
     classification: z.enum(PRODUCT_CLASSIFICATIONS).optional(),
+    // POS-PERF-P58 — omitted = keep the current type (a form that resends an
+    // unchanged classification keeps a custom type too); see
+    // products.service.ts's resolveProductTypeWrite.
+    product_type: productTypeKeySchema.optional(),
     seasonal_start_date: z.iso.date().nullable().optional(),
     seasonal_end_date: z.iso.date().nullable().optional(),
     // POS-PERF-P36R — optional optimistic-concurrency token (the product's
@@ -173,6 +207,7 @@ export const updateProductSchema = z
       ctx,
     );
     validateClassificationFields(data, ctx);
+    validateProductTypeFields(data, ctx);
   });
 
 export const changeProductStatusSchema = z.object({
@@ -338,6 +373,11 @@ export const productResponseSchema = z.object({
   // POS-PERF-P49 — optional for the same pre-existing-fixture reason as
   // forked_from_product_id below; always present from the API.
   classification: z.enum(PRODUCT_CLASSIFICATIONS).optional(),
+  // POS-PERF-P58 — the type to display. Optional for the same fixture reason,
+  // and because an older API doesn't send it.
+  product_type: z
+    .object({ key: z.string(), id: z.uuid().nullable(), name: z.string(), is_builtin: z.boolean(), is_active: z.boolean() })
+    .optional(),
   seasonal_start_date: z.iso.date().nullable(),
   seasonal_end_date: z.iso.date().nullable(),
   branch_exclusive: z.boolean(),
@@ -396,6 +436,9 @@ export const productListResponseSchema = z.object({
   // POS-PERF-P39 — present only for a branch-scoped request (branch_id), and
   // computed with the same search/category filters as `products`.
   counts: z.object({ active: z.number().int(), drafts: z.number().int(), inactive: z.number().int() }).optional(),
+  // POS-PERF-P58 — branch-scoped only: products per type key, within the
+  // requested tab and the same search/category filters.
+  type_counts: z.record(z.string(), z.number().int()).optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -725,6 +768,9 @@ export const publicationCheckResponseSchema = z.object({
 // one branch they do control, that they fully own instead.
 export const forkProductToBranchSchema = z.object({
   branch_id: z.uuid(),
+  // POS-PERF-P58 — needed only when the source's type can't be used at this
+  // branch (PRODUCT_TYPE_SELECTION_REQUIRED); a copy never widens a type's scope.
+  product_type: productTypeKeySchema.optional(),
 });
 
 // POS-PERF-P36R5 — explicit replacement: branch_id must be the branch copy's

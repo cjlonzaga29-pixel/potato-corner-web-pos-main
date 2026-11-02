@@ -8,7 +8,7 @@ import type { ProductDetailResponse } from '@potato-corner/shared';
  * losing what was typed, Cancel restores the saved values, and a
  * newer version refreshes the fields only while nothing is typed.
  */
-const { mockUpdate, MockProductApiError } = vi.hoisted(() => {
+const { mockUpdate, mockTypes, MockProductApiError } = vi.hoisted(() => {
   class MockProductApiError extends Error {
     constructor(
       message: string,
@@ -17,9 +17,11 @@ const { mockUpdate, MockProductApiError } = vi.hoisted(() => {
       super(message);
     }
   }
-  return { mockUpdate: vi.fn(), MockProductApiError };
+  return { mockUpdate: vi.fn(), mockTypes: vi.fn(() => ({ data: undefined as unknown })), MockProductApiError };
 });
 
+const MARKETING_ID = 'b6f0a7de-5b0c-4e8b-9a43-0d2b7f3f1c11';
+vi.mock('@/hooks/queries/use-product-types', () => ({ useProductTypes: () => mockTypes() }));
 vi.mock('@/hooks/queries/use-products', () => ({
   ProductApiError: MockProductApiError,
   useUpdateProduct: () => ({ mutateAsync: mockUpdate, isPending: false }),
@@ -125,8 +127,8 @@ describe('ProductDetailsForm (POS-PERF-P39)', () => {
   it('shows the saved classification and saves it without any status or legacy is_seasonal field', async () => {
     mockUpdate.mockResolvedValue(product({ classification: 'promotional', version: 5 }));
     render(<ProductDetailsForm product={product({ classification: 'promotional' })} disabled={false} onDirtyChange={vi.fn()} />);
-    expect(screen.getByRole('combobox', { name: 'Classification' })).toHaveTextContent('Promotional');
-    expect(screen.getByText(/Classification alone never changes the price/)).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Product type' })).toHaveTextContent('Promotional');
+    expect(screen.getByText(/The type alone never changes the price/)).toBeInTheDocument();
 
     fireEvent.change(nameInput(), { target: { value: 'Promo Fries' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
@@ -135,6 +137,46 @@ describe('ProductDetailsForm (POS-PERF-P39)', () => {
     expect(sent).toMatchObject({ classification: 'promotional', seasonal_start_date: null, seasonal_end_date: null, expected_version: 4 });
     expect(sent).not.toHaveProperty('status');
     expect(sent).not.toHaveProperty('is_seasonal');
+  });
+
+  // POS-PERF-P58 — an inactive custom type stays selected and isn't resent, so an unrelated edit saves.
+  it('saves an unrelated edit to a product whose custom type is inactive, without sending any type', async () => {
+    const type = { key: 'b6f0a7de-5b0c-4e8b-9a43-0d2b7f3f1c11', id: 'b6f0a7de-5b0c-4e8b-9a43-0d2b7f3f1c11', name: 'Marketing', is_builtin: false, is_active: false };
+    mockUpdate.mockResolvedValue(product({ product_type: type, version: 5 }));
+    render(<ProductDetailsForm product={product({ product_type: type, classification: 'regular' })} disabled={false} onDirtyChange={vi.fn()} />);
+    expect(screen.getByRole('combobox', { name: 'Product type' })).toHaveTextContent('Marketing (inactive)');
+
+    fireEvent.change(nameInput(), { target: { value: 'Campaign Fries' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    const sent = mockUpdate.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(sent).toMatchObject({ name: 'Campaign Fries', expected_version: 4 });
+    for (const field of ['product_type', 'classification', 'seasonal_start_date', 'seasonal_end_date']) expect(sent).not.toHaveProperty(field);
+  });
+
+  it('POS-PERF-P58R: explains a type change before saving, and the save sends the type and no promotion field', async () => {
+    const marketing = { key: MARKETING_ID, id: MARKETING_ID, name: 'Marketing', is_builtin: false, is_active: true };
+    mockTypes.mockReturnValue({ data: [marketing] });
+    mockUpdate.mockResolvedValue(product({ classification: 'promotional', product_type: marketing as never, version: 5 }));
+    render(<ProductDetailsForm product={product({ classification: 'promotional' })} disabled={false} onDirtyChange={vi.fn()} />);
+    expect(screen.queryByTestId('product-type-change-notice')).not.toBeInTheDocument();
+    // jsdom has no scrollIntoView, which the open list calls.
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Product type' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Marketing' }));
+
+    const notice = await screen.findByTestId('product-type-change-notice');
+    expect(notice).toHaveTextContent("it stays Promotional");
+    expect(notice).toHaveTextContent("doesn't stop a promotion");
+    expect(mockUpdate).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalledTimes(1));
+    const sent = mockUpdate.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(sent.product_type).toBe(MARKETING_ID);
+    for (const field of ['classification', 'is_seasonal', 'seasonal_start_date', 'seasonal_end_date', 'promotion', 'status']) expect(sent).not.toHaveProperty(field);
+    mockTypes.mockReturnValue({ data: undefined });
   });
 
   it('keeps typed values and shows the reason inline when a save fails for another reason', async () => {

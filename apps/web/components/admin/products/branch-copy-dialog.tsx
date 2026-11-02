@@ -9,6 +9,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { useForkProductToBranch } from '@/hooks/queries/use-products';
+import { useProductTypes } from '@/hooks/queries/use-product-types';
+import { BUILT_IN_PRODUCT_TYPES } from '@/lib/product-types';
+import { ProductTypeSelect } from '@/components/supervisor/products/product-type-select';
 
 interface EligibleBranch {
   id: string;
@@ -40,6 +43,13 @@ export function BranchCopyDialog({ open, onOpenChange, product, eligibleBranches
   const router = useRouter();
   const fork = useForkProductToBranch(product.id);
   const [branchId, setBranchId] = useState('');
+  const [chosenType, setChosenType] = useState('');
+  // POS-PERF-P58 — a copy keeps its custom type only if that type is active at
+  // this branch. Otherwise it needs an explicit choice; the scope never widens.
+  const { data: branchTypes, isLoading: typesLoading } = useProductTypes({ branchId, includeInactive: false }, { enabled: open && Boolean(branchId) });
+  const typeOptions = branchTypes ?? BUILT_IN_PRODUCT_TYPES;
+  const sourceType = product.product_type;
+  const typeChoiceNeeded = Boolean(branchId) && !typesLoading && Boolean(sourceType) && !typeOptions.some((type) => type.key === sourceType?.key);
 
   const onlyEligibleBranch = eligibleBranches.length === 1 ? eligibleBranches[0] : undefined;
 
@@ -51,7 +61,7 @@ export function BranchCopyDialog({ open, onOpenChange, product, eligibleBranches
 
   async function handleCreate() {
     if (!branchId) return;
-    const copy = await fork.mutateAsync(branchId);
+    const copy = await fork.mutateAsync({ branchId, ...(typeChoiceNeeded && { productType: chosenType }) });
     onOpenChange(false);
     router.push(`/supervisor/products/${copy.id}`);
   }
@@ -92,6 +102,15 @@ export function BranchCopyDialog({ open, onOpenChange, product, eligibleBranches
             <p className="text-destructive">You have no active branch assignment this product is configured at.</p>
           )}
 
+          {typeChoiceNeeded && (
+            <div className="space-y-1.5" data-testid="branch-copy-type-choice">
+              <p>
+                The type <span className="font-medium text-foreground">{sourceType?.name}</span> can&apos;t be used for a copy at this branch. Choose a type for the copy.
+              </p>
+              <ProductTypeSelect id="branch-copy-type" value={chosenType} options={typeOptions} onChange={setChosenType} savedClassification={product.classification} />
+            </div>
+          )}
+
           <div className="rounded-md border p-3">
             <p className="font-medium">What&apos;s copied</p>
             <p className="text-muted-foreground">Product configuration, variants, recipes, and flavor slots / option groups.</p>
@@ -110,7 +129,7 @@ export function BranchCopyDialog({ open, onOpenChange, product, eligibleBranches
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={fork.isPending}>
             Cancel
           </Button>
-          <Button type="button" onClick={() => void handleCreate()} disabled={!branchId || fork.isPending}>
+          <Button type="button" onClick={() => void handleCreate()} disabled={!branchId || fork.isPending || typesLoading || (typeChoiceNeeded && !chosenType)}>
             {fork.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             Create Branch Copy
           </Button>

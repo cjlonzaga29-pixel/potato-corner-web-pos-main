@@ -10,6 +10,7 @@ const { mockUseUpdateProduct, mockUseProductImage, mockUseUploadProductImage, mo
   mockUseDeleteProductImage: vi.fn(),
 }));
 
+vi.mock('@/hooks/queries/use-product-types', () => ({ useProductTypes: () => ({ data: undefined }) }));
 vi.mock('@/hooks/queries/use-products', () => ({
   useUpdateProduct: mockUseUpdateProduct,
   useProductImage: mockUseProductImage,

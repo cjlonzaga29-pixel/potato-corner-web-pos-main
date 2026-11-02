@@ -29,6 +29,7 @@ const productForPromotionSelect = {
   name: true,
   status: true,
   classification: true,
+  productType: { select: { name: true } },
   branchAvailability: { select: { branchId: true } },
   variants: {
     select: { id: true, name: true, basePrice: true, vatableCapAmount: true, isActive: true, displayOrder: true },

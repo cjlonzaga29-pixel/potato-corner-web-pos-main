@@ -2,7 +2,8 @@
 
 import Link from 'next/link';
 import { MoreHorizontal } from 'lucide-react';
-import { PRODUCT_CLASSIFICATION_LABELS, type ProductBranchView, type ProductResponse } from '@potato-corner/shared';
+import type { ProductBranchView, ProductResponse } from '@potato-corner/shared';
+import { productTypeLabel } from '@/lib/product-types';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -47,7 +48,7 @@ function statusFor(product: ProductResponse, view: ProductBranchView, branchName
  */
 export function ProductListRow({ product, view, branchName, canEdit, canDeactivate, onAction }: ProductListRowProps) {
   const status = statusFor(product, view, branchName);
-  const typeLabel = PRODUCT_CLASSIFICATION_LABELS[product.classification ?? 'regular'];
+  const typeLabel = `${productTypeLabel(product)}${product.product_type?.is_active === false ? ' (inactive)' : ''}`;
   const branches = product.branches ?? [];
   const lifecycleClosed = product.status === 'archived' || product.status === 'discontinued';
   const readOnlyReason = !canEdit && !lifecycleClosed ? 'Set up for a branch outside your assignment — view only.' : null;
@@ -70,7 +71,7 @@ export function ProductListRow({ product, view, branchName, canEdit, canDeactiva
         {readOnlyReason && <p className="text-xs text-muted-foreground">{readOnlyReason}</p>}
       </div>
 
-      <p className="hidden truncate text-sm text-muted-foreground md:block" data-testid="product-row-type">
+      <p className="hidden truncate text-sm text-muted-foreground md:block" data-testid="product-row-type" title={typeLabel}>
         {typeLabel}
       </p>
 

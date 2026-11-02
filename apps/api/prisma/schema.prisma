@@ -355,6 +355,8 @@ model User {
   correctedAttendanceRecords       AttendanceRecord[]     @relation("AttendanceCorrector")
   auditLogs                        AuditLog[]
   createdProducts                  Product[]
+  createdProductTypes              ProductType[]          @relation("ProductTypeCreatedBy")
+  updatedProductTypes              ProductType[]          @relation("ProductTypeUpdatedBy")
   cashierTransactions              Transaction[]
   voidedTransactions               Transaction[]          @relation("TransactionVoidedBy")
   refundedTransactions             Transaction[]          @relation("TransactionRefundedBy")
@@ -428,17 +430,18 @@ model User {
 }
 
 model Branch {
-  id              String       @id @default(uuid())
-  name            String
-  code            String       @unique
-  address         String
-  city            String
-  gpsLatitude     Decimal?     @map("gps_latitude") @db.Decimal(10, 8)
-  gpsLongitude    Decimal?     @map("gps_longitude") @db.Decimal(11, 8)
-  gpsRadiusMeters Int          @default(100) @map("gps_radius_meters")
-  status          BranchStatus @default(active)
-  gcashQrUrl      String?
-  gcashQrKey      String?
+  id                  String              @id @default(uuid())
+  productTypeBranches ProductTypeBranch[]
+  name                String
+  code                String              @unique
+  address             String
+  city                String
+  gpsLatitude         Decimal?            @map("gps_latitude") @db.Decimal(10, 8)
+  gpsLongitude        Decimal?            @map("gps_longitude") @db.Decimal(11, 8)
+  gpsRadiusMeters     Int                 @default(100) @map("gps_radius_meters")
+  status              BranchStatus        @default(active)
+  gcashQrUrl          String?
+  gcashQrKey          String?
 
   catalogAssignments  CatalogManagementAssignment[]
   userAssignments     UserBranchAssignment[]
@@ -838,17 +841,24 @@ model Product {
   // Only promotional/seasonal products may be selected by a Promotion.
   classification ProductClassification @default(regular)
 
-  creator            User?                       @relation(fields: [createdBy], references: [id])
-  manager            User?                       @relation("ProductManagedBy", fields: [managedBy], references: [id])
-  exclusiveBranch    Branch?                     @relation("ProductExclusiveBranch", fields: [exclusiveBranchId], references: [id])
-  productCategory    ProductCategory?            @relation(fields: [categoryId], references: [id])
-  forkedFromProduct  Product?                    @relation("ProductForkedFrom", fields: [forkedFromProductId], references: [id])
-  forkedCopies       Product[]                   @relation("ProductForkedFrom")
-  variants           ProductVariant[]
-  branchAvailability BranchProductAvailability[]
-  transactionItems   TransactionItem[]
-  holdOrderItems     HoldOrderItem[]
-  promotionProducts  PromotionProduct[]
+  // POS-PERF-P58 — set only for a custom (supervisor-created) product type; NULL
+  // means the built-in type named by classification. A label only: classification
+  // alone still decides promotion eligibility, so assigning a custom type leaves
+  // it as it was. See docs/runbooks/pos-perf-p58-custom-product-types.md.
+  productTypeId String? @map("product_type_id")
+
+  productType                ProductType?                @relation(fields: [productTypeId], references: [id], onDelete: Restrict)
+  creator                    User?                       @relation(fields: [createdBy], references: [id])
+  manager                    User?                       @relation("ProductManagedBy", fields: [managedBy], references: [id])
+  exclusiveBranch            Branch?                     @relation("ProductExclusiveBranch", fields: [exclusiveBranchId], references: [id])
+  productCategory            ProductCategory?            @relation(fields: [categoryId], references: [id])
+  forkedFromProduct          Product?                    @relation("ProductForkedFrom", fields: [forkedFromProductId], references: [id])
+  forkedCopies               Product[]                   @relation("ProductForkedFrom")
+  variants                   ProductVariant[]
+  branchAvailability         BranchProductAvailability[]
+  transactionItems           TransactionItem[]
+  holdOrderItems             HoldOrderItem[]
+  promotionProducts          PromotionProduct[]
   manualDiscountTypeProducts ManualDiscountTypeProduct[]
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -858,7 +868,54 @@ model Product {
   @@index([status])
   @@index([category])
   @@index([categoryId])
+  @@index([productTypeId])
   @@map("products")
+}
+
+/// POS-PERF-P58 — a supervisor-created product type (Marketing, One-time, ...).
+/// Regular/Promotional/Seasonal are not rows: they are ProductClassification
+/// values, so they can't be renamed, deactivated or deleted. Never hard-deleted
+/// by the app; products.product_type_id restricts deleting a referenced row.
+model ProductType {
+  id             String    @id @default(uuid())
+  name           String
+  /// See normalizeProductTypeName (packages/shared). Copied to ProductTypeBranch by the composite FK.
+  normalizedName String    @map("normalized_name")
+  description    String?
+  isActive       Boolean   @default(true) @map("is_active")
+  version        Int       @default(1)
+  createdById    String    @map("created_by_id")
+  updatedById    String?   @map("updated_by_id")
+  deactivatedAt  DateTime? @map("deactivated_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  /// Not @updatedAt: lockActive's no-op update takes the row lock without counting as an edit.
+  updatedAt      DateTime  @default(now()) @map("updated_at")
+
+  creator  User                @relation("ProductTypeCreatedBy", fields: [createdById], references: [id])
+  updater  User?               @relation("ProductTypeUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  branches ProductTypeBranch[]
+  products Product[]
+
+  @@unique([id, normalizedName, isActive])
+  @@map("product_types")
+}
+
+/// POS-PERF-P58 — the branches a custom type may be used at. normalizedName and
+/// isActive follow product_types through the composite FK (ON UPDATE CASCADE), so
+/// the partial unique index product_type_branches_active_name_key (raw SQL:
+/// one active type per name per branch) also decides renames and reactivations.
+model ProductTypeBranch {
+  productTypeId  String  @map("product_type_id")
+  branchId       String  @map("branch_id")
+  normalizedName String  @map("normalized_name")
+  isActive       Boolean @map("is_active")
+
+  productType ProductType @relation(fields: [productTypeId, normalizedName, isActive], references: [id, normalizedName, isActive], onDelete: Cascade, onUpdate: Cascade)
+  branch      Branch      @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  @@id([productTypeId, branchId])
+  @@index([branchId])
+  @@map("product_type_branches")
 }
 
 model ProductVariant {
@@ -2259,10 +2316,10 @@ model ManualDiscountType {
   // Rows created by one supervisor action for several branches share this; null = a type at one branch.
   groupId         String?   @map("group_id")
 
-  branch        Branch        @relation(fields: [branchId], references: [id])
-  createdBy     User          @relation("ManualDiscountTypeCreatedBy", fields: [createdById], references: [id])
-  updatedBy     User?         @relation("ManualDiscountTypeUpdatedBy", fields: [updatedById], references: [id])
-  deactivatedBy User?         @relation("ManualDiscountTypeDeactivatedBy", fields: [deactivatedById], references: [id])
+  branch        Branch                      @relation(fields: [branchId], references: [id])
+  createdBy     User                        @relation("ManualDiscountTypeCreatedBy", fields: [createdById], references: [id])
+  updatedBy     User?                       @relation("ManualDiscountTypeUpdatedBy", fields: [updatedById], references: [id])
+  deactivatedBy User?                       @relation("ManualDiscountTypeDeactivatedBy", fields: [deactivatedById], references: [id])
   transactions  Transaction[]
   products      ManualDiscountTypeProduct[]
 

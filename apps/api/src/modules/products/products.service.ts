@@ -1,6 +1,16 @@
 import sharp from 'sharp';
 import { Prisma, type ProductFlavorSlot, type VariantLifecycleStatus } from '@prisma/client';
-import { ROLES, SOCKET_EVENTS, type JwtPayload, type PosReadinessCode, type ProductClassification, type ProductStatus } from '@potato-corner/shared';
+import {
+  PRODUCT_CLASSIFICATION_LABELS,
+  ROLES,
+  SOCKET_EVENTS,
+  isBuiltInProductTypeKey,
+  type JwtPayload,
+  type PosReadinessCode,
+  type ProductClassification,
+  type ProductStatus,
+  type ProductTypeKey,
+} from '@potato-corner/shared';
 import { productsRepository } from './products.repository.js';
 import {
   ProductError,
@@ -17,6 +27,8 @@ import { config } from '../../config/index.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { notifySuperAdmin, notifyBranch } from '../../lib/notify.js';
 import { productCategoriesRepository } from '../product-categories/product-categories.repository.js';
+import { productTypesRepository } from '../product-types/product-types.repository.js';
+import { branchesRepository } from '../branches/branches.repository.js';
 import { productReadinessService } from '../product-readiness/product-readiness.service.js';
 import type { ProductVariantReadinessResult, ReadinessIssue, ReadinessIssueCode } from '../product-readiness/product-readiness.types.js';
 import { stockAvailabilityService } from '../stock-availability/stock-availability.service.js';
@@ -96,6 +108,7 @@ function assertSupervisorMayEnableAtBranch(
     exclusiveBranchId: string | null;
     branchSelectionScoped?: boolean;
     branchAvailability?: { branchId: string }[];
+    productType?: { name: string; branches: { branchId: string }[] } | null;
   },
   branchId: string,
   isAvailable: boolean,
@@ -115,6 +128,37 @@ function assertSupervisorMayEnableAtBranch(
       'This product was not created for this branch and cannot be enabled here',
       403,
     );
+  }
+  // POS-PERF-P58 — selling a product at a branch must not quietly widen its
+  // custom type's scope. Widen the type or change the product's type first.
+  if (product.productType && !product.productType.branches.some((row) => row.branchId === branchId)) {
+    throw new ProductError('PRODUCT_TYPE_BRANCH_MISMATCH', `The product type "${product.productType.name}" isn't available at this branch`, 422);
+  }
+}
+
+/**
+ * POS-PERF-P58 — the one check before a custom type is newly assigned, always
+ * inside the write's transaction: the type must be visible to the actor (a
+ * forged id from another branch is simply not found), active, and scoped to
+ * every branch the product is configured at. lockActive holds the type's row
+ * until commit, so a concurrent deactivation lands before or after this
+ * assignment, never in between.
+ */
+async function assertProductTypeAssignable(productTypeId: string, branchIds: string[], actor: ActorContext, tx: Prisma.TransactionClient): Promise<void> {
+  const type = await productTypesRepository.findById(productTypeId, tx);
+  const scope = new Set((type?.branches ?? []).map((row) => row.branchId));
+  const liveBranchIds = await branchesRepository.findAllActiveBranchIds(actor.id, tx);
+  if (!type || !liveBranchIds.some((id) => scope.has(id))) {
+    throw new ProductError('PRODUCT_TYPE_NOT_FOUND', 'This product type does not exist or is not available at your branches', 404);
+  }
+  if (!(await productTypesRepository.lockActive(productTypeId, tx))) {
+    throw new ProductError('PRODUCT_TYPE_INACTIVE', `The product type "${type.name}" is inactive. Choose another type.`, 422);
+  }
+  const outside = branchIds.filter((id) => !scope.has(id));
+  if (outside.length > 0) {
+    throw new ProductError('PRODUCT_TYPE_BRANCH_MISMATCH', `The product type "${type.name}" isn't available at every branch this product uses`, 422, {
+      branch_ids: outside,
+    });
   }
 }
 
@@ -514,17 +558,36 @@ async function publishWithinLock(
 }
 
 /**
+ * POS-PERF-P58R — turning a product on outside publication. Takes the lock a
+ * custom type's assignment and publication hold, then repeats the guards on
+ * what is committed now, so a type assigned a moment ago can't be missed and
+ * this row can't slip past an assignment reading the product's branches.
+ * Turning off needs none of this: it can't break the scope, and an urgent
+ * disable shouldn't queue behind a publication.
+ */
+async function lockAndAssertMayEnable(tx: Prisma.TransactionClient, productId: string, branchIds: string[], actor: ActorContext): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(${productCatalogLockId(productId)})`;
+  const current = await productsRepository.findPublicationTarget(productId, tx);
+  if (!current) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
+  if (current.status === 'discontinued' || current.status === 'archived') {
+    throw new ProductError('PRODUCT_GLOBALLY_UNAVAILABLE', 'Cannot enable a globally discontinued or archived product for a branch', 409);
+  }
+  for (const branchId of branchIds) assertSupervisorMayEnableAtBranch(current, branchId, true, actor);
+}
+
+/**
  * POS-PERF-P39R2 — a single branch availability write and, when it turns the
  * row on, the ever-published marker, in one transaction: if either fails,
  * neither is kept. Used by the per-branch toggle and the branch-scoped status
  * change, which used to be one bare upsert.
  */
-function writeBranchAvailability(branchId: string, productId: string, isAvailable: boolean, actorId: string) {
+function writeBranchAvailability(branchId: string, productId: string, isAvailable: boolean, actor: ActorContext) {
   return prisma.$transaction(async (tx) => {
-    const row = await productsRepository.upsertBranchProductAvailability(branchId, productId, isAvailable, actorId, tx);
+    if (isAvailable) await lockAndAssertMayEnable(tx, productId, [branchId], actor);
+    const row = await productsRepository.upsertBranchProductAvailability(branchId, productId, isAvailable, actor.id, tx);
     if (isAvailable) await productsRepository.markEverPublishedIfLive(productId, tx);
     return row;
-  });
+  }, PUBLICATION_TRANSACTION_OPTIONS);
 }
 
 /**
@@ -736,7 +799,10 @@ function toProductBase(product: {
   forkedFromProductId?: string | null;
   // POS-PERF-P37 — optional for the same reason as forkedFromProductId.
   branchSelectionScoped?: boolean;
+  // POS-PERF-P58 — optional for the same reason as version; absent or null means built-in.
+  productType?: { id: string; name: string; isActive: boolean } | null;
 }) {
+  const classification = product.classification ?? (product.isSeasonal ? 'seasonal' : 'regular');
   return {
     id: product.id,
     name: product.name,
@@ -749,7 +815,10 @@ function toProductBase(product: {
     status_label: STATUS_LABELS[product.status],
     display_order: product.displayOrder,
     is_seasonal: product.isSeasonal,
-    classification: product.classification ?? (product.isSeasonal ? 'seasonal' : 'regular'),
+    classification,
+    product_type: product.productType
+      ? { key: product.productType.id, id: product.productType.id, name: product.productType.name, is_builtin: false, is_active: product.productType.isActive }
+      : { key: classification, id: null, name: PRODUCT_CLASSIFICATION_LABELS[classification], is_builtin: true, is_active: true },
     seasonal_start_date: product.seasonalStartDate ? isoDate(product.seasonalStartDate) : null,
     seasonal_end_date: product.seasonalEndDate ? isoDate(product.seasonalEndDate) : null,
     branch_exclusive: product.branchExclusive,
@@ -859,6 +928,38 @@ export function resolveClassificationWrite(
   return { classification, isSeasonal: classification === 'seasonal' };
 }
 
+/**
+ * POS-PERF-P58 — what a request changes about a product's type.
+ *
+ * - product_type, built-in: that built-in; clears any custom type.
+ * - product_type, custom: only the custom type. classification is deliberately
+ *   left alone (regular on create), so a custom type never makes a product
+ *   eligible or ineligible for a promotion: a Promotional product moved to
+ *   Marketing keeps its promotion, and a new Marketing product can't have one.
+ * - legacy fields only (an older client): a form that resends the classification
+ *   it was given keeps the custom type; a different one is an explicit choice
+ *   of that built-in.
+ */
+export function resolveProductTypeWrite(
+  input: { product_type?: ProductTypeKey; classification?: ProductClassification; is_seasonal?: boolean },
+  current?: { classification: ProductClassification; productTypeId: string | null },
+): { classification?: ProductClassification; isSeasonal?: boolean; productTypeId?: string | null } | undefined {
+  const key = input.product_type;
+  if (key !== undefined) {
+    if (isBuiltInProductTypeKey(key)) return { classification: key, isSeasonal: key === 'seasonal', productTypeId: null };
+    if (current?.productTypeId === key) return undefined;
+    return current ? { productTypeId: key } : { classification: 'regular', isSeasonal: false, productTypeId: key };
+  }
+  const legacy = resolveClassificationWrite(input, current?.classification);
+  if (!legacy || !current?.productTypeId) return legacy;
+  return legacy.classification === current.classification ? undefined : { ...legacy, productTypeId: null };
+}
+
+/** A custom type this write would newly assign, which is what assertProductTypeAssignable checks. An unchanged or inactive current type is never re-checked, so unrelated edits still save. */
+function newlyAssignedProductType(write: { productTypeId?: string | null } | undefined): string | null {
+  return write?.productTypeId ?? null;
+}
+
 interface CreateProductInput {
   name: string;
   description?: string;
@@ -868,6 +969,7 @@ interface CreateProductInput {
   display_order?: number;
   is_seasonal?: boolean;
   classification?: ProductClassification;
+  product_type?: ProductTypeKey;
   seasonal_start_date?: string;
   seasonal_end_date?: string;
   branch_exclusive: boolean;
@@ -883,6 +985,7 @@ interface UpdateProductInput {
   display_order?: number;
   is_seasonal?: boolean;
   classification?: ProductClassification;
+  product_type?: ProductTypeKey;
   seasonal_start_date?: string | null;
   seasonal_end_date?: string | null;
   expected_version?: number;
@@ -1325,7 +1428,7 @@ export const productsService = {
     if (filters.branch_id && !(await hasBranchAccess(requestingUser, filters.branch_id))) {
       throw new ProductError('BRANCH_ACCESS_DENIED', 'You do not have access to this branch', 403);
     }
-    const { products, total, counts } = await productsRepository.findAll(filters);
+    const { products, total, counts, typeCounts } = await productsRepository.findAll(filters);
 
     // One batched Storage call for every image-bearing product on this page,
     // instead of the frontend minting one signed URL per product via
@@ -1344,6 +1447,7 @@ export const productsService = {
       page: filters.page,
       limit: filters.limit,
       ...(counts && { counts }),
+      ...(typeCounts && { type_counts: typeCounts }),
     };
   },
 
@@ -1361,7 +1465,8 @@ export const productsService = {
       seasonalStartDate: data.seasonal_start_date,
       seasonalEndDate: data.seasonal_end_date,
     });
-    const classificationWrite = resolveClassificationWrite(data) ?? { classification: 'regular' as const, isSeasonal: false };
+    const typeWrite = resolveProductTypeWrite(data);
+    const customTypeId = newlyAssignedProductType(typeWrite);
 
     // POS-PERF-P34R — a supervisor may only ever create a branch-exclusive
     // product scoped to one of their own branches: a non-exclusive product
@@ -1427,6 +1532,15 @@ export const productsService = {
       if (!category) throw new ProductError('CATEGORY_NOT_FOUND', 'category_id does not reference an existing product category', 422);
     }
 
+    // POS-PERF-P58 — a custom type can't follow a company-wide cascade: it has a
+    // branch scope, and the rows that cascade would seed aren't an explicit choice.
+    const targetBranchIds = selectedBranchIds ?? (branchExclusive && exclusiveBranchId ? [exclusiveBranchId] : null);
+    if (customTypeId && !targetBranchIds) {
+      throw new ProductError('PRODUCT_TYPE_BRANCH_MISMATCH', 'A custom product type needs an explicit branch selection', 422);
+    }
+
+    const typeCheck: [] | [(tx: Prisma.TransactionClient) => Promise<void>] =
+      customTypeId && targetBranchIds ? [(tx) => assertProductTypeAssignable(customTypeId, targetBranchIds, createdBy, tx)] : [];
     const { product, cascadedBranchIds } = await productsRepository.createWithCascade(
       {
         name: data.name,
@@ -1435,8 +1549,9 @@ export const productsService = {
         categoryId: data.category_id,
         status: data.status,
         displayOrder: data.display_order,
-        isSeasonal: classificationWrite.isSeasonal,
-        classification: classificationWrite.classification,
+        isSeasonal: typeWrite?.isSeasonal ?? false,
+        classification: typeWrite?.classification ?? 'regular',
+        ...(customTypeId && { productTypeId: customTypeId }),
         seasonalStartDate: data.seasonal_start_date,
         seasonalEndDate: data.seasonal_end_date,
         branchExclusive,
@@ -1444,6 +1559,7 @@ export const productsService = {
         selectedBranchIds,
       },
       createdBy.id,
+      ...typeCheck,
     );
 
     const response = toProductDetailResponse(product as DetailRow);
@@ -1491,7 +1607,8 @@ export const productsService = {
     if (updatedBy.role === ROLES.SUPERVISOR && !(await hasActiveCatalogAuthorityForProduct(before, updatedBy.id))) {
       throw new ProductError('PRODUCT_UPDATE_FORBIDDEN', 'You may only edit a product an active branch assignment gives you authority over', 403);
     }
-    const classificationWrite = resolveClassificationWrite(data, before.classification);
+    const typeWrite = resolveProductTypeWrite(data, { classification: before.classification, productTypeId: before.productTypeId ?? null });
+    const customTypeId = newlyAssignedProductType(typeWrite);
     const mergedStart =
       data.seasonal_start_date !== undefined
         ? (data.seasonal_start_date ?? undefined)
@@ -1517,21 +1634,27 @@ export const productsService = {
     // why. `null` here means the version predicate matched zero rows: either
     // someone else's concurrent write already bumped the version, or (rare,
     // already excluded by the `before` lookup above) the row is gone.
-    const product = await productsRepository.update(
-      productId,
-      {
-        name: data.name,
-        description: data.description,
-        category: data.category,
-        categoryId: data.category_id,
-        displayOrder: data.display_order,
-        isSeasonal: classificationWrite?.isSeasonal,
-        classification: classificationWrite?.classification,
-        seasonalStartDate: data.seasonal_start_date,
-        seasonalEndDate: data.seasonal_end_date,
-      },
-      data.expected_version,
-    );
+    const updateData = {
+      name: data.name,
+      description: data.description,
+      category: data.category,
+      categoryId: data.category_id,
+      displayOrder: data.display_order,
+      isSeasonal: typeWrite?.isSeasonal,
+      classification: typeWrite?.classification,
+      ...(typeWrite?.productTypeId !== undefined && { productTypeId: typeWrite.productTypeId }),
+      seasonalStartDate: data.seasonal_start_date,
+      seasonalEndDate: data.seasonal_end_date,
+    };
+    // POS-PERF-P58 — a new custom type is checked against the product's branches
+    // under the same lock publication holds, so the two can't pass each other.
+    const product = customTypeId
+      ? await prisma.$transaction(async (tx) => {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(${productCatalogLockId(productId)})`;
+          await assertProductTypeAssignable(customTypeId, await productsRepository.findConfiguredBranchIds(productId, tx), updatedBy, tx);
+          return productsRepository.update(productId, updateData, data.expected_version, tx);
+        }, PUBLICATION_TRANSACTION_OPTIONS)
+      : await productsRepository.update(productId, updateData, data.expected_version);
     if (!product) {
       throw new ProductError(
         'PRODUCT_CONFLICT',
@@ -1592,11 +1715,13 @@ export const productsService = {
       const restoring = product.status === 'archived' && data.status === 'active';
       const updated = data.status === 'active'
         ? await prisma.$transaction(async (tx) => {
+          // POS-PERF-P58R — restore turns rows on, so it reads the type's scope under the catalog lock.
+          if (restoring) await tx.$executeRaw`SELECT pg_advisory_xact_lock(${productCatalogLockId(productId)})`;
           const row = await productsRepository.updateStatus(productId, data.status, tx);
           if (restoring) await productsRepository.cascadeBranchAvailabilityOn(productId, actor.id, tx);
           await productsRepository.markEverPublishedIfLive(productId, tx);
           return row;
-        })
+        }, PUBLICATION_TRANSACTION_OPTIONS)
         : await productsRepository.updateStatus(productId, data.status);
 
       if (data.status === 'discontinued' || data.status === 'archived') {
@@ -1668,7 +1793,7 @@ export const productsService = {
 
       const isAvailable = data.status === 'active';
       assertSupervisorMayEnableAtBranch(product, data.branch_id, isAvailable, actor);
-      const row = await writeBranchAvailability(data.branch_id, productId, isAvailable, actor.id);
+      const row = await writeBranchAvailability(data.branch_id, productId, isAvailable, actor);
 
       await recordAuditLog({
         action: 'PRODUCT_BRANCH_AVAILABILITY_CHANGED',
@@ -2094,7 +2219,7 @@ export const productsService = {
     }
     assertSupervisorMayEnableAtBranch(product, branchId, isAvailable, actor);
 
-    const row = await writeBranchAvailability(branchId, productId, isAvailable, actor.id);
+    const row = await writeBranchAvailability(branchId, productId, isAvailable, actor);
 
     await recordAuditLog({
       action: 'PRODUCT_BRANCH_AVAILABILITY_CHANGED',
@@ -2154,7 +2279,9 @@ export const productsService = {
       assertSupervisorMayEnableAtBranch(product, update.branch_id, update.is_available, actor);
     }
 
+    const enabling = updates.filter((update) => update.is_available).map((update) => update.branch_id);
     const rows = await prisma.$transaction(async (tx) => {
+      if (enabling.length > 0) await lockAndAssertMayEnable(tx, productId, enabling, actor);
       const results = [];
       for (const update of updates) {
         results.push(
@@ -2165,7 +2292,7 @@ export const productsService = {
       // one branch on and another off still marks a product left live.
       if (updates.some((u) => u.is_available)) await productsRepository.markEverPublishedIfLive(productId, tx);
       return results;
-    });
+    }, PUBLICATION_TRANSACTION_OPTIONS);
 
     for (const row of rows) {
       await recordAuditLog({
@@ -2589,8 +2716,12 @@ export const productsService = {
    * control). This creates a branch-exclusive copy, scoped to one branch
    * they DO control, that they fully own and can edit independently —
    * the source product and every other branch it sells at are untouched.
+   *
+   * POS-PERF-P58 — the copy keeps a custom type only if that type is active and
+   * scoped to this branch. Otherwise the supervisor must choose one
+   * (PRODUCT_TYPE_SELECTION_REQUIRED); it is never widened or silently swapped.
    */
-  async forkProductForBranch(productId: string, branchId: string, actor: ActorContext, ipAddress: string | null) {
+  async forkProductForBranch(productId: string, branchId: string, actor: ActorContext, ipAddress: string | null, productType?: ProductTypeKey) {
     const source = await productsRepository.findById(productId);
     if (!source) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
 
@@ -2611,9 +2742,21 @@ export const productsService = {
       return toProductDetailResponse(existingFork as DetailRow);
     }
 
+    const chosenWrite = productType === undefined ? undefined : isBuiltInProductTypeKey(productType)
+      ? { classification: productType, isSeasonal: productType === 'seasonal', productTypeId: null }
+      : { productTypeId: productType };
+    const copiedTypeId = productType === undefined ? (source.productTypeId ?? null) : (chosenWrite?.productTypeId ?? null);
+    if (productType === undefined && source.productType && (!source.productType.isActive || !source.productType.branches.some((row) => row.branchId === branchId))) {
+      throw new ProductError('PRODUCT_TYPE_SELECTION_REQUIRED', `The product type "${source.productType.name}" can't be used for a copy at this branch. Choose a type for the copy.`, 409);
+    }
+
     let forked;
     try {
-      forked = await productsRepository.forkProductCascade(productId, branchId, actor.id);
+      forked = await productsRepository.forkProductCascade(productId, branchId, actor.id, {
+        // POS-PERF-P58R — always the type just checked, not whatever the source holds by the time the copy is written.
+        write: chosenWrite ?? { productTypeId: copiedTypeId },
+        ...(copiedTypeId && { beforeWrite: (tx: Prisma.TransactionClient) => assertProductTypeAssignable(copiedTypeId, [branchId], actor, tx) }),
+      });
     } catch (error) {
       // Concurrent fork request for the same (productId, branchId) pair won
       // the race first — the unique index on (forkedFromProductId,

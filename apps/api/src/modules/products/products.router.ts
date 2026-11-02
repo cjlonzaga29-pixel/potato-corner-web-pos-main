@@ -26,6 +26,8 @@ import {
   PRODUCT_STATUS,
   PRODUCT_BRANCH_VIEWS,
   PRODUCT_CLASSIFICATIONS,
+  productTypeKeySchema,
+  type ForkProductToBranchInput,
   type ProductStatus,
 } from '@potato-corner/shared';
 import { productsService, toFlavorSlotResponse } from './products.service.js';
@@ -76,6 +78,7 @@ const listQuerySchema = z
     branch_id: z.uuid().optional(),
     view: z.enum(PRODUCT_BRANCH_VIEWS).optional(),
     classification: z.enum(PRODUCT_CLASSIFICATIONS).optional(),
+    product_type: productTypeKeySchema.optional(),
   })
   .refine((query) => !query.view || query.branch_id, { message: 'view requires branch_id', path: ['view'] });
 
@@ -545,12 +548,13 @@ router.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
-      const { branch_id } = req.body as { branch_id: string };
+      const { branch_id, product_type } = req.body as ForkProductToBranchInput;
       const product = await productsService.forkProductForBranch(
         req.params.productId as string,
         branch_id,
         { id: req.user.user_id, role: req.user.role },
         req.ip ?? null,
+        product_type,
       );
       res.status(201).json({ data: product, error: null, meta: null });
     } catch (error) {

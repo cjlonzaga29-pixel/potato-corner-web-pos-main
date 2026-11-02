@@ -1,5 +1,5 @@
 import type { Prisma, VariantLifecycleStatus } from '@prisma/client';
-import type { ProductBranchView, ProductClassification, ProductStatus } from '@potato-corner/shared';
+import type { ProductBranchView, ProductClassification, ProductStatus, ProductTypeKey } from '@potato-corner/shared';
 
 export interface ProductListFilters {
   status?: ProductStatus;
@@ -16,6 +16,8 @@ export interface ProductListFilters {
   view?: ProductBranchView;
   /** POS-PERF-P57 — Regular / Promotional / Seasonal; counts and pages follow it too. */
   classification?: ProductClassification;
+  /** POS-PERF-P58 — a built-in or custom type. Unlike classification, a built-in here excludes products with a custom type. */
+  product_type?: ProductTypeKey;
 }
 
 export interface CreateProductData {
@@ -28,6 +30,8 @@ export interface CreateProductData {
   isSeasonal: boolean;
   /** POS-PERF-P49 — always written together with isSeasonal (isSeasonal === (classification === 'seasonal')). */
   classification: ProductClassification;
+  /** POS-PERF-P58 — a custom type; absent means the built-in named by classification. */
+  productTypeId?: string;
   seasonalStartDate?: string;
   seasonalEndDate?: string;
   branchExclusive: boolean;
@@ -45,6 +49,8 @@ export interface UpdateProductData {
   isSeasonal?: boolean;
   /** POS-PERF-P49 — set together with isSeasonal, never alone. */
   classification?: ProductClassification;
+  /** POS-PERF-P58 — a custom type, or null to return to the built-in named by classification. */
+  productTypeId?: string | null;
   seasonalStartDate?: string | null;
   seasonalEndDate?: string | null;
 }

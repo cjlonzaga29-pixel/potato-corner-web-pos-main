@@ -46,6 +46,8 @@ export interface ProductFilters {
   view?: ProductBranchView;
   /** POS-PERF-P57 — Regular / Promotional / Seasonal. */
   classification?: ProductClassification;
+  /** POS-PERF-P58 — a built-in or custom type. Sent with classification for a built-in, which is all an older API reads. */
+  productType?: string;
 }
 
 interface ApiErrorShape {
@@ -157,6 +159,7 @@ function buildQueryString(filters: ProductFilters): string {
   if (filters.branchId) params.set('branch_id', filters.branchId);
   if (filters.view) params.set('view', filters.view);
   if (filters.classification) params.set('classification', filters.classification);
+  if (filters.productType) params.set('product_type', filters.productType);
   params.set('page', String(filters.page ?? 1));
   params.set('limit', String(filters.limit ?? 25));
   return params.toString();
@@ -658,10 +661,10 @@ export function useUnpublishProduct(productId: string) {
 export function useForkProductToBranch(productId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (branchId: string) => {
+    mutationFn: async ({ branchId, productType }: { branchId: string; productType?: string }) => {
       const response = await apiClient<ProductDetailResponse>(`/api/products/${productId}/fork-to-branch`, {
         method: 'POST',
-        body: JSON.stringify({ branch_id: branchId }),
+        body: JSON.stringify({ branch_id: branchId, ...(productType && { product_type: productType }) }),
       });
       if (!response.data) throw new Error(errorMessage(response, 'Failed to create a branch copy of this product'));
       return response.data;

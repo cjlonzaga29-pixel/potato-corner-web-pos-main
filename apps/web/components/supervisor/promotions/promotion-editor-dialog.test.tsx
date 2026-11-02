@@ -43,7 +43,7 @@ const eligible: PromotionEligibleProduct[] = [
     classification: 'regular',
     status: 'active',
     branch_ids: [BRANCH_MAIN],
-    ineligible_reason: 'Only Promotional or Seasonal products can have a promotion. Change the classification in the product editor first.',
+    ineligible_reason: 'Only Promotional or Seasonal products can have a promotion. Change the product type in the product editor first.',
     cashier_selected_ineligible_reason: null,
     variants: [{ id: 'v-plain', name: 'Regular', base_price: 45, is_active: true }],
   },

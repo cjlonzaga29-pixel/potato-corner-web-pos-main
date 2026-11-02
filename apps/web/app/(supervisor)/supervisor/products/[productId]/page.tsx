@@ -31,6 +31,7 @@ import {
 } from '@/hooks/queries/use-products';
 import { ProductStatusBadge } from '@/components/admin/products/product-status-badge';
 import { SeasonalBadge } from '@/components/admin/products/seasonal-badge';
+import { productTypeLabel } from '@/lib/product-types';
 import { VariantCard } from '@/components/admin/products/variant-card';
 import { EditProductDialog } from '@/components/admin/products/edit-product-dialog';
 import { ChangeProductStatusDialog } from '@/components/admin/products/change-product-status-dialog';
@@ -124,7 +125,7 @@ export default function SupervisorProductDetailPage({ params }: SupervisorProduc
           <div className="flex items-center gap-2">
             <h1 className="app-title font-bold">{product.name}</h1>
             <ProductStatusBadge status={product.status} />
-            <SeasonalBadge isSeasonal={product.is_seasonal} />
+            <SeasonalBadge isSeasonal={product.is_seasonal} label={productTypeLabel(product)} />
           </div>
           <p className="text-sm text-muted-foreground">{product.category_name ?? 'Uncategorized'}</p>
         </div>

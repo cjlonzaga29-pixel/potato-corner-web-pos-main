@@ -189,6 +189,7 @@ export function EditProductDialog({ open, onOpenChange, product }: EditProductDi
               value={productType}
               options={productTypeOptionsFor(product, types ?? BUILT_IN_PRODUCT_TYPES)}
               savedClassification={product.classification}
+              savedKey={product.product_type?.key ?? product.classification}
               onChange={(value) => form.setValue('product_type', value, { shouldDirty: true })}
             />
 

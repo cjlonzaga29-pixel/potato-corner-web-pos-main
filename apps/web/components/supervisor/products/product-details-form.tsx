@@ -199,6 +199,7 @@ export function ProductDetailsForm({ product, disabled, onDirtyChange }: Product
               onChange={(value) => form.setValue('product_type', value, { shouldDirty: true })}
               disabled={disabled}
               savedClassification={product.classification}
+              savedKey={product.product_type?.key ?? product.classification}
             />
 
             {isSeasonal && (

@@ -785,8 +785,12 @@ describe('productsService.changeProductStatus — supervisor branch-scoped chang
       branch: { code: 'PC-MNL-001', name: 'Main', city: 'Manila' },
     } as never);
 
+    vi.mocked(productsRepository.findPublicationTarget).mockResolvedValue(buildProduct({ status: 'active' }) as never);
+
     await productsService.changeProductStatus('prod-1', { status: 'active', branch_id: 'branch-a' }, SUPERVISOR, null);
 
+    // POS-PERF-P58R — the guards are repeated on what's committed, under the product's lock.
+    expect(productsRepository.findPublicationTarget).toHaveBeenCalledWith('prod-1', txMock);
     expect(productsRepository.upsertBranchProductAvailability).toHaveBeenCalledWith('branch-a', 'prod-1', true, SUPERVISOR.id, txMock);
     expect(productsRepository.markEverPublishedIfLive).toHaveBeenCalledWith('prod-1', txMock);
   });

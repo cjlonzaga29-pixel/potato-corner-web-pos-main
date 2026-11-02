@@ -616,6 +616,10 @@ export const productsRepository = {
    * flagged but left unfixed in docs/decisions/POS-PERF-P36R5-branch-copy-
    * ui-and-replacement.md §3. Every other branch this product sells at
    * (never replaced) still restores exactly as before.
+   *
+   * POS-PERF-P58R — a custom-typed product turns on only inside its type's
+   * scope. An unavailable row can sit outside it (a disable, or a stock-driven
+   * row); restoring must not make that row sellable.
    */
   async cascadeBranchAvailabilityOn(productId: string, updatedBy: string, client: Prisma.TransactionClient | typeof prisma = prisma) {
     const replacingForks = await client.product.findMany({
@@ -628,13 +632,20 @@ export const productsRepository = {
       select: { exclusiveBranchId: true },
     });
     const replacedBranchIds = replacingForks.map((p) => p.exclusiveBranchId as string);
+    const typed = await client.product.findUnique({
+      where: { id: productId },
+      select: { productType: { select: { branches: { select: { branchId: true } } } } },
+    });
+    const typeScope = typed?.productType?.branches.map((row) => row.branchId);
 
     return client.branchProductAvailability.updateMany({
       where: {
         productId,
         isAvailable: false,
         branch: { status: 'active' },
-        ...(replacedBranchIds.length > 0 ? { branchId: { notIn: replacedBranchIds } } : {}),
+        ...(replacedBranchIds.length > 0 || typeScope
+          ? { branchId: { ...(replacedBranchIds.length > 0 && { notIn: replacedBranchIds }), ...(typeScope && { in: typeScope }) } }
+          : {}),
       },
       data: { isAvailable: true, updatedBy },
     });

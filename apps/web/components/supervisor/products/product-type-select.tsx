@@ -3,7 +3,7 @@
 import type { ProductClassification } from '@potato-corner/shared';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import type { ProductTypeOption } from '@/lib/product-types';
+import { productTypeChangeNotice, type ProductTypeOption } from '@/lib/product-types';
 
 const BUILT_IN_HELP: Record<ProductClassification, string> = {
   regular: 'Everyday menu item. Cannot have a promotion.',
@@ -19,6 +19,8 @@ interface ProductTypeSelectProps {
   disabled?: boolean;
   /** A saved product's classification, for what a custom type leaves in place. Absent for a new product, which starts as regular. */
   savedClassification?: ProductClassification;
+  /** A saved product's type, so a change can be explained before it is saved. */
+  savedKey?: string;
 }
 
 /**
@@ -26,11 +28,12 @@ interface ProductTypeSelectProps {
  * here. Independent of publication status (Active/Drafts/Inactive). A custom
  * name is only a label, whatever it says: promotion eligibility stays where it was.
  */
-export function ProductTypeSelect({ id, value, options, onChange, disabled, savedClassification }: ProductTypeSelectProps) {
+export function ProductTypeSelect({ id, value, options, onChange, disabled, savedClassification, savedKey }: ProductTypeSelectProps) {
   const builtInHelp = BUILT_IN_HELP[value as ProductClassification];
   const customHelp = savedClassification === 'promotional' || savedClassification === 'seasonal'
     ? 'A custom type is a label. This product can still be given a promotion, as it could before.'
     : 'A custom type is a label. This product cannot have a promotion unless you change it to Promotional or Seasonal.';
+  const changeNotice = savedKey !== undefined && savedClassification ? productTypeChangeNotice(value, savedKey, savedClassification) : null;
   return (
     <div className="space-y-2">
       <Label htmlFor={id}>Product type</Label>
@@ -57,6 +60,11 @@ export function ProductTypeSelect({ id, value, options, onChange, disabled, save
       <p id={`${id}-help`} className="text-xs text-muted-foreground">
         {builtInHelp ?? customHelp} The type alone never changes the price, and it does not affect whether the product is live on POS.
       </p>
+      {changeNotice && (
+        <p role="status" data-testid="product-type-change-notice" className="rounded-md border bg-muted/50 p-2 text-xs">
+          {changeNotice}
+        </p>
+      )}
     </div>
   );
 }

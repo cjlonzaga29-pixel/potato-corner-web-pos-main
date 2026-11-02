@@ -558,17 +558,36 @@ async function publishWithinLock(
 }
 
 /**
+ * POS-PERF-P58R — turning a product on outside publication. Takes the lock a
+ * custom type's assignment and publication hold, then repeats the guards on
+ * what is committed now, so a type assigned a moment ago can't be missed and
+ * this row can't slip past an assignment reading the product's branches.
+ * Turning off needs none of this: it can't break the scope, and an urgent
+ * disable shouldn't queue behind a publication.
+ */
+async function lockAndAssertMayEnable(tx: Prisma.TransactionClient, productId: string, branchIds: string[], actor: ActorContext): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(${productCatalogLockId(productId)})`;
+  const current = await productsRepository.findPublicationTarget(productId, tx);
+  if (!current) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
+  if (current.status === 'discontinued' || current.status === 'archived') {
+    throw new ProductError('PRODUCT_GLOBALLY_UNAVAILABLE', 'Cannot enable a globally discontinued or archived product for a branch', 409);
+  }
+  for (const branchId of branchIds) assertSupervisorMayEnableAtBranch(current, branchId, true, actor);
+}
+
+/**
  * POS-PERF-P39R2 — a single branch availability write and, when it turns the
  * row on, the ever-published marker, in one transaction: if either fails,
  * neither is kept. Used by the per-branch toggle and the branch-scoped status
  * change, which used to be one bare upsert.
  */
-function writeBranchAvailability(branchId: string, productId: string, isAvailable: boolean, actorId: string) {
+function writeBranchAvailability(branchId: string, productId: string, isAvailable: boolean, actor: ActorContext) {
   return prisma.$transaction(async (tx) => {
-    const row = await productsRepository.upsertBranchProductAvailability(branchId, productId, isAvailable, actorId, tx);
+    if (isAvailable) await lockAndAssertMayEnable(tx, productId, [branchId], actor);
+    const row = await productsRepository.upsertBranchProductAvailability(branchId, productId, isAvailable, actor.id, tx);
     if (isAvailable) await productsRepository.markEverPublishedIfLive(productId, tx);
     return row;
-  });
+  }, PUBLICATION_TRANSACTION_OPTIONS);
 }
 
 /**
@@ -1634,7 +1653,7 @@ export const productsService = {
           await tx.$executeRaw`SELECT pg_advisory_xact_lock(${productCatalogLockId(productId)})`;
           await assertProductTypeAssignable(customTypeId, await productsRepository.findConfiguredBranchIds(productId, tx), updatedBy, tx);
           return productsRepository.update(productId, updateData, data.expected_version, tx);
-        })
+        }, PUBLICATION_TRANSACTION_OPTIONS)
       : await productsRepository.update(productId, updateData, data.expected_version);
     if (!product) {
       throw new ProductError(
@@ -1696,11 +1715,13 @@ export const productsService = {
       const restoring = product.status === 'archived' && data.status === 'active';
       const updated = data.status === 'active'
         ? await prisma.$transaction(async (tx) => {
+          // POS-PERF-P58R — restore turns rows on, so it reads the type's scope under the catalog lock.
+          if (restoring) await tx.$executeRaw`SELECT pg_advisory_xact_lock(${productCatalogLockId(productId)})`;
           const row = await productsRepository.updateStatus(productId, data.status, tx);
           if (restoring) await productsRepository.cascadeBranchAvailabilityOn(productId, actor.id, tx);
           await productsRepository.markEverPublishedIfLive(productId, tx);
           return row;
-        })
+        }, PUBLICATION_TRANSACTION_OPTIONS)
         : await productsRepository.updateStatus(productId, data.status);
 
       if (data.status === 'discontinued' || data.status === 'archived') {
@@ -1772,7 +1793,7 @@ export const productsService = {
 
       const isAvailable = data.status === 'active';
       assertSupervisorMayEnableAtBranch(product, data.branch_id, isAvailable, actor);
-      const row = await writeBranchAvailability(data.branch_id, productId, isAvailable, actor.id);
+      const row = await writeBranchAvailability(data.branch_id, productId, isAvailable, actor);
 
       await recordAuditLog({
         action: 'PRODUCT_BRANCH_AVAILABILITY_CHANGED',
@@ -2198,7 +2219,7 @@ export const productsService = {
     }
     assertSupervisorMayEnableAtBranch(product, branchId, isAvailable, actor);
 
-    const row = await writeBranchAvailability(branchId, productId, isAvailable, actor.id);
+    const row = await writeBranchAvailability(branchId, productId, isAvailable, actor);
 
     await recordAuditLog({
       action: 'PRODUCT_BRANCH_AVAILABILITY_CHANGED',
@@ -2258,7 +2279,9 @@ export const productsService = {
       assertSupervisorMayEnableAtBranch(product, update.branch_id, update.is_available, actor);
     }
 
+    const enabling = updates.filter((update) => update.is_available).map((update) => update.branch_id);
     const rows = await prisma.$transaction(async (tx) => {
+      if (enabling.length > 0) await lockAndAssertMayEnable(tx, productId, enabling, actor);
       const results = [];
       for (const update of updates) {
         results.push(
@@ -2269,7 +2292,7 @@ export const productsService = {
       // one branch on and another off still marks a product left live.
       if (updates.some((u) => u.is_available)) await productsRepository.markEverPublishedIfLive(productId, tx);
       return results;
-    });
+    }, PUBLICATION_TRANSACTION_OPTIONS);
 
     for (const row of rows) {
       await recordAuditLog({
@@ -2730,7 +2753,8 @@ export const productsService = {
     let forked;
     try {
       forked = await productsRepository.forkProductCascade(productId, branchId, actor.id, {
-        write: chosenWrite,
+        // POS-PERF-P58R — always the type just checked, not whatever the source holds by the time the copy is written.
+        write: chosenWrite ?? { productTypeId: copiedTypeId },
         ...(copiedTypeId && { beforeWrite: (tx: Prisma.TransactionClient) => assertProductTypeAssignable(copiedTypeId, [branchId], actor, tx) }),
       });
     } catch (error) {

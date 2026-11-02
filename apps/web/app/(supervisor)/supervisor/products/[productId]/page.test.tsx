@@ -166,6 +166,28 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+describe('SupervisorProductDetailPage type label (POS-PERF-P58R)', () => {
+  it('names a custom type, and a promotional product, instead of calling them Regular', async () => {
+    mockUseProduct.mockReturnValue({
+      data: product({ classification: 'regular', product_type: { key: 'type-1', id: 'type-1', name: 'Marketing', is_builtin: false, is_active: true } }),
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    await act(async () => {
+      render(<SupervisorProductDetailPage params={Promise.resolve({ productId: 'product-1' })} />);
+    });
+    expect(screen.getByText('Marketing')).toBeInTheDocument();
+    cleanup();
+
+    mockUseProduct.mockReturnValue({ data: product({ classification: 'promotional' }), isLoading: false, isError: false, refetch: vi.fn() });
+    await act(async () => {
+      render(<SupervisorProductDetailPage params={Promise.resolve({ productId: 'product-1' })} />);
+    });
+    expect(screen.getByText('Promotional')).toBeInTheDocument();
+  });
+});
+
 describe('SupervisorProductDetailPage Publish (POS-PERF-P38R)', () => {
   it('checks publication for this branch only, and enables Publish despite a missing link and the unpublished state', async () => {
     await renderVariantsTab();

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ProductResponse, ProductTypeResponse } from '@potato-corner/shared';
-import { BUILT_IN_PRODUCT_TYPES, parseProductTypeKey, productTypeCoversBranches, productTypeOptionsFor, productTypeRequestFields, productTypeSaveFields } from './product-types';
+import { BUILT_IN_PRODUCT_TYPES, parseProductTypeKey, productTypeChangeNotice, productTypeCoversBranches, productTypeOptionsFor, productTypeRequestFields, productTypeSaveFields } from './product-types';
 
 const CUSTOM_ID = 'b6f0a7de-5b0c-4e8b-9a43-0d2b7f3f1c11';
 
@@ -56,5 +56,34 @@ describe('product type helpers (POS-PERF-P58)', () => {
     const types = [...BUILT_IN_PRODUCT_TYPES, custom()];
     expect(productTypeOptionsFor(product('regular'), types).map((o) => o.key)).toEqual(['regular', 'promotional', 'seasonal']);
     expect(productTypeOptionsFor(product(CUSTOM_ID, false), types).map((o) => o.key)).toEqual(['regular', 'promotional', 'seasonal', CUSTOM_ID]);
+  });
+});
+
+describe('productTypeChangeNotice', () => {
+  it('says nothing until the type actually changes', () => {
+    expect(productTypeChangeNotice('promotional', 'promotional', 'promotional')).toBeNull();
+    expect(productTypeChangeNotice(CUSTOM_ID, CUSTOM_ID, 'promotional')).toBeNull();
+  });
+
+  it('a custom type on a promotion-eligible product: a label, and a running promotion is not stopped', () => {
+    const notice = productTypeChangeNotice(CUSTOM_ID, 'promotional', 'promotional');
+    expect(notice).toContain('it stays Promotional');
+    expect(notice).toContain("doesn't stop a promotion");
+    expect(productTypeChangeNotice(CUSTOM_ID, 'seasonal', 'seasonal')).toContain('it stays Seasonal');
+  });
+
+  it('a custom type on a regular product: its name never makes it eligible', () => {
+    const notice = productTypeChangeNotice(CUSTOM_ID, 'regular', 'regular');
+    expect(notice).toContain('it stays Regular');
+    expect(notice).toContain("still can't have one");
+  });
+
+  it('built-ins are described as classification changes, distinct from a custom label', () => {
+    expect(productTypeChangeNotice('regular', 'promotional', 'promotional')).toContain('stops applying once you save');
+    expect(productTypeChangeNotice('regular', CUSTOM_ID, 'seasonal')).toContain('stops applying once you save');
+    expect(productTypeChangeNotice('seasonal', 'promotional', 'promotional')).toContain('keeps its discount');
+    expect(productTypeChangeNotice('seasonal', 'regular', 'regular')).toContain('applies from the next sale');
+    // Back from a custom label to the classification it kept all along.
+    expect(productTypeChangeNotice('promotional', CUSTOM_ID, 'promotional')).toContain("eligibility doesn't change");
   });
 });

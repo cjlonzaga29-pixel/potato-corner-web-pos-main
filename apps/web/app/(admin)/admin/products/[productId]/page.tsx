@@ -17,6 +17,7 @@ import { useProduct, useProductReadiness } from '@/hooks/queries/use-products';
 import { BranchSelector } from '@/components/admin/branch-selector';
 import { ProductStatusBadge } from '@/components/admin/products/product-status-badge';
 import { SeasonalBadge } from '@/components/admin/products/seasonal-badge';
+import { productTypeLabel } from '@/lib/product-types';
 import { VariantCard } from '@/components/admin/products/variant-card';
 import { ReadinessChecklist } from '@/components/admin/products/readiness-checklist';
 
@@ -57,7 +58,7 @@ export default function ProductDetailPage({ params }: ProductDetailPageProps) {
         <div className="flex items-center gap-2">
           <h1 className="app-title font-bold">{product.name}</h1>
           <ProductStatusBadge status={product.status} />
-          <SeasonalBadge isSeasonal={product.is_seasonal} />
+          <SeasonalBadge isSeasonal={product.is_seasonal} label={productTypeLabel(product)} />
         </div>
         <p className="text-sm text-muted-foreground">{product.category_name ?? 'Uncategorized'}</p>
       </div>

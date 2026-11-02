@@ -3,6 +3,7 @@ import {
   PRODUCT_CLASSIFICATION_LABELS,
   isBuiltInProductTypeKey,
   productTypeKeySchema,
+  type ProductClassification,
   type ProductDetailResponse,
   type ProductResponse,
   type ProductTypeResponse,
@@ -61,6 +62,30 @@ export function productTypeSaveFields(key: string, savedKey: string | undefined,
     };
   }
   return key === savedKey ? {} : productTypeRequestFields(key);
+}
+
+/**
+ * POS-PERF-P58R — what a type change will do to promotions, before it is saved.
+ * Only the classification decides promotion eligibility, and it is re-read at
+ * every sale. A custom type leaves it alone, so a Promotional or Seasonal
+ * product keeps a running promotion. Moving to built-in Regular is different:
+ * an automatic promotion stops applying at once (resolvePromotionsForBranch).
+ */
+export function productTypeChangeNotice(key: string, savedKey: string, savedClassification: ProductClassification): string | null {
+  if (key === savedKey) return null;
+  const eligible = savedClassification !== 'regular';
+  const savedLabel = PRODUCT_CLASSIFICATION_LABELS[savedClassification];
+  if (!isBuiltInProductTypeKey(key)) {
+    return eligible
+      ? `This changes the name shown for this product only. For promotions it stays ${savedLabel}, and any running promotion keeps its discount. Changing the type doesn't stop a promotion: end it in Promotions.`
+      : `This changes the name shown for this product only. For promotions it stays ${savedLabel}, so it still can't have one, whatever the type is called.`;
+  }
+  if (key === savedClassification) return `This product goes back to the built-in ${savedLabel} type. Promotion eligibility doesn't change.`;
+  const label = PRODUCT_CLASSIFICATION_LABELS[key];
+  if (key === 'regular') return `Unlike a custom type, this changes promotions. Regular products can't have an automatic promotion, so any running on this product stops applying once you save. The promotion itself stays in Promotions.`;
+  return eligible
+    ? `This product can still have a promotion as ${label}, and any running promotion keeps its discount.`
+    : `Unlike a custom type, this changes promotions. As ${label} this product can have one, and an enabled promotion that includes it applies from the next sale.`;
 }
 
 /** Types valid at every branch of this product, plus its current one even if inactive. */

@@ -59,7 +59,7 @@ export const SUPERVISOR_NAV_ITEMS: ReadonlyArray<NavItem> = [
   { label: 'Dashboard', href: '/supervisor/dashboard', icon: LayoutDashboard },
   { label: 'Inventory', href: '/supervisor/inventory', icon: Package },
   { label: 'Products', href: '/supervisor/products', icon: ShoppingBag },
-  { label: 'Discounts & Promotions', href: '/supervisor/promotions', icon: TicketPercent },
+  { label: 'Discounts', href: '/supervisor/discounts', icon: TicketPercent },
   {
     label: 'Catalog Setup',
     icon: ListTree,

@@ -22,9 +22,7 @@ import { useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useTransactions, useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
 import { useDashboardSalesTrendReport, useInventoryAnalyticsRealtimeSync } from '@/hooks/queries/use-reports';
 import { useBranchInventoryStockAlerts, useInventoryStockRealtimeSync } from '@/hooks/queries/use-universal-inventory';
-import { useCatalog } from '@/hooks/queries/use-products';
-import { unsellableVariants } from '@/lib/pos-product-availability';
-import { DashboardProductAvailability } from '@/components/supervisor/dashboard-product-availability';
+import { stockAlertCounts, stockAlertRows } from '@/lib/inventory-stock-status';
 import { useAttendanceSummary, useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
 import { useExpensesRealtimeSync } from '@/hooks/queries/use-expenses';
 import { MAX_LIST_LIMIT } from '@potato-corner/shared';
@@ -67,9 +65,6 @@ export default function SupervisorDashboardPage() {
     limit: RECENT_TRANSACTIONS_LIMIT,
   });
   const alertsQuery = useBranchInventoryStockAlerts(activeBranchId);
-  // POS-PERF-P56 — the POS's own catalog read, keyed per branch, so this panel
-  // can never disagree with what the cashier sees or show another branch's.
-  const catalogQuery = useCatalog(activeBranchId);
   // POS-PERF-P47 — attendance from clock-in/out records only (never logins
   // or socket presence); same rule as the Staff Clocked In KPI.
   const attendanceQuery = useAttendanceSummary(activeBranchId);
@@ -134,13 +129,14 @@ export default function SupervisorDashboardPage() {
   const todayStats = branchStats?.find((s) => s.branchId === activeBranchId);
   const averageOrderValue =
     todayStats && todayStats.todayTransactionCount > 0 ? todayStats.todayGrossSales / todayStats.todayTransactionCount : 0;
-  const alerts = alertsQuery.data?.branch_id === activeBranchId ? alertsQuery.data.alerts : undefined;
+  const alertsData = alertsQuery.data?.branch_id === activeBranchId ? alertsQuery.data : undefined;
+  const alerts = alertsData ? stockAlertRows(alertsData) : undefined;
   const isAlertsLoading = alertsQuery.isLoading || (alertsQuery.data !== undefined && alerts === undefined);
   const alertCount = alerts?.length ?? 0;
-  const outCount = alerts?.filter((a) => a.quantity_available <= 0).length ?? 0;
-  const criticalCount = alerts?.filter((a) => a.severity === 'critical' && a.quantity_available > 0).length ?? 0;
-  const lowCount = alertCount - outCount - criticalCount;
-  const attentionLabel = [outCount > 0 && `${outCount} out of stock`, criticalCount > 0 && `${criticalCount} critical`].filter(Boolean).join(', ');
+  const { out: outCount, insufficient: insufficientCount, critical: criticalCount, low: lowCount } = stockAlertCounts(alerts ?? []);
+  const attentionLabel = [outCount > 0 && `${outCount} out of stock`, insufficientCount > 0 && `${insufficientCount} insufficient for a serving`, criticalCount > 0 && `${criticalCount} critical`]
+    .filter(Boolean)
+    .join(', ');
   const attendanceSummary = attendanceQuery.data?.branch_id === activeBranchId ? attendanceQuery.data : undefined;
   const isAttendanceLoading = attendanceQuery.isLoading || (attendanceQuery.data !== undefined && attendanceSummary === undefined);
   const isTodayStatsLoading = isStatsLoading || (branchStats !== undefined && todayStats === undefined);
@@ -210,10 +206,10 @@ export default function SupervisorDashboardPage() {
           value={alertCount}
           isLoading={isAlertsLoading}
           icon={BellRing}
-          tone={outCount + criticalCount > 0 ? 'danger' : alertCount > 0 ? 'warning' : 'default'}
+          tone={outCount + insufficientCount + criticalCount > 0 ? 'danger' : alertCount > 0 ? 'warning' : 'default'}
           href={INVENTORY_ALERTS_HREF}
           actionLabel={attentionLabel ? `View alerts (${attentionLabel})` : 'View alerts'}
-          tooltip="Tracked inventory items needing attention: out of stock (nothing available, thresholds or not), critical and low. Counts items, not products."
+          tooltip="Tracked inventory items needing attention: out of stock, insufficient for one serving of something on the POS, critical and low. Counts each item once, not products or sizes."
         />
       </div>
 
@@ -233,16 +229,12 @@ export default function SupervisorDashboardPage() {
       </div>
 
       <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-2">
-        <DashboardProductAvailability
-          variants={catalogQuery.data ? unsellableVariants(catalogQuery.data.products) : undefined}
-          isLoading={catalogQuery.isLoading}
-          isError={catalogQuery.isError}
-          href="/supervisor/products"
-        />
         <DashboardInventoryAlerts
           alerts={alerts}
           isLoading={isAlertsLoading}
           href={INVENTORY_ALERTS_HREF}
+          setupIssues={alertsData?.setup_issues}
+          setupHref="/supervisor/products"
           prepareTransferHref={
             (branchesData?.branches.length ?? 0) > 1
               ? (alert) => transferPrepareHref('/supervisor', { toBranchId: activeBranchId, inventoryItemId: alert.inventory_item_id })

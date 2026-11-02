@@ -34,7 +34,7 @@ export const NOT_SAVED_SAFE_TO_RETRY = 'NOT_SAVED_SAFE_TO_RETRY';
  */
 export const MANUAL_DISCOUNT_UNSUPPORTED_BY_SERVER = 'MANUAL_DISCOUNT_UNSUPPORTED_BY_SERVER';
 export const MANUAL_DISCOUNT_UNSUPPORTED_MESSAGE =
-  'This server does not support manual discounts yet, so the sale was not charged. Choose “No discount” or a statutory discount, or ask a supervisor to check the system update.';
+  'This server does not support manual discounts yet, so the sale was not charged. Choose “No discount”, or ask a supervisor to check the system update.';
 /**
  * P55R2 — a pre-P55R2 API refused a manual-total sale at validation (its
  * tax_basis needs a VAT rate), so nothing was written and no VAT was
@@ -85,6 +85,9 @@ const TITLES: Record<string, string> = {
   MANUAL_DISCOUNT_PROOF_ALREADY_USED: 'Proof photo already used — not charged',
   MANUAL_DISCOUNT_EXCEEDS_SUBTOTAL: 'Discount too large — not charged',
   MANUAL_DISCOUNT_TOTAL_CHANGED: 'Total changed — not charged',
+  MANUAL_DISCOUNT_AMOUNT_MODE_CHANGED: 'Discount type changed — not charged',
+  MANUAL_DISCOUNT_FIXED_AMOUNT_MISMATCH: 'Discount amount changed — not charged',
+  MANUAL_DISCOUNT_NO_ELIGIBLE_ITEMS: 'No eligible items — not charged',
   MANUAL_DISCOUNT_OFFLINE_UNSUPPORTED: 'Manual discount not allowed offline — not recorded',
   DISCOUNT_NOT_COMBINABLE: 'Discounts cannot be combined — not charged',
   DISCOUNT_NOT_SUPPORTED_IN_MANUAL_FLOW: 'Discount not available here — not charged',

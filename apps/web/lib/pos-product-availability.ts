@@ -50,32 +50,3 @@ export function stockShortageDetail(variant: CatalogVariant): string | null {
   if (shortages.length === 0) return null;
   return `${shortages.map(shortageReason).join('; ')}.`;
 }
-
-export interface UnsellableVariant {
-  key: string;
-  productName: string;
-  variantName: string;
-  kind: 'stock' | 'setup';
-  reason: string;
-}
-
-/**
- * Sizes on the branch's POS that can't be sold right now, and why. Only what
- * the POS offers: a product a supervisor turned off (or never published) isn't
- * in the catalog, so it is not a shortage and is never counted here.
- */
-export function unsellableVariants(products: PosCatalogProduct[]): UnsellableVariant[] {
-  return products.flatMap((product) =>
-    product.variants.flatMap((variant): UnsellableVariant[] => {
-      const base = { key: variant.id, productName: product.name, variantName: variant.name };
-      if (!variant.live_ready) {
-        const reason = variant.blocking_issues[0]?.message ?? readinessMessage(variant) ?? 'Setup incomplete.';
-        return [{ ...base, kind: 'setup', reason }];
-      }
-      if (variant.stock_status === 'out_of_stock') {
-        return [{ ...base, kind: 'stock', reason: stockShortageDetail(variant) ?? 'Not enough ingredient stock to make one.' }];
-      }
-      return [];
-    }),
-  );
-}

@@ -1,11 +1,20 @@
 import { prisma } from '../../lib/prisma.js';
-import { convertQuantity } from '../product-components/unit-conversion.util.js';
-import { computeBomDeductionBatch } from '../shadow-bom-deduction/shadow-bom-deduction.service.js';
+import { convertQuantity, UnitConversionError } from '../product-components/unit-conversion.util.js';
+import { buildBatchConverter, computeBomDeductionBatch, computeBomDeductionBatchSettled } from '../shadow-bom-deduction/shadow-bom-deduction.service.js';
+import { productReadinessService } from '../product-readiness/product-readiness.service.js';
+import { productsRepository } from '../products/products.repository.js';
 import { availableStock, classifyStockStatus } from '../universal-inventory/stock-classification.js';
+import { evaluateRequiredChoices, toStockChoiceRequest } from './required-choice-combinations.js';
+import type { RequiredChoice, RequiredChoiceResult, StockLine } from './required-choice-combinations.js';
 import type {
+  BranchRecipeShortages,
   CartAvailabilityLineInput,
   CartAvailabilityResult,
   CatalogStockRequest,
+  RecipeSetupIssue,
+  RecipeShortage,
+  RecipeShortageAffected,
+  RequiredStockChoices,
   StockShortage,
   StockStatus,
   VariantStockResult,
@@ -28,6 +37,27 @@ async function fetchStockByItem(branchId: string, inventoryItemIds: string[]): P
   });
   return new Map(rows.map((row) => [row.inventoryItemId, row]));
 }
+
+/** Whole units this availability covers: the POS card, the cart check and the alert all use this one sum. */
+function servingsFrom(available: number, perServing: number): number {
+  return perServing > 0 ? Math.floor(available / perServing) : Infinity;
+}
+
+/**
+ * POS-PERF-P57 — BOM lines with an unconvertible recipe as null. Readiness
+ * doesn't check conversions, so one such recipe must not fail the read for
+ * every other product at the branch. Checkout still refuses that recipe.
+ */
+async function bomLinesOrNull(requests: { productVariantId: string; flavorId: string | null; quantitySold: number }[]): Promise<(StockLine[] | null)[]> {
+  try {
+    return await computeBomDeductionBatch(requests);
+  } catch (error) {
+    if (!(error instanceof UnitConversionError)) throw error;
+    return (await computeBomDeductionBatchSettled(requests)).map((result) => (result instanceof Error ? null : result));
+  }
+}
+
+const roundQuantity = (value: number) => Math.round(value * 1000) / 1000;
 
 function availableQuantity(stock: StockRow | undefined): number {
   if (!stock) return 0;
@@ -80,16 +110,26 @@ export const stockAvailabilityService = {
       flatRequests.push(...subs);
     }
 
-    const bomLinesByRequest = await computeBomDeductionBatch(flatRequests.map((r) => ({ ...r, quantitySold: 1 })));
+    const bomLinesByRequest = (await bomLinesOrNull(flatRequests.map((r) => ({ ...r, quantitySold: 1 })))).map((lines) => lines ?? []);
+    const choicesByVariant = new Map(variants.flatMap((variant) => (variant.choices ? [[variant.productVariantId, variant.choices] as const] : [])));
+    const slotLines = await slotChoiceLines([...choicesByVariant.values()]);
+    const pickLines = await optionServingLines([...choicesByVariant.values()].flatMap((choices) => choices.requiredPicks.flat().map((option) => option.id)));
 
-    const allItemIds = [...new Set(bomLinesByRequest.flat().map((l) => l.inventoryItemId))];
+    const allItemIds = [...new Set([...bomLinesByRequest.flat(), ...[...slotLines.values()].flat(), ...pickLines.values()].map((l) => l.inventoryItemId))];
     const stockByItem = await fetchStockByItem(branchId, allItemIds);
 
     const results = new Map<string, VariantStockResult>();
     let cursor = 0;
     for (const [productVariantId, subs] of subRequestsByVariant) {
-      const subResults = subs.map(() => evaluateLines(bomLinesByRequest[cursor++] ?? [], stockByItem));
-      results.set(productVariantId, { ...aggregateVariantStock(subResults), productVariantId });
+      const subLines = subs.map(() => bomLinesByRequest[cursor++] ?? []);
+      const aggregated = aggregateVariantStock(subLines.map((lines) => evaluateLines(lines, stockByItem)));
+      const choices = choicesByVariant.get(productVariantId);
+      const combined = choices
+        ? evaluateVariantChoices(choices, subs.map((sub, index) => ({ flavorId: sub.flavorId, lines: subLines[index] ?? [] })), slotLines, pickLines, (itemId) => availableQuantity(stockByItem.get(itemId)))
+        : null;
+      // A confirmed answer from the whole selection replaces the flavor-only one. 'unknown' (no recipe) stays, unless the slots supply the recipe.
+      const useCombined = combined && combined.outcome !== 'too_many' && combined.lines.length > 0 && (aggregated.status !== 'unknown' || (choices?.slots.length ?? 0) > 0);
+      results.set(productVariantId, { ...(useCombined ? evaluateLines(combined.lines, stockByItem) : aggregated), productVariantId });
     }
     await nameShortages(results);
     return results;
@@ -167,7 +207,262 @@ export const stockAvailabilityService = {
 
     return { ok: shortfalls.length === 0, shortfalls };
   },
+
+  /**
+   * POS-PERF-P57 — which tracked items can't cover one serving of what the POS
+   * offers at this branch, by the same recipe, conversion, flavor and
+   * availability rules as evaluateCatalogStock. A fixed number of batched
+   * queries, however many products there are.
+   *
+   * Flavors and add-ons are alternatives, so each configuration is judged on
+   * its own quantity and quantities are never added across them: an item is
+   * reported for the sizes and choices it actually can't cover, and blocksSize
+   * says whether anything of that size can still be sold. Choices one sale
+   * takes together (Mix & Max slots, required add-ons) do add up, so a size is
+   * blocked only when no whole selection fits.
+   *
+   * Only sellable variants are read. A size with a setup problem or a product
+   * a supervisor turned off is not a shortage. An item with no stock row here,
+   * or an untracked item a recipe still needs, blocks the POS too, but more
+   * stock on a dashboard list would not explain it, so those are setupIssues.
+   */
+  async evaluateBranchRecipeShortages(branchId: string): Promise<BranchRecipeShortages> {
+    const [products, disabledFlavorIds] = await Promise.all([
+      productsRepository.findRecipeCheckCatalogForBranch(branchId),
+      productsRepository.findDisabledFlavorIds(branchId),
+    ]);
+    const variantIds = products.flatMap((product) => product.variants.map((variant) => variant.id));
+    if (variantIds.length === 0) return { byItem: new Map(), setupIssues: [] };
+
+    const readiness = await productReadinessService.evaluateProductVariantReadinessBatch({ branchId, productVariantIds: variantIds });
+    const sellable = new Set(readiness.filter((result) => result.sellable).map((result) => result.productVariantId));
+    const disabledFlavors = new Set(disabledFlavorIds);
+
+    interface Configuration {
+      flavorName: string | null;
+      lines: { inventoryItemId: string; quantity: number }[];
+    }
+    const variants = products.flatMap((product) =>
+      product.variants
+        .filter((variant) => sellable.has(variant.id))
+        .map((variant) => {
+          const request = toStockChoiceRequest(variant, disabledFlavors);
+          return {
+            product,
+            variant,
+            choices: request.choices,
+            flavors: variant.variantFlavors.filter((vf) => request.flavorIds.includes(vf.flavorId)),
+          };
+        }),
+    );
+    const requests = variants.flatMap(({ variant, flavors }) =>
+      (flavors.length > 0 ? flavors.map((vf): string | null => vf.flavorId) : [null]).map((flavorId) => ({ productVariantId: variant.id, flavorId, quantitySold: 1 })),
+    );
+    const bomLines = await bomLinesOrNull(requests);
+    const optionLines = await optionServingLines(
+      variants.flatMap(({ variant }) =>
+        variant.optionGroupAssignments.flatMap((assignment) => [...assignment.allowedOptions.map((row) => row.productOption.id), ...assignment.optionGroup.options.map((option) => option.id)]),
+      ),
+    );
+    const slotLines = await slotChoiceLines(variants.flatMap(({ choices }) => (choices ? [choices] : [])));
+
+    const itemIds = [...new Set([...bomLines.flatMap((lines) => lines ?? []), ...[...slotLines.values()].flat(), ...optionLines.values()].map((line) => line.inventoryItemId))];
+    const [stockByItem, items] = await Promise.all([
+      fetchStockByItem(branchId, itemIds),
+      prisma.inventoryItem.findMany({
+        where: { id: { in: itemIds } },
+        select: { id: true, name: true, trackInventory: true, baseUnit: { select: { code: true } } },
+      }),
+    ]);
+    const itemById = new Map(items.map((item) => [item.id, item]));
+
+    const affectedByItem = new Map<string, RecipeShortageAffected[]>();
+    const setupIssues = new Map<string, RecipeSetupIssue>();
+    const availableOf = (inventoryItemId: string) => availableQuantity(stockByItem.get(inventoryItemId));
+    const isShort = (inventoryItemId: string, quantity: number) => servingsFrom(availableOf(inventoryItemId), quantity) < 1;
+    /** Tracked item with a stock row: a shortage. Anything else that blocks is setup, recorded once per item and size. */
+    const reportable = (inventoryItemId: string, productName: string, variantName: string): boolean => {
+      const item = itemById.get(inventoryItemId);
+      if (!item) return false;
+      const reason = !stockByItem.has(inventoryItemId) ? ('not_assigned' as const) : !item.trackInventory ? ('untracked' as const) : null;
+      if (!reason) return true;
+      setupIssues.set(`${inventoryItemId}:${productName}:${variantName}`, { inventoryItemId, name: item.name, reason, productName, variantName });
+      return false;
+    };
+    const addAffected = (inventoryItemId: string, entry: RecipeShortageAffected) => {
+      const list = affectedByItem.get(inventoryItemId);
+      if (list) list.push(entry);
+      else affectedByItem.set(inventoryItemId, [entry]);
+    };
+
+    let cursor = 0;
+    for (const { product, variant, flavors, choices } of variants) {
+      const flavorLines = (flavors.length > 0 ? flavors : [null]).map((flavor) => {
+        const lines = bomLines[cursor++];
+        return { flavor, lines: lines ?? [], unconvertible: lines === null };
+      });
+      if (flavorLines.some((entry) => entry.unconvertible)) {
+        setupIssues.set(`unit:${variant.id}`, { inventoryItemId: null, name: 'Its recipe', reason: 'no_unit_conversion', productName: product.name, variantName: variant.name });
+      }
+      const configurations: Configuration[] = flavorLines.map(({ flavor, lines }) => ({ flavorName: flavor?.flavor.name ?? null, lines }));
+      const base = { productId: product.id, productName: product.name, variantId: variant.id, variantName: variant.name };
+      const combined = choices
+        ? evaluateVariantChoices(choices, flavorLines.map(({ flavor, lines }) => ({ flavorId: flavor?.flavorId ?? null, lines })), slotLines, optionLines, availableOf)
+        : null;
+      const nothingSells = combined?.outcome === 'blocked' || configurations.every((config) => config.lines.some((line) => isShort(line.inventoryItemId, line.quantity)));
+      for (const slot of choices?.slots ?? []) {
+        if (slot.options.some((option) => option.flavors.some((flavor) => slotLines.has(slotLineKey(option.productVariantId, flavor.flavorId))))) continue;
+        setupIssues.set(`slot:${variant.id}:${slot.label}`, { inventoryItemId: null, name: slot.label, reason: 'no_slot_choice', productName: product.name, variantName: variant.name });
+      }
+
+      const perItem = new Map<string, { config: Configuration; quantity: number }[]>();
+      for (const config of configurations) {
+        for (const line of config.lines) {
+          if (!isShort(line.inventoryItemId, line.quantity)) continue;
+          const list = perItem.get(line.inventoryItemId);
+          if (list) list.push({ config, quantity: line.quantity });
+          else perItem.set(line.inventoryItemId, [{ config, quantity: line.quantity }]);
+        }
+      }
+      for (const [inventoryItemId, shortIn] of perItem) {
+        if (!reportable(inventoryItemId, product.name, variant.name)) continue;
+        const available = availableQuantity(stockByItem.get(inventoryItemId));
+        const firstQuantity = shortIn[0]?.quantity ?? 0;
+        const everyConfigurationSame = shortIn.length === configurations.length && shortIn.every((entry) => entry.quantity === firstQuantity);
+        const entries = everyConfigurationSame ? [{ choiceName: null, quantity: firstQuantity }] : shortIn.map((entry) => ({ choiceName: entry.config.flavorName, quantity: entry.quantity }));
+        for (const { choiceName, quantity } of entries) {
+          addAffected(inventoryItemId, {
+            ...base,
+            choiceName,
+            choiceKind: choiceName === null ? null : 'flavor',
+            required: roundQuantity(quantity),
+            deficit: roundQuantity(quantity - available),
+            blocksSize: nothingSells,
+          });
+        }
+      }
+
+      // A selection no whole combination can cover names what would have to be
+      // restocked: the items short in the combination closest to fitting.
+      const reported = new Set(perItem.keys());
+      if (combined?.outcome === 'blocked') {
+        for (const line of combined.short) {
+          if (reported.has(line.inventoryItemId) || !reportable(line.inventoryItemId, product.name, variant.name)) continue;
+          reported.add(line.inventoryItemId);
+          addAffected(line.inventoryItemId, {
+            ...base,
+            choiceName: combined.names.join(' + ') || null,
+            choiceKind: 'combination',
+            required: roundQuantity(line.quantity),
+            deficit: roundQuantity(line.quantity - availableOf(line.inventoryItemId)),
+            blocksSize: true,
+          });
+        }
+      } else {
+        // A slot option too big by itself, while something else still fills the slot.
+        const fixedLines = configurations[0]?.lines ?? [];
+        for (const slot of choices?.slots ?? []) {
+          for (const option of slot.options) {
+            const shortFlavors = new Map<string, { quantity: number; flavorNames: string[] }>();
+            for (const flavor of option.flavors) {
+              for (const line of slotLines.get(slotLineKey(option.productVariantId, flavor.flavorId)) ?? []) {
+                const quantity = line.quantity + (fixedLines.find((fixed) => fixed.inventoryItemId === line.inventoryItemId)?.quantity ?? 0);
+                if (!isShort(line.inventoryItemId, quantity)) continue;
+                const key = `${line.inventoryItemId}:${quantity}`;
+                const entry = shortFlavors.get(key) ?? { quantity, flavorNames: [] };
+                entry.flavorNames.push(flavor.name);
+                shortFlavors.set(key, entry);
+              }
+            }
+            for (const [key, { quantity, flavorNames }] of shortFlavors) {
+              const inventoryItemId = key.slice(0, key.lastIndexOf(':'));
+              if (!reportable(inventoryItemId, product.name, variant.name)) continue;
+              const everyFlavor = flavorNames.length === option.flavors.length;
+              addAffected(inventoryItemId, {
+                ...base,
+                choiceName: `${slot.label}: ${option.name}${everyFlavor ? '' : ` (${flavorNames.join(', ')})`}`,
+                choiceKind: 'slot',
+                required: roundQuantity(quantity),
+                deficit: roundQuantity(quantity - availableOf(inventoryItemId)),
+                blocksSize: false,
+              });
+            }
+          }
+        }
+      }
+
+      // An add-on too big by itself. Whether that stops the size is the
+      // selection check's answer above, under checkout's own picking rules.
+      for (const assignment of variant.optionGroupAssignments) {
+        const group = assignment.optionGroup;
+        if (!group.isActive) continue;
+        const allowed = assignment.allowedOptions.map((row) => row.productOption).filter((option) => option.isActive);
+        const options = allowed.length > 0 ? allowed : group.options;
+        const shortOptions = options.filter((option) => {
+          const line = optionLines.get(option.id);
+          return line !== undefined && isShort(line.inventoryItemId, line.quantity);
+        });
+        for (const option of shortOptions) {
+          const line = optionLines.get(option.id);
+          if (!line || !reportable(line.inventoryItemId, product.name, variant.name)) continue;
+          const available = availableQuantity(stockByItem.get(line.inventoryItemId));
+          addAffected(line.inventoryItemId, {
+            ...base,
+            choiceName: option.name,
+            choiceKind: 'option',
+            required: roundQuantity(line.quantity),
+            deficit: roundQuantity(line.quantity - available),
+            blocksSize: nothingSells,
+          });
+        }
+      }
+    }
+
+    const byItem = new Map<string, RecipeShortage>();
+    for (const [inventoryItemId, affected] of affectedByItem) {
+      const required = Math.max(...affected.map((entry) => entry.required));
+      byItem.set(inventoryItemId, {
+        required,
+        deficit: roundQuantity(required - availableQuantity(stockByItem.get(inventoryItemId))),
+        unitCode: itemById.get(inventoryItemId)?.baseUnit.code ?? '',
+        affected,
+      });
+    }
+    return { byItem, setupIssues: [...setupIssues.values()] };
+  },
 };
+
+/**
+ * POS-PERF-P57 — one serving of each add-on the given variants offer, keyed by
+ * option id, in the item's base unit: what checkout's add-on deduction takes.
+ * A mapping checkout would refuse (deleted item, no unit conversion) is left
+ * out, as in optionRequirements below. An option listed twice counts once here
+ * because this is one selection of it, not a cart.
+ */
+async function optionServingLines(ids: string[]): Promise<Map<string, { inventoryItemId: string; quantity: number }>> {
+  const optionIds = [...new Set(ids)];
+  if (optionIds.length === 0) return new Map();
+  const mappings = await prisma.productOptionInventoryMapping.findMany({
+    where: { productOptionId: { in: optionIds } },
+    select: { productOptionId: true, inventoryItemId: true, quantityRequired: true, deductionUnitId: true, inventoryItem: { select: { baseUnitId: true, deletedAt: true } } },
+  });
+  const live = mappings.filter((mapping) => mapping.inventoryItem.deletedAt === null);
+  const convert = await buildBatchConverter(
+    live.filter((mapping) => mapping.deductionUnitId !== mapping.inventoryItem.baseUnitId).map((mapping) => ({ inventoryItemId: mapping.inventoryItemId, fromUnitId: mapping.deductionUnitId, toUnitId: mapping.inventoryItem.baseUnitId })),
+  );
+  const lines = new Map<string, { inventoryItemId: string; quantity: number }>();
+  for (const mapping of live) {
+    try {
+      lines.set(mapping.productOptionId, {
+        inventoryItemId: mapping.inventoryItemId,
+        quantity: convert(mapping.quantityRequired, mapping.deductionUnitId, mapping.inventoryItem.baseUnitId, mapping.inventoryItemId),
+      });
+    } catch {
+      continue;
+    }
+  }
+  return lines;
+}
 
 /**
  * POS-PERF-P41 — add-on ingredient requirements, the same composition
@@ -202,6 +497,63 @@ async function optionRequirements(lines: CartAvailabilityLineInput[]): Promise<{
   );
 }
 
+const slotLineKey = (productVariantId: string, flavorId: string) => `${productVariantId}:${flavorId}`;
+
+/**
+ * One serving of each slot's snack and flavor, in one batched read: base recipe
+ * plus flavor rows, the same lines the cart check adds up. A recipe that can't
+ * be converted is left out, as checkout could not sell it either.
+ */
+async function slotChoiceLines(allChoices: RequiredStockChoices[]): Promise<Map<string, StockLine[]>> {
+  const requests = new Map<string, { productVariantId: string; flavorId: string; quantitySold: number }>();
+  for (const slot of allChoices.flatMap((choices) => choices.slots)) {
+    for (const option of slot.options) {
+      for (const { flavorId } of option.flavors) requests.set(slotLineKey(option.productVariantId, flavorId), { productVariantId: option.productVariantId, flavorId, quantitySold: 1 });
+    }
+  }
+  if (requests.size === 0) return new Map();
+  const results = await computeBomDeductionBatchSettled([...requests.values()]);
+  const lines = new Map<string, StockLine[]>();
+  [...requests.keys()].forEach((key, index) => {
+    const result = results[index];
+    if (result && !(result instanceof Error)) lines.set(key, result);
+  });
+  return lines;
+}
+
+/**
+ * One variant's whole selection through the combination check. A slot with
+ * nothing to choose is setup, which stock can't answer, so it reports no
+ * outcome ('too_many', the same "claim nothing" answer as an oversized search).
+ */
+function evaluateVariantChoices(
+  choices: RequiredStockChoices,
+  flavorLines: { flavorId: string | null; lines: StockLine[] }[],
+  slotLines: Map<string, StockLine[]>,
+  pickLines: Map<string, StockLine>,
+  availableOf: (inventoryItemId: string) => number,
+): RequiredChoiceResult {
+  const slotGroups: RequiredChoice[][] = choices.slots.map((slot) =>
+    slot.options.flatMap((option) =>
+      option.flavors.flatMap((flavor) => {
+        const lines = slotLines.get(slotLineKey(option.productVariantId, flavor.flavorId));
+        return lines ? [{ name: `${option.name} ${flavor.name}`, lines }] : [];
+      }),
+    ),
+  );
+  if (slotGroups.some((group) => group.length === 0)) return { outcome: 'too_many' };
+
+  const flavorGroup: RequiredChoice[] = flavorLines.flatMap((entry) => (entry.flavorId === null ? [] : [{ name: choices.flavorNames.get(entry.flavorId) ?? '', lines: entry.lines }]));
+  const fixedLines = flavorGroup.length === 0 ? (flavorLines[0]?.lines ?? []) : [];
+  const pickGroups: RequiredChoice[][] = choices.requiredPicks.map((options) =>
+    options.map((option) => {
+      const line = pickLines.get(option.id);
+      return { name: option.name, lines: line ? [line] : [] };
+    }),
+  );
+  return evaluateRequiredChoices(fixedLines, [...(flavorGroup.length > 0 ? [flavorGroup] : []), ...slotGroups, ...pickGroups], availableOf);
+}
+
 function evaluateLines(lines: { inventoryItemId: string; quantity: number }[], stockByItem: Map<string, StockRow>): VariantStockResult {
   if (lines.length === 0) {
     return { productVariantId: '', status: 'unknown', maxSellableUnits: null, shortages: [] };
@@ -213,7 +565,7 @@ function evaluateLines(lines: { inventoryItemId: string; quantity: number }[], s
   for (const line of lines) {
     const stock = stockByItem.get(line.inventoryItemId);
     const available = availableQuantity(stock);
-    const sellableFromThisItem = line.quantity > 0 ? Math.floor(available / line.quantity) : Infinity;
+    const sellableFromThisItem = servingsFrom(available, line.quantity);
     maxUnits = Math.min(maxUnits, sellableFromThisItem);
     if (sellableFromThisItem < 1) shortages.push(toShortage(line, stock, available));
 

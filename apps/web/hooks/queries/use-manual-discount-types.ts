@@ -1,11 +1,13 @@
 'use client';
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
+import { MANUAL_DISCOUNT_POS_CAPABILITY } from '@potato-corner/shared';
 import type {
   CreateManualDiscountTypeInput,
   ManualDiscountTypeResponse,
   PosManualDiscountType,
+  ProductListResponse,
   UpdateManualDiscountTypeInput,
 } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
@@ -20,7 +22,7 @@ function errorMessage(response: ApiErrorShape, fallback: string): string {
   return typeof response.error === 'string' ? response.error : (response.error.message ?? response.error.code);
 }
 
-/** POS-PERF-P55 — a refused discount-type save; `code` is the server's (e.g. MANUAL_DISCOUNT_TYPE_CONFLICT, STATUTORY_DISCOUNT_NAME_RESERVED). */
+/** POS-PERF-P55 — a refused discount-type save; `code` is the server's (e.g. MANUAL_DISCOUNT_TYPE_CONFLICT, MANUAL_DISCOUNT_PRODUCT_INVALID). */
 export class ManualDiscountTypeSaveError extends Error {
   constructor(
     message: string,
@@ -32,6 +34,39 @@ export class ManualDiscountTypeSaveError extends Error {
 }
 
 const KEY = ['manual-discount-types'] as const;
+
+const PRODUCT_PAGE_SIZE = 100;
+const RETIRED_PRODUCT_STATUSES: readonly string[] = ['archived', 'discontinued'];
+
+/**
+ * POS-PERF-P57 — every current product set up at any of these branches, for the
+ * discount editor's checklist. Reads all pages, so "Select all" means all and
+ * not the first page. The server re-checks whatever is saved.
+ */
+export function useDiscountEligibleProducts(branchIds: readonly string[]) {
+  const results = useQueries({
+    queries: branchIds.map((branchId) => ({
+      queryKey: [...KEY, 'eligible-products', branchId],
+      queryFn: async () => {
+        const products: { id: string; name: string }[] = [];
+        for (let page = 1; ; page += 1) {
+          const response = await apiClient<ProductListResponse>(`/api/products?branch_id=${encodeURIComponent(branchId)}&sort_by=name&sort_order=asc&page=${page}&limit=${PRODUCT_PAGE_SIZE}`);
+          if (!response.data) throw new Error(errorMessage(response, 'Failed to load products'));
+          products.push(...response.data.products.filter((product) => !RETIRED_PRODUCT_STATUSES.includes(product.status)).map((product) => ({ id: product.id, name: product.name })));
+          if (page * PRODUCT_PAGE_SIZE >= response.data.total) return products;
+        }
+      },
+    })),
+  });
+  const isError = results.some((result) => result.isError);
+  const ready = results.every((result) => result.data !== undefined);
+  const byId = new Map(results.flatMap((result) => result.data ?? []).map((product) => [product.id, product]));
+  return {
+    data: ready && results.length > 0 ? [...byId.values()] : undefined,
+    isError,
+    refetch: () => results.forEach((result) => void result.refetch()),
+  };
+}
 
 /** Supervisor/admin list for one branch (the server re-checks live branch authority on every read). */
 export function useManualDiscountTypes(branchId: string | null, includeInactive = true) {
@@ -71,7 +106,7 @@ export function usePosManualDiscountTypes(branchId: string | null | undefined) {
   return useQuery({
     queryKey: [...KEY, 'pos', branchId],
     queryFn: async () => {
-      const response = await apiClient<PosManualDiscountType[]>(`/api/discounts/manual-types/pos?branch_id=${encodeURIComponent(branchId as string)}`);
+      const response = await apiClient<PosManualDiscountType[]>(`/api/discounts/manual-types/pos?branch_id=${encodeURIComponent(branchId as string)}&capabilities=${MANUAL_DISCOUNT_POS_CAPABILITY}`);
       if (!response.data) {
         if (typeof response.error === 'object' && response.error?.code === 'NOT_FOUND') throw new ManualDiscountsUnsupportedError();
         throw new Error(errorMessage(response, 'Failed to load discount types'));

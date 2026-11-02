@@ -212,10 +212,30 @@ const manualDiscountTypeSelect = {
   createdAt: true,
   updatedAt: true,
   deactivatedAt: true,
+  amountMode: true,
+  fixedAmount: true,
+  productScope: true,
+  groupId: true,
+  products: { select: { productId: true } },
   _count: { select: { transactions: true } },
 } satisfies Prisma.ManualDiscountTypeSelect;
 
 export type ManualDiscountTypeRow = Prisma.ManualDiscountTypeGetPayload<{ select: typeof manualDiscountTypeSelect }>;
+
+/** POS-PERF-P57 — settings written to every row of one save. productIds undefined = leave the stored list alone. */
+export interface ManualDiscountTypeSettings {
+  name?: string;
+  applyToPos?: boolean;
+  requireProof?: boolean;
+  amountMode?: string;
+  fixedAmount?: number | null;
+  productScope?: string;
+  productIds?: string[];
+  groupId?: string;
+}
+
+/** Thrown inside a save so its whole transaction rolls back; the service reports it as a conflict. */
+export class ManualDiscountTypeVersionConflict extends Error {}
 
 /**
  * POS-PERF-P55 — supervisor-managed manual discount types. Writes are
@@ -247,22 +267,101 @@ export const manualDiscountTypesRepository = {
     });
   },
 
-  create(data: { branchId: string; name: string; applyToPos: boolean; requireProof: boolean }, actorId: string): Promise<ManualDiscountTypeRow> {
-    return prisma.manualDiscountType.create({ data: { ...data, createdById: actorId }, select: manualDiscountTypeSelect });
+  /** POS-PERF-P57 — one row per branch, all or none. */
+  createForBranches(
+    branchIds: string[],
+    data: { name: string; applyToPos: boolean; requireProof: boolean; amountMode: string; fixedAmount: number | null; productScope: string; productIds: string[]; groupId: string | null },
+    actorId: string,
+  ): Promise<ManualDiscountTypeRow[]> {
+    const { productIds, ...fields } = data;
+    return prisma.$transaction((tx) =>
+      Promise.all(
+        branchIds.map((branchId) =>
+          tx.manualDiscountType.create({
+            data: { ...fields, branchId, createdById: actorId, products: { create: productIds.map((productId) => ({ productId })) } },
+            select: manualDiscountTypeSelect,
+          }),
+        ),
+      ),
+    );
   },
 
-  async update(
-    id: string,
-    expectedVersion: number,
-    data: { name?: string; applyToPos?: boolean; requireProof?: boolean },
-    actorId: string,
-  ): Promise<ManualDiscountTypeRow | null> {
-    const result = await prisma.manualDiscountType.updateMany({
-      where: { id, version: expectedVersion, isActive: true },
-      data: { ...data, updatedById: actorId, version: { increment: 1 } },
-    });
-    return result.count === 0 ? null : this.findById(id);
+  /** The active rows that share a type's group; just the row itself has no group. */
+  findActiveGroupRows(groupId: string): Promise<ManualDiscountTypeRow[]> {
+    return prisma.manualDiscountType.findMany({ where: { groupId, isActive: true }, select: manualDiscountTypeSelect });
   },
+
+  /** POS-PERF-P57 — which branches each group is active at, for showing "also at". */
+  findGroupBranches(groupIds: string[]) {
+    if (groupIds.length === 0) return Promise.resolve([]);
+    return prisma.manualDiscountType.findMany({ where: { groupId: { in: groupIds }, isActive: true }, select: { groupId: true, branchId: true } });
+  },
+
+  /** POS-PERF-P57 — of these ids, the products that exist, are not retired, and are set up at one of these branches. */
+  async findEligibleProductIds(productIds: string[], branchIds: string[]): Promise<Set<string>> {
+    if (productIds.length === 0) return new Set();
+    const rows = await prisma.product.findMany({
+      where: { id: { in: productIds }, status: { notIn: ['archived', 'discontinued'] }, branchAvailability: { some: { branchId: { in: branchIds } } } },
+      select: { id: true },
+    });
+    return new Set(rows.map((row) => row.id));
+  },
+
+  /**
+   * POS-PERF-P57 — one supervisor save across a type's rows, all or none. Each
+   * existing row is compare-and-set on the version read for it, so a stale
+   * save or a change by someone else rolls the whole save back.
+   */
+  applySave(
+    targets: { id: string; expectedVersion: number }[],
+    settings: ManualDiscountTypeSettings,
+    additions: { branchIds: string[]; fields: { name: string; applyToPos: boolean; requireProof: boolean; amountMode: string; fixedAmount: number | null; productScope: string; productIds: string[]; groupId: string | null } } | null,
+    removals: { id: string; expectedVersion: number }[],
+    actorId: string,
+  ): Promise<void> {
+    const { productIds, ...fields } = settings;
+    return prisma.$transaction(async (tx) => {
+      for (const target of targets) {
+        const result = await tx.manualDiscountType.updateMany({
+          where: { id: target.id, version: target.expectedVersion, isActive: true },
+          data: { ...fields, updatedById: actorId, version: { increment: 1 } },
+        });
+        if (result.count === 0) throw new ManualDiscountTypeVersionConflict();
+        if (productIds !== undefined) {
+          await tx.manualDiscountTypeProduct.deleteMany({ where: { manualDiscountTypeId: target.id } });
+          if (productIds.length > 0) {
+            await tx.manualDiscountTypeProduct.createMany({ data: productIds.map((productId) => ({ manualDiscountTypeId: target.id, productId })) });
+          }
+        }
+      }
+      for (const removal of removals) {
+        const result = await tx.manualDiscountType.updateMany({
+          where: { id: removal.id, version: removal.expectedVersion, isActive: true },
+          data: { isActive: false, deactivatedAt: new Date(), deactivatedById: actorId, updatedById: actorId, version: { increment: 1 } },
+        });
+        if (result.count === 0) throw new ManualDiscountTypeVersionConflict();
+      }
+      if (additions) {
+        const { productIds: addedProductIds, ...addedFields } = additions.fields;
+        for (const branchId of additions.branchIds) {
+          await tx.manualDiscountType.create({
+            data: { ...addedFields, branchId, createdById: actorId, products: { create: addedProductIds.map((productId) => ({ productId })) } },
+            select: { id: true },
+          });
+        }
+      }
+    });
+  },
+
+  findManyByIds(ids: string[]): Promise<ManualDiscountTypeRow[]> {
+    return prisma.manualDiscountType.findMany({ where: { id: { in: ids } }, select: manualDiscountTypeSelect });
+  },
+
+  /** POS-PERF-P57 — the rows a save just created at these branches. */
+  findActiveByGroupAndBranches(groupId: string, branchIds: string[]): Promise<ManualDiscountTypeRow[]> {
+    return prisma.manualDiscountType.findMany({ where: { groupId, branchId: { in: branchIds }, isActive: true }, select: manualDiscountTypeSelect });
+  },
+
 
   async deactivate(id: string, expectedVersion: number, actorId: string): Promise<ManualDiscountTypeRow | null> {
     const result = await prisma.manualDiscountType.updateMany({
@@ -276,7 +375,7 @@ export const manualDiscountTypesRepository = {
   findForPos(branchId: string) {
     return prisma.manualDiscountType.findMany({
       where: { branchId, isActive: true, applyToPos: true },
-      select: { id: true, name: true, requireProof: true, version: true },
+      select: { id: true, name: true, requireProof: true, version: true, amountMode: true, fixedAmount: true, productScope: true, products: { select: { productId: true } } },
       orderBy: [{ name: 'asc' }, { id: 'asc' }],
     });
   },
@@ -285,7 +384,19 @@ export const manualDiscountTypesRepository = {
   findForCheckout(id: string) {
     return prisma.manualDiscountType.findUnique({
       where: { id },
-      select: { id: true, branchId: true, name: true, applyToPos: true, requireProof: true, isActive: true, version: true },
+      select: {
+        id: true,
+        branchId: true,
+        name: true,
+        applyToPos: true,
+        requireProof: true,
+        isActive: true,
+        version: true,
+        amountMode: true,
+        fixedAmount: true,
+        productScope: true,
+        products: { select: { productId: true } },
+      },
     });
   },
 

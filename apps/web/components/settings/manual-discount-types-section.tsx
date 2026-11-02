@@ -22,6 +22,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useAuth } from '@/hooks/use-auth';
 import { useSelectedBranch } from '@/hooks/use-selected-branch';
 import { useDeactivateManualDiscountType, useManualDiscountTypes } from '@/hooks/queries/use-manual-discount-types';
+import { formatCurrency } from '@/lib/utils';
 import { ManualDiscountTypeDialog } from './manual-discount-type-dialog';
 
 /**
@@ -55,8 +56,7 @@ export function ManualDiscountTypesSection() {
       <CardHeader>
         <CardTitle>Discount types</CardTitle>
         <CardDescription>
-          Choose which discounts cashiers can apply. At checkout the cashier picks a type and enters the discount in pesos — nothing is applied
-          automatically. Amount to pay = subtotal − discount; the POS does not calculate VAT on these sales.
+          The discounts cashiers can choose from at checkout. Nothing is applied automatically, and a branch with no types offers only &ldquo;No discount&rdquo;.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -106,8 +106,7 @@ export function ManualDiscountTypesSection() {
 
             {data && active.length === 0 && (
               <p className="rounded-md border border-dashed p-4 text-sm text-muted-foreground" data-testid="manual-types-empty">
-                No discount types yet at {branchName}. Cashiers can only choose &ldquo;No discount&rdquo; (or the statutory PWD/Senior Citizen discount) until
-                you add one.
+                No discount types yet at {branchName}. Cashiers can only choose &ldquo;No discount&rdquo; until you add one.
               </p>
             )}
 
@@ -119,7 +118,10 @@ export function ManualDiscountTypesSection() {
                       <p className="font-medium break-words">{type.name}</p>
                       <div className="flex flex-wrap gap-1.5 text-xs">
                         <Badge variant={type.apply_to_pos ? 'default' : 'secondary'}>{type.apply_to_pos ? 'On POS' : 'Not on POS'}</Badge>
+                        <Badge variant="outline">{type.amount_mode === 'fixed' && type.fixed_amount !== null ? `Fixed ${formatCurrency(type.fixed_amount)}` : 'Staff enters amount'}</Badge>
+                        <Badge variant="outline">{type.product_scope === 'selected' ? `${type.product_ids.length} product${type.product_ids.length === 1 ? '' : 's'}` : 'All products'}</Badge>
                         {type.require_proof && <Badge variant="outline">Proof photo required</Badge>}
+                        {type.branch_ids.length > 1 && <Badge variant="outline">{type.branch_ids.length} branches</Badge>}
                         {type.sale_count > 0 && (
                           <span className="text-muted-foreground">
                             Used in {type.sale_count} sale{type.sale_count === 1 ? '' : 's'}
@@ -170,8 +172,8 @@ export function ManualDiscountTypesSection() {
         <ManualDiscountTypeDialog
           open={dialog.open}
           onOpenChange={(open) => setDialog((prev) => ({ ...prev, open }))}
+          branches={availableBranches}
           branchId={branchId}
-          branchName={branchName}
           editing={dialog.editing}
         />
       )}
@@ -179,7 +181,9 @@ export function ManualDiscountTypesSection() {
       <AlertDialog open={deactivating !== null} onOpenChange={(open) => !open && setDeactivating(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Deactivate &ldquo;{deactivating?.name}&rdquo;?</AlertDialogTitle>
+            <AlertDialogTitle>
+              Deactivate &ldquo;{deactivating?.name}&rdquo; at {branchName}?
+            </AlertDialogTitle>
             <AlertDialogDescription>
               Cashiers will no longer see it at checkout. Past sales that used it keep their records and proof photos. This cannot be undone; you can
               create a new type with the same name later.

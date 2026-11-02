@@ -7,6 +7,8 @@ import { supabaseAdmin } from '../../lib/supabase.js';
 import { universalInventoryRepository as repo } from './universal-inventory.repository.js';
 import { UniversalInventoryError } from './universal-inventory.types.js';
 import { availableStock, classifyStockStatus } from './stock-classification.js';
+import { stockAvailabilityService } from '../stock-availability/stock-availability.service.js';
+import type { BranchRecipeShortages, RecipeShortage } from '../stock-availability/stock-availability.types.js';
 import { branchesRepository } from '../branches/branches.repository.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { hasSharedCatalogAuthority } from '../../lib/catalog-authority.js';
@@ -426,6 +428,36 @@ function toStockRowResponse(row: StockRow) {
     avg_unit_cost: avgUnitCost,
     inventory_value: avgUnitCost !== null ? Math.round(avgUnitCost * quantity * 100) / 100 : null,
   };
+}
+
+function toRecipeShortageResponse(shortage: RecipeShortage | undefined) {
+  if (!shortage) return null;
+  return {
+    required: shortage.required,
+    deficit: shortage.deficit,
+    unit_code: shortage.unitCode,
+    affected: shortage.affected.map((entry) => ({
+      product_id: entry.productId,
+      product_name: entry.productName,
+      variant_id: entry.variantId,
+      variant_name: entry.variantName,
+      choice_name: entry.choiceName,
+      choice_kind: entry.choiceKind,
+      required: entry.required,
+      deficit: entry.deficit,
+      blocks_size: entry.blocksSize,
+    })),
+  };
+}
+
+function toRecipeSetupIssues(shortages: BranchRecipeShortages) {
+  return shortages.setupIssues.map((issue) => ({
+    inventory_item_id: issue.inventoryItemId,
+    name: issue.name,
+    reason: issue.reason,
+    product_name: issue.productName,
+    variant_name: issue.variantName,
+  }));
 }
 
 /** Same low_stock_alert job the legacy path enqueues — fire-and-forget, never fails an already-committed movement. Null threshold means "no alerting configured for this item/branch", not "always alert". */
@@ -1147,16 +1179,19 @@ export const universalInventoryService = {
     if (!branch) throw new UniversalInventoryError('BRANCH_NOT_FOUND', 'Branch not found', 404);
 
     const { dayStart, dayEnd } = dayBounds(new Date());
-    const [rows, consumedTodayByItem] = await Promise.all([
+    const [rows, consumedTodayByItem, shortages] = await Promise.all([
       repo.findBranchStockRows(branchId),
       repo.getConsumedTodayByBranch(branchId, dayStart, dayEnd),
+      stockAvailabilityService.evaluateBranchRecipeShortages(branchId),
     ]);
     return {
       branch_id: branchId,
       items: rows.map((row) => ({
         ...toStockRowResponse(row),
         consumed_today: Math.round((consumedTodayByItem.get(row.inventoryItemId) ?? 0) * 100) / 100,
+        recipe_shortage: toRecipeShortageResponse(shortages.byItem.get(row.inventoryItemId)),
       })),
+      setup_issues: toRecipeSetupIssues(shortages),
     };
   },
 
@@ -1164,19 +1199,26 @@ export const universalInventoryService = {
     const branch = await branchesRepository.findById(branchId);
     if (!branch) throw new UniversalInventoryError('BRANCH_NOT_FOUND', 'Branch not found', 404);
 
-    const rows = (await repo.findBranchStockRows(branchId)).map(toStockRowResponse);
+    const [stockRows, shortages] = await Promise.all([repo.findBranchStockRows(branchId), stockAvailabilityService.evaluateBranchRecipeShortages(branchId)]);
+    const rows = stockRows.map(toStockRowResponse);
+    const common = (r: (typeof rows)[number]) => ({
+      inventory_item_id: r.inventory_item_id,
+      name: r.name,
+      quantity_on_hand: r.quantity_on_hand,
+      quantity_reserved: r.quantity_reserved,
+      quantity_available: r.quantity_available,
+      unit_code: r.base_unit_code,
+      recipe_shortage: toRecipeShortageResponse(shortages.byItem.get(r.inventory_item_id)),
+    });
     const alerts = rows
       .filter((r) => r.status !== 'healthy')
       .map((r) => ({
-        inventory_item_id: r.inventory_item_id,
-        name: r.name,
-        quantity_on_hand: r.quantity_on_hand,
-        quantity_reserved: r.quantity_reserved,
-        quantity_available: r.quantity_available,
+        ...common(r),
         threshold: r.status === 'critical' ? (r.critical_threshold ?? 0) : (r.low_stock_threshold ?? 0),
         severity: r.status as 'low' | 'critical',
       }));
-    return { branch_id: branchId, alerts };
+    const recipeShortages = rows.filter((r) => r.status === 'healthy' && shortages.byItem.has(r.inventory_item_id)).map(common);
+    return { branch_id: branchId, alerts, recipe_shortages: recipeShortages, setup_issues: toRecipeSetupIssues(shortages) };
   },
 
   async getStockMovements(

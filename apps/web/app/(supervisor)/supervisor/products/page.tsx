@@ -3,9 +3,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Loader2, Plus } from 'lucide-react';
-import type { ProductBranchView, ProductResponse } from '@potato-corner/shared';
+import { PRODUCT_CLASSIFICATIONS, PRODUCT_CLASSIFICATION_LABELS, type ProductBranchView, type ProductClassification, type ProductResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { SearchInput } from '@/components/shared/forms/search-input';
 import { ErrorState } from '@/components/shared/feedback/error-state';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
@@ -20,6 +21,7 @@ import { ProductListRow, type ProductRowAction } from '@/components/supervisor/p
 import { ProductEditorDialog, type ProductEditorTab } from '@/components/supervisor/products/product-editor-dialog';
 import { DeactivateProductDialog } from '@/components/supervisor/products/deactivate-product-dialog';
 import { RemoveProductDialog } from '@/components/supervisor/products/remove-product-dialog';
+import { ProductTypeChooserDialog } from '@/components/supervisor/products/product-type-chooser-dialog';
 
 const PAGE_SIZE = 25;
 
@@ -46,6 +48,8 @@ export default function SupervisorProductsPage() {
   const loadExisting = useProductBuilderStore((state) => state.loadExisting);
   const [view, setView] = useState<ProductBranchView>('active');
   const [search, setSearch] = useState('');
+  const [typeFilter, setTypeFilter] = useState<ProductClassification | 'all'>('all');
+  const [choosingType, setChoosingType] = useState(false);
   // SearchInput already debounces its onChange.
   const debouncedSearch = search.trim();
   const [page, setPage] = useState(1);
@@ -54,12 +58,13 @@ export default function SupervisorProductsPage() {
   const [removing, setRemoving] = useState<ProductResponse | null>(null);
 
   // A different branch, tab or search starts again from page 1.
-  useEffect(() => setPage(1), [activeBranchId, view, debouncedSearch]);
+  useEffect(() => setPage(1), [activeBranchId, view, debouncedSearch, typeFilter]);
 
   const { data, isLoading, isFetching, isError, isPlaceholderData, refetch } = useProducts({
     branchId: activeBranchId ?? undefined,
     view,
     search: debouncedSearch || undefined,
+    classification: typeFilter === 'all' ? undefined : typeFilter,
     sortBy: 'name',
     sortOrder: 'asc',
     page,
@@ -81,10 +86,12 @@ export default function SupervisorProductsPage() {
   const activeBranchIds = user?.branchIds ?? [];
   const totalPages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1;
 
-  function startNewProduct() {
+  function startNewProduct(classification: ProductClassification) {
     // POS-PERF-P36 — Create Product always starts a fresh builder draft.
+    // POS-PERF-P57 — with the type chosen first; the builder can still change it.
     resetBuilder();
-    router.push('/supervisor/products/builder');
+    setChoosingType(false);
+    router.push(`/supervisor/products/builder?type=${classification}`);
   }
 
   function handleAction(action: ProductRowAction, product: ProductResponse) {
@@ -108,7 +115,7 @@ export default function SupervisorProductsPage() {
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="app-title mr-auto font-bold">Products</h1>
         <SearchInput value={search} onChange={setSearch} placeholder="Search products..." className="w-full sm:w-64" />
-        <Button onClick={startNewProduct} className="w-full sm:w-auto">
+        <Button onClick={() => setChoosingType(true)} className="w-full sm:w-auto">
           <Plus className="mr-2 h-4 w-4" />
           Create Product
         </Button>
@@ -129,6 +136,19 @@ export default function SupervisorProductsPage() {
                 ))}
               </TabsList>
             </Tabs>
+            <Select value={typeFilter} onValueChange={(value) => setTypeFilter(value as ProductClassification | 'all')}>
+              <SelectTrigger className="w-full sm:w-44" aria-label="Filter by product type">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All types</SelectItem>
+                {PRODUCT_CLASSIFICATIONS.map((classification) => (
+                  <SelectItem key={classification} value={classification}>
+                    {PRODUCT_CLASSIFICATION_LABELS[classification]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <p className="text-sm text-muted-foreground" aria-live="polite">
               At {branchName}
               {isFetching && !isLoading && (
@@ -143,10 +163,11 @@ export default function SupervisorProductsPage() {
           <div className="overflow-hidden rounded-xl border bg-card">
             <div
               aria-hidden="true"
-              className="hidden grid-cols-[3rem_minmax(0,2fr)_minmax(0,1fr)_minmax(0,1.6fr)_9rem_auto] gap-x-3 border-b bg-muted/40 px-4 py-2 text-xs font-medium text-muted-foreground md:grid"
+              className="hidden grid-cols-[3rem_minmax(0,2fr)_6.5rem_minmax(0,1fr)_minmax(0,1.6fr)_9rem_auto] gap-x-3 border-b bg-muted/40 px-4 py-2 text-xs font-medium text-muted-foreground md:grid"
             >
               <span />
               <span>Product</span>
+              <span>Type</span>
               <span>Category</span>
               <span>Branches</span>
               <span>Status</span>
@@ -169,8 +190,14 @@ export default function SupervisorProductsPage() {
             ) : products.length === 0 ? (
               <div className="p-6">
                 <EmptyState
-                  title={debouncedSearch ? 'No matching products' : EMPTY_COPY[view].title}
-                  description={debouncedSearch ? `Nothing in ${VIEW_LABELS[view]} matches "${debouncedSearch}".` : EMPTY_COPY[view].description}
+                  title={debouncedSearch || typeFilter !== 'all' ? 'No matching products' : EMPTY_COPY[view].title}
+                  description={
+                    debouncedSearch
+                      ? `Nothing in ${VIEW_LABELS[view]} matches "${debouncedSearch}".`
+                      : typeFilter !== 'all'
+                        ? `Nothing in ${VIEW_LABELS[view]} is ${PRODUCT_CLASSIFICATION_LABELS[typeFilter]}.`
+                        : EMPTY_COPY[view].description
+                  }
                 />
               </div>
             ) : (
@@ -211,6 +238,7 @@ export default function SupervisorProductsPage() {
         </>
       )}
 
+      <ProductTypeChooserDialog open={choosingType} onOpenChange={setChoosingType} onChoose={startNewProduct} />
       {editing && <ProductEditorDialog productId={editing.productId} initialTab={editing.tab} onClose={() => setEditing(null)} />}
       {deactivating && activeBranchId && (
         <DeactivateProductDialog product={deactivating} branch={{ id: activeBranchId, name: branchName }} onOpenChange={(open) => !open && setDeactivating(null)} />

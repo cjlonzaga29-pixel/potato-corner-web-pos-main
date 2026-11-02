@@ -56,7 +56,7 @@ export function DashboardLowStockSummary({ branchId }: DashboardLowStockSummaryP
         ) : rollup.isLoading ? (
           <Skeleton className="h-32 w-full" />
         ) : affectedBranches.length === 0 ? (
-          <EmptyState title="No low stock items" description="Every branch is within its stock thresholds." />
+          <EmptyState title="No items at a stock threshold" description="Thresholds and zero stock only. Each branch's Inventory alerts also list items too short for a serving." />
         ) : (
           <ul className="divide-y divide-border/60">
             {affectedBranches.map((branch) => (

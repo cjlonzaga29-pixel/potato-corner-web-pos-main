@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { MoreHorizontal } from 'lucide-react';
-import type { ProductBranchView, ProductResponse } from '@potato-corner/shared';
+import { PRODUCT_CLASSIFICATION_LABELS, type ProductBranchView, type ProductResponse } from '@potato-corner/shared';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -47,13 +47,14 @@ function statusFor(product: ProductResponse, view: ProductBranchView, branchName
  */
 export function ProductListRow({ product, view, branchName, canEdit, canDeactivate, onAction }: ProductListRowProps) {
   const status = statusFor(product, view, branchName);
+  const typeLabel = PRODUCT_CLASSIFICATION_LABELS[product.classification ?? 'regular'];
   const branches = product.branches ?? [];
   const lifecycleClosed = product.status === 'archived' || product.status === 'discontinued';
   const readOnlyReason = !canEdit && !lifecycleClosed ? 'Set up for a branch outside your assignment — view only.' : null;
 
   return (
     <li
-      className="grid grid-cols-[3rem_minmax(0,1fr)] gap-x-3 gap-y-2 px-3 py-3 sm:px-4 md:grid-cols-[3rem_minmax(0,2fr)_minmax(0,1fr)_minmax(0,1.6fr)_9rem_auto] md:items-center"
+      className="grid grid-cols-[3rem_minmax(0,1fr)] gap-x-3 gap-y-2 px-3 py-3 sm:px-4 md:grid-cols-[3rem_minmax(0,2fr)_6.5rem_minmax(0,1fr)_minmax(0,1.6fr)_9rem_auto] md:items-center"
       data-testid="product-row"
       data-product-id={product.id}
     >
@@ -63,9 +64,15 @@ export function ProductListRow({ product, view, branchName, canEdit, canDeactiva
         <Link href={`/supervisor/products/${product.id}`} className="block truncate font-medium hover:underline" title={product.name}>
           {product.name}
         </Link>
-        <p className="truncate text-xs text-muted-foreground md:hidden">{product.category_name ?? 'Uncategorized'}</p>
+        <p className="truncate text-xs text-muted-foreground md:hidden">
+          {typeLabel} · {product.category_name ?? 'Uncategorized'}
+        </p>
         {readOnlyReason && <p className="text-xs text-muted-foreground">{readOnlyReason}</p>}
       </div>
+
+      <p className="hidden truncate text-sm text-muted-foreground md:block" data-testid="product-row-type">
+        {typeLabel}
+      </p>
 
       <p className="hidden truncate text-sm text-muted-foreground md:block">{product.category_name ?? 'Uncategorized'}</p>
 

@@ -268,6 +268,9 @@ function DetailsStep({
 }
 
 function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) => void }) {
+  // POS-PERF-P57 — the type chosen on Create Product, when it is a real one; still editable below.
+  const typeParam = useSearchParams().get('type');
+  const initialClassification = PRODUCT_CLASSIFICATIONS.find((classification) => classification === typeParam) ?? 'regular';
   const { user } = useAuth();
   const createProduct = useCreateProduct();
   const uploadImage = useUploadProductImage();
@@ -297,7 +300,7 @@ function NewProductDetailsForm({ onCreated }: { onCreated: (productId: string) =
       name: '',
       description: '',
       category_id: '',
-      classification: 'regular',
+      classification: initialClassification,
       branch_ids: [],
     },
   });

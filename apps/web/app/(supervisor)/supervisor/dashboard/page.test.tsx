@@ -33,10 +33,8 @@ const {
   mockUseDashboardSalesTrendReport: vi.fn(),
 }));
 
-const { mockUseCatalog } = vi.hoisted(() => ({ mockUseCatalog: vi.fn() }));
 
 vi.mock('@/hooks/queries/use-products', () => ({
-  useCatalog: mockUseCatalog,
 }));
 
 vi.mock('next/navigation', () => ({
@@ -227,7 +225,6 @@ const CLOCKED_IN = {
 };
 
 beforeEach(() => {
-  mockUseCatalog.mockReturnValue({ data: { products: [] }, isLoading: false, isError: false });
   mockBranchState({ activeBranchId: 'branch-1', activeBranch: { id: 'branch-1', name: 'Main Branch' } });
   mockSocketState({ isConnected: true, isReconnecting: false });
   mockUseShiftsRealtimeSync.mockReturnValue(undefined);
@@ -351,7 +348,7 @@ describe('SupervisorDashboardPage', () => {
     expect(screen.getByRole('link', { name: /View all 3/ })).toHaveAttribute('href', '/supervisor/inventory?status=alerts');
   });
 
-  it('POS-PERF-P56 — counts out-of-stock items apart from critical and low, and labels product sizes apart from inventory items', () => {
+  it('POS-PERF-P57 — counts out of stock, insufficient, critical and low apart; no product-size panel', () => {
     mockUseBranchInventoryAlerts.mockReturnValue({
       data: {
         branch_id: 'branch-1',
@@ -360,30 +357,32 @@ describe('SupervisorDashboardPage', () => {
           inventoryAlert({ inventory_item_id: 'c1', severity: 'critical', quantity_available: 2 }),
           inventoryAlert({ inventory_item_id: 'l1', severity: 'low', quantity_available: 5 }),
         ],
-      },
-      isLoading: false,
-    });
-    mockUseCatalog.mockReturnValue({
-      data: {
-        products: [
+        // POS-PERF-P57 — positive stock, no threshold, too little for one serving.
+        recipe_shortages: [
           {
-            name: 'Fries',
-            variants: [
-              { id: 'v1', name: 'Large', live_ready: true, blocking_issues: [], stock_status: 'out_of_stock', stock_shortages: [{ inventory_item_id: 'o1', name: 'Cheese', reason: 'no_stock', available: 0, required: 1, unit_code: 'g', track_inventory: true }] },
-              { id: 'v2', name: 'Small', live_ready: true, blocking_issues: [], stock_status: 'in_stock', stock_shortages: [] },
-            ],
+            inventory_item_id: 'r1',
+            name: 'Raw Fries',
+            quantity_on_hand: 12,
+            quantity_reserved: 0,
+            quantity_available: 12,
+            unit_code: 'g',
+            recipe_shortage: {
+              required: 20,
+              deficit: 8,
+              unit_code: 'g',
+              affected: [{ product_id: 'p', product_name: 'Fries', variant_id: 'v', variant_name: 'Regular', choice_name: null, choice_kind: null, required: 20, deficit: 8, blocks_size: true }],
+            },
           },
         ],
       },
       isLoading: false,
-      isError: false,
     });
     render(<SupervisorDashboardPage />);
     expect(screen.getByTestId('kpi-Low Stock Items')).toHaveTextContent('1');
-    expect(screen.getByTestId('kpi-Inventory Alerts')).toHaveTextContent('3');
-    expect(screen.getByText("POS product sizes that can't be sold (1)")).toBeInTheDocument();
-    expect(screen.getByText('Cheese is out of stock.')).toBeInTheDocument();
-    expect(screen.getByText('Ingredient shortage')).toBeInTheDocument();
+    expect(screen.getByTestId('kpi-Inventory Alerts')).toHaveTextContent('4');
+    expect(screen.queryByText(/POS product sizes that can.t be sold/)).not.toBeInTheDocument();
+    expect(screen.getByText('Insufficient For Serving')).toBeInTheDocument();
+    expect(screen.getByTestId('alert-shortage-detail')).toHaveTextContent('12 g available, 20 g needed for one serving, 8 g short. Affects Fries Regular.');
     expect(screen.getByText('Inventory item alerts')).toBeInTheDocument();
     expect(screen.getByText('Out Of Stock')).toBeInTheDocument();
   });

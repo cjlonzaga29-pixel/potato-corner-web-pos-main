@@ -15,6 +15,8 @@ import {
   PRICES_INCLUDE_VAT,
   isVatExemptDiscountType,
   computeManualTotal,
+  fixedDiscountEffectiveAmount,
+  manualDiscountEligibleSubtotal,
   resolveCalculationMode,
   LEGACY_VAT_CALCULATION,
   MANUAL_TOTAL_CALCULATION,
@@ -1255,6 +1257,16 @@ async function resolveManualDiscount(data: CreateTransactionData, manual: NonNul
     throw new TransactionError(
       'MANUAL_DISCOUNT_TYPE_CHANGED',
       `The "${type.name}" discount type was changed by a supervisor, so the sale was not charged. Review the discount, then charge again.`,
+      409,
+      { current: { discount_type_id: type.id, name: type.name, require_proof: type.requireProof, version: type.version } },
+    );
+  }
+  // POS-PERF-P57 — never guessed: an older POS (no amount_mode) is not offered a
+  // fixed type, and one that claims it anyway is refused, not converted.
+  if ((manual.amountMode ?? 'manual') !== type.amountMode) {
+    throw new TransactionError(
+      'MANUAL_DISCOUNT_AMOUNT_MODE_CHANGED',
+      `The "${type.name}" discount is set up differently from what this POS showed, so the sale was not charged. Reload the POS and review the discount.`,
       409,
       { current: { discount_type_id: type.id, name: type.name, require_proof: type.requireProof, version: type.version } },
     );
@@ -2630,13 +2642,44 @@ export const transactionsService = {
     const subtotal = round2(resolvedItems.reduce((sum, item) => sum + item.lineTotal, 0));
     // POS-PERF-P55R2 — a manual discount may be up to the whole order
     // subtotal (no VATable cap: no VAT is calculated in this mode).
+    // POS-PERF-P57 — or, for a type limited to products, up to those lines
+    // (line totals, so an eligible line's add-ons count with it). A fixed
+    // amount is the server's own, capped there; the amount a client sends is
+    // only compared with it, so an override is refused and never charged.
     let manualEligibleSubtotal: number | null = null;
-    if (data.manualDiscount) {
-      manualEligibleSubtotal = subtotal;
-      if (toCents(data.manualDiscount.amount) > toCents(manualEligibleSubtotal)) {
+    let manualFixedAmount: number | null = null;
+    let manualCapped = false;
+    let manualEligibleProductIds: string[] = [];
+    if (data.manualDiscount && manualResolution) {
+      const { type } = manualResolution;
+      manualEligibleProductIds = type.products.map((product) => product.productId);
+      manualEligibleSubtotal = manualDiscountEligibleSubtotal(resolvedItems, type.productScope, manualEligibleProductIds);
+      if (toCents(manualEligibleSubtotal) <= 0) {
+        throw new TransactionError(
+          'MANUAL_DISCOUNT_NO_ELIGIBLE_ITEMS',
+          `No item in this order is eligible for the "${type.name}" discount, so the sale was not charged. Choose another discount or "No discount".`,
+          422,
+          { subtotal, eligible_subtotal: manualEligibleSubtotal },
+        );
+      }
+      if (type.amountMode === 'fixed') {
+        manualFixedAmount = type.fixedAmount?.toNumber() ?? null;
+        const effective = fixedDiscountEffectiveAmount(manualFixedAmount ?? 0, manualEligibleSubtotal);
+        manualCapped = manualFixedAmount !== null && toCents(effective) < toCents(manualFixedAmount);
+        if (toCents(data.manualDiscount.amount) !== toCents(effective)) {
+          throw new TransactionError(
+            'MANUAL_DISCOUNT_FIXED_AMOUNT_MISMATCH',
+            `The "${type.name}" discount is ${formatPesoAmount(effective)} for this order (the screen showed ${formatPesoAmount(data.manualDiscount.amount)}), so the sale was not charged. Review the order, then charge again.`,
+            409,
+            { subtotal, eligible_subtotal: manualEligibleSubtotal, amount: effective },
+          );
+        }
+      } else if (toCents(data.manualDiscount.amount) > toCents(manualEligibleSubtotal)) {
         throw new TransactionError(
           'MANUAL_DISCOUNT_EXCEEDS_SUBTOTAL',
-          `The discount can be at most the order subtotal, ${formatPesoAmount(manualEligibleSubtotal)}.`,
+          toCents(manualEligibleSubtotal) === toCents(subtotal)
+            ? `The discount can be at most the order subtotal, ${formatPesoAmount(manualEligibleSubtotal)}.`
+            : `The discount can be at most the eligible items' subtotal, ${formatPesoAmount(manualEligibleSubtotal)}.`,
           422,
           { subtotal, eligible_subtotal: manualEligibleSubtotal, amount: data.manualDiscount.amount },
         );
@@ -2679,6 +2722,12 @@ export const transactionsService = {
             eligible_subtotal: manualEligibleSubtotal,
             proof_upload_id: manualResolution.proof?.id ?? null,
             entered_by_id: data.cashierId,
+            amount_mode: manualResolution.type.amountMode === 'fixed' ? 'fixed' : 'manual',
+            fixed_amount: manualFixedAmount,
+            capped_to_eligible: manualCapped,
+            product_scope: manualResolution.type.productScope === 'selected' ? 'selected' : 'all',
+            eligible_product_ids: manualEligibleProductIds,
+            order_subtotal: subtotal,
           }
         : null;
     const rateType =

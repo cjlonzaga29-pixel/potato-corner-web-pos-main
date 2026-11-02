@@ -18,7 +18,7 @@ interface Props {
   onConfigure: () => void;
 }
 
-/** select period → generate draft → review → finalize → export. */
+/** POS-PERF-P57 — cutoff → employees → review payroll (a draft), then finalize and export. Calculation and finalization live in the server and PayrollRunView, unchanged. */
 export function PayrollRunsPanel({ branchId, onConfigure }: Props) {
   const periods = usePayrollPeriods(branchId);
   const rates = usePayRates(branchId);
@@ -51,8 +51,7 @@ export function PayrollRunsPanel({ branchId, onConfigure }: Props) {
       <Alert>
         <AlertTitle>Payroll is not configured for this branch</AlertTitle>
         <AlertDescription className="grid gap-3">
-          <span>Set the business timezone, pay period and break treatment first. Nothing is assumed.</span>
-          <span>After that, add an hourly rate for each employee. Regular work hours in Settings are attendance only; they do not set pay.</span>
+          <span>Open Payroll Settings to set this branch&apos;s business timezone, pay period and break treatment, then add an hourly rate for each employee. Nothing is assumed.</span>
           <Button variant="outline" className="w-full sm:w-fit" onClick={onConfigure}>
             Open Payroll Settings
           </Button>
@@ -65,7 +64,8 @@ export function PayrollRunsPanel({ branchId, onConfigure }: Props) {
   const selected = options.find((p) => `${p.period_start}|${p.period_end}` === periodKey) ?? options[1] ?? options[0];
   const key = selected ? `${selected.period_start}|${selected.period_end}` : '';
   const live = selected?.runs.find((r) => r.status === 'draft' || r.status === 'finalized');
-  const missingRates = rates.data?.employees.filter((e) => e.assignment === 'current' && e.employee_active && e.current_rate === null) ?? [];
+  const currentEmployees = rates.data?.employees.filter((e) => e.assignment === 'current' && e.employee_active) ?? [];
+  const missingRates = currentEmployees.filter((e) => e.current_rate === null);
 
   return (
     <div className="grid gap-4">
@@ -84,12 +84,12 @@ export function PayrollRunsPanel({ branchId, onConfigure }: Props) {
       )}
       <Card>
         <CardHeader className="gap-1">
-          <CardTitle className="text-base">Pay period</CardTitle>
-          <CardDescription>Shifts belong to the period of their clock-in business date.</CardDescription>
+          <CardTitle className="text-base">1. Cutoff</CardTitle>
+          <CardDescription>The pay period to review.</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-3">
           <div className="grid gap-2 sm:max-w-sm">
-            <Label htmlFor="payroll-period">Period</Label>
+            <Label htmlFor="payroll-period">Cutoff</Label>
             <Select
               value={key}
               onValueChange={(v) => {
@@ -110,6 +110,59 @@ export function PayrollRunsPanel({ branchId, onConfigure }: Props) {
               </SelectContent>
             </Select>
           </div>
+          <details className="text-sm text-muted-foreground" data-testid="payroll-advanced">
+            <summary className="cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">How payroll is worked out</summary>
+            <ul className="mt-2 list-disc space-y-1 pl-5">
+              <li>Shifts belong to the period of their clock-in business date.</li>
+              <li>Regular work hours in Settings are attendance only; they do not set pay.</li>
+              <li>Reviewing creates a draft that follows current attendance, rates and settings. Nothing is final until you finalize it, and a finalized payroll never changes on its own.</li>
+            </ul>
+          </details>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader className="gap-1">
+          <CardTitle className="text-base">2. Employees</CardTitle>
+          <CardDescription>Current staff at this branch and the hourly rate in effect now.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {rates.isLoading ? (
+            <p className="text-sm text-muted-foreground" role="status">
+              Loading employees…
+            </p>
+          ) : rates.isError ? (
+            <p className="text-sm text-destructive" role="alert">
+              Could not load employees.{' '}
+              <button type="button" className="underline" onClick={() => void rates.refetch()}>
+                Retry
+              </button>
+            </p>
+          ) : currentEmployees.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No current employees at this branch.</p>
+          ) : (
+            <ul className="divide-y" data-testid="payroll-employees">
+              {currentEmployees.map((employee) => (
+                <li key={employee.employee_id} className="flex flex-wrap items-center justify-between gap-2 py-2 text-sm">
+                  <span className="min-w-0 break-words">{employee.name}</span>
+                  {employee.current_rate ? (
+                    <span className="tabular-nums text-muted-foreground">{formatPeso(employee.current_rate.hourly_rate)}/h</span>
+                  ) : (
+                    <Button type="button" variant="link" className="h-auto p-0 text-sm" onClick={onConfigure}>
+                      No rate — add one
+                    </Button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader className="gap-1">
+          <CardTitle className="text-base">3. Review payroll</CardTitle>
+          <CardDescription>{selected ? `For ${selected.label}.` : 'Choose a cutoff first.'}</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-3">
           {selected && (
             <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
               {!live && (
@@ -130,7 +183,7 @@ export function PayrollRunsPanel({ branchId, onConfigure }: Props) {
                   }
                 >
                   {create.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
-                  Generate draft
+                  Review payroll
                 </Button>
               )}
               {selected.runs.map((r) => (

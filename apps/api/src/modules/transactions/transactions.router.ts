@@ -105,6 +105,7 @@ function toManualDiscount(manual: CheckoutManualDiscountInput | undefined): Manu
     discountTypeId: manual.discount_type_id,
     typeVersion: manual.type_version,
     amount: manual.amount,
+    amountMode: manual.amount_mode,
     proofUploadId: manual.proof_upload_id,
     expectedTotalAmount: manual.expected_total_amount,
   };

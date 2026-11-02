@@ -2,12 +2,11 @@
 
 import { Suspense } from 'react';
 import Link from 'next/link';
-import { Banknote } from 'lucide-react';
+import { Banknote, TicketPercent } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { BranchDiscountSettingsSection } from '@/components/settings/branch-discount-settings-section';
 import { LegacyDiscountSettings } from '@/components/settings/legacy-discount-settings';
-import { ManualDiscountTypesSection } from '@/components/settings/manual-discount-types-section';
 import { TaxSettingsSection } from '@/components/settings/tax-settings-section';
 import { BranchWorkHoursSection } from '@/components/settings/branch-work-hours-section';
 
@@ -18,8 +17,8 @@ import { BranchWorkHoursSection } from '@/components/settings/branch-work-hours-
  * they manage, never organization-wide) and, since POS-PERF-P40, the Work
  * Hours of the branches they are assigned to.
  *
- * POS-PERF-P56 — manual Discount Types first; statutory and legacy VAT
- * settings collapsed underneath, unchanged.
+ * POS-PERF-P56 — statutory and legacy VAT settings collapsed, unchanged.
+ * POS-PERF-P57 — Discount Types moved to the Discounts menu; linked from here.
  */
 export default function SupervisorSettingsPage() {
   return (
@@ -31,9 +30,20 @@ export default function SupervisorSettingsPage() {
 
       {/* useSelectedBranch reads search params, which needs a Suspense boundary. */}
       <Suspense fallback={null}>
-        {/* POS-PERF-P55 — discount types replace the Employee rate and the
-            required-decision switch; the statutory PWD/Senior rows stay. */}
-        <ManualDiscountTypesSection />
+        <Card>
+          <CardHeader className="gap-2 sm:flex-row sm:items-center sm:justify-between sm:space-y-0">
+            <div className="min-w-0 space-y-1">
+              <CardTitle>Discount types</CardTitle>
+              <CardDescription>The discounts cashiers can choose from at checkout.</CardDescription>
+            </div>
+            <Button asChild variant="outline" className="min-h-10 w-full shrink-0 gap-2 sm:w-auto">
+              <Link href="/supervisor/discounts">
+                <TicketPercent className="h-4 w-4" aria-hidden="true" />
+                Open Discounts
+              </Link>
+            </Button>
+          </CardHeader>
+        </Card>
         <BranchWorkHoursSection />
         <Card>
           <CardHeader className="gap-2 sm:flex-row sm:items-center sm:justify-between sm:space-y-0">

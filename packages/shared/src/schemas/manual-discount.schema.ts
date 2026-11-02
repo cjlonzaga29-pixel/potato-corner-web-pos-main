@@ -6,8 +6,13 @@ import { z } from 'zod';
  *
  * A supervisor names a discount type for a branch and switches it on for the
  * POS (and, optionally, makes a proof photo required). The cashier enters the
- * amount in pesos for each sale. There is no rate, schedule, product scope or
- * automatic application anywhere in this model.
+ * amount in pesos for each sale. There is no rate, schedule or automatic
+ * application anywhere in this model.
+ *
+ * POS-PERF-P57 — a type is either "staff enters the amount" or one fixed peso
+ * amount for the whole order, and may be limited to selected products. One
+ * supervisor action can set a type up at several branches: each branch keeps
+ * its own row (group_id links them), so branch-level checks are unchanged.
  */
 
 /**
@@ -28,11 +33,10 @@ export const MANUAL_DISCOUNT_MAX_AMOUNT = 999_999.99;
 const hasTwoDecimals = (value: number) => Math.round(value * 100) / 100 === value;
 
 /**
- * PWD and Senior Citizen discounts are statutory (RA 10754 / RA 9994): their
- * rate and VAT exemption come from the law and are calculated by the
- * statutory formula, never entered as a peso amount. A manual type with such
- * a name would record a taxable commercial discount under a statutory label,
- * so those names are reserved.
+ * POS-PERF-P57 — only used to show a notice. A supervisor may name a type
+ * "PWD" or "Senior": it stays an ordinary manual peso discount. The name never
+ * selects a calculation; the statutory formula is reached only by the legacy
+ * discount_type values older clients send.
  */
 const STATUTORY_NAME_PATTERNS: readonly RegExp[] = [
   /\bpwds?\b/i,
@@ -48,8 +52,19 @@ export function isStatutoryDiscountName(name: string): boolean {
   return STATUTORY_NAME_PATTERNS.some((pattern) => pattern.test(name));
 }
 
-export const STATUTORY_DISCOUNT_NAME_MESSAGE =
-  'PWD and Senior Citizen discounts are set by law and keep their own VAT-exempt calculation, so they cannot be created as a manual peso discount. Cashiers choose them under "Statutory" at checkout.';
+export const STATUTORY_DISCOUNT_NAME_NOTICE =
+  'This will be recorded as a manual peso discount. The POS does not apply or verify the legal PWD/Senior Citizen formula, VAT exemption or ID check for it.';
+
+/** POS-PERF-P57 — who decides the amount. */
+export const MANUAL_DISCOUNT_AMOUNT_MODES = ['manual', 'fixed'] as const;
+export type ManualDiscountAmountMode = (typeof MANUAL_DISCOUNT_AMOUNT_MODES)[number];
+
+/** POS-PERF-P57 — 'all' is every product, including ones added later; 'selected' is exactly the stored list. */
+export const MANUAL_DISCOUNT_PRODUCT_SCOPES = ['all', 'selected'] as const;
+export type ManualDiscountProductScope = (typeof MANUAL_DISCOUNT_PRODUCT_SCOPES)[number];
+
+/** Sent by a POS that can honor amount modes and product limits. Without it, GET /manual-types/pos lists only types an older POS charges correctly. */
+export const MANUAL_DISCOUNT_POS_CAPABILITY = 'amount_modes_v1' as const;
 
 const nameSchema = z
   .string()
@@ -57,22 +72,80 @@ const nameSchema = z
   .min(1, 'Enter a name')
   .max(MANUAL_DISCOUNT_TYPE_NAME_MAX, `Use at most ${MANUAL_DISCOUNT_TYPE_NAME_MAX} characters`);
 
-export const createManualDiscountTypeSchema = z.object({
-  branch_id: z.uuid(),
-  name: nameSchema,
-  apply_to_pos: z.boolean(),
-  require_proof: z.boolean(),
-});
+const moneyAmountSchema = z
+  .number()
+  .finite('Enter a valid amount')
+  .positive('Enter an amount greater than ₱0')
+  .max(MANUAL_DISCOUNT_MAX_AMOUNT)
+  .refine(hasTwoDecimals, { message: 'Use at most 2 decimal places (centavos)' });
+
+const branchIdsSchema = z.array(z.uuid()).min(1, 'Choose at least one branch').max(200);
+const productIdsSchema = z.array(z.uuid()).max(2000);
+
+interface AmountAndScope {
+  amount_mode?: ManualDiscountAmountMode | undefined;
+  fixed_amount?: number | null | undefined;
+  product_scope?: ManualDiscountProductScope | undefined;
+  product_ids?: string[] | undefined;
+}
+
+function refineAmountAndScope(data: AmountAndScope, ctx: z.RefinementCtx): void {
+  if (data.amount_mode === 'fixed' && (data.fixed_amount === undefined || data.fixed_amount === null)) {
+    ctx.addIssue({ code: 'custom', path: ['fixed_amount'], message: 'Enter the fixed peso amount' });
+  }
+  if (data.amount_mode === 'manual' && data.fixed_amount !== undefined && data.fixed_amount !== null) {
+    ctx.addIssue({ code: 'custom', path: ['fixed_amount'], message: 'A staff-entered discount has no fixed amount' });
+  }
+  if (data.amount_mode === undefined && data.fixed_amount !== undefined) {
+    ctx.addIssue({ code: 'custom', path: ['amount_mode'], message: 'Say how the amount is decided' });
+  }
+  if (data.product_scope === 'selected' && (data.product_ids?.length ?? 0) === 0) {
+    ctx.addIssue({ code: 'custom', path: ['product_ids'], message: 'Choose at least one product' });
+  }
+  if (data.product_scope === 'all' && (data.product_ids?.length ?? 0) > 0) {
+    ctx.addIssue({ code: 'custom', path: ['product_ids'], message: 'A discount for all products has no product list' });
+  }
+  if (data.product_scope === undefined && data.product_ids !== undefined) {
+    ctx.addIssue({ code: 'custom', path: ['product_scope'], message: 'Say which products are eligible' });
+  }
+}
+
+/** branch_id alone is what a P55/P56 web sends; both modes then default to the old behavior. */
+export const createManualDiscountTypeSchema = z
+  .object({
+    branch_id: z.uuid().optional(),
+    branch_ids: branchIdsSchema.optional(),
+    name: nameSchema,
+    apply_to_pos: z.boolean(),
+    require_proof: z.boolean(),
+    amount_mode: z.enum(MANUAL_DISCOUNT_AMOUNT_MODES).default('manual'),
+    fixed_amount: moneyAmountSchema.nullable().optional(),
+    product_scope: z.enum(MANUAL_DISCOUNT_PRODUCT_SCOPES).default('all'),
+    product_ids: productIdsSchema.optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (!data.branch_id && !data.branch_ids) ctx.addIssue({ code: 'custom', path: ['branch_ids'], message: 'Choose at least one branch' });
+    if (data.branch_id && data.branch_ids) ctx.addIssue({ code: 'custom', path: ['branch_id'], message: 'Send branch_id or branch_ids, not both' });
+    refineAmountAndScope(data, ctx);
+  });
 
 export const updateManualDiscountTypeSchema = z
   .object({
     name: nameSchema.optional(),
     apply_to_pos: z.boolean().optional(),
     require_proof: z.boolean().optional(),
+    amount_mode: z.enum(MANUAL_DISCOUNT_AMOUNT_MODES).optional(),
+    fixed_amount: moneyAmountSchema.nullable().optional(),
+    product_scope: z.enum(MANUAL_DISCOUNT_PRODUCT_SCOPES).optional(),
+    product_ids: productIdsSchema.optional(),
+    /** The branches this type should end up at. Present: also applied to its sibling rows there. Absent (older web): only this row changes. */
+    branch_ids: branchIdsSchema.optional(),
     expected_version: z.number().int().positive(),
   })
-  .refine((data) => data.name !== undefined || data.apply_to_pos !== undefined || data.require_proof !== undefined, {
-    message: 'Nothing to change',
+  .superRefine((data, ctx) => {
+    refineAmountAndScope(data, ctx);
+    const changed = Object.entries(data).some(([key, value]) => key !== 'expected_version' && value !== undefined);
+    if (!changed) ctx.addIssue({ code: 'custom', message: 'Nothing to change' });
   });
 
 export const deactivateManualDiscountTypeSchema = z.object({
@@ -101,6 +174,12 @@ export const manualDiscountTypeResponseSchema = z.object({
   /** Sales recorded with this type (so the UI can say why it can only be deactivated). */
   sale_count: z.number().int(),
   can_edit: z.boolean(),
+  amount_mode: z.enum(MANUAL_DISCOUNT_AMOUNT_MODES),
+  fixed_amount: z.number().nullable(),
+  product_scope: z.enum(MANUAL_DISCOUNT_PRODUCT_SCOPES),
+  product_ids: z.array(z.uuid()),
+  /** Branches this type is active at, limited to those the reader may see. */
+  branch_ids: z.array(z.uuid()),
 });
 
 /** What the POS needs to offer a type: only active, Apply-to-POS types of the terminal's own branch. */
@@ -109,6 +188,11 @@ export const posManualDiscountTypeSchema = z.object({
   name: z.string(),
   require_proof: z.boolean(),
   version: z.number().int(),
+  /** Absent from an API older than P57: the type is then staff-entered, for the whole order. */
+  amount_mode: z.enum(MANUAL_DISCOUNT_AMOUNT_MODES).optional(),
+  fixed_amount: z.number().nullable().optional(),
+  product_scope: z.enum(MANUAL_DISCOUNT_PRODUCT_SCOPES).optional(),
+  product_ids: z.array(z.uuid()).optional(),
 });
 
 export const manualDiscountAmountSchema = z
@@ -128,7 +212,13 @@ export const manualDiscountAmountSchema = z
 export const checkoutManualDiscountSchema = z.object({
   discount_type_id: z.uuid(),
   type_version: z.number().int().positive(),
+  /**
+   * Staff-entered: the cashier's entry. Fixed: the effective amount the screen
+   * showed — only compared with what the server calculates, never used.
+   */
   amount: manualDiscountAmountSchema,
+  /** POS-PERF-P57 — acknowledges how the amount was decided. Absent = an older POS, which only knows staff-entered amounts. */
+  amount_mode: z.enum(MANUAL_DISCOUNT_AMOUNT_MODES).optional(),
   /** Server-issued id from POST /api/transactions/discount-proof (never a storage key). */
   proof_upload_id: z.uuid().optional(),
   expected_total_amount: z.number().finite().nonnegative().optional(),
@@ -138,6 +228,8 @@ export const checkoutManualDiscountSchema = z.object({
  * Frozen onto transactions.manual_discount_snapshot when the sale is created.
  * Version 2 (P55R2): calculated without VAT; eligible_subtotal is the whole
  * order subtotal. Version 1 exists only on local pre-P55R2 test data.
+ * P57 adds optional fields: eligible_subtotal is now what the type's product
+ * scope allows (the whole order for scope 'all').
  */
 export interface ManualDiscountSnapshot {
   version: 2;
@@ -151,6 +243,12 @@ export interface ManualDiscountSnapshot {
   eligible_subtotal: number;
   proof_upload_id: string | null;
   entered_by_id: string;
+  amount_mode?: ManualDiscountAmountMode;
+  fixed_amount?: number | null;
+  capped_to_eligible?: boolean;
+  product_scope?: ManualDiscountProductScope;
+  eligible_product_ids?: string[];
+  order_subtotal?: number;
 }
 
 /** Shown on receipts/history for a manual-discount sale; built from the snapshot only. */

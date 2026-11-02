@@ -303,10 +303,12 @@ vi.mock('@/hooks/queries/use-settings', () => ({
 // POS-PERF-P55 — the branch's manual discount types offered at the POS.
 const { manualTypesState, ManualDiscountsUnsupportedError } = vi.hoisted(() => ({
   manualTypesState: {
-    types: [] as { id: string; name: string; require_proof: boolean; version: number }[],
+    types: [] as { id: string; name: string; require_proof: boolean; version: number; amount_mode?: string; fixed_amount?: number | null; product_scope?: string; product_ids?: string[] }[],
     refetch: vi.fn(async () => ({ isError: false, error: null })),
     // P55 release fix — set to simulate a pre-P55 API (no discount-types route).
     unsupported: false,
+    // POS-PERF-P57 — set to simulate a failed list request.
+    failed: false,
   },
   ManualDiscountsUnsupportedError: class ManualDiscountsUnsupportedError extends Error {},
 }));
@@ -315,6 +317,8 @@ vi.mock('@/hooks/queries/use-manual-discount-types', () => ({
   usePosManualDiscountTypes: () =>
     manualTypesState.unsupported
       ? { data: undefined, error: new ManualDiscountsUnsupportedError(), isError: true, isLoading: false, refetch: manualTypesState.refetch }
+      : manualTypesState.failed
+        ? { data: undefined, error: new Error('down'), isError: true, isLoading: false, refetch: manualTypesState.refetch }
       : { data: manualTypesState.types, error: null, isError: false, isLoading: false, refetch: manualTypesState.refetch },
 }));
 
@@ -1919,186 +1923,6 @@ describe('TerminalPage — GCash, Maya, and Other payment methods (proof-only, T
 // above. Proof is optional (no proof-required policy exists yet — see
 // DISCOUNT_PROOF_REQUIREMENT_POLICY_MISSING), so Charge must never be
 // gated on it.
-describe('TerminalPage — PWD/Senior Citizen discount-proof capture (Task 209.5)', () => {
-  beforeEach(() => {
-    mockAddItem.mockClear();
-    mockUploadDiscountProofMutateAsync.mockClear();
-    mockCreateTransactionMutateAsync.mockClear();
-    mockCartItems.mockReturnValue([{ product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 }]);
-    mockUseCatalog.mockReturnValue({ data: catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), isLoading: false });
-    mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isLoading: false });
-    mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' }, isLoading: false });
-  });
-
-  afterEach(() => cleanup());
-
-  // POS-PERF-P55 — statutory discounts are under "Apply discount"; "No discount" is its own choice.
-  function selectDiscount(label: string) {
-    if (label === 'No discount') {
-      fireEvent.click(screen.getByRole('radio', { name: 'No discount' }));
-      return;
-    }
-    fireEvent.click(screen.getByRole('radio', { name: 'Apply discount' }));
-    fireEvent.click(screen.getByRole('button', { name: label }));
-  }
-
-  it('shows the PWD/Senior ID input and an optional Discount ID Proof upload once PWD is selected', () => {
-    render(<TerminalPage />);
-    openCheckout();
-    selectDiscount('PWD (20%)');
-
-    expect(screen.getByPlaceholderText('PWD / Senior Citizen ID number')).toBeInTheDocument();
-    expect(screen.getByText('Discount ID Proof')).toBeInTheDocument();
-    expect(screen.getByText(/Optional/i)).toBeInTheDocument();
-  });
-
-  it('never shows the discount ID input or proof upload for a non-PWD/Senior discount (e.g. Employee)', () => {
-    manualTypesState.types = [{ id: '55555555-5555-4555-8555-555555555551', name: 'Employee', require_proof: false, version: 1 }];
-    render(<TerminalPage />);
-    openCheckout();
-    selectDiscount('Employee');
-    manualTypesState.types = [];
-
-    expect(screen.queryByPlaceholderText('PWD / Senior Citizen ID number')).not.toBeInTheDocument();
-    expect(screen.queryByText('Discount ID Proof')).not.toBeInTheDocument();
-  });
-
-  it('enables Charge for a PWD discount once the ID number and cash tendered are filled, with no proof attached — proof is optional', () => {
-    render(<TerminalPage />);
-    openCheckout();
-    selectDiscount('PWD (20%)');
-    fireEvent.change(screen.getByPlaceholderText('PWD / Senior Citizen ID number'), { target: { value: 'PWD-000123' } });
-    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '1000' } });
-
-    expect(screen.getByRole('button', { name: /Charge/ })).not.toBeDisabled();
-    expect(mockUploadDiscountProofMutateAsync).not.toHaveBeenCalled();
-  });
-
-  it('still blocks Charge on a missing PWD/Senior ID number even when no proof is required', () => {
-    render(<TerminalPage />);
-    openCheckout();
-    selectDiscount('Senior Citizen (20%)');
-    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '1000' } });
-
-    expect(screen.getByRole('button', { name: /Charge/ })).toBeDisabled();
-  });
-
-  it('uploads a gallery photo as discount proof and sends discount_proof_key/type alongside discount_type/discount_id_reference', async () => {
-    render(<TerminalPage />);
-    openCheckout();
-    selectDiscount('Senior Citizen (20%)');
-    fireEvent.change(screen.getByPlaceholderText('PWD / Senior Citizen ID number'), { target: { value: 'SC-000456' } });
-    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '1000' } });
-
-    const file = new File(['fake-image'], 'proof.jpg', { type: 'image/jpeg' });
-    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
-    fireEvent.change(fileInput, { target: { files: [file] } });
-
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm' })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
-
-    await waitFor(() => expect(mockUploadDiscountProofMutateAsync).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(screen.getByText('Discount ID proof attached')).toBeInTheDocument());
-    // Optional proof never blocks Charge either before or after capture.
-    expect(screen.getByRole('button', { name: /Charge/ })).not.toBeDisabled();
-
-    fireEvent.click(screen.getByRole('button', { name: /Charge/ }));
-
-    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(1));
-    const payload = firstCallArg(mockCreateTransactionMutateAsync) as CreateTransactionInput;
-    expect(payload.discount_type).toBe('senior_citizen');
-    expect(payload.discount_id_reference).toBe('SC-000456');
-    expect(payload.discount_proof_key).toBe('branch-1/shift-1/user-1-456.webp');
-    expect(payload.discount_proof_type).toBe('gallery_upload');
-  });
-
-  it('preserves the discount selection and cart when the discount-proof upload fails, and allows retry without recapturing', async () => {
-    mockUploadDiscountProofMutateAsync.mockRejectedValueOnce(new Error('Network error'));
-    render(<TerminalPage />);
-    openCheckout();
-    selectDiscount('PWD (20%)');
-    fireEvent.change(screen.getByPlaceholderText('PWD / Senior Citizen ID number'), { target: { value: 'PWD-000123' } });
-    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '1000' } });
-
-    const file = new File(['fake-image'], 'proof.jpg', { type: 'image/jpeg' });
-    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
-    fireEvent.change(fileInput, { target: { files: [file] } });
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm' })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
-
-    await waitFor(() => expect(screen.getByText('Network error')).toBeInTheDocument());
-    // Discount selection, ID number, and cart are untouched by the failed
-    // upload — same as payment proof's failure-preservation behavior.
-    expect(screen.getByPlaceholderText('PWD / Senior Citizen ID number')).toHaveValue('PWD-000123');
-    expect(screen.queryByText('Discount ID proof attached')).not.toBeInTheDocument();
-    // Charge stays enabled throughout — a failed optional-proof upload must
-    // never block an otherwise-valid PWD/Senior sale.
-    expect(screen.getByRole('button', { name: /Charge/ })).not.toBeDisabled();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Retry Upload' }));
-    await waitFor(() => expect(mockUploadDiscountProofMutateAsync).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(screen.getByText('Discount ID proof attached')).toBeInTheDocument());
-  });
-
-  it('Replace clears the attached proof and shows the upload control again', async () => {
-    render(<TerminalPage />);
-    openCheckout();
-    selectDiscount('PWD (20%)');
-    fireEvent.change(screen.getByPlaceholderText('PWD / Senior Citizen ID number'), { target: { value: 'PWD-000123' } });
-
-    const file = new File(['fake-image'], 'proof.jpg', { type: 'image/jpeg' });
-    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
-    fireEvent.change(fileInput, { target: { files: [file] } });
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm' })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
-    await waitFor(() => expect(screen.getByText('Discount ID proof attached')).toBeInTheDocument());
-
-    fireEvent.click(screen.getByRole('button', { name: 'Replace' }));
-
-    expect(screen.queryByText('Discount ID proof attached')).not.toBeInTheDocument();
-    expect(screen.getByText('Discount ID Proof')).toBeInTheDocument();
-  });
-
-  it('never sends discount_proof_key/type when the discount type is switched away from PWD/Senior, even if a proof was already attached', async () => {
-    render(<TerminalPage />);
-    openCheckout();
-    selectDiscount('PWD (20%)');
-    fireEvent.change(screen.getByPlaceholderText('PWD / Senior Citizen ID number'), { target: { value: 'PWD-000123' } });
-
-    const file = new File(['fake-image'], 'proof.jpg', { type: 'image/jpeg' });
-    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
-    fireEvent.change(fileInput, { target: { files: [file] } });
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm' })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
-    await waitFor(() => expect(mockUploadDiscountProofMutateAsync).toHaveBeenCalledTimes(1));
-
-    selectDiscount('No discount');
-    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '1000' } });
-    fireEvent.click(screen.getByRole('button', { name: /Charge/ }));
-
-    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalledTimes(1));
-    const payload = firstCallArg(mockCreateTransactionMutateAsync) as CreateTransactionInput;
-    expect(payload.discount_type).toBeUndefined();
-    expect(payload.discount_proof_key).toBeUndefined();
-    expect(payload.discount_proof_type).toBeUndefined();
-  });
-
-  it('never requires discount proof for a cash sale with no discount at all', () => {
-    render(<TerminalPage />);
-    openCheckout();
-    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '1000' } });
-
-    expect(screen.queryByText('Discount ID Proof')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Charge/ })).not.toBeDisabled();
-    expect(mockUploadDiscountProofMutateAsync).not.toHaveBeenCalled();
-  });
-});
-
-// Single clean cashier workflow (Phase 4-9, finalized): Clock In -> Ready to
-// Sell, entirely inside POS Terminal — no separate Clock In page/redirect,
-// and no shift/shift-ownership requirement. The API auto-manages the shift
-// server-side (shiftGuard), so a not-yet-loaded client-side shift lookup
-// must never block Charge.
 describe('TerminalPage — attendance guard and inline Clock In', () => {
   beforeEach(() => {
     mockCartItems.mockReturnValue([]);
@@ -3909,12 +3733,13 @@ describe('TerminalPage — P49 promotions are not applied in the P55 checkout', 
   it('never offers the old typed "Promotional", Employee rate or cashier-selected promotions', () => {
     mockUseCatalog.mockReturnValue({ data: { ...promoCatalog(), selectable_discounts: [{ promotion_id: '7'.repeat(8) + '-7777-4777-8777-777777777777', name: 'Loyalty', discount_kind: 'percentage', discount_value: 10, version: 2, ends_on: null, unit_discounts: { 'variant-1': 10 } }] }, isLoading: false });
     render(<TerminalPage />);
+    manualTypesState.types = [{ id: '55555555-5555-4555-8555-555555555551', name: 'Staff meal', require_proof: false, version: 1 }];
     openCheckout();
     fireEvent.click(screen.getByRole('radio', { name: 'Apply discount' }));
     expect(screen.queryByRole('button', { name: 'Promotional' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Employee \(/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Loyalty/ })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'PWD (20%)' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /PWD|Senior/ })).not.toBeInTheDocument();
   });
 });
 
@@ -3941,24 +3766,6 @@ describe('TerminalPage — P50 tax basis', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Charge/ }));
   }
 
-  it('PWD: sends the VAT rate and the statutory rate, and no amounts', async () => {
-    render(<TerminalPage />);
-    openCheckout();
-    fireEvent.click(screen.getByRole('radio', { name: 'Apply discount' }));
-    fireEvent.click(screen.getByRole('button', { name: 'PWD (20%)' }));
-    fireEvent.change(screen.getByPlaceholderText('PWD / Senior Citizen ID number'), { target: { value: 'PWD-1' } });
-    // P55R2 — the statutory discount keeps its VAT-exempt calculation and shows it.
-    expect(screen.getByTestId('checkout-vat-line')).toHaveTextContent('VAT-exempt (PWD/Senior)');
-    charge();
-    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalled());
-    const payload = mockCreateTransactionMutateAsync.mock.calls[0]?.[0] as CreateTransactionInput & Record<string, unknown>;
-    expect(payload.tax_basis).toEqual({ vat_rate: 12, discount_rate: 20 });
-    expect(payload.discount_type).toBe('pwd');
-    expect(payload.discount_choice).toBe('selected');
-    expect(payload).not.toHaveProperty('manual_discount');
-    for (const key of ['total_amount', 'vat_amount', 'subtotal']) expect(payload).not.toHaveProperty(key);
-  });
-
   it('P55R2 — no discount: a manual total with no VAT rate, and no VAT line on screen', async () => {
     render(<TerminalPage />);
     openCheckout();
@@ -3966,27 +3773,6 @@ describe('TerminalPage — P50 tax basis', () => {
     charge();
     await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalled());
     expect((mockCreateTransactionMutateAsync.mock.calls[0]?.[0] as CreateTransactionInput).tax_basis).toEqual({ calculation_mode: 'manual_total_v1', vat_rate: null, discount_rate: null });
-  });
-
-  it('a changed rate keeps the cart, re-reads settings and offers no Retry', async () => {
-    const { TransactionApiError } = await import('@/hooks/queries/use-transactions');
-    mockCreateTransactionMutateAsync.mockRejectedValueOnce(
-      new TransactionApiError('VAT or discount settings changed since this total was shown, so the sale was not charged.', 'TAX_SETTINGS_CHANGED', {
-        shown: { vat_rate: 12, discount_rate: 20 },
-        current: { vat_rate: 12, discount_rate: 25 },
-        amounts: { subtotal: 200, discount_amount: 44.64, vat_amount: 0, total_amount: 133.93 },
-      }),
-    );
-    render(<TerminalPage />);
-    openCheckout();
-    fireEvent.click(screen.getByRole('radio', { name: 'Apply discount' }));
-    fireEvent.click(screen.getByRole('button', { name: 'PWD (20%)' }));
-    fireEvent.change(screen.getByPlaceholderText('PWD / Senior Citizen ID number'), { target: { value: 'PWD-1' } });
-    charge();
-    await waitFor(() => expect(screen.getByText('Discount or VAT settings changed — not recorded')).toBeInTheDocument());
-    expect(mockRefetchDiscountPolicy).toHaveBeenCalled();
-    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
-    expect(mockClearCart).not.toHaveBeenCalled();
   });
 
   it('an offline sale is queued with the basis it was rung at and the explicit decision', async () => {
@@ -4222,15 +4008,16 @@ describe('TerminalPage — P55 manual peso discounts', () => {
     expect(mockClearCart).not.toHaveBeenCalled();
   });
 
-  it('a pre-P55 API without the discount-types route: only statutory discounts, an explanation and no Retry (P55 release fix)', () => {
+  it('a pre-P55 API without the discount-types route: no legacy options, an explanation and no Retry; No discount works (P57)', () => {
     manualTypesState.unsupported = true;
     try {
       render(<TerminalPage />);
       openCheckout();
-      fireEvent.click(screen.getByRole('radio', { name: 'Apply discount' }));
-      expect(screen.getByText(/Manual discounts aren.t available on this server yet/)).toBeInTheDocument();
-      expect(screen.queryByText(/Couldn.t load this branch.s discount types/)).not.toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'PWD (20%)' })).toBeInTheDocument();
+      expect(screen.getByRole('radio', { name: 'Apply discount' })).toBeDisabled();
+      expect(screen.getByRole('radio', { name: 'No discount' })).toHaveAttribute('aria-checked', 'true');
+      expect(screen.getByText(/Discounts aren.t available on this server yet/)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /PWD|Senior/ })).not.toBeInTheDocument();
     } finally {
       manualTypesState.unsupported = false;
     }
@@ -4248,16 +4035,16 @@ describe('TerminalPage — P55 manual peso discounts', () => {
     expect(screen.getAllByText('The discount type you chose is no longer offered. Choose another discount, or “No discount”.').length).toBeGreaterThan(0);
   });
 
-  it('offline: only the statutory discounts can be applied; manual types are not offered', () => {
+  it('offline: nothing can be applied; No discount works', () => {
     const base = mockUseOffline();
     mockUseOffline.mockReturnValue({ ...base, isOnline: false });
     try {
       render(<TerminalPage />);
       openCheckout();
-      fireEvent.click(screen.getByRole('radio', { name: 'Apply discount' }));
+      expect(screen.getByRole('radio', { name: 'Apply discount' })).toBeDisabled();
       expect(screen.queryByRole('button', { name: /^Employee/ })).not.toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'PWD (20%)' })).toBeInTheDocument();
-      expect(screen.getByText(/Offline — discount types need a connection/)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /PWD|Senior/ })).not.toBeInTheDocument();
+      expect(screen.getByText(/Offline — discounts need a connection/)).toBeInTheDocument();
     } finally {
       mockUseOffline.mockReturnValue(base);
     }
@@ -4298,6 +4085,156 @@ describe('TerminalPage — P55 manual peso discounts', () => {
 // the page's rules: confirm first, lock after; resume recorded before the
 // employee becomes the operator; another employee's PIN is a normal
 // handoff; nothing is discarded or reassigned.
+// POS-PERF-P57 — only supervisor-created types; fixed and staff-entered amounts; product eligibility.
+describe('TerminalPage — P57 discount types', () => {
+  const MANUAL = { id: '55555555-5555-4555-8555-555555555551', name: 'Staff meal', require_proof: false, version: 3, amount_mode: 'manual', fixed_amount: null, product_scope: 'all', product_ids: [] };
+  const FIXED = { id: '55555555-5555-4555-8555-555555555553', name: 'Voucher', require_proof: false, version: 2, amount_mode: 'fixed', fixed_amount: 50, product_scope: 'all', product_ids: [] };
+  const line = (quantity: number) => [{ product_id: 'product-1', product_variant_id: 'variant-1', quantity }];
+
+  beforeEach(() => {
+    discountPolicyState.requireChoice = false;
+    manualTypesState.types = [];
+    mockUseAuth.mockReturnValue({ user: STAFF_USER, selectEmployee: mockSelectEmployee, refreshEmployeeSession: mockRefreshEmployeeSession });
+    useAuthStore.setState({ user: STAFF_USER, accessToken: 'staff-token', isAuthenticated: true, isLoading: false });
+    // 5 × ₱100 = ₱500.
+    mockUseCatalog.mockReturnValue({ data: catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), isLoading: false });
+    mockUseMyActiveShift.mockReturnValue({ shift: { id: 'shift-1' }, isLoading: false });
+    mockUseIsClockedIn.mockReturnValue({ isClockedIn: true, record: { clock_in_server_time: '2026-01-01T08:00:00.000Z' }, isLoading: false });
+    mockCartItems.mockReturnValue(line(5));
+    mockCreateTransactionMutateAsync.mockReset().mockResolvedValue({});
+    mockClearCart.mockClear();
+  });
+
+  afterEach(() => {
+    manualTypesState.types = [];
+    manualTypesState.failed = false;
+    discountPolicyState.requireChoice = false;
+    cleanup();
+  });
+
+  function applyType(name: string) {
+    fireEvent.click(screen.getByRole('radio', { name: 'Apply discount' }));
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(`^${name}`) }));
+  }
+
+  function chargeWithCash() {
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '500' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Charge/ }));
+  }
+
+  it('no configured types: nothing is offered, Apply is disabled and No discount charges', async () => {
+    render(<TerminalPage />);
+    openCheckout();
+    expect(screen.getByTestId('no-discounts-available')).toHaveTextContent('No discounts available. Ask your supervisor to add one.');
+    expect(screen.getByRole('radio', { name: 'Apply discount' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: /PWD|Senior|Employee/ })).not.toBeInTheDocument();
+    chargeWithCash();
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalled());
+    expect(mockCreateTransactionMutateAsync.mock.calls.at(-1)?.[0]).toMatchObject({ discount_choice: 'none_applicable', tax_basis: { calculation_mode: 'manual_total_v1' } });
+  });
+
+  it('a required-choice flag can not leave checkout impossible when there are no types', () => {
+    discountPolicyState.requireChoice = true;
+    render(<TerminalPage />);
+    openCheckout();
+    expect(screen.getByRole('radio', { name: 'No discount' })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.queryByTestId('discount-choice-prompt')).not.toBeInTheDocument();
+  });
+
+  it('a failed list shows a retryable error and never falls back to legacy options', () => {
+    manualTypesState.failed = true;
+    render(<TerminalPage />);
+    openCheckout();
+    expect(screen.getByRole('radio', { name: 'Apply discount' })).toBeDisabled();
+    expect(screen.getByText(/Couldn.t load discounts/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(manualTypesState.refetch).toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: /PWD|Senior/ })).not.toBeInTheDocument();
+  });
+
+  it('offers only configured types, with no percentage on a peso type', () => {
+    manualTypesState.types = [MANUAL, FIXED];
+    render(<TerminalPage />);
+    openCheckout();
+    fireEvent.click(screen.getByRole('radio', { name: 'Apply discount' }));
+    expect(screen.getByRole('button', { name: /^Staff meal/ }).textContent).not.toContain('%');
+    expect(screen.getByRole('button', { name: /^Voucher · ₱50.00 off/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /PWD|Senior/ })).not.toBeInTheDocument();
+  });
+
+  it('nothing applies until a type is chosen explicitly', () => {
+    manualTypesState.types = [FIXED];
+    render(<TerminalPage />);
+    openCheckout();
+    expect(screen.getByTestId('manual-discount-summary')).not.toHaveTextContent('Voucher');
+    fireEvent.click(screen.getByRole('radio', { name: 'Apply discount' }));
+    expect(screen.getAllByText('Choose the discount type.').length).toBeGreaterThan(0);
+  });
+
+  it('fixed: shows the amount without an input and acknowledges it in the payload', async () => {
+    manualTypesState.types = [FIXED];
+    render(<TerminalPage />);
+    openCheckout();
+    applyType('Voucher');
+    expect(screen.queryByLabelText('Discount amount (₱)')).not.toBeInTheDocument();
+    expect(screen.getByTestId('discount-fixed-amount')).toHaveTextContent('₱50.00 off the order');
+    expect(screen.getByTestId('manual-discount-summary')).toHaveTextContent('₱450.00');
+    chargeWithCash();
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalled());
+    expect(mockCreateTransactionMutateAsync.mock.calls.at(-1)?.[0]).toMatchObject({ discount_type: 'manual', manual_discount: { discount_type_id: FIXED.id, type_version: 2, amount: 50, amount_mode: 'fixed', expected_total_amount: 450 } });
+  });
+
+  it('fixed: capped at the subtotal, and the cap is shown', () => {
+    manualTypesState.types = [{ ...FIXED, fixed_amount: 900 }];
+    render(<TerminalPage />);
+    openCheckout();
+    applyType('Voucher');
+    expect(screen.getByTestId('discount-fixed-amount')).toHaveTextContent('₱500.00 off: this ₱900.00 discount stops at the eligible subtotal.');
+    expect(screen.getByTestId('manual-discount-summary')).toHaveTextContent('₱0.00');
+  });
+
+  it('eligibility: nothing eligible blocks Charge; the type says why', () => {
+    manualTypesState.types = [{ ...MANUAL, product_scope: 'selected', product_ids: ['some-other-product'] }];
+    render(<TerminalPage />);
+    openCheckout();
+    applyType('Staff meal');
+    expect(screen.getByTestId('discount-no-eligible-items')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Discount amount (₱)')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '500' } });
+    expect(screen.getByRole('button', { name: /^Charge/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole('radio', { name: 'No discount' }));
+    expect(screen.getByRole('button', { name: /^Charge/ })).toBeEnabled();
+  });
+
+  it('a supervisor changing the chosen type must be confirmed before Charge', () => {
+    manualTypesState.types = [FIXED];
+    const { rerender } = render(<TerminalPage />);
+    openCheckout();
+    applyType('Voucher');
+    fireEvent.change(screen.getByPlaceholderText('Cash tendered'), { target: { value: '500' } });
+    expect(screen.getByRole('button', { name: /^Charge/ })).toBeEnabled();
+    manualTypesState.types = [{ ...FIXED, version: 3, fixed_amount: 20 }];
+    rerender(<TerminalPage />);
+    expect(screen.getByTestId('manual-discount-changed-settings')).toHaveTextContent('₱480.00');
+    expect(screen.getByRole('button', { name: /^Charge/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm new total' }));
+    expect(screen.getByRole('button', { name: /^Charge/ })).toBeEnabled();
+  });
+
+  it('an older API (no amount_mode in its list) stays staff-entered and is never sent a mode', async () => {
+    manualTypesState.types = [{ id: MANUAL.id, name: 'Staff meal', require_proof: false, version: 3 }];
+    render(<TerminalPage />);
+    openCheckout();
+    applyType('Staff meal');
+    fireEvent.change(screen.getByLabelText('Discount amount (₱)'), { target: { value: '25' } });
+    chargeWithCash();
+    await waitFor(() => expect(mockCreateTransactionMutateAsync).toHaveBeenCalled());
+    const payload = mockCreateTransactionMutateAsync.mock.calls.at(-1)?.[0] as CreateTransactionInput;
+    expect(payload.manual_discount).toMatchObject({ amount: 25 });
+    expect(payload.manual_discount).not.toHaveProperty('amount_mode');
+  });
+});
+
 describe('TerminalPage — break time (POS-PERF-P51)', () => {
   function selectionFor(id: string, firstName: string, lastName: string, accessToken: string) {
     return { user: { id, role: 'staff' as const, email: null, firstName, lastName, branchIds: ['branch-1'] }, accessToken };
@@ -4500,6 +4437,7 @@ describe('TerminalPage — break time (POS-PERF-P51)', () => {
   // would inherit "No applicable discount" and never be asked.
   it('a discount decision made before Start Break does not carry over; the next cashier gets re-read rates', async () => {
     discountPolicyState.requireChoice = true;
+    manualTypesState.types = [{ id: '55555555-5555-4555-8555-555555555551', name: 'Staff meal', require_proof: false, version: 1 }];
     try {
       const line = { product_id: 'product-1', product_variant_id: 'variant-1', quantity: 1 };
       mockUseCatalog.mockReturnValue({ data: catalogWith([slotVariant({ flavors: [], flavor_slots: [] })]), isLoading: false });

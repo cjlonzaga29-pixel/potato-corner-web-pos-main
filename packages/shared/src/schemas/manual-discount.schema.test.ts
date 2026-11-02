@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { checkoutManualDiscountSchema, createManualDiscountTypeSchema, isStatutoryDiscountName, updateManualDiscountTypeSchema } from './manual-discount.schema.js';
 import { createTransactionSchema, offlineTransactionItemSchema } from './transaction.schema.js';
-import { computeManualTotal, computeSaleTax, resolveCalculationMode, MANUAL_TOTAL_CALCULATION, LEGACY_VAT_CALCULATION } from '../tax/sale-tax.js';
+import { computeManualTotal, computeSaleTax, fixedDiscountEffectiveAmount, manualDiscountEligibleSubtotal, resolveCalculationMode, MANUAL_TOTAL_CALCULATION, LEGACY_VAT_CALCULATION } from '../tax/sale-tax.js';
 
 const TYPE_ID = '11111111-1111-4111-8111-111111111111';
 const BRANCH_ID = '22222222-2222-4222-8222-222222222222';
@@ -80,5 +80,47 @@ describe('POS-PERF-P55R2 manual-total calculation (no VAT)', () => {
     const queued = { offline_provisional_number: 'X', items: [item], payment_method: 'cash', cash_tendered: 1, client_created_at: 1 };
     expect(offlineTransactionItemSchema.safeParse({ ...queued, tax_basis: manualBasis }).success).toBe(true);
     expect(offlineTransactionItemSchema.safeParse({ ...queued, tax_basis: { vat_rate: 12, discount_rate: null } }).success).toBe(true);
+  });
+});
+
+describe('POS-PERF-P57 amount modes and eligibility', () => {
+  const type = { branch_ids: [BRANCH_ID], name: 'Voucher', apply_to_pos: true, require_proof: false };
+  const product = '33333333-3333-4333-8333-333333333333';
+  const lines = [
+    { productId: product, lineTotal: 100.1 },
+    { productId: '55555555-5555-4555-8555-555555555555', lineTotal: 30.2 },
+  ];
+
+  it('defaults an older web payload to a staff-entered, whole-order type', () => {
+    const parsed = createManualDiscountTypeSchema.parse({ branch_id: BRANCH_ID, name: 'Voucher', apply_to_pos: true, require_proof: false });
+    expect(parsed.amount_mode).toBe('manual');
+    expect(parsed.product_scope).toBe('all');
+  });
+
+  it('requires a fixed amount only for a fixed type', () => {
+    expect(createManualDiscountTypeSchema.safeParse({ ...type, amount_mode: 'fixed' }).success).toBe(false);
+    expect(createManualDiscountTypeSchema.safeParse({ ...type, amount_mode: 'fixed', fixed_amount: 50 }).success).toBe(true);
+    expect(createManualDiscountTypeSchema.safeParse({ ...type, amount_mode: 'manual', fixed_amount: 50 }).success).toBe(false);
+    expect(updateManualDiscountTypeSchema.safeParse({ fixed_amount: 50, expected_version: 1 }).success).toBe(false);
+  });
+
+  it('keeps the product scope and its list consistent', () => {
+    expect(createManualDiscountTypeSchema.safeParse({ ...type, product_scope: 'selected' }).success).toBe(false);
+    expect(createManualDiscountTypeSchema.safeParse({ ...type, product_scope: 'selected', product_ids: [product] }).success).toBe(true);
+    expect(createManualDiscountTypeSchema.safeParse({ ...type, product_scope: 'all', product_ids: [product] }).success).toBe(false);
+    expect(updateManualDiscountTypeSchema.safeParse({ product_ids: [product], expected_version: 1 }).success).toBe(false);
+  });
+
+  it('sums only the eligible lines, to the centavo', () => {
+    expect(manualDiscountEligibleSubtotal(lines, 'all', [])).toBe(130.3);
+    expect(manualDiscountEligibleSubtotal(lines, 'selected', [product])).toBe(100.1);
+    expect(manualDiscountEligibleSubtotal(lines, 'selected', [])).toBe(0);
+  });
+
+  it('caps a fixed amount at the eligible subtotal, once per order', () => {
+    expect(fixedDiscountEffectiveAmount(50, 100)).toBe(50);
+    expect(fixedDiscountEffectiveAmount(50, 30)).toBe(30);
+    expect(fixedDiscountEffectiveAmount(50, 0)).toBe(0);
+    expect(fixedDiscountEffectiveAmount(0.1, 0.1)).toBe(0.1);
   });
 });

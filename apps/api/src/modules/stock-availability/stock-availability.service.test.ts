@@ -2,6 +2,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../shadow-bom-deduction/shadow-bom-deduction.service.js', () => ({
   computeBomDeductionBatch: vi.fn(),
+  buildBatchConverter: vi.fn(async () => (quantity: { toNumber(): number }) => quantity.toNumber()),
+}));
+
+vi.mock('../products/products.repository.js', () => ({
+  productsRepository: { findRecipeCheckCatalogForBranch: vi.fn(), findDisabledFlavorIds: vi.fn() },
+}));
+
+vi.mock('../product-readiness/product-readiness.service.js', () => ({
+  productReadinessService: { evaluateProductVariantReadinessBatch: vi.fn() },
 }));
 
 vi.mock('../../lib/prisma.js', () => ({
@@ -20,6 +29,8 @@ const { computeBomDeductionBatch } = await import('../shadow-bom-deduction/shado
 const { prisma } = await import('../../lib/prisma.js');
 const { stockAvailabilityService } = await import('./stock-availability.service.js');
 const { convertQuantity } = await import('../product-components/unit-conversion.util.js');
+const { productsRepository } = await import('../products/products.repository.js');
+const { productReadinessService } = await import('../product-readiness/product-readiness.service.js');
 
 function decimal(value: number) {
   return { toNumber: () => value };
@@ -305,5 +316,47 @@ describe('stockAvailabilityService.evaluateCartAvailability', () => {
     await stockAvailabilityService.evaluateCartAvailability('branch-1', [{ productVariantId: 'variant-1', quantity: 1 }]);
 
     expect(prisma.productOptionInventoryMapping.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('stockAvailabilityService.evaluateBranchRecipeShortages (POS-PERF-P57)', () => {
+  const variant = (id: string) => ({ id, name: id, variantFlavors: [], optionGroupAssignments: [] });
+
+  it('keeps a fixed query count however many products the branch has (no N+1)', async () => {
+    const products = Array.from({ length: 50 }, (_, index) => ({ id: `p${index}`, name: `P${index}`, variants: [variant(`v${index}`)] }));
+    vi.mocked(productsRepository.findRecipeCheckCatalogForBranch).mockResolvedValue(products as never);
+    vi.mocked(productsRepository.findDisabledFlavorIds).mockResolvedValue([]);
+    vi.mocked(productReadinessService.evaluateProductVariantReadinessBatch).mockResolvedValue(products.map((product) => ({ productVariantId: product.variants[0]?.id, sellable: true })) as never);
+    vi.mocked(computeBomDeductionBatch).mockResolvedValue(products.map(() => [{ inventoryItemId: 'item-potato', baseUnitId: 'g', quantity: 500 }]));
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([stockRow()] as never);
+
+    const result = await stockAvailabilityService.evaluateBranchRecipeShortages('branch-1');
+
+    expect(productReadinessService.evaluateProductVariantReadinessBatch).toHaveBeenCalledTimes(1);
+    expect(computeBomDeductionBatch).toHaveBeenCalledTimes(1);
+    expect(prisma.inventoryStock.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.inventoryItem.findMany).toHaveBeenCalledTimes(1);
+    // One item, however many sizes use it.
+    expect(result.byItem.size).toBe(1);
+    expect(result.byItem.get('item-potato')?.affected).toHaveLength(50);
+    expect(result.byItem.get('item-potato')).toMatchObject({ required: 500, deficit: 400 });
+  });
+
+  it('reads nothing further when the branch offers no products', async () => {
+    vi.mocked(productsRepository.findRecipeCheckCatalogForBranch).mockResolvedValue([]);
+    vi.mocked(productsRepository.findDisabledFlavorIds).mockResolvedValue([]);
+    const result = await stockAvailabilityService.evaluateBranchRecipeShortages('branch-1');
+    expect(result.byItem.size).toBe(0);
+    expect(computeBomDeductionBatch).not.toHaveBeenCalled();
+  });
+
+  it('never reads a size that failed readiness', async () => {
+    vi.mocked(productsRepository.findRecipeCheckCatalogForBranch).mockResolvedValue([{ id: 'p', name: 'P', variants: [variant('v')] }] as never);
+    vi.mocked(productsRepository.findDisabledFlavorIds).mockResolvedValue([]);
+    vi.mocked(productReadinessService.evaluateProductVariantReadinessBatch).mockResolvedValue([{ productVariantId: 'v', sellable: false }] as never);
+    vi.mocked(computeBomDeductionBatch).mockResolvedValue([]);
+    vi.mocked(prisma.inventoryStock.findMany).mockResolvedValue([]);
+    expect((await stockAvailabilityService.evaluateBranchRecipeShortages('branch-1')).byItem.size).toBe(0);
+    expect(computeBomDeductionBatch).toHaveBeenCalledWith([]);
   });
 });

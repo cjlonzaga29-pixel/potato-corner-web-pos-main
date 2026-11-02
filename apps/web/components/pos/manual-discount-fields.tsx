@@ -5,7 +5,7 @@ import type { ImageProofType } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
 
 function formatPeso(amount: number): string {
@@ -13,27 +13,28 @@ function formatPeso(amount: number): string {
 }
 
 export type ManualDiscountMode = 'unset' | 'none' | 'apply';
-export type StatutoryDiscountChoice = 'pwd' | 'senior_citizen';
 
 /** What the terminal tells the checkout about the manual-discount decision (POS-PERF-P55). */
 export interface ManualDiscountFooterState {
   mode: ManualDiscountMode;
   onModeChange: (mode: 'none' | 'apply') => void;
   /** Active, Apply-to-POS types of this branch (empty offline). */
-  types: readonly { id: string; name: string; requireProof: boolean }[];
+  types: readonly { id: string; name: string; requireProof: boolean; fixedAmount: number | null }[];
   /** 'unsupported' — the API predates manual discounts (P55 release fix). */
   typesStatus: 'loading' | 'ready' | 'error' | 'offline' | 'unsupported';
   onRetryTypes: () => void;
-  /** `manual:<id>`, a statutory type, or null (nothing chosen yet). */
-  selection: `manual:${string}` | StatutoryDiscountChoice | null;
-  onSelectionChange: (value: `manual:${string}` | StatutoryDiscountChoice) => void;
-  statutoryLabels: Record<StatutoryDiscountChoice, string>;
-  statutoryAvailable: readonly StatutoryDiscountChoice[];
+  /** The chosen type's id, or null (nothing chosen yet). */
+  selection: string | null;
+  onSelectionChange: (typeId: string) => void;
   amount: string;
   onAmountChange: (value: string) => void;
   amountError: string | null;
-  /** Largest amount allowed: the order subtotal (P55R2 — no VAT is calculated, so there is no VATable cap). */
+  /** Largest amount allowed: the eligible items' subtotal (P55R2 — no VAT is calculated, so there is no VATable cap). */
   maxAmount: number;
+  /** POS-PERF-P57 — the chosen type's fixed amount as configured; null for a staff-entered type. */
+  fixedAmount: number | null;
+  /** POS-PERF-P57 — what its product scope allows; shown when it differs from the order subtotal. */
+  eligibleSubtotal: number;
   proofRequired: boolean;
   proofAttached: boolean;
   proofPreviewUrl: string | null;
@@ -42,6 +43,8 @@ export interface ManualDiscountFooterState {
   onClearProof: () => void;
   /** Shown when the cart changed after the amount was entered; Charge stays blocked until confirmed. */
   changedTotal: { previousSubtotal: number; subtotal: number; totalAmount: number } | null;
+  /** POS-PERF-P57 — a supervisor changed the chosen type on this screen; Charge stays blocked until confirmed. */
+  changedSettings: { totalAmount: number } | null;
   onConfirmChangedTotal: () => void;
   /** The breakdown the cashier reviews before charging. */
   summary: { subtotal: number; label: string | null; discountAmount: number; totalAmount: number };
@@ -49,13 +52,21 @@ export interface ManualDiscountFooterState {
 
 /**
  * POS-PERF-P55 — the checkout's discount decision: "No discount" or "Apply
- * discount", then one type (a branch manual type, or the statutory PWD/Senior
- * discount, which keeps its own VAT-exempt formula) and, for a manual type,
- * the amount in pesos. Never a percentage; nothing is applied automatically.
+ * discount", then one of the branch's types and, for a staff-entered type, the
+ * amount in pesos. Never a percentage; nothing is applied automatically.
+ *
+ * POS-PERF-P57 — only types a supervisor set up for this branch are offered.
+ * There are no built-in choices, and "No discount" always works, even when the
+ * list is empty, loading, failed or unavailable offline.
  */
 export function ManualDiscountFields({ state }: { state: ManualDiscountFooterState }) {
-  const manualSelected = state.selection?.startsWith('manual:') === true;
+  const selected = state.selection !== null;
+  const canApply = state.typesStatus === 'ready' && state.types.length > 0;
   const choiceInvalid = state.mode === 'unset';
+  const isFixed = state.fixedAmount !== null;
+  const noneEligible = selected && state.eligibleSubtotal <= 0;
+  const limited = selected && Math.round(state.eligibleSubtotal * 100) !== Math.round(state.summary.subtotal * 100);
+  const capped = isFixed && !noneEligible && Math.round((state.fixedAmount ?? 0) * 100) > Math.round(state.eligibleSubtotal * 100);
   return (
     <div className="space-y-2" data-testid="manual-discount-fields">
       <div role="radiogroup" aria-label="Discount" aria-invalid={choiceInvalid} className="grid grid-cols-2 gap-2">
@@ -67,6 +78,7 @@ export function ManualDiscountFields({ state }: { state: ManualDiscountFooterSta
             aria-checked={state.mode === mode}
             variant={state.mode === mode ? 'default' : 'outline'}
             className="app-control"
+            disabled={mode === 'apply' && !canApply}
             onClick={() => state.onModeChange(mode)}
           >
             {mode === 'none' ? 'No discount' : 'Apply discount'}
@@ -79,57 +91,69 @@ export function ManualDiscountFields({ state }: { state: ManualDiscountFooterSta
         </p>
       )}
 
-      {state.mode === 'apply' && (
+      {state.typesStatus === 'loading' && (
+        <p className="text-xs text-muted-foreground" role="status">
+          Loading discounts…
+        </p>
+      )}
+      {state.typesStatus === 'offline' && <p className="text-xs text-muted-foreground">Offline — discounts need a connection.</p>}
+      {state.typesStatus === 'unsupported' && (
+        <p className="text-xs text-muted-foreground" role="status">
+          Discounts aren&apos;t available on this server yet.
+        </p>
+      )}
+      {state.typesStatus === 'error' && (
+        <p className="text-xs text-destructive" role="alert">
+          Couldn&apos;t load discounts.{' '}
+          <button type="button" className="underline" onClick={state.onRetryTypes}>
+            Retry
+          </button>
+        </p>
+      )}
+      {state.typesStatus === 'ready' && state.types.length === 0 && (
+        <p className="text-xs text-muted-foreground" data-testid="no-discounts-available">
+          No discounts available. Ask your supervisor to add one.
+        </p>
+      )}
+
+      {state.mode === 'apply' && canApply && (
         <>
-          <Select value={state.selection ?? ''} onValueChange={(v) => state.onSelectionChange(v as `manual:${string}` | StatutoryDiscountChoice)}>
+          <Select value={state.selection ?? ''} onValueChange={state.onSelectionChange}>
             <SelectTrigger className="app-control" aria-label="Discount type">
               <SelectValue placeholder="Choose the discount type" />
             </SelectTrigger>
             <SelectContent>
-              {state.types.length > 0 && (
-                <SelectGroup aria-label="Discount types">
-                  <div className="px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Enter amount in pesos</div>
-                  {state.types.map((type) => (
-                    <SelectItem key={type.id} value={`manual:${type.id}`}>
-                      {type.name}
-                      {type.requireProof ? ' · photo required' : ''}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              )}
-              {state.statutoryAvailable.length > 0 && (
-                <SelectGroup aria-label="Statutory discounts (VAT-exempt)">
-                  <div className="px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Statutory · VAT-exempt</div>
-                  {state.statutoryAvailable.map((value) => (
-                    <SelectItem key={value} value={value}>
-                      {state.statutoryLabels[value]}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              )}
+              {state.types.map((type) => (
+                <SelectItem key={type.id} value={type.id}>
+                  {type.name}
+                  {type.fixedAmount !== null ? ` · ${formatPeso(type.fixedAmount)} off` : ''}
+                  {type.requireProof ? ' · photo required' : ''}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
-          {state.typesStatus === 'offline' && (
-            <p className="text-xs text-muted-foreground">Offline — discount types need a connection. Only the statutory discounts can be applied.</p>
-          )}
-          {state.typesStatus === 'unsupported' && (
-            <p className="text-xs text-muted-foreground" role="status">
-              Manual discounts aren&apos;t available on this server yet. Only the statutory PWD/Senior Citizen discount can be charged until the server is updated.
+
+          {noneEligible && (
+            <p className="text-xs text-destructive" role="alert" data-testid="discount-no-eligible-items">
+              No item in this order is eligible for this discount.
             </p>
-          )}
-          {state.typesStatus === 'error' && (
-            <p className="text-xs text-destructive" role="alert">
-              Couldn&apos;t load this branch&apos;s discount types.{' '}
-              <button type="button" className="underline" onClick={state.onRetryTypes}>
-                Retry
-              </button>
-            </p>
-          )}
-          {state.typesStatus === 'ready' && state.types.length === 0 && (
-            <p className="text-xs text-muted-foreground">No discount types are set up for this branch yet. A supervisor adds them in Settings.</p>
           )}
 
-          {manualSelected && (
+          {selected && !noneEligible && limited && (
+            <p className="text-xs text-muted-foreground" data-testid="discount-eligible-amount">
+              Eligible items: {formatPeso(state.eligibleSubtotal)} of the {formatPeso(state.summary.subtotal)} order.
+            </p>
+          )}
+
+          {selected && !noneEligible && isFixed && (
+            <p className="text-xs text-muted-foreground" data-testid="discount-fixed-amount">
+              {capped
+                ? `${formatPeso(state.eligibleSubtotal)} off: this ${formatPeso(state.fixedAmount ?? 0)} discount stops at the eligible subtotal.`
+                : `${formatPeso(state.fixedAmount ?? 0)} off the order. This amount is set by your supervisor.`}
+            </p>
+          )}
+
+          {selected && !noneEligible && !isFixed && (
             <div className="space-y-1">
               <Label htmlFor="manual-discount-amount" className="text-xs">
                 Discount amount (₱)
@@ -151,11 +175,22 @@ export function ManualDiscountFields({ state }: { state: ManualDiscountFooterSta
                 />
               </div>
               <p id="manual-discount-amount-help" className={cn('text-xs', state.amountError ? 'text-destructive' : 'text-muted-foreground')}>
-                {state.amountError ?? `Pesos off the whole order, up to ${formatPeso(state.maxAmount)}.`}
+                {state.amountError ?? `Pesos off the order, up to ${formatPeso(state.maxAmount)}.`}
               </p>
             </div>
           )}
         </>
+      )}
+
+      {state.changedSettings && !state.changedTotal && (
+        <div role="alert" className="space-y-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200" data-testid="manual-discount-changed-settings">
+          <p className="flex items-start gap-1.5">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />A supervisor changed this discount. Amount to pay is now {formatPeso(state.changedSettings.totalAmount)}.
+          </p>
+          <Button type="button" size="sm" variant="outline" onClick={state.onConfirmChangedTotal}>
+            Confirm new total
+          </Button>
+        </div>
       )}
 
       {state.changedTotal && (

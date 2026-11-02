@@ -20,6 +20,7 @@ import { productCategoriesRepository } from '../product-categories/product-categ
 import { productReadinessService } from '../product-readiness/product-readiness.service.js';
 import type { ProductVariantReadinessResult, ReadinessIssue, ReadinessIssueCode } from '../product-readiness/product-readiness.types.js';
 import { stockAvailabilityService } from '../stock-availability/stock-availability.service.js';
+import { toStockChoiceRequest } from '../stock-availability/required-choice-combinations.js';
 import { universalInventoryRepository } from '../universal-inventory/universal-inventory.repository.js';
 import type { VariantStockResult } from '../stock-availability/stock-availability.types.js';
 import { getAccessibleBranchIds, hasBranchAccess } from '../../lib/branch-access.js';
@@ -2380,12 +2381,7 @@ export const productsService = {
     // configuration a cashier could actually sell, not just the base recipe.
     const sellableVariantIds = new Set(readinessResults.filter((r) => r.sellable).map((r) => r.productVariantId));
     const stockRequests = products.flatMap((product) =>
-      product.variants
-        .filter((variant) => sellableVariantIds.has(variant.id))
-        .map((variant) => ({
-          productVariantId: variant.id,
-          flavorIds: variant.variantFlavors.filter((vf) => !disabledFlavors.has(vf.flavorId)).map((vf) => vf.flavorId),
-        })),
+      product.variants.filter((variant) => sellableVariantIds.has(variant.id)).map((variant) => toStockChoiceRequest(variant, disabledFlavors)),
     );
     const stockByVariantId = await stockAvailabilityService.evaluateCatalogStock(branchId, stockRequests);
 

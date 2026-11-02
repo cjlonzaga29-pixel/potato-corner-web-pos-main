@@ -130,11 +130,11 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 - **UI:** `WEB/app/(admin)/admin/dashboard/page.tsx`, `WEB/app/(supervisor)/supervisor/dashboard/page.tsx`,
   `WEB/app/(branch)/branch/dashboard/page.tsx`, `WEB/components/admin/dashboard-low-stock-summary.tsx`,
   `WEB/components/supervisor/dashboard-inventory-alerts.tsx`, `WEB/app/(admin)/admin/reports/page.tsx`, `WEB/components/branch-ops/reports-view.tsx`, `WEB/components/reports/`
-- **API:** `API/reports/` (exports in `apps/api/src/lib/reports/`); shortage counts in
+- **API:** `API/reports/` (exports in `apps/api/src/lib/reports/`); partial-file labelling in `export-coverage.ts`; shortage counts in
   `API/stock-availability/stock-availability.service.ts`
 - **Schema:** `SHARED/reports.schema.ts`
 - **Tests:** `WEB/components/admin/dashboard-low-stock-summary.test.tsx`,
-  `WEB/components/supervisor/dashboard-inventory-alerts.test.tsx`, `API/reports/reports.service.test.ts`, `API/reports/p59-discount-report.integration.test.ts`
+  `WEB/components/supervisor/dashboard-inventory-alerts.test.tsx`, `API/reports/reports.service.test.ts`, `API/reports/p59-discount-report.integration.test.ts`, `API/reports/p59-export-coverage.integration.test.ts`
 - **Runbooks:** `RUN/pos-perf-p47-dashboard-and-management.md`, `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§2), `RUN/pos-perf-p59-reports-and-ui-cleanup.md`
 
 ## Stock transfers

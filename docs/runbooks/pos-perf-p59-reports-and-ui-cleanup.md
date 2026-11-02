@@ -8,7 +8,7 @@ familiar Daily Sales Report (DSR) wording, and removes one line of employee-list
 | | |
 |---|---|
 | Started from | `origin/main` `6931b10`. PR #44 is not included |
-| Tested code | `e6a4d1a`, on `c341814` |
+| Tested code | `e6a4d1a`, on `c341814`. Readiness follow-up (§10): `61b4df1`, on `050056d` |
 | Production | Not accessed. Nothing pushed, merged or deployed |
 
 ## Decisions the owner should confirm
@@ -173,8 +173,7 @@ On the same data the on-screen ₱184.29 matched the export.
 **Not tested:**
 
 - Real phones or tablets (Chromium viewport emulation only); printing (`window.print`)
-- Service worker active, and offline flows: browser runs blocked the worker
-- Sales rung through the terminal screen. Browser-run sales went through the real checkout API, and the terminal's own component tests pass
+- Offline flows. The worker-active terminal run is in §10
 - New web with an older API, or old web with the new API. During that overlap, the old web shows several "Manual" rows, and the new web shows `Unspecified discount` for manual rows with no filter effect, until both are updated
 - PDF exports from the staff and Branch account roles
 - Production data volume
@@ -182,9 +181,8 @@ On the same data the on-screen ₱184.29 matched the export.
 **Known limits:**
 
 - **Report cost:** the aggregate loads each discounted sale's snapshot, and `eligible_product_ids` can make those large. It should be fine for a branch and a normal date range, but it wasn't measured. Worth reviewing in the performance batch.
-- **Export ceiling:** the Supervisor Discount Report export stops at 10,000 rows (CSV) or 2,000 (PDF) without saying so. This replaces a silent cap of the newest 100 sales.
-- **Admin drill-down** still shows at most 100 sales, as before.
-- **Breakdown** reads up to 100 type rows per request, so KPIs would undercount beyond 100 types in a range.
+- **Export ceiling:** the Supervisor and Branch Discount Report export holds the newest 10,000 rows (CSV) or 2,000 (PDF), and now says so when it stops short. See §10.
+- **Breakdown** reads up to 100 summary rows per request, so totals undercount beyond that. The screens now say so. See §10.
 - **Limiter:** the Reports page adds one request on load and one on the Discount tab, against the existing 100 a minute per IP.
 
 **Existing, not changed:**
@@ -205,3 +203,91 @@ On the same data the on-screen ₱184.29 matched the export.
 **Rollback:** revert `c341814` and `e6a4d1a` (plus the docs commit). Nothing stored changed, so no data step is needed, and all VAT screens return.
 
 The browser fixture is `apps/api/scripts/p59-browser-fixtures.ts`. The driver was session scratch and is not committed.
+
+## 10. Readiness follow-up: limits and the real terminal
+
+Starting SHA `5cce460`. Code tested in the browser `61b4df1`, on `050056d`. Everything here is local. **Production was not accessed, and nothing here says what is deployed.**
+
+### Limit behaviour
+
+| Surface | Limit | Complete | Cut short |
+|---|---|---|---|
+| Supervisor and Branch CSV | Newest 10,000 | File unchanged, byte for byte | First line `PARTIAL EXPORT: ...`, file name ends `_PARTIAL.csv` |
+| Supervisor and Branch PDF | Newest 2,000 | Header line `Coverage: all N matching discounted sales`, with their total | Boxed notice on page 1, `PARTIAL EXPORT` in every footer, file name ends `_PARTIAL.pdf` |
+| Discount Report screens | 100 summary rows per request | `Totals cover all N matching discounted sales.` | `Partial totals` alert, using the API's own total |
+| Supervisor and Branch screen, before export | Same as the files | Nothing | `Exports will be partial`, naming the formats, once the sales exceed a limit |
+| Admin drill-down | None now | Pages through the server. The pager shows the true total | Not applicable |
+| Supervisor detail table | None | Already paged through the server | Not applicable |
+
+- **Detection:** the export asks for one row past the limit, so a file holding exactly the limit reads as complete. No count query was added.
+- **Totals:** a partial file's total is labelled `for these exported rows only`, with the date span they cover, and points to the screen for all matching sales. The screen totals come from the aggregate, which covers every match.
+- **Download message:** a partial file also gets a warning toast, but the label inside the file is what lasts.
+- **Audit:** `REPORT_EXPORTED` for this export now records `partial`.
+- **Admin's exports** list summary rows, so these row limits don't apply to them.
+
+A partial CSV's first line is not the header row, so a tool importing it blindly would misread it. That is deliberate: such a file should not pass as complete.
+
+### Two defects this found
+
+**1. Reload recovery could charge a sale twice. Fixed in `61b4df1`.** After a lost reply and a reload, the terminal correctly showed `Sale completed` but left the sold items in the cart, which `sessionStorage` had restored. Next Customer or Escape closed the dialog with those items ready to charge. Charging them minted a new key. Reproduced in the browser on the build before the fix: a second real sale and a second stock deduction (sales 2007 to 2008, stock 915 to 900). Both recovery paths now clear the cart, as `handleCharge`'s own resolve already did. An attempt that never committed keeps its cart.
+
+This code predates P59, so any deployed build with this recovery path and the persisted cart probably has it. That was not checked against production.
+
+**2. Large PDFs froze the API. Reduced, not eliminated.** P59 raised this PDF from 100 to 2,000 rows, and rendering blocks the event loop. With one `Page` element it took about 52s for 500 rows and 154s for 1,000, and 2,000 did not finish in the 190s left. Above 100 rows, `generatePdf` now splits rows across `Page` elements. Reports of 100 rows or fewer keep their exact layout. This applies to every report's PDF above 100 rows, and a group boundary can leave a part-empty sheet. No row is lost: a real 2,000-row file held all 2,000 on 251 sheets.
+
+**Still open:** in the browser run, a 2,000-row PDF took 25.1s, and the worst `/health` response during it took 17.4s. Every branch's checkout would wait about that long. Measured on one laptop, not on the hosted API.
+
+### Terminal run
+
+Final production builds of `61b4df1`, fresh database, API on 4161 behind a local proxy on 4160, web on 3160, real local Supabase Storage (`storage-api` through the local gateway). **95 / 95.**
+
+| Area | Result |
+|---|---|
+| Service worker | Active and controlling every terminal session and the Supervisor report page, including after reload. Chromium, not a real device |
+| No-discount sale | Cart, payment, Charge, receipt. One sale, one deduction |
+| PWD sale | Type created on the Supervisor screen. Choose, enter ₱30, upload, Charge. Subtotal 200 - 30 = total 170; tendered 200, change 30. Cashier is Ana, not the branch account |
+| Saved name | PWD on the receipt, public receipt, Discount Report, transaction details, CSV, PDF and Admin drill-down |
+| Rename, then deactivate | PWD unchanged on the report row, receipt, CSV and stored sale. The terminal stops offering the type |
+| Proof | A real object in local Storage, on the correct sale. The Supervisor saw the 640x480 image through a signed URL. Admin 200, another branch's supervisor 403 |
+| Lost reply, Retry | Server committed, client saw a failure. Retry resolved to the same sale, once |
+| Lost reply, reload, Next Customer | Recovered as completed, cart empty, one sale |
+| Lost reply, reload, Escape | Cart empty, Checkout disabled, one sale |
+| Request never arrived, Retry | Exactly one sale |
+| Ledger | 6 sales, stock 1000 - 5 - 10 - 5 - 15 - 10 - 20 = 935, one SALE movement per sale, none pending |
+| Queued rows | Read only, nothing cleared: `offlineTransactions` 0 |
+| Large data, 2,002 sales | Screen warned for PDF only. CSV complete with 2,002 rows. PDF labelled partial with exactly 2,000 rows, opened and read. Admin pager showed 2002 rows and reached page 2 |
+
+Lost replies were real network cuts: a one-shot proxy in front of the API either forwarded the sale and cut the reply, or cut the request first. The proof was a **gallery upload, not a physical camera**.
+
+**Boundary tests:** `p59-export-coverage.integration.test.ts` runs real Express and Postgres at 9,999, 10,000 and 10,001 CSV rows and 1,999, 2,000 and 2,001 PDF rows, with a type filter, an out-of-range date and other types, and compares the rows with the aggregate.
+
+**Checks at `61b4df1`, sequential:**
+
+| Check | Result |
+|---|---|
+| Shared suite | 73 passed |
+| API: all report tests plus the P55 and P57 discount integration tests, serial | 344 passed. **The full API suite was not re-run.** The last full run is `e6a4d1a` (§7) |
+| Full web suite | 1,644 passed, 0 failed (178 files) |
+| Typecheck: shared, API, web | Clean |
+| Lint | 0 errors. One new web warning was closed with a commented exception after the browser run; that commit changes no behaviour |
+| Production builds: shared, API, web | Pass |
+
+**Failures along the way, in order:**
+
+- **New coverage test:** 4 failed because the new test file didn't clean up between tests.
+- **First boundary run:** the PDF test timed out at 300s, which exposed defect 2.
+- **Page-count assertion:** expected 5 sheets, got 9. Discount Report rows wrap to about 8 a sheet, so the group size became 24.
+- **Driver setup:** a long profile path broke `CacheStorage`, a short one fixed it. Several selector and timing mistakes followed, and the first checks read stock before deduction had finished.
+- **First complete run, `050056d`: 86 / 90.** It found defect 1. One failure was a label mistake in the driver and one read the pager while loading.
+- **Not explained:** that run's `renameDeactivate` phase stopped once at the PIN step, waiting for `Continue as`. It did not recur in a direct probe or in the final run, and the cause was not established.
+
+### Found, not changed
+
+- **The worker can't install while logged out.** `/apple-touch-icon.png` is precached, but the middleware redirects it to login, so install fails on the login page. It installs on the next page load after signing in, and it was active within 10s. A terminal that has signed in is fine. Fix is one matcher entry, in a separate batch.
+- **Other Supervisor tabs still stop at 100 without saying so.** Daily Sales, Sold Products, Void/Refund, Inventory Movement and Attendance, including Daily Sales KPIs and its export. `reports-view.tsx` documents this ceiling, but users can't see it. The same is true of the customer IDs read by the Daily Sales drill-down.
+
+### Still not tested
+
+Real phones or tablets, a physical camera, printing, offline sales in this run, hosted Supabase Storage, mixed old and new versions, production data volume and the hosted API's PDF timing.
+
+The fixture is `apps/api/scripts/p59r-browser-fixtures.ts`. The driver and proxy were session scratch and are not committed.

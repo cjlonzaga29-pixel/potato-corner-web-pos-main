@@ -1234,6 +1234,7 @@ export default function TerminalPage() {
     };
     // Deliberately branchId-only: this recovers at most once per mount per
     // branch, not every time unrelated state changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [branchId]);
 
   function handleRecheckPendingAttempt() {

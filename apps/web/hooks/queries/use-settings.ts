@@ -10,8 +10,6 @@ import type {
   TaxConfigurationResponse,
   BranchDiscountSettingsResponse,
   UpdateBranchDiscountSettingsInput,
-  BranchTaxProfileResponse,
-  UpdateBranchTaxProfileInput,
   WorkHoursPolicyResponse,
   BranchWorkHoursResponse,
   UpdateBranchWorkHoursInput,
@@ -156,29 +154,6 @@ export function useUpdateBranchDiscountSettings(branchId: string) {
     onSuccess: (data) => {
       invalidateDiscountQueries(queryClient);
       toast.success(`Discount settings saved for ${data.branchName}`);
-    },
-    onError: (error: Error) => {
-      if (error instanceof SettingsSaveError && error.code === 'SETTINGS_CHANGED') invalidateDiscountQueries(queryClient);
-      toast.error(error.message);
-    },
-  });
-}
-
-/** POS-PERF-P50R — record a branch's VAT registration (Super Admin only; the server refuses everyone else). */
-export function useUpdateBranchTaxProfile(branchId: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (input: UpdateBranchTaxProfileInput) => {
-      const response = await apiClient<BranchTaxProfileResponse>(`/api/settings/tax/branches/${branchId}`, { method: 'PUT', body: JSON.stringify(input) });
-      if (!response.data) {
-        const code = response.error && typeof response.error !== 'string' ? response.error.code : null;
-        throw new SettingsSaveError(errorMessage(response, 'Failed to update VAT registration'), code);
-      }
-      return response.data;
-    },
-    onSuccess: () => {
-      invalidateDiscountQueries(queryClient);
-      toast.success('VAT registration recorded');
     },
     onError: (error: Error) => {
       if (error instanceof SettingsSaveError && error.code === 'SETTINGS_CHANGED') invalidateDiscountQueries(queryClient);

@@ -26,7 +26,7 @@ interface KpiCardProps {
   href?: string;
   /** Visible call to action under the value when `href` is set, and the link's accessible name suffix. */
   actionLabel?: string;
-  /** POS-PERF-P55R3 — shown instead of the number when there is no figure to show (e.g. "Not calculated"); prefix/suffix are dropped. */
+  /** POS-PERF-P55R3 — shown instead of the number when there is no figure to show (e.g. "N/A"); prefix/suffix are dropped. */
   valueText?: string;
   /** POS-PERF-P55R3 — a short visible note under the value (e.g. what a figure leaves out). Unlike `tooltip`, always on screen. */
   caption?: string;

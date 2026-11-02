@@ -276,7 +276,7 @@ describe.skipIf(!canRunIntegrationTests)('P50 VAT settings and calculation integ
       const byNumber = new Map(second.results.map((r) => [r.offline_provisional_number.split('-')[3], r]));
       expect(byNumber.get('1')).toMatchObject({ status: 'synced', transaction: { discount_rate_used: 20 } });
       expect(byNumber.get('2')).toMatchObject({ status: 'failed', error: { code: 'TAX_SETTINGS_CHANGED' } });
-      expect(byNumber.get('2')?.error?.message).toBe('This offline sale was rung with 20% (VAT 12%), but checkout now uses 10% (VAT 12%). It was not recorded, so the amount collected was not changed.');
+      expect(byNumber.get('2')?.error?.message).toBe('This offline sale was rung with 20%, but checkout now uses 10%. It was not recorded, so the amount collected was not changed.');
       expect(byNumber.get('3')).toMatchObject({ status: 'synced' });
       expect(byNumber.get('4')).toMatchObject({ status: 'synced', transaction: { discount_rate_used: 10 } });
       expect((await trace()).transactions).toBe(before.transactions + 2);

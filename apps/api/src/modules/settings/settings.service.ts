@@ -123,8 +123,8 @@ function assertStatutoryRowsUnchanged(data: UpdateDiscountPolicyInput, before: D
       throw new SettingsError(
         'STATUTORY_DISCOUNT_LOCKED',
         type === 'pwd'
-          ? `The PWD discount is required by law (RA 10754): at least ${STATUTORY_DISCOUNT_PERCENT}%, VAT-exempt. It can be raised up to 100% but not lowered below ${STATUTORY_DISCOUNT_PERCENT}% or turned off.`
-          : `The Senior Citizen discount is set by law (RA 9994): exactly ${STATUTORY_DISCOUNT_PERCENT}%, VAT-exempt. It cannot be changed or turned off.`,
+          ? `The PWD discount is required by law (RA 10754): at least ${STATUTORY_DISCOUNT_PERCENT}%. It can be raised up to 100% but not lowered below ${STATUTORY_DISCOUNT_PERCENT}% or turned off.`
+          : `The Senior Citizen discount is set by law (RA 9994): exactly ${STATUTORY_DISCOUNT_PERCENT}%. It cannot be changed or turned off.`,
         422,
       );
     }
@@ -193,7 +193,7 @@ function branchBoundId(actor: ActorContext): string | null {
 }
 
 const ORGANIZATION_ADMIN_ONLY_MESSAGE =
-  'Organization-wide discount defaults are set by a Super Admin. Supervisors change discounts for their own branches in Settings → Discounts & VAT.';
+  'Organization-wide discount defaults are set by a Super Admin. Supervisors change discounts for their own branches in Settings → Discounts.';
 
 /** Default state assumed when no BranchPaymentMethodConfig row exists yet (both methods enabled). */
 const DEFAULT_PAYMENT_METHOD_CONFIG = { cashEnabled: true, gcashEnabled: true };

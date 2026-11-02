@@ -57,6 +57,7 @@ function parseFilters(query: unknown): { ok: true; filters: ReportFilters } | { 
       paymentMethod: parsed.data.payment_method,
       status: parsed.data.status,
       search: parsed.data.search,
+      discountKey: parsed.data.discount_key,
     },
   };
 }
@@ -228,6 +229,7 @@ router.post('/export', authenticate, adminSupervisorOrBranch, requirePasswordCha
       paymentMethod: body.filters.payment_method,
       status: body.filters.status,
       search: body.filters.search,
+      discountKey: body.filters.discount_key,
     };
     const branchId = filters.branchId ?? null;
     const result = await reportsService.requestExport(body.report_type as ReportType, filters, body.format, req.user.user_id, req.user.role, branchId);

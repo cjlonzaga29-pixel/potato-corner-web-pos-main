@@ -8,7 +8,6 @@ import { DiscountSettingsSection } from '@/components/settings/discount-settings
 import { BranchDiscountSettingsSection } from '@/components/settings/branch-discount-settings-section';
 import { LegacyDiscountSettings } from '@/components/settings/legacy-discount-settings';
 import { ManualDiscountTypesSection } from '@/components/settings/manual-discount-types-section';
-import { TaxSettingsSection } from '@/components/settings/tax-settings-section';
 import { WorkHoursOverviewSection } from '@/components/settings/work-hours-overview-section';
 import { WriteGateSettingsSection } from '@/components/settings/write-gate-settings-section';
 
@@ -56,11 +55,10 @@ function SettingsPageContent() {
         <TabsContent value="discounts" className="space-y-4">
           {/* POS-PERF-P55 — read-only for Super Admin; supervisors manage their branches' types. */}
           <ManualDiscountTypesSection />
-          {/* POS-PERF-P56 — statutory rates and legacy VAT settings, unchanged, below what cashiers use. */}
+          {/* POS-PERF-P56 — legacy statutory rates, unchanged, below what cashiers use. */}
           <LegacyDiscountSettings>
             <DiscountSettingsSection canEdit />
             <BranchDiscountSettingsSection />
-            <TaxSettingsSection />
           </LegacyDiscountSettings>
         </TabsContent>
 

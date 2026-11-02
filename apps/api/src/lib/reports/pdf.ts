@@ -2,7 +2,7 @@
 import React from 'react';
 import { Document, Page, Text, View, StyleSheet, renderToBuffer } from '@react-pdf/renderer';
 import { columnsForRows, type ReportColumn, type ReportFilters } from '../../modules/reports/reports.types.js';
-import type { ReportType } from '@potato-corner/shared';
+import { reportTypeDisplayName, type ReportType } from '@potato-corner/shared';
 import { manilaDateKey, formatManilaDateTime } from '../manila-time.js';
 
 const e = React.createElement;
@@ -19,13 +19,6 @@ const styles = StyleSheet.create({
   cell: { padding: 4, lineHeight: 1.35 },
   footer: { position: 'absolute', bottom: 16, left: 24, right: 24, fontSize: 8, textAlign: 'center', color: '#666666' },
 });
-
-function reportTypeLabel(reportType: ReportType): string {
-  return reportType
-    .split('_')
-    .map((w) => w[0] + w.slice(1).toLowerCase())
-    .join(' ');
-}
 
 // Matches the exact `.toISOString()` shape every report repository stores
 // timestamps in (e.g. created_at, closed_at, actioned_at). Rendering that
@@ -182,7 +175,7 @@ export async function generatePdf<T extends Record<string, unknown>>(
       : 'All dates';
 
   // Narrow reports (few columns) stay portrait; reports with enough columns
-  // to need the extra horizontal room (Discount Compliance and its 9
+  // to need the extra horizontal room (the Discount Report and its 9
   // columns, Shift Summary's 16, etc.) render landscape.
   const orientation: 'portrait' | 'landscape' = visibleColumns.length > 6 ? 'landscape' : 'portrait';
   const { fontSize: bodyFontSize, widths: columnWidths } = computeColumnLayout(visibleColumns, data, orientation);
@@ -210,7 +203,7 @@ export async function generatePdf<T extends Record<string, unknown>>(
         View,
         { style: styles.header },
         e(Text, { style: styles.brand }, 'POTATO CORNER'),
-        e(Text, { style: styles.title }, `${reportTypeLabel(reportType)} Report`),
+        e(Text, { style: styles.title }, reportTypeDisplayName(reportType)),
         e(Text, { style: styles.meta }, `Branch: ${branchName ?? 'All Branches'} | Date range: ${dateRangeLabel} | Generated: ${generatedAt}`),
       ),
       e(

@@ -7,7 +7,6 @@ import { Button } from '@/components/ui/button';
 import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { BranchDiscountSettingsSection } from '@/components/settings/branch-discount-settings-section';
 import { LegacyDiscountSettings } from '@/components/settings/legacy-discount-settings';
-import { TaxSettingsSection } from '@/components/settings/tax-settings-section';
 import { BranchWorkHoursSection } from '@/components/settings/branch-work-hours-section';
 
 /**
@@ -17,7 +16,7 @@ import { BranchWorkHoursSection } from '@/components/settings/branch-work-hours-
  * they manage, never organization-wide) and, since POS-PERF-P40, the Work
  * Hours of the branches they are assigned to.
  *
- * POS-PERF-P56 — statutory and legacy VAT settings collapsed, unchanged.
+ * POS-PERF-P56 — legacy statutory discount settings collapsed, unchanged. POS-PERF-P59 — no VAT sections.
  * POS-PERF-P57 — Discount Types moved to the Discounts menu; linked from here.
  */
 export default function SupervisorSettingsPage() {
@@ -61,7 +60,6 @@ export default function SupervisorSettingsPage() {
         </Card>
         <LegacyDiscountSettings>
           <BranchDiscountSettingsSection statutoryOnly />
-          <TaxSettingsSection />
         </LegacyDiscountSettings>
       </Suspense>
     </div>

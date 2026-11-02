@@ -11,7 +11,6 @@ import { Switch } from '@/components/ui/switch';
 import { SettingsSaveError, useUpdateBranchDiscountSettings } from '@/hooks/queries/use-settings';
 import { formatManilaDateTime } from '@/lib/manila-date';
 import { DiscountPreviewTable } from './discount-preview-table';
-import { BranchVatRegistration } from './branch-vat-registration';
 
 const SOURCE_LABELS = { statute: 'Set by law', organization: 'Organization default', branch: 'This branch' } as const;
 
@@ -87,15 +86,13 @@ export function BranchDiscountSettingsForm({ data, statutoryOnly = false }: { da
 
   return (
     <div className="space-y-4" data-testid={`branch-discount-form-${data.branchId}`}>
-      <BranchVatRegistration branchId={data.branchId} branchName={data.branchName} profile={data.taxProfile} canEdit={data.canEditTaxProfile} />
-
       <section className="space-y-3" aria-label="Discount rates">
         <h3 className="text-sm font-medium">Discount rates at {data.branchName}</h3>
 
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/30 p-3" data-testid="branch-row-senior">
           <div className="min-w-0">
             <p className="font-medium">Senior Citizen</p>
-            <p className="text-xs text-muted-foreground">Set by law (RA 9994 §4(a)): exactly {STATUTORY_DISCOUNT_PERCENT}%, VAT-exempt, always on. Not editable.</p>
+            <p className="text-xs text-muted-foreground">Set by law (RA 9994 §4(a)): exactly {STATUTORY_DISCOUNT_PERCENT}%, always on. Not editable.</p>
           </div>
           <span className="flex items-center gap-1 text-sm font-semibold tabular-nums">
             <Lock className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
@@ -110,7 +107,7 @@ export function BranchDiscountSettingsForm({ data, statutoryOnly = false }: { da
                 PWD
               </Label>
               <p className="text-xs text-muted-foreground">
-                Required by law (RA 10754): at least {STATUTORY_DISCOUNT_PERCENT}%, VAT-exempt, always on. You may give more; you cannot give less or turn it off.
+                Required by law (RA 10754): at least {STATUTORY_DISCOUNT_PERCENT}%, always on. You may give more; you cannot give less or turn it off.
               </p>
             </div>
             <div className="flex items-center gap-1">
@@ -157,7 +154,7 @@ export function BranchDiscountSettingsForm({ data, statutoryOnly = false }: { da
               <Label htmlFor={id('employee')} className="font-medium">
                 Employee
               </Label>
-              <p className="text-xs text-muted-foreground">Business choice. Comes off the price with VAT; VAT is charged on what remains (not VAT-exempt).</p>
+              <p className="text-xs text-muted-foreground">Business choice. Comes off the price.</p>
             </div>
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-2">
@@ -254,7 +251,7 @@ export function BranchDiscountSettingsForm({ data, statutoryOnly = false }: { da
       )}
       <p className="text-xs text-muted-foreground">
         {statutoryOnly
-          ? 'Other discounts are entered by the cashier as a peso amount, using the discount types above. Those sales, and sales without a discount, are charged as subtotal − discount: the POS does not calculate VAT on them. The VAT registration above is kept as recorded. Changes apply to new sales only; past sales keep the amounts and VAT they were rung with.'
+          ? 'Other discounts are entered by the cashier as a peso amount, using the discount types above. Those sales, and sales without a discount, are charged as subtotal − discount. Changes apply to new sales only; past sales keep the amounts they were rung with.'
           : 'Custom discounts (name, amount, products, schedule) are set up on the Discounts & Promotions page. Changes apply to new sales only; past sales keep the amounts they were rung with.'}
       </p>
 

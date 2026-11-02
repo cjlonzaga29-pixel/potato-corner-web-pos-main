@@ -16,6 +16,7 @@ import type {
   ExportReadyPayload,
   ExportRequestInput,
 } from '@potato-corner/shared';
+import { reportTypeDisplayName } from '@potato-corner/shared';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DataTable } from '@/components/shared/data-table/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
@@ -29,6 +30,9 @@ import { ReportsSectionTabs } from '@/components/reports/reports-section-tabs';
 import { ReportLastUpdated } from '@/components/reports/report-last-updated';
 import { DailySalesDrilldown } from '@/components/reports/daily-sales-drilldown';
 import { DiscountComplianceDrilldown } from '@/components/reports/discount-compliance-drilldown';
+import { DiscountProofSummary } from '@/components/reports/discount-proof-summary';
+import { ALL_DISCOUNT_TYPES, DiscountTypeFilter } from '@/components/reports/discount-type-filter';
+import { getDiscountBreakdownColumns } from '@/components/reports/discount-type-breakdown-columns';
 import { FinancialSummaryPanel } from '@/components/reports/financial-summary-panel';
 import { InventoryAnalyticsPanel } from '@/components/reports/inventory-analytics-panel';
 import { WidgetErrorBoundary } from '@/components/shared/widget-error-boundary';
@@ -36,7 +40,8 @@ import { DashboardConnectionBadge } from '@/components/shared/dashboard/dashboar
 import { createExpenseColumns, categoryLabel } from '@/components/admin/expense-columns';
 import { ViewInventoryMovementProofDialog } from '@/components/shared/transactions/view-inventory-movement-proof-dialog';
 import { ViewExpenseReceiptDialog, type ExpenseReceiptProofData } from '@/components/shared/transactions/view-expense-receipt-dialog';
-import { downloadCsv, formatCurrency, formatDateTime, formatVatAmount } from '@/lib/utils';
+import { downloadCsv, formatCurrency, formatDateTime } from '@/lib/utils';
+import { discountTypeOptions, mergeDiscountRows, summarizeDiscountProof } from '@/lib/discount-report';
 import { movementTypeLabel } from '@/lib/inventory-movement-labels';
 import { manilaToday, manilaDaysAgo } from '@/lib/manila-date';
 import { useAuthStore } from '@/stores/auth.store';
@@ -98,13 +103,6 @@ function getDailySalesColumns(onViewTransactions: (row: DailySalesReportRow) => 
     { accessorKey: 'voided_count', header: 'Voided' },
     { accessorKey: 'refunded_count', header: 'Refunded' },
     {
-      // POS-PERF-P55R2 — manual-total sales (VAT not calculated): count and amount paid; an older API omits them.
-      id: 'tax_not_calculated',
-      header: 'Without VAT Calc.',
-      cell: ({ row }) =>
-        row.original.tax_not_calculated_count ? `${row.original.tax_not_calculated_count} · ${formatCurrency(row.original.tax_not_calculated_sales ?? 0)}` : '—',
-    },
-    {
       id: 'actions',
       header: 'Actions',
       cell: ({ row }) => (
@@ -131,48 +129,6 @@ const voidRefundColumns: ColumnDef<VoidRefundReportRow>[] = [
   { accessorKey: 'reason', header: 'Reason', cell: ({ row }) => row.original.reason ?? '—' },
   { accessorKey: 'actioned_by_name', header: 'Actioned By', cell: ({ row }) => row.original.actioned_by_name ?? '—' },
 ];
-
-/**
- * Task 209.16 — "View Transactions" opens DiscountComplianceDrilldown, the
- * per-transaction breakdown (receipt #, cashier, customer ID/reference,
- * Proof Available/View Proof) behind this branch+discount_type aggregate
- * row. This aggregate table has no row-level proof data of its own by
- * design (see DiscountComplianceReportRowSchema) — the drill-down is what
- * actually answers "is there a discount ID photo for this row".
- */
-function getDiscountComplianceColumns(onViewTransactions: (row: DiscountComplianceReportRow) => void): ColumnDef<DiscountComplianceReportRow>[] {
-  return [
-    { accessorKey: 'branch_name', header: 'Branch' },
-    { id: 'discount_type', header: 'Discount Type', cell: ({ row }) => humanize(row.original.discount_type) },
-    { accessorKey: 'transaction_count', header: 'Transactions' },
-    {
-      accessorKey: 'total_discount_amount',
-      header: 'Discount Amount',
-      cell: ({ row }) => formatCurrency(row.original.total_discount_amount),
-    },
-    {
-      // POS-PERF-P50 — the stored total of each PWD/Senior sale (VAT-exempt in full); older API: not reported.
-      id: 'total_vat_exempt_sales',
-      header: 'VAT-Exempt Sales',
-      // POS-PERF-P55R2 — null: a manual-total row, VAT not calculated.
-      cell: ({ row }) => (row.original.total_vat_exempt_sales === undefined ? '—' : formatVatAmount(row.original.total_vat_exempt_sales)),
-    },
-    {
-      accessorKey: 'total_vat_exempt_amount',
-      header: 'Non-VATable (VAT cap)',
-      cell: ({ row }) => formatVatAmount(row.original.total_vat_exempt_amount),
-    },
-    {
-      id: 'actions',
-      header: 'Actions',
-      cell: ({ row }) => (
-        <Button type="button" variant="outline" size="sm" onClick={() => onViewTransactions(row.original)}>
-          View Transactions
-        </Button>
-      ),
-    },
-  ];
-}
 
 function createInventoryMovementColumns(onViewProof: (row: InventoryMovementReportRow) => void): ColumnDef<InventoryMovementReportRow>[] {
   return [
@@ -231,13 +187,13 @@ const kgOrDash = (v: number | null) => (v === null ? '—' : v);
 const ingredientWeightKgColumns: ColumnDef<IngredientWeightKgRow>[] = [
   { accessorKey: 'ingredient_name', header: 'Ingredient' },
   { accessorKey: 'unit_code', header: 'Base Unit' },
-  { accessorKey: 'opening_stock', header: 'Opening Stock' },
-  { accessorKey: 'consumed_today', header: 'Consumed Today' },
-  { accessorKey: 'consumed_this_month', header: 'Consumed This Month' },
+  { accessorKey: 'opening_stock', header: 'Beginning Stock (Beg.)' },
+  { accessorKey: 'consumed_today', header: 'Stock Used Today (Sales)' },
+  { accessorKey: 'consumed_this_month', header: 'Stock Used This Month (Sales)' },
   { accessorKey: 'remaining', header: 'Remaining' },
-  { accessorKey: 'opening_stock_kg', header: 'Opening Stock (KG)', cell: ({ row }) => kgOrDash(row.original.opening_stock_kg) },
-  { accessorKey: 'consumed_today_kg', header: 'Consumed Today (KG)', cell: ({ row }) => kgOrDash(row.original.consumed_today_kg) },
-  { accessorKey: 'consumed_this_month_kg', header: 'Consumed This Month (KG)', cell: ({ row }) => kgOrDash(row.original.consumed_this_month_kg) },
+  { accessorKey: 'opening_stock_kg', header: 'Beginning Stock (KG)', cell: ({ row }) => kgOrDash(row.original.opening_stock_kg) },
+  { accessorKey: 'consumed_today_kg', header: 'Stock Used Today - Sales (KG)', cell: ({ row }) => kgOrDash(row.original.consumed_today_kg) },
+  { accessorKey: 'consumed_this_month_kg', header: 'Stock Used This Month - Sales (KG)', cell: ({ row }) => kgOrDash(row.original.consumed_this_month_kg) },
   { accessorKey: 'remaining_kg', header: 'Remaining (KG)', cell: ({ row }) => kgOrDash(row.original.remaining_kg) },
   {
     id: 'status',
@@ -252,9 +208,9 @@ const ingredientWeightKgColumns: ColumnDef<IngredientWeightKgRow>[] = [
 
 const packagingPcColumns: ColumnDef<PackagingPcRow>[] = [
   { accessorKey: 'ingredient_name', header: 'Packaging' },
-  { accessorKey: 'opening_stock_pc', header: 'Opening Stock (PC)' },
-  { accessorKey: 'consumed_today_pc', header: 'Consumed Today (PC)' },
-  { accessorKey: 'consumed_this_month_pc', header: 'Consumed This Month (PC)' },
+  { accessorKey: 'opening_stock_pc', header: 'Beginning Stock (PC)' },
+  { accessorKey: 'consumed_today_pc', header: 'Stock Used Today - Sales (PC)' },
+  { accessorKey: 'consumed_this_month_pc', header: 'Stock Used This Month - Sales (PC)' },
   { accessorKey: 'remaining_pc', header: 'Remaining (PC)' },
 ];
 
@@ -272,13 +228,13 @@ function IngredientWeightKgMobileCards({ rows }: { rows: IngredientWeightKgRow[]
           </div>
           <p className="text-xs text-muted-foreground">Base unit: {row.unit_code}</p>
           <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-sm">
-            <div><p className="text-xs text-muted-foreground">Opening Stock</p><p>{row.opening_stock}</p></div>
-            <div><p className="text-xs text-muted-foreground">Consumed Today</p><p>{row.consumed_today}</p></div>
-            <div><p className="text-xs text-muted-foreground">Consumed This Month</p><p>{row.consumed_this_month}</p></div>
+            <div><p className="text-xs text-muted-foreground">Beginning Stock (Beg.)</p><p>{row.opening_stock}</p></div>
+            <div><p className="text-xs text-muted-foreground">Stock Used Today (Sales)</p><p>{row.consumed_today}</p></div>
+            <div><p className="text-xs text-muted-foreground">Stock Used This Month (Sales)</p><p>{row.consumed_this_month}</p></div>
             <div><p className="text-xs text-muted-foreground">Remaining</p><p>{row.remaining}</p></div>
-            <div><p className="text-xs text-muted-foreground">Opening (KG)</p><p>{kgOrDash(row.opening_stock_kg)}</p></div>
-            <div><p className="text-xs text-muted-foreground">Consumed Today (KG)</p><p>{kgOrDash(row.consumed_today_kg)}</p></div>
-            <div><p className="text-xs text-muted-foreground">Consumed Month (KG)</p><p>{kgOrDash(row.consumed_this_month_kg)}</p></div>
+            <div><p className="text-xs text-muted-foreground">Beg. (KG)</p><p>{kgOrDash(row.opening_stock_kg)}</p></div>
+            <div><p className="text-xs text-muted-foreground">Used Today (KG)</p><p>{kgOrDash(row.consumed_today_kg)}</p></div>
+            <div><p className="text-xs text-muted-foreground">Used Month (KG)</p><p>{kgOrDash(row.consumed_this_month_kg)}</p></div>
             <div><p className="text-xs text-muted-foreground">Remaining (KG)</p><p>{kgOrDash(row.remaining_kg)}</p></div>
           </div>
         </div>
@@ -295,9 +251,9 @@ function PackagingPcMobileCards({ rows }: { rows: PackagingPcRow[] }) {
         <div key={row.ingredient_id} className="rounded-xl border border-border/60 bg-card p-4 shadow-panel">
           <p className="truncate font-medium">{row.ingredient_name}</p>
           <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-sm">
-            <div><p className="text-xs text-muted-foreground">Opening (PC)</p><p>{row.opening_stock_pc}</p></div>
-            <div><p className="text-xs text-muted-foreground">Consumed Today (PC)</p><p>{row.consumed_today_pc}</p></div>
-            <div><p className="text-xs text-muted-foreground">Consumed Month (PC)</p><p>{row.consumed_this_month_pc}</p></div>
+            <div><p className="text-xs text-muted-foreground">Beg. (PC)</p><p>{row.opening_stock_pc}</p></div>
+            <div><p className="text-xs text-muted-foreground">Used Today (PC)</p><p>{row.consumed_today_pc}</p></div>
+            <div><p className="text-xs text-muted-foreground">Used Month (PC)</p><p>{row.consumed_this_month_pc}</p></div>
             <div><p className="text-xs text-muted-foreground">Remaining (PC)</p><p>{row.remaining_pc}</p></div>
           </div>
         </div>
@@ -309,10 +265,10 @@ function PackagingPcMobileCards({ rows }: { rows: PackagingPcRow[] }) {
 const attendanceSummaryColumns: ColumnDef<AttendanceSummaryReportRow>[] = [
   { accessorKey: 'employee_name', header: 'Employee' },
   { accessorKey: 'branch_name', header: 'Branch' },
-  { id: 'clock_in', header: 'Clock In', cell: ({ row }) => formatDateTime(row.original.clock_in) },
+  { id: 'clock_in', header: 'Time In', cell: ({ row }) => formatDateTime(row.original.clock_in) },
   {
     id: 'clock_out',
-    header: 'Clock Out',
+    header: 'Time Out',
     cell: ({ row }) => (row.original.clock_out ? formatDateTime(row.original.clock_out) : 'Still clocked in'),
   },
   {
@@ -330,7 +286,7 @@ const REPORT_GROUPS: { category: string; reports: { value: string; label: string
     category: 'Finance',
     reports: [
       { value: 'FINANCIAL_SUMMARY', label: 'Financial Summary' },
-      { value: 'DAILY_SALES', label: 'Daily Sales' },
+      { value: 'DAILY_SALES', label: 'Daily Sales Report (DSR)' },
       { value: 'EXPENSES', label: 'Expenses' },
     ],
   },
@@ -350,7 +306,7 @@ const REPORT_GROUPS: { category: string; reports: { value: string; label: string
     category: 'Compliance',
     reports: [
       { value: 'VOID_REFUND', label: 'Void / Refund' },
-      { value: 'DISCOUNT_COMPLIANCE', label: 'Discount Compliance' },
+      { value: 'DISCOUNT_COMPLIANCE', label: 'Discount Report' },
     ],
   },
 ];
@@ -404,6 +360,7 @@ function AdminReportsPageContent() {
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [drilldownRow, setDrilldownRow] = useState<DailySalesReportRow | null>(null);
   const [discountDrilldownRow, setDiscountDrilldownRow] = useState<DiscountComplianceReportRow | null>(null);
+  const [discountTypeFilter, setDiscountTypeFilter] = useState(ALL_DISCOUNT_TYPES);
   const [movementProofRow, setMovementProofRow] = useState<InventoryMovementReportRow | null>(null);
   const [selectedExpenseId, setSelectedExpenseId] = useState<string | null>(null);
 
@@ -412,7 +369,7 @@ function AdminReportsPageContent() {
   useReportsRealtimeSync((payload: ExportReadyPayload) => {
     if (payload.requester_id !== currentUserId) return;
     toast.success('Export ready', {
-      description: `Your ${payload.report_type} export is ready`,
+      description: `Your ${reportTypeDisplayName(payload.report_type)} export is ready`,
       action: { label: 'Download', onClick: () => window.open(payload.download_url, '_blank') },
       duration: 30_000,
     });
@@ -435,6 +392,16 @@ function AdminReportsPageContent() {
   const dailySales = useDailySalesReport(realtimeFilters, activeReport === 'DAILY_SALES');
   const voidRefund = useVoidRefundReport(realtimeFilters, activeReport === 'VOID_REFUND');
   const discountCompliance = useDiscountComplianceReport(realtimeFilters, activeReport === 'DISCOUNT_COMPLIANCE');
+  // POS-PERF-P59 — the choices come from the unfiltered rows; the KPIs, table and export all follow the same discount identity.
+  const discountRows = useMemo(() => mergeDiscountRows(discountCompliance.data?.data ?? []), [discountCompliance.data]);
+  const discountOptions = useMemo(() => discountTypeOptions(discountRows), [discountRows]);
+  const activeDiscountKey = discountTypeFilter === ALL_DISCOUNT_TYPES ? undefined : discountTypeFilter;
+  const visibleDiscountRows = activeDiscountKey ? discountRows.filter((r) => r.discount_key === activeDiscountKey) : discountRows;
+  // A chosen type can drop out when the branch or dates change: back to all types rather than an empty report.
+  useEffect(() => {
+    if (activeDiscountKey && discountCompliance.data && !discountRows.some((r) => r.discount_key === activeDiscountKey)) setDiscountTypeFilter(ALL_DISCOUNT_TYPES);
+  }, [activeDiscountKey, discountCompliance.data, discountRows]);
+  const discountColumns = useMemo(() => getDiscountBreakdownColumns({ showBranch: true, showProof: true, onViewTransactions: setDiscountDrilldownRow }), []);
   const inventoryMovement = useInventoryMovementReport(realtimeFilters, activeReport === 'INVENTORY_MOVEMENT');
   const inventorySummary = useInventorySummaryReport(realtimeFilters, activeReport === 'INVENTORY_SUMMARY');
   const attendanceSummary = useAttendanceSummaryReport(realtimeFilters, activeReport === 'ATTENDANCE_SUMMARY');
@@ -544,7 +511,14 @@ function AdminReportsPageContent() {
     setIsExporting(true);
     const input: ExportRequestInput = {
       report_type: reportType,
-      filters: { branch_id: selectedBranchId ?? undefined, date_from: dateFrom, date_to: dateTo, page: 1, limit: 100 },
+      filters: {
+        branch_id: selectedBranchId ?? undefined,
+        date_from: dateFrom,
+        date_to: dateTo,
+        page: 1,
+        limit: 100,
+        ...(reportType === 'DISCOUNT_COMPLIANCE' && activeDiscountKey ? { discount_key: activeDiscountKey } : {}),
+      },
       format,
     };
     requestExport.mutate(input, { onSettled: () => setIsExporting(false) });
@@ -691,28 +665,28 @@ function AdminReportsPageContent() {
                 <EmptyState title="Select a branch" description="Choose a branch above to view this report." />
               ) : discountCompliance.isError ? <ErrorState retry={() => discountCompliance.refetch()} /> : <>
               <ReportLastUpdated timestamp={discountCompliance.data?.generated_at} isLoading={discountCompliance.isLoading} />
-              <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-3">
-                <KpiCard
-                  title="Discounted Transactions"
-                  value={(discountCompliance.data?.data ?? []).reduce((sum, r) => sum + r.transaction_count, 0)}
-                  isLoading={discountCompliance.isLoading}
-                />
-                <KpiCard
-                  title="Total Discount Amount"
-                  value={(discountCompliance.data?.data ?? []).reduce((sum, r) => sum + r.total_discount_amount, 0)}
-                  isLoading={discountCompliance.isLoading}
-                  tone="warning"
-                />
-                <KpiCard
-                  title="VAT-Exempt Sales (PWD/Senior)"
-                  value={(discountCompliance.data?.data ?? []).reduce((sum, r) => sum + (r.total_vat_exempt_sales ?? 0), 0)}
-                  isLoading={discountCompliance.isLoading}
-                />
+              <div className="my-4 space-y-4">
+                <DiscountTypeFilter options={discountOptions} value={discountTypeFilter} onChange={setDiscountTypeFilter} />
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <KpiCard
+                    title="Total Discounted Transactions"
+                    value={visibleDiscountRows.reduce((sum, r) => sum + r.transaction_count, 0)}
+                    isLoading={discountCompliance.isLoading}
+                  />
+                  <KpiCard
+                    title="Total Discount Amount"
+                    value={visibleDiscountRows.reduce((sum, r) => sum + r.total_discount_amount, 0)}
+                    prefix="₱"
+                    isLoading={discountCompliance.isLoading}
+                    tone="warning"
+                  />
+                </div>
+                <DiscountProofSummary summary={summarizeDiscountProof(visibleDiscountRows)} isLoading={discountCompliance.isLoading} />
               </div>
               <DataTable
                 stickyHeader
-                columns={getDiscountComplianceColumns(setDiscountDrilldownRow)}
-                data={discountCompliance.data?.data ?? []}
+                columns={discountColumns}
+                data={visibleDiscountRows}
                 isLoading={discountCompliance.isLoading}
                 emptyState={<EmptyState title="No discounted transactions in this range" />}
               />
@@ -727,7 +701,7 @@ function AdminReportsPageContent() {
               <div className="my-4 grid grid-cols-1 gap-4 md:grid-cols-3">
                 <KpiCard title="Total Movements" value={(inventoryMovement.data?.data ?? []).length} isLoading={inventoryMovement.isLoading} />
                 <KpiCard
-                  title="Stock In"
+                  title="Deliveries / Received"
                   value={(inventoryMovement.data?.data ?? []).filter((r) => r.movement_type === 'RECEIVING').length}
                   isLoading={inventoryMovement.isLoading}
                 />
@@ -759,7 +733,7 @@ function AdminReportsPageContent() {
                 const excludedCount = inventorySummary.data?.excluded_ingredient_count ?? 0;
                 return (
                   <>
-                    <h3 className="mt-6 mb-2 text-sm font-semibold text-foreground">Ingredient Weight Consumption (KG)</h3>
+                    <h3 className="mt-6 mb-2 text-sm font-semibold text-foreground">Ingredient Stock Used (KG)</h3>
                     {!isDesktop && !inventorySummary.isLoading && ingredientWeightKg.length > 0 ? (
                       <IngredientWeightKgMobileCards rows={ingredientWeightKg} />
                     ) : (
@@ -777,7 +751,7 @@ function AdminReportsPageContent() {
                       </p>
                     )}
 
-                    <h3 className="mt-6 mb-2 text-sm font-semibold text-foreground">Packaging Consumption (PC)</h3>
+                    <h3 className="mt-6 mb-2 text-sm font-semibold text-foreground">Packaging Stock Used (PC)</h3>
                     {!isDesktop && !inventorySummary.isLoading && packagingPc.length > 0 ? (
                       <PackagingPcMobileCards rows={packagingPc} />
                     ) : (
@@ -835,6 +809,8 @@ function AdminReportsPageContent() {
         branchId={discountDrilldownRow?.branch_id ?? null}
         branchName={discountDrilldownRow?.branch_name ?? ''}
         discountType={discountDrilldownRow?.discount_type ?? null}
+        discountKey={discountDrilldownRow?.discount_key ?? null}
+        discountName={discountDrilldownRow?.discount_name ?? null}
         dateFrom={dateFrom}
         dateTo={dateTo}
       />

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup, act } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, act, within } from '@testing-library/react';
 import type {
   AttendanceResponse,
   EmployeeResponse,
@@ -105,10 +105,11 @@ vi.mock('@/hooks/queries/use-reports', () => ({
  * *computed* KPI values the page passes down.
  */
 vi.mock('@/components/shared/charts/kpi-card', () => ({
-  KpiCard: ({ title, value, prefix, isLoading }: { title: string; value: number; prefix?: string; isLoading?: boolean }) => (
+  KpiCard: ({ title, value, prefix, isLoading, valueText, caption }: { title: string; value: number; prefix?: string; isLoading?: boolean; valueText?: string; caption?: string }) => (
     <div>
       <span>{title}</span>
-      <span>{isLoading ? 'loading' : `${prefix ?? ''}${Number.isInteger(value) ? value : value.toFixed(2)}`}</span>
+      <span>{isLoading ? 'loading' : (valueText ?? `${prefix ?? ''}${Number.isInteger(value) ? value : value.toFixed(2)}`)}</span>
+      {caption && <span>{caption}</span>}
     </div>
   ),
 }));
@@ -330,10 +331,10 @@ describe('SupervisorReportsPage', () => {
   it('renders all report tabs, with no Shift Summary or Cash Reconciliation', () => {
     render(<SupervisorReportsPage />);
     for (const label of [
-      'Daily Sales',
+      'Daily Sales Report (DSR)',
       'Sold Product Transactions',
       'Void/Refund',
-      'Discount Compliance',
+      'Discount Report',
       'Inventory Movement',
       'Attendance Summary',
     ]) {
@@ -362,8 +363,9 @@ describe('SupervisorReportsPage', () => {
     // subtotal-based Gross Sales figure used elsewhere.
     expect(screen.getByText('Total Sales — Selected Period')).toBeInTheDocument();
     expect(screen.getByText('₱300')).toBeInTheDocument();
-    expect(screen.getByText('VAT Collected')).toBeInTheDocument();
-    expect(screen.getByText('₱30')).toBeInTheDocument();
+    // POS-PERF-P59 — no VAT card, whatever the sales stored.
+    expect(screen.queryByText('VAT Collected')).not.toBeInTheDocument();
+    expect(screen.queryByText('₱30')).not.toBeInTheDocument();
     expect(screen.getByText('Discounts Given')).toBeInTheDocument();
     expect(screen.getByText('₱5')).toBeInTheDocument();
   });
@@ -440,12 +442,12 @@ describe('SupervisorReportsPage', () => {
     });
   });
 
-  // Task 209.5 — Discount Compliance's Proof Available/View Proof column
+  // Task 209.5 — the Discount Report's Proof Available/View Proof column
   // and KPIs, gated to the supervisor role the same way the Daily Sales
   // tab's Payment Proof column already is (see the Phase 10-11 block above).
-  describe('Discount Compliance — discount-proof viewing (Task 209.5)', () => {
+  describe('Discount Report — discount-proof viewing (Task 209.5)', () => {
     function openDiscountCompliance() {
-      fireEvent.mouseDown(screen.getByRole('tab', { name: 'Discount Compliance' }));
+      fireEvent.mouseDown(screen.getByRole('tab', { name: 'Discount Report' }));
     }
 
     it('shows a Proof Available "Yes · View Proof" button for a PWD/Senior row with a proof attached', () => {
@@ -506,47 +508,57 @@ describe('SupervisorReportsPage', () => {
       expect(screen.queryByRole('button', { name: 'Yes · View Proof' })).not.toBeInTheDocument();
     });
 
-    it('computes Proof Available/Proof Missing/Proof Compliance Rate KPIs from PWD/Senior rows only, excluding Employee/Promotional discounts', () => {
-      mockTransactionsByStatus({
-        completed: {
+    it('POS-PERF-P59 — proof completion counts only sales that required proof, from the report aggregate', () => {
+      mockUseDiscountComplianceReport.mockReturnValue({
+        data: {
           data: [
-            transaction({ id: 't1', discount_type: 'pwd', discount_amount: 20, has_discount_proof: true }),
-            transaction({ id: 't2', discount_type: 'senior_citizen', discount_amount: 20, has_discount_proof: false }),
-            transaction({ id: 't3', discount_type: 'employee', discount_amount: 10, has_discount_proof: false }),
+            { branch_id: 'b', branch_name: 'B', discount_type: 'manual', discount_key: 'manual:a', discount_name: 'PWD', transaction_count: 3, total_discount_amount: 30, total_vat_exempt_amount: null, proof_required_count: 2, proof_available_count: 1, proof_missing_count: 1, proof_unknown_count: 0 },
+            { branch_id: 'b', branch_name: 'B', discount_type: 'employee', discount_key: 'type:employee', discount_name: 'Employee', transaction_count: 5, total_discount_amount: 50, total_vat_exempt_amount: 0, proof_required_count: 0, proof_available_count: 0, proof_missing_count: 0, proof_unknown_count: 0 },
           ],
         },
+        isLoading: false,
       });
 
       render(<SupervisorReportsPage />);
       openDiscountCompliance();
 
-      // "Proof Available" also labels the table column header, so this KPI
-      // card's title is one of two matches — assert presence, not uniqueness.
-      expect(screen.getAllByText('Proof Available').length).toBeGreaterThan(0);
-      expect(screen.getByText('Proof Missing')).toBeInTheDocument();
-      expect(screen.getByText('Proof Compliance Rate')).toBeInTheDocument();
-      // 1 of 2 PWD/Senior rows has proof — Employee is excluded from the
-      // denominator entirely, so the rate is 50%, not 33%. (The KpiCard
-      // mock above renders only prefix+value, not suffix, so the raw
-      // computed value "50" is what appears — the "%" itself is real
-      // KpiCard markup this mock doesn't reproduce.)
-      expect(screen.getByText('50')).toBeInTheDocument();
+      const summary = within(screen.getByTestId('discount-proof-summary'));
+      expect(summary.getByText('Proof Required')).toBeInTheDocument();
+      expect(summary.getByText('Proof Missing')).toBeInTheDocument();
+      expect(summary.getByText('Proof Completion')).toBeInTheDocument();
+      // 1 of 2 required; the 5 Employee sales are not in the denominator (50%, not 12.5%).
+      expect(summary.getByText('50')).toBeInTheDocument();
+      expect(screen.queryByText('PWD Discounts')).not.toBeInTheDocument();
+      expect(screen.queryByText('Senior Citizen Discounts')).not.toBeInTheDocument();
+    });
+
+    it('POS-PERF-P59 — no sale requiring proof reads N/A, never an invented 100%', () => {
+      mockUseDiscountComplianceReport.mockReturnValue({
+        data: {
+          data: [{ branch_id: 'b', branch_name: 'B', discount_type: 'pwd', discount_key: 'type:pwd', discount_name: 'PWD', transaction_count: 4, total_discount_amount: 40, total_vat_exempt_amount: 0, proof_required_count: 0, proof_available_count: 0, proof_missing_count: 0, proof_unknown_count: 4 }],
+        },
+        isLoading: false,
+      });
+
+      render(<SupervisorReportsPage />);
+      openDiscountCompliance();
+
+      const summary = within(screen.getByTestId('discount-proof-summary'));
+      expect(summary.getByText('N/A')).toBeInTheDocument();
+      expect(summary.queryByText('100')).not.toBeInTheDocument();
+      expect(summary.getByText(/4 sales with no saved requirement not counted/)).toBeInTheDocument();
     });
 
     it('does not render the Proof KPI row at all for a non-supervisor role', () => {
       mockUseAuthStore.mockImplementation((selector: (s: { user: { id: string; role: string } }) => unknown) =>
         selector({ user: { id: 'user-1', role: 'branch' } }),
       );
-      mockTransactionsByStatus({
-        completed: {
-          data: [transaction({ id: 't1', discount_type: 'pwd', discount_amount: 20, has_discount_proof: true })],
-        },
-      });
 
       render(<SupervisorReportsPage />);
       openDiscountCompliance();
 
-      expect(screen.queryByText('Proof Compliance Rate')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('discount-proof-summary')).not.toBeInTheDocument();
+      expect(screen.queryByText('Proof Completion')).not.toBeInTheDocument();
     });
   });
 
@@ -596,7 +608,7 @@ describe('SupervisorReportsPage', () => {
     render(<SupervisorReportsPage />);
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Attendance Summary' }));
 
-    expect(screen.getByText('Clocked In Now')).toBeInTheDocument();
+    expect(screen.getByText('Crew on Duty')).toBeInTheDocument();
     expect(screen.getByText('1')).toBeInTheDocument();
   });
 
@@ -623,9 +635,9 @@ describe('SupervisorReportsPage', () => {
     expect(screen.getByText('Total Movements')).toBeInTheDocument();
     expect(screen.getByText('3')).toBeInTheDocument();
     // Movement-type badges render the humanized label (lib/inventory-movement-labels.ts),
-    // not the raw enum value — "Receiving"/"Waste" also appear as KPI card
+    // not the raw enum value — "Deliveries / Received"/"Waste" also appear as KPI card
     // titles, so more than one match is expected here.
-    expect(screen.getAllByText('Receiving').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Deliveries / Received').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Waste').length).toBeGreaterThan(0);
     expect(screen.getByText('Adjustments')).toBeInTheDocument();
   });
@@ -680,7 +692,7 @@ describe('SupervisorReportsPage', () => {
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Void/Refund' }));
     expect(screen.getByText('No voids or refunds')).toBeInTheDocument();
 
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Discount Compliance' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Discount Report' }));
     expect(screen.getByText('No discounted transactions')).toBeInTheDocument();
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Inventory Movement' }));

@@ -91,7 +91,7 @@ export function InventoryList({ basePath }: { basePath: string }) {
     },
     {
       id: 'consumed_today',
-      header: 'Consumed Today',
+      header: 'Stock Used Today (Sales)',
       cell: ({ row }) => (
         <span className="tabular-nums text-muted-foreground">
           {row.original.consumed_today} {row.original.base_unit_code}

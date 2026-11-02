@@ -303,8 +303,8 @@ export const PaymentFooter = memo(function PaymentFooter({
             <SelectContent>
               <SelectItem value="none">{noneLabel}</SelectItem>
               {statutoryChoices.length > 0 && (
-                <SelectGroup aria-label="Statutory discounts (VAT-exempt)">
-                  <div className="px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Statutory · VAT-exempt</div>
+                <SelectGroup aria-label="Statutory discounts">
+                  <div className="px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Statutory</div>
                   {statutoryChoices.map((value) => (
                     <SelectItem key={value} value={value}>
                       {resolvedDiscountLabels[value]}

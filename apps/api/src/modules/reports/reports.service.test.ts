@@ -45,14 +45,12 @@ vi.mock('./reports.columns.js', () => ({
       { key: 'discount_type', header: 'Discount Type' },
       { key: 'transaction_count', header: 'Transactions' },
       { key: 'total_discount_amount', header: 'Total Discount' },
-      { key: 'total_vat_exempt_amount', header: 'VAT Exempt Total' },
     ],
   },
   DAILY_SALES_TRANSACTION_COLUMNS: [
     { key: 'receipt_number', header: 'Receipt #' },
     { key: 'payment_method', header: 'Payment' },
     { key: 'total_amount', header: 'Total' },
-    { key: 'vat_amount', header: 'VAT' },
     { key: 'discount_amount', header: 'Discount' },
     { key: 'discount_type', header: 'Discount Type' },
     { key: 'discount_id_reference', header: 'Customer ID / Reference' },
@@ -323,8 +321,8 @@ describe('reportsService.requestExport', () => {
     const csv = result.buffer.toString('utf-8');
     const lines = csv.split('\n');
     expect(lines).toHaveLength(3); // header + 2 transaction rows, matching the screen's row count
-    expect(lines[0]).toBe('Receipt #,Payment,Total,VAT,Discount,Discount Type,Customer ID / Reference,Date,Cashier');
-    expect(lines[1]).toBe('MNL001-20260801-000001,cash,150,16.07,0,,,2026-08-01T10:00:00.000Z,Juan Dela Cruz');
+    expect(lines[0]).toBe('Receipt #,Payment,Total,Discount,Discount Type,Customer ID / Reference,Date,Cashier');
+    expect(lines[1]).toBe('MNL001-20260801-000001,cash,150,0,,,2026-08-01T10:00:00.000Z,Juan Dela Cruz');
     expect(recordAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'REPORT_EXPORTED', afterState: expect.objectContaining({ async: false, rowCount: 2 }) }),
     );
@@ -473,7 +471,6 @@ describe('reportsService.requestExport', () => {
   describe('Supervisor/Branch Discount Compliance tab CSV/PDF export (getDailySalesTransactions redirect)', () => {
     const transactionRows = [
       { receipt_number: 'MNL001-20260801-000001', payment_method: 'cash', total_amount: 150, vat_amount: 16.07, discount_amount: 30, discount_type: 'pwd', created_at: '2026-08-01T10:00:00.000Z', cashier_name: 'Juan Dela Cruz' },
-      { receipt_number: 'MNL001-20260801-000002', payment_method: 'gcash', total_amount: 200, vat_amount: 21.43, discount_amount: 0, discount_type: null, created_at: '2026-08-01T11:00:00.000Z', cashier_name: 'Juan Dela Cruz' },
       { receipt_number: 'MNL001-20260801-000003', payment_method: 'cash', total_amount: 180, vat_amount: 19.29, discount_amount: 36, discount_type: 'senior_citizen', created_at: '2026-08-01T12:00:00.000Z', cashier_name: 'Maria Santos' },
     ];
 
@@ -492,7 +489,7 @@ describe('reportsService.requestExport', () => {
       expect(reportsRepository.getDiscountCompliance).not.toHaveBeenCalled();
       expect(reportsRepository.countRows).not.toHaveBeenCalled();
       expect(getReportRows).not.toHaveBeenCalled();
-      const expectedRows = [transactionRows[0], transactionRows[2]];
+      const expectedRows = transactionRows;
       expect(generatePdf).toHaveBeenCalledWith('DISCOUNT_COMPLIANCE', expect.any(Object), expectedRows, expect.anything(), 'SM North');
       expect(result).toEqual({ kind: 'file', buffer: pdfBuffer, filename: expect.stringMatching(/\.pdf$/), contentType: 'application/pdf' });
       expect(recordAuditLog).toHaveBeenCalledWith(
@@ -560,14 +557,25 @@ describe('reportsService.requestExport', () => {
 
       if (result.kind !== 'file') throw new Error('expected file result');
       const lines = result.buffer.toString('utf-8').trim().split('\n');
-      expect(lines).toHaveLength(3); // header + 2 discounted rows (the discount_type === null row is excluded), in original order
+      expect(lines).toHaveLength(3); // header + the 2 rows the discounted-only query returned, in original order
       expect(lines[0]).toContain('Receipt #');
       expect(lines[0]).toContain('Cashier');
       expect(lines[1]).toContain('MNL001-20260801-000001');
       expect(lines[1]).toContain('pwd');
       expect(lines[2]).toContain('MNL001-20260801-000003');
       expect(lines[2]).toContain('senior_citizen');
-      expect(result.buffer.toString('utf-8')).not.toContain('MNL001-20260801-000002');
+    });
+
+    it('P59 — filters to discounted sales in the query, up to the format ceiling rather than the screen page size, with the type filter', async () => {
+      vi.mocked(reportsRepository.getDailySalesTransactions).mockResolvedValue([] as never);
+      const { generatePdf } = await import('../../lib/reports/pdf.js');
+      vi.mocked(generatePdf).mockResolvedValue(Buffer.from('%PDF-1.4 fake'));
+
+      await reportsService.requestExport('DISCOUNT_COMPLIANCE', { branchId: 'b1', page: 1, limit: 100, discountKey: 'type:pwd' }, 'csv', 'user-1', 'supervisor', 'b1');
+      expect(reportsRepository.getDailySalesTransactions).toHaveBeenLastCalledWith(expect.objectContaining({ discountedOnly: true, discountKey: 'type:pwd', limit: 10_000 }));
+
+      await reportsService.requestExport('DISCOUNT_COMPLIANCE', { branchId: 'b1', page: 1, limit: 100 }, 'pdf', 'user-1', 'supervisor', 'b1');
+      expect(reportsRepository.getDailySalesTransactions).toHaveBeenLastCalledWith(expect.objectContaining({ discountedOnly: true, limit: 2_000 }));
     });
 
     it('forwards branch and date-range filters to getDailySalesTransactions for the Supervisor CSV export', async () => {
@@ -599,7 +607,7 @@ describe('reportsService.requestExport', () => {
 
       const result = await reportsService.requestExport('DISCOUNT_COMPLIANCE', { branchId: 'b1', page: 1, limit: 100 }, 'pdf', 'user-1', 'supervisor', 'b1');
 
-      const expectedRows = [transactionRows[0], transactionRows[2]];
+      const expectedRows = transactionRows;
       expect(generatePdf).toHaveBeenCalledWith('DISCOUNT_COMPLIANCE', expect.any(Object), expectedRows, expect.anything(), 'SM North');
       expect(result).toEqual({ kind: 'file', buffer: pdfBuffer, filename: expect.stringMatching(/\.pdf$/), contentType: 'application/pdf' });
     });

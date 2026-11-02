@@ -57,9 +57,6 @@ vi.mock('@/components/ui/tabs', () => {
 vi.mock('@/components/settings/notification-preferences-section', () => ({
   NotificationPreferencesSection: () => <div>Notifications Section Content</div>,
 }));
-vi.mock('@/components/settings/tax-settings-section', () => ({
-  TaxSettingsSection: () => <div>Tax Section Content</div>,
-}));
 vi.mock('@/components/settings/discount-settings-section', () => ({
   DiscountSettingsSection: () => <div>Discounts Section Content</div>,
 }));

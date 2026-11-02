@@ -20,7 +20,7 @@ function parsePercent(value: string, min: number): number | null {
 /**
  * Task 209.xx — the organization-wide discount defaults (GET/PUT
  * /api/settings/discount-policy). Every branch uses these unless it has its
- * own value (POS-PERF-P50R, Discounts & VAT by branch).
+ * own value (POS-PERF-P50R, Discounts by branch).
  *
  * POS-PERF-P50R — only a Super Admin saves these (the server refuses
  * supervisors, whose changes used to reach every branch). PWD is editable
@@ -111,7 +111,7 @@ export function DiscountSettingsSection({ canEdit }: { canEdit: boolean }) {
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/30 p-3" data-testid="discount-row-senior_citizen">
                 <div className="min-w-0">
                   <p className="font-medium">Senior Citizen</p>
-                  <p className="text-xs text-muted-foreground">Set by law (RA 9994): exactly {STATUTORY_DISCOUNT_PERCENT}%, VAT-exempt. Cannot be changed or turned off.</p>
+                  <p className="text-xs text-muted-foreground">Set by law (RA 9994): exactly {STATUTORY_DISCOUNT_PERCENT}%. Cannot be changed or turned off.</p>
                 </div>
                 <div className="flex items-center gap-2 text-sm">
                   <Lock className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
@@ -126,7 +126,7 @@ export function DiscountSettingsSection({ canEdit }: { canEdit: boolean }) {
                     PWD
                   </Label>
                   <p className="text-xs text-muted-foreground">
-                    Required by law (RA 10754): at least {STATUTORY_DISCOUNT_PERCENT}%, VAT-exempt, always on. It can be raised, never lowered or turned off.
+                    Required by law (RA 10754): at least {STATUTORY_DISCOUNT_PERCENT}%, always on. It can be raised, never lowered or turned off.
                   </p>
                 </div>
                 <div className="flex items-center gap-1">
@@ -173,7 +173,7 @@ export function DiscountSettingsSection({ canEdit }: { canEdit: boolean }) {
                   <Label htmlFor="discount-employee" className="font-medium">
                     Employee
                   </Label>
-                  <p className="text-xs text-muted-foreground">Business choice. Comes off the VAT-inclusive price; VAT is charged on the rest.</p>
+                  <p className="text-xs text-muted-foreground">Business choice. Comes off the price.</p>
                 </div>
                 {canEdit ? (
                   <div className="flex shrink-0 items-center gap-4">

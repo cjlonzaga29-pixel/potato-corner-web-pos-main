@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type ComponentProps, type ReactNode } from 'react';
 import { Receipt, ShoppingCart } from 'lucide-react';
-import { VAT_RATE_PERCENT, isVatExemptDiscountType, type ImageProofType } from '@potato-corner/shared';
+import type { ImageProofType } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
@@ -20,12 +20,8 @@ interface OrderReviewPanelProps {
   onRemoveLine: (index: number) => void;
   onQuantityChange: (index: number, quantity: number) => void;
   subtotal: number;
-  /** POS-PERF-P55R2 — null: the manual-total checkout does not calculate VAT, so no VAT line is shown. */
-  vatAmount: number | null;
   discountAmount: number;
   totalAmount: number;
-  /** POS-PERF-P50 — PWD/Senior Citizen: the sale is VAT-exempt, shown as such instead of "VAT ₱0.00". */
-  isVatExempt?: boolean;
   /** POS-PERF-P55 — e.g. "Employee discount"; defaults to "Discount". */
   discountLabel?: string;
   /** POS-PERF-P55 — "Amount to pay" in the manual-discount checkout; defaults to "Total". */
@@ -39,7 +35,7 @@ interface OrderReviewPanelProps {
  * Task 209.25 — the order side of the Checkout Workspace. Reuses the exact
  * same CartLineItem the permanent side cart renders (same edit/remove/qty
  * handlers, same memoized `cartLines` the terminal page already derives) and
- * the Subtotal/Discount/VAT/TOTAL breakdown that used to live at the top of
+ * the Subtotal/Discount/TOTAL breakdown that used to live at the top of
  * PaymentFooter — moved here verbatim (same canonical values, no
  * recalculation) per the owner's Order Review pane spec. Owns its own
  * scroll region so a long cart never pushes the totals or the sibling
@@ -51,10 +47,8 @@ export function OrderReviewPanel({
   onRemoveLine,
   onQuantityChange,
   subtotal,
-  vatAmount,
   discountAmount,
   totalAmount,
-  isVatExempt = false,
   discountLabel,
   totalLabel,
   notice,
@@ -91,12 +85,6 @@ export function OrderReviewPanel({
             <div className="app-pos-total-row flex items-center justify-between font-medium text-destructive">
               <span>{discountLabel ?? 'Discount'}</span>
               <span className="tabular-nums">-{formatPeso(discountAmount)}</span>
-            </div>
-          )}
-          {vatAmount !== null && (
-            <div className="flex justify-between text-xs text-muted-foreground" data-testid="checkout-vat-line">
-              <span>{isVatExempt ? 'VAT-exempt (PWD/Senior) — no VAT' : `VAT (${VAT_RATE_PERCENT}%, included in prices)`}</span>
-              <span className="tabular-nums">{formatPeso(vatAmount)}</span>
             </div>
           )}
           <Separator className="my-1.5 lg:my-1" />
@@ -163,7 +151,6 @@ interface CheckoutWorkspaceProps extends PaymentFooterProps {
   onRemoveLine: (index: number) => void;
   onQuantityChange: (index: number, quantity: number) => void;
   subtotal: number;
-  vatAmount: number | null;
   discountAmount: number;
   reviewNotice?: ReactNode;
 }
@@ -187,7 +174,6 @@ export function CheckoutWorkspace({
   onRemoveLine,
   onQuantityChange,
   subtotal,
-  vatAmount,
   discountAmount,
   reviewNotice,
   ...paymentFooterProps
@@ -223,10 +209,8 @@ export function CheckoutWorkspace({
       onRemoveLine={onRemoveLine}
       onQuantityChange={onQuantityChange}
       subtotal={subtotal}
-      vatAmount={vatAmount}
       discountAmount={discountAmount}
       totalAmount={totalAmount}
-      isVatExempt={isVatExemptDiscountType(discountType)}
       discountLabel={paymentFooterProps.manualDiscount?.summary.label ?? undefined}
       totalLabel={paymentFooterProps.manualDiscount ? 'Amount to pay' : undefined}
       notice={reviewNotice}

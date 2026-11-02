@@ -183,7 +183,7 @@ export default function SupervisorDashboardPage() {
           icon={TrendingDown}
         />
         <KpiCard
-          title="Staff Clocked In"
+          title="Crew on Duty"
           value={attendanceSummary?.clocked_in.length ?? 0}
           isLoading={isAttendanceLoading}
           icon={Users}

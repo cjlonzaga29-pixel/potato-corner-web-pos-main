@@ -200,7 +200,7 @@ beforeEach(() => {
   mockUseAuthStore.mockImplementation((selector: (s: { user: { id: string } }) => unknown) => selector({ user: { id: 'user-1' } }));
   mockUseRequestExport.mockReturnValue({ mutate: vi.fn(), isPending: false });
   mockUseReportsRealtimeSync.mockReturnValue(undefined);
-  // Task 209.56E — Discount Compliance's headline KPIs now read from this
+  // Task 209.56E — the Discount Report's headline KPIs now read from this
   // hook (server groupBy aggregate) instead of being reduced client-side
   // from completedTransactions; default empty so tests that don't care
   // about discount numbers specifically still render without crashing.
@@ -248,7 +248,7 @@ describe('ReportsView — Inventory Movement tab (aligned InventoryStockMovement
     const row = screen.getByText('Large Cup').closest('tr');
     expect(row).not.toBeNull();
     const rowUtils = within(row as HTMLElement);
-    expect(rowUtils.getByText('Receiving')).toBeInTheDocument();
+    expect(rowUtils.getByText('Deliveries / Received')).toBeInTheDocument();
     expect(rowUtils.getByText('0')).toBeInTheDocument();
     expect(rowUtils.getByText('+500')).toBeInTheDocument();
     expect(rowUtils.getByText('500')).toBeInTheDocument();
@@ -310,7 +310,7 @@ describe('ReportsView — Inventory Movement tab (aligned InventoryStockMovement
 });
 
 function openConsumptionSummaryTab() {
-  fireEvent.mouseDown(screen.getByRole('tab', { name: 'Consumption Summary' }));
+  fireEvent.mouseDown(screen.getByRole('tab', { name: 'Stock Used Summary' }));
 }
 
 describe('ReportsView — Consumption Summary tab (TASK 209.9 mixed-unit total removal)', () => {
@@ -511,7 +511,7 @@ describe('ReportsView — Reports §8/§9/§10 (shift removal, Sold Product Tran
     render(<ReportsView />);
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Sold Product Transactions' }));
     fireEvent.change(screen.getByPlaceholderText('Search receipt number'), { target: { value: 'PC-0002' } });
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Daily Sales' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Daily Sales Report (DSR)' }));
     fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
 
     expect(mutate).toHaveBeenCalledWith(
@@ -596,7 +596,7 @@ describe('ReportsView — export controls (CSV/PDF download fix)', () => {
 // already uses (mocked here as mockUseDiscountAuditTrail), not a new query.
 describe('ReportsView — Discount Compliance tab Customer ID / Reference column', () => {
   function openDiscountComplianceTab() {
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Discount Compliance' }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Discount Report' }));
   }
 
   function mockDiscountedTransaction(overrides: Partial<TransactionResponse> = {}) {
@@ -796,41 +796,132 @@ describe('ReportsView — Daily Sales tab Customer ID / Reference and cashier na
   });
 });
 
-describe('ReportsView — Daily Sales VAT coverage (POS-PERF-P55R3)', () => {
-  const legacy = (id: string, vat: number) => transaction({ id, receipt_number: id, total_amount: 500, vat_amount: vat, discount_type: null, discount_amount: 0 });
-  const manual = (id: string, total: number) =>
-    transaction({ id, receipt_number: id, total_amount: total, calculation_mode: 'manual_total_v1', vat_amount: null, vat_exempt_amount: null, discount_type: null, discount_amount: 0 });
-  function mockPeriod(transactions: TransactionResponse[]) {
-    mockUseTransactions.mockReturnValue({ data: { transactions, total: transactions.length, page: 1, limit: 100 }, isLoading: false, isError: false, refetch: vi.fn() });
-    mockUseDiscountAuditTrail.mockReturnValue({ data: { data: [] }, isLoading: false });
+describe('ReportsView — no visible VAT (POS-PERF-P59)', () => {
+  const legacy = transaction({ id: 'L1', receipt_number: 'L1', total_amount: 500, vat_amount: 53.57, discount_type: null, discount_amount: 0 });
+  const manual = transaction({ id: 'M1', receipt_number: 'M1', total_amount: 450, calculation_mode: 'manual_total_v1', vat_amount: null, vat_exempt_amount: null, discount_type: null, discount_amount: 0 });
+
+  it('legacy and manual-total sales keep their totals, with no VAT card, column or "Not calculated" message', () => {
+    mockUseTransactions.mockReturnValue({ data: { transactions: [legacy, manual], total: 2, page: 1, limit: 100 }, isLoading: false, isError: false, refetch: vi.fn() });
+    render(<ReportsView />);
+    expect(screen.getByText('950')).toBeInTheDocument();
+    for (const gone of ['VAT Collected', 'Without VAT Calculation', 'VAT', 'Not calculated', '53.57']) {
+      expect(screen.queryByText(gone)).not.toBeInTheDocument();
+    }
+    expect(document.body.textContent).not.toMatch(/\bVAT\b|Not calculated/);
+  });
+});
+
+describe('ReportsView — Discount Report (POS-PERF-P59)', () => {
+  const customPwd = () =>
+    transaction({
+      id: 'txn-manual-1',
+      receipt_number: 'PC-M1',
+      discount_type: 'manual',
+      discount_amount: 25,
+      calculation_mode: 'manual_total_v1',
+      vat_amount: null,
+      vat_exempt_amount: null,
+      manual_discount: { discount_type_id: '11111111-1111-4111-8111-111111111111', name: 'PWD', amount: 25, require_proof: true },
+    });
+  const reportRow = (key: string, name: string, count: number, overrides: Record<string, unknown> = {}) => ({
+    branch_id: 'branch-1',
+    branch_name: 'Main',
+    discount_type: key.startsWith('manual') ? 'manual' : key.slice('type:'.length),
+    discount_key: key,
+    discount_name: name,
+    transaction_count: count,
+    total_discount_amount: count * 10,
+    total_vat_exempt_amount: null,
+    proof_required_count: 0,
+    proof_available_count: 0,
+    proof_missing_count: 0,
+    proof_unknown_count: 0,
+    ...overrides,
+  });
+
+  function asSupervisor() {
+    mockUseAuthStore.mockImplementation((selector: (s: { user: { id: string; role: string } }) => unknown) => selector({ user: { id: 'supervisor-1', role: 'supervisor' } }));
   }
-  const card = (title: string) => screen.getByText(title).closest('.app-kpi-card') as HTMLElement;
 
-  it('a legacy-only period shows the VAT total with no exclusion note and no manual-total card', () => {
-    mockPeriod([legacy('L1', 53.57), legacy('L2', 53.57)]);
+  it('a custom type named PWD shows PWD, never the word Manual, on the Daily Sales and Discount tabs', () => {
+    asSupervisor();
+    mockUseTransactions.mockReturnValue({ data: { transactions: [customPwd()], total: 1, page: 1, limit: 100 }, isLoading: false, isError: false, refetch: vi.fn() });
     render(<ReportsView />);
-    expect(within(card('VAT Collected')).getByText('107.14')).toBeInTheDocument();
-    expect(screen.queryByText(/excludes/i)).not.toBeInTheDocument();
-    expect(screen.queryByText('Without VAT Calculation')).not.toBeInTheDocument();
+    expect(within(screen.getByText('PC-M1').closest('tr') as HTMLElement).getByText('PWD')).toBeInTheDocument();
+    expect(screen.queryByText('Manual')).not.toBeInTheDocument();
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Discount Report' }));
+    expect(within(screen.getByText('PC-M1').closest('tr') as HTMLElement).getByText('PWD')).toBeInTheDocument();
+    expect(screen.queryByText('Manual')).not.toBeInTheDocument();
   });
 
-  it('a manual-only period never shows ₱0 VAT: "Not calculated", and the manual-total sales are shown with their amount', () => {
-    mockPeriod([manual('M1', 500), manual('M2', 450)]);
+  it('a manual sale with no saved name reads Unspecified discount: no guess from the amount or proof', () => {
+    mockUseTransactions.mockReturnValue({
+      data: { transactions: [transaction({ id: 'old', receipt_number: 'PC-OLD', discount_type: 'manual', discount_amount: 25, has_discount_proof: true, manual_discount: null })], total: 1, page: 1, limit: 100 },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
     render(<ReportsView />);
-    const vat = card('VAT Collected');
-    expect(within(vat).getByText('Not calculated')).toBeInTheDocument();
-    expect(within(vat).queryByText('0')).not.toBeInTheDocument();
-    const without = card('Without VAT Calculation');
-    expect(within(without).getByText('950')).toBeInTheDocument();
-    expect(within(without).getByText(/2 manual-total sales/)).toBeInTheDocument();
+    expect(within(screen.getByText('PC-OLD').closest('tr') as HTMLElement).getByText('Unspecified discount')).toBeInTheDocument();
   });
 
-  it('a mixed period says, visibly, that its VAT figure excludes the manual-total sales', () => {
-    mockPeriod([legacy('L1', 53.57), manual('M1', 500)]);
+  it('has no fixed PWD/Senior cards, and a historical statutory sale keeps its own label', () => {
+    mockUseTransactions.mockReturnValue({
+      data: { transactions: [transaction({ id: 's1', receipt_number: 'PC-S1', discount_type: 'senior_citizen', discount_amount: 20 })], total: 1, page: 1, limit: 100 },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    mockUseDiscountComplianceReport.mockReturnValue({ data: { data: [reportRow('type:senior_citizen', 'Senior Citizen', 1)] }, isLoading: false });
     render(<ReportsView />);
-    const vat = card('VAT Collected');
-    expect(within(vat).getByText('53.57')).toBeInTheDocument();
-    expect(within(vat).getByText('VAT-calculated sales only — excludes 1 manual-total sale')).toBeInTheDocument();
-    expect(within(card('Without VAT Calculation')).getByText('500')).toBeInTheDocument();
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Discount Report' }));
+    expect(screen.getByText('Total Discounted Transactions')).toBeInTheDocument();
+    expect(screen.getByText('Total Discount Amount')).toBeInTheDocument();
+    expect(screen.queryByText('PWD Discounts')).not.toBeInTheDocument();
+    expect(screen.queryByText('Senior Citizen Discounts')).not.toBeInTheDocument();
+    expect(within(screen.getByText('PC-S1').closest('tr') as HTMLElement).getByText('Senior Citizen')).toBeInTheDocument();
+  });
+
+  it('the type breakdown, its filter and the export all use the discount identity', () => {
+    asSupervisor();
+    const mutate = vi.fn();
+    mockUseRequestExport.mockReturnValue({ mutate, isPending: false });
+    mockUseDiscountComplianceReport.mockReturnValue({
+      data: {
+        data: [
+          reportRow('manual:aaaaaaaa-1111-4111-8111-111111111111', 'PWD', 2, { discount_other_names: ['PWD 2025'] }),
+          reportRow('manual:bbbbbbbb-1111-4111-8111-111111111111', 'Loyalty', 3),
+        ],
+      },
+      isLoading: false,
+    });
+    render(<ReportsView />);
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Discount Report' }));
+
+    // Both rows, with the historical name still visible after a rename.
+    expect(screen.getByText('PWD')).toBeInTheDocument();
+    expect(screen.getByText('Also saved as: PWD 2025')).toBeInTheDocument();
+    expect(screen.getByText('Loyalty')).toBeInTheDocument();
+    // No hidden server filter yet.
+    expect(mockUseTransactions).toHaveBeenCalledWith(expect.objectContaining({ discounted_only: 'true', discount_key: undefined }));
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Discount Type' }));
+    fireEvent.click(screen.getByRole('option', { name: 'Loyalty' }));
+
+    expect(mockUseTransactions).toHaveBeenCalledWith(expect.objectContaining({ discounted_only: 'true', discount_key: 'manual:bbbbbbbb-1111-4111-8111-111111111111' }));
+    expect(screen.queryByText('Also saved as: PWD 2025')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /csv/i }));
+    expect(mutate.mock.calls[0]?.[0]).toMatchObject({ report_type: 'DISCOUNT_COMPLIANCE', filters: { discount_key: 'manual:bbbbbbbb-1111-4111-8111-111111111111' } });
+  });
+
+  it('only the Discount tab sends the type filter on export', () => {
+    const mutate = vi.fn();
+    mockUseRequestExport.mockReturnValue({ mutate, isPending: false });
+    mockUseDiscountComplianceReport.mockReturnValue({ data: { data: [reportRow('type:pwd', 'PWD', 1)] }, isLoading: false });
+    render(<ReportsView />);
+    fireEvent.click(screen.getByRole('button', { name: /csv/i }));
+    expect(mutate.mock.calls[0]?.[0]).toMatchObject({ report_type: 'DAILY_SALES' });
+    expect(mutate.mock.calls[0]?.[0].filters.discount_key).toBeUndefined();
   });
 });

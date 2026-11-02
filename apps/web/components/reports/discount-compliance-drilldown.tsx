@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import type { ColumnDef, PaginationState } from '@tanstack/react-table';
-import type { DiscountAuditTransactionRow } from '@potato-corner/shared';
+import { DISCOUNT_PROOF_REQUIREMENT_LABELS, discountDisplayName, type DiscountAuditTransactionRow } from '@potato-corner/shared';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -12,13 +12,6 @@ import { ViewDiscountProofDialog } from '@/components/shared/transactions/view-d
 import { formatCurrency } from '@/lib/utils';
 import { useDiscountAuditTrail } from '@/hooks/queries/use-transactions';
 import { useEmployees } from '@/hooks/queries/use-employees';
-
-function humanizeSnake(value: string): string {
-  return value
-    .split('_')
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ');
-}
 
 function formatDateTime(iso: string): string {
   return new Date(iso).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Manila' });
@@ -30,13 +23,16 @@ interface DiscountComplianceDrilldownProps {
   branchId: string | null;
   branchName: string;
   discountType: string | null;
+  /** POS-PERF-P59 — the row's identity (one type at one branch) and saved name. Absent from an older API's row. */
+  discountKey?: string | null;
+  discountName?: string | null;
   dateFrom: string;
   dateTo: string;
 }
 
 /**
  * Task 209.16 — every PWD/Senior Citizen (or other discount-type) transaction
- * behind one Discount Compliance summary row, reusing the existing
+ * behind one Discount Report summary row, reusing the existing
  * GET /api/transactions/discount-audit endpoint (transactionsService.
  * getDiscountAuditTrail) that already exists and is already role-gated to
  * super_admin/supervisor — this just wires it into the Admin Reports UI,
@@ -50,6 +46,8 @@ export function DiscountComplianceDrilldown({
   branchId,
   branchName,
   discountType,
+  discountKey,
+  discountName,
   dateFrom,
   dateTo,
 }: DiscountComplianceDrilldownProps) {
@@ -57,7 +55,7 @@ export function DiscountComplianceDrilldown({
   const [proofTransactionId, setProofTransactionId] = useState<string | null>(null);
 
   const { data, isLoading, isError, refetch } = useDiscountAuditTrail(
-    { branchId: branchId ?? undefined, discountType: discountType ?? undefined, dateFrom, dateTo, page: 1, limit: 100 },
+    { branchId: branchId ?? undefined, discountType: discountType ?? undefined, discountKey: discountKey ?? undefined, dateFrom, dateTo, page: 1, limit: 100 },
     open,
   );
 
@@ -75,7 +73,11 @@ export function DiscountComplianceDrilldown({
     {
       id: 'discount_type',
       header: 'Discount Type',
-      cell: ({ row }) => (row.original.discountType ? <Badge variant="secondary">{humanizeSnake(row.original.discountType)}</Badge> : '—'),
+      // POS-PERF-P59 — the name saved on this sale, which may differ from the row's after a rename.
+      cell: ({ row }) => {
+        const name = row.original.discountName ?? discountDisplayName(row.original.discountType, null);
+        return name ? <Badge variant="secondary">{name}</Badge> : '—';
+      },
     },
     {
       id: 'discount_rate_used',
@@ -90,6 +92,11 @@ export function DiscountComplianceDrilldown({
       cell: ({ row }) => row.original.discountCustomerId ?? '—',
     },
     { id: 'discount_amount', header: 'Discount Amount', cell: ({ row }) => formatCurrency(row.original.discountAmount) },
+    {
+      id: 'proof_requirement',
+      header: 'Proof Requirement',
+      cell: ({ row }) => DISCOUNT_PROOF_REQUIREMENT_LABELS[row.original.discountProofRequirement ?? 'unknown'],
+    },
     {
       id: 'proof',
       header: 'Proof Available',
@@ -111,7 +118,7 @@ export function DiscountComplianceDrilldown({
         <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-4xl">
           <SheetHeader>
             <SheetTitle>
-              Discount Transactions — {branchName} — {discountType ? humanizeSnake(discountType) : 'All types'}
+              Discount Transactions — {branchName} — {discountName ?? discountDisplayName(discountType, null) ?? 'All types'}
             </SheetTitle>
           </SheetHeader>
 

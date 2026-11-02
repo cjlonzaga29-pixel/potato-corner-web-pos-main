@@ -68,6 +68,9 @@ export interface ReportFilters {
   paymentMethod?: 'cash' | 'gcash' | 'maya' | 'other';
   status?: 'completed' | 'voided' | 'refunded';
   search?: string;
+  // POS-PERF-P59 — Discount Report's type filter, plus its transaction-level export's discounted-only scope.
+  discountKey?: string;
+  discountedOnly?: boolean;
 }
 
 export interface ExportRequest {
@@ -120,6 +123,10 @@ export type DailySalesTransactionRow = {
   tax_calculation?: string | null;
   discount_amount: number;
   discount_type: string | null;
+  // POS-PERF-P59 — what exports print (discountDisplayName); discount_type stays the raw code.
+  discount_name?: string | null;
+  discount_key?: string | null;
+  discount_proof_requirement?: string | null;
   // Task 209.xx — the configured percentage actually applied at sale time
   // (Transaction.discountRateUsed), frozen forever; never today's Discount
   // Settings value. Null for no-discount rows and for legacy sales predating

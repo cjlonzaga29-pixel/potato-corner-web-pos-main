@@ -2,13 +2,12 @@
 
 import { useEffect, useState } from 'react';
 import { CheckCircle2, Loader2, Printer } from 'lucide-react';
-import type { TransactionResponse } from '@potato-corner/shared';
+import { discountReceiptLabel, type TransactionResponse } from '@potato-corner/shared';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { useMarkReceiptPrinted } from '@/hooks/queries/use-transactions';
 import { useEmployee } from '@/hooks/queries/use-employees';
-import { ReceiptTaxLines } from './receipt-tax-lines';
 
 function formatPeso(amount: number): string {
   return `₱${amount.toFixed(2)}`;
@@ -21,30 +20,13 @@ const PAYMENT_METHOD_LABEL: Record<TransactionResponse['payment_method'], string
   other: 'Other',
 };
 
-const DISCOUNT_TYPE_LABEL: Record<string, string> = {
-  pwd: 'PWD',
-  senior_citizen: 'Senior Citizen',
-  employee: 'Employee',
-  manager_override: 'Manager Override',
-  promotional: 'Promotional',
-};
-
 /**
  * Task 209.xx — always the rate FROZEN on this transaction (discount_rate_used),
- * never today's Discount Settings value, so an old receipt keeps showing the
- * percentage that was actually charged even after a supervisor changes the
- * configured rate.
+ * never today's Discount Settings value. POS-PERF-P59 — a manual discount shows
+ * the type name saved on the sale, never the live type or the word Manual.
  */
 function discountLabel(transaction: TransactionResponse): string {
-  const type = transaction.discount_type;
-  if (!type) return 'Discount';
-  // POS-PERF-P55 — the type name frozen on the sale, never the live type.
-  if (type === 'manual') return transaction.manual_discount ? `${transaction.manual_discount.name} discount` : 'Discount';
-  // POS-PERF-P55R3 (Release 1) — a type this build does not know (a newer
-  // API's) is shown as a plain "Discount", never as its raw code.
-  const name = DISCOUNT_TYPE_LABEL[type];
-  if (!name) return 'Discount';
-  return transaction.discount_rate_used != null ? `${name} Discount (${transaction.discount_rate_used}%)` : `${name} Discount`;
+  return discountReceiptLabel(transaction.discount_type, transaction.manual_discount?.name, transaction.discount_rate_used);
 }
 
 interface ReceiptModalProps {
@@ -156,7 +138,6 @@ export function ReceiptModal({ transaction, onClose }: ReceiptModalProps) {
                 <span className="tabular-nums">-{formatPeso(transaction.discount_amount)}</span>
               </div>
             )}
-            <ReceiptTaxLines sale={transaction} />
             <div className="flex justify-between border-t pt-1 font-semibold">
               <span>Total</span>
               <span className="tabular-nums">{formatPeso(transaction.total_amount)}</span>

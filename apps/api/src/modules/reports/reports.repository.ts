@@ -1,7 +1,14 @@
 import { Prisma, type $Enums } from '@prisma/client';
 import {
+  discountDisplayName,
+  discountIdentityKey,
+  discountProofRequirement,
+  DISCOUNT_PROOF_REQUIREMENT_LABELS,
   isVatExemptDiscountType,
+  proofCompletionPercent,
+  readManualDiscountEvidence,
   resolveCalculationMode,
+  MANUAL_DISCOUNT_TYPE,
   MANUAL_TOTAL_CALCULATION,
   TAX_NOT_CALCULATED_LABEL,
   type SaleCalculationMode,
@@ -13,6 +20,7 @@ import { universalInventoryRepository } from '../universal-inventory/universal-i
 import { convertQuantity, UnitConversionError } from '../product-components/unit-conversion.util.js';
 import { computeFinancialMetrics } from '../../lib/financial-metrics.js';
 import { decryptField } from '../../lib/encryption.js';
+import { discountKeyWhere } from '../../lib/discount-key-where.js';
 import type {
   ReportFilters,
   ReportType,
@@ -383,6 +391,8 @@ export const reportsRepository = {
         ...(filters.cashierId && { cashierId: filters.cashierId }),
         ...(filters.paymentMethod && { paymentMethod: filters.paymentMethod }),
         ...(filters.search && { transactionNumber: { contains: filters.search, mode: 'insensitive' } }),
+        ...(filters.discountedOnly && { discountType: { not: null } }),
+        ...discountKeyWhere(filters.discountKey),
       },
       select: {
         id: true,
@@ -394,6 +404,8 @@ export const reportsRepository = {
         discountAmount: true,
         discountType: true,
         discountRateUsed: true,
+        manualDiscountTypeId: true,
+        manualDiscountSnapshot: true,
         createdAt: true,
         cashier: { select: { firstName: true, lastName: true } },
         branch: { select: { name: true } },
@@ -429,6 +441,7 @@ export const reportsRepository = {
       }
       // POS-PERF-P55R2 — no VAT figure for a manual-total sale (blank, not 0).
       const isManualTotal = resolveCalculationMode(row.calculationMode) === MANUAL_TOTAL_CALCULATION;
+      const evidence = readManualDiscountEvidence(row.manualDiscountSnapshot);
       return {
         transaction_id: row.id,
         receipt_number: row.transactionNumber,
@@ -438,6 +451,10 @@ export const reportsRepository = {
         tax_calculation: isManualTotal ? TAX_NOT_CALCULATED_LABEL : null,
         discount_amount: row.discountAmount.toNumber(),
         discount_type: row.discountType,
+        // POS-PERF-P59 — from the saved sale only, never the current type.
+        discount_name: discountDisplayName(row.discountType, evidence.name),
+        discount_key: row.discountType ? discountIdentityKey(row.discountType, row.manualDiscountTypeId) : null,
+        discount_proof_requirement: row.discountType ? DISCOUNT_PROOF_REQUIREMENT_LABELS[discountProofRequirement(row.discountType, evidence.require_proof)] : null,
         discount_rate_used: row.discountRateUsed?.toNumber() ?? null,
         discount_id_reference: discountIdReference,
         created_at: row.createdAt.toISOString(),
@@ -565,58 +582,104 @@ export const reportsRepository = {
     return [...voided.map(mapVoidRefundRow), ...refunded.map(mapVoidRefundRow)];
   },
 
-  async getDiscountCompliance(filters: ReportFilters): Promise<DiscountComplianceReportRow[]> {
+  async getDiscountCompliance(filters: ReportFilters): Promise<Array<DiscountComplianceReportRow & { proof_completion_label: string }>> {
     const range = dateRangeFilter(filters);
+    // POS-PERF-P59 — read per sale, not a groupBy: the name and the proof
+    // requirement are inside the saved JSON snapshot. Newest first, so the first
+    // name seen for a type is the one its row shows.
     const [rows, branches] = await Promise.all([
-      prisma.transaction.groupBy({
-        by: ['branchId', 'discountType', 'calculationMode'],
-        where: { discountType: { not: null }, status: 'completed', ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) },
-        _count: { _all: true },
-        _sum: { discountAmount: true, vatExemptAmount: true, totalAmount: true },
+      prisma.transaction.findMany({
+        where: {
+          discountType: { not: null },
+          status: 'completed',
+          ...(filters.branchId && { branchId: filters.branchId }),
+          ...(range && { createdAt: range }),
+          ...discountKeyWhere(filters.discountKey),
+        },
+        select: {
+          branchId: true,
+          discountType: true,
+          calculationMode: true,
+          manualDiscountTypeId: true,
+          manualDiscountSnapshot: true,
+          discountProofKey: true,
+          discountAmount: true,
+          vatExemptAmount: true,
+          totalAmount: true,
+        },
+        orderBy: { createdAt: 'desc' },
       }),
       prisma.branch.findMany({ select: { id: true, name: true } }),
     ]);
     const branchNameById = new Map(branches.map((b) => [b.id, b.name]));
-    // POS-PERF-P55R2 — one row per branch, discount type and calculation.
+    // One row per branch, discount identity and calculation (POS-PERF-P55R2).
     // NULL (recorded before P55R2) and 'legacy_vat_v1' are the same VAT
     // calculation, so they are merged and historical rows read as before.
-    const merged = new Map<string, DiscountComplianceReportRow & { calculation_mode: SaleCalculationMode }>();
+    const merged = new Map<string, DiscountComplianceReportRow & { calculation_mode: SaleCalculationMode; discount_other_names: string[] }>();
     for (const row of rows) {
       if (row.discountType === null) continue;
       const calculationMode = resolveCalculationMode(row.calculationMode);
-      const key = `${row.branchId}|${row.discountType}|${calculationMode}`;
+      const discountKey = discountIdentityKey(row.discountType, row.manualDiscountTypeId);
+      const key = `${row.branchId}|${discountKey}|${calculationMode}`;
+      const evidence = readManualDiscountEvidence(row.manualDiscountSnapshot);
+      const name = discountDisplayName(row.discountType, evidence.name) ?? '';
       const existing = merged.get(key) ?? {
         branch_id: row.branchId,
         branch_name: branchNameById.get(row.branchId) ?? 'Unknown Branch',
         discount_type: row.discountType,
+        discount_key: discountKey,
+        discount_type_id: row.discountType === MANUAL_DISCOUNT_TYPE ? row.manualDiscountTypeId : null,
+        discount_name: name,
+        discount_other_names: [],
         calculation_mode: calculationMode,
         transaction_count: 0,
         total_discount_amount: 0,
         total_vat_exempt_amount: 0,
         total_vat_exempt_sales: 0,
+        proof_required_count: 0,
+        proof_available_count: 0,
+        proof_missing_count: 0,
+        proof_unknown_count: 0,
       };
-      existing.transaction_count += row._count._all;
-      existing.total_discount_amount = round2(existing.total_discount_amount + (row._sum.discountAmount?.toNumber() ?? 0));
+      if (name !== existing.discount_name && !existing.discount_other_names.includes(name)) existing.discount_other_names.push(name);
+      existing.transaction_count += 1;
+      existing.total_discount_amount = round2(existing.total_discount_amount + row.discountAmount.toNumber());
+      const hasProof = row.discountProofKey !== null;
+      const requirement = discountProofRequirement(row.discountType, evidence.require_proof);
+      if (requirement === 'required') {
+        existing.proof_required_count = (existing.proof_required_count ?? 0) + 1;
+        if (hasProof) existing.proof_available_count = (existing.proof_available_count ?? 0) + 1;
+        else existing.proof_missing_count = (existing.proof_missing_count ?? 0) + 1;
+      } else if (requirement === 'unknown') {
+        existing.proof_unknown_count = (existing.proof_unknown_count ?? 0) + 1;
+      }
       if (calculationMode === MANUAL_TOTAL_CALCULATION) {
         // VAT was not calculated: no non-VATable or VAT-exempt figure exists.
         existing.total_vat_exempt_amount = null;
         existing.total_vat_exempt_sales = null;
       } else {
-        existing.total_vat_exempt_amount = round2((existing.total_vat_exempt_amount ?? 0) + (row._sum.vatExemptAmount?.toNumber() ?? 0));
+        existing.total_vat_exempt_amount = round2((existing.total_vat_exempt_amount ?? 0) + row.vatExemptAmount.toNumber());
         // POS-PERF-P50 — a PWD/Senior sale is VAT-exempt in full, but its
         // vatExemptAmount only holds the VAT-cap overflow (usually 0), so the
         // exempt-sales figure comes from the stored totals instead. Stored
         // amounts only — never recomputed from current settings.
         existing.total_vat_exempt_sales = isVatExemptDiscountType(row.discountType)
-          ? round2((existing.total_vat_exempt_sales ?? 0) + (row._sum.totalAmount?.toNumber() ?? 0))
+          ? round2((existing.total_vat_exempt_sales ?? 0) + row.totalAmount.toNumber())
           : 0;
       }
       merged.set(key, existing);
     }
-    return [...merged.values()].map((row) => ({
-      ...row,
-      tax_calculation: row.calculation_mode === MANUAL_TOTAL_CALCULATION ? TAX_NOT_CALCULATED_LABEL : null,
-    }));
+    return [...merged.values()]
+      .map((row) => {
+        const completion = proofCompletionPercent(row.proof_required_count ?? 0, row.proof_available_count ?? 0);
+        return {
+          ...row,
+          tax_calculation: row.calculation_mode === MANUAL_TOTAL_CALCULATION ? TAX_NOT_CALCULATED_LABEL : null,
+          proof_completion_percent: completion,
+          proof_completion_label: completion === null ? 'N/A' : `${completion}%`,
+        };
+      })
+      .sort((x, y) => x.branch_name.localeCompare(y.branch_name) || (x.discount_name ?? '').localeCompare(y.discount_name ?? ''));
   },
 
   async getPaymentMethodMix(filters: ReportFilters): Promise<PaymentMethodMixReportRow[]> {

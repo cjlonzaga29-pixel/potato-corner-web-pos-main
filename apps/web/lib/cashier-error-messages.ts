@@ -75,7 +75,7 @@ const TITLES: Record<string, string> = {
   PROMOTION_CHANGED: 'Promotion changed — not charged',
   PROMOTION_NOT_COMBINABLE: 'Promotion not combinable — not charged',
   PROMOTION_OFFLINE_UNSUPPORTED: 'Promotion not allowed offline — not recorded',
-  TAX_SETTINGS_CHANGED: 'Discount or VAT settings changed — not recorded',
+  TAX_SETTINGS_CHANGED: 'Discount settings changed — not recorded',
   DISCOUNT_CHOICE_REQUIRED: 'Choose a discount or “No applicable discount” — not charged',
   DISCOUNT_CHOICE_CONFLICT: 'Two discount choices — not charged',
   MANUAL_DISCOUNT_TYPE_UNAVAILABLE: 'Discount type no longer offered — not charged',

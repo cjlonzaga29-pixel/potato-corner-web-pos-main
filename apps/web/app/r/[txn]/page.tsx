@@ -7,29 +7,15 @@ import { StatusBadge } from '@/components/shared/status-badge';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { ErrorState } from '@/components/shared/feedback/error-state';
 import { usePublicReceipt, type PublicReceipt } from '@/hooks/queries/use-receipts';
-import { ReceiptTaxLines } from '@/components/pos/receipt-tax-lines';
+import { discountReceiptLabel } from '@potato-corner/shared';
 
 function formatPeso(amount: number): string {
   return `₱${amount.toFixed(2)}`;
 }
 
-const DISCOUNT_TYPE_LABEL: Record<string, string> = {
-  pwd: 'PWD',
-  senior_citizen: 'Senior Citizen',
-  employee: 'Employee',
-  manager_override: 'Manager Override',
-  promotional: 'Promotional',
-  manual: 'Manual',
-};
-
-/** Task 209.xx — always the rate frozen on this transaction, never today's Discount Settings value; matches receipt-modal.tsx's same-purpose helper. */
+/** Task 209.xx — always the rate frozen on this transaction, never today's Discount Settings value. POS-PERF-P59 — same rule as receipt-modal.tsx. */
 function discountLabel(receipt: PublicReceipt): string {
-  const type = receipt.discount_type;
-  if (!type) return 'Discount';
-  // POS-PERF-P55 — the type name frozen on the sale (e.g. "Employee"), not the live type.
-  if (type === 'manual') return receipt.manual_discount_name ? `${receipt.manual_discount_name} discount` : 'Discount';
-  const name = DISCOUNT_TYPE_LABEL[type] ?? type;
-  return receipt.discount_rate_used != null ? `${name} Discount (${receipt.discount_rate_used}%)` : `${name} Discount`;
+  return discountReceiptLabel(receipt.discount_type, receipt.manual_discount_name, receipt.discount_rate_used);
 }
 
 /** Public, unauthenticated e-receipt view — destination of the link/QR code printed on a physical receipt. transaction_number IS the receipt number, used as-is in the URL. */
@@ -106,7 +92,6 @@ export default function PublicReceiptPage() {
                   <span className="tabular-nums">-{formatPeso(receipt.discount_amount)}</span>
                 </div>
               )}
-              <ReceiptTaxLines sale={receipt} />
               <div className="flex justify-between border-t pt-1 font-semibold">
                 <span>Total</span>
                 <span className="tabular-nums">{formatPeso(receipt.total_amount)}</span>

@@ -8,7 +8,7 @@ import type { InventoryStockMovementType } from '@potato-corner/shared';
  * underscore-joined values (e.g. "ADJUSTMENT_IN" -> "ADJUSTMENT IN").
  */
 export const MOVEMENT_TYPE_LABELS: Record<InventoryStockMovementType, string> = {
-  RECEIVING: 'Receiving',
+  RECEIVING: 'Deliveries / Received',
   ADJUSTMENT_IN: 'Adjustment (In)',
   ADJUSTMENT_OUT: 'Adjustment (Out)',
   WASTE: 'Waste',

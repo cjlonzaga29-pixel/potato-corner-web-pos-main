@@ -2108,7 +2108,7 @@ export default function TerminalPage() {
     if (isChargeInFlight) return 'Checkout is already processing.';
     if (optionRecovery?.status === 'checking') return 'Checking the current product options…';
     if (taxNotice?.status === 'checking') return 'Loading the current discount settings…';
-    if (taxNotice?.buildMismatch) return 'This terminal uses an outdated VAT rate. Reload the page before charging.';
+    if (taxNotice?.buildMismatch) return 'This terminal uses outdated settings. Reload the page before charging.';
     if (cartOptionIssueCount > 0) return 'Update the items marked in the order before charging.';
     if (stockValidation.status === 'checking' || stockValidation.pendingKeys.size > 0) return 'Checking stock for the latest cart changes…';
     if (!isClockedIn) return 'Clock in before completing a sale.';
@@ -3514,9 +3514,9 @@ export default function TerminalPage() {
   // cashier is now looking at, recomputed with the current rates.
   const taxRecoveryNotice = taxNotice ? (
     <div role="status" data-testid="tax-settings-change-notice" className="mb-3 space-y-1.5 rounded-lg border border-amber-500/40 bg-amber-50 p-3 text-xs dark:bg-amber-950/20">
-      <p className="font-semibold">VAT or discount settings changed — the sale was not charged. Your cart is kept.</p>
+      <p className="font-semibold">Discount settings changed — the sale was not charged. Your cart is kept.</p>
       {taxNotice.buildMismatch && (
-        <p className="font-semibold text-destructive">This terminal&apos;s VAT rate is out of date. Reload the page, then ring the sale again.</p>
+        <p className="font-semibold text-destructive">This terminal&apos;s settings are out of date. Reload the page, then ring the sale again.</p>
       )}
       {taxNotice.status === 'checking' && (
         <p className="flex items-center gap-2">
@@ -3560,7 +3560,6 @@ export default function TerminalPage() {
         ) : null
       }
       subtotal={subtotal}
-      vatAmount={vatAmount}
       discountAmount={discountAmount}
       totalAmount={totalAmount}
       discountType={discountType}

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { SALE_CALCULATION_MODES } from '../tax/sale-tax.js';
 import { REPORT_TYPE, TRANSACTION_STATUS, PAYMENT_METHOD, type ReportType, type TransactionStatus, type PaymentMethod } from '../constants/status.js';
 import { MAX_LIST_LIMIT } from '../constants/pagination.js';
+import { discountKeySchema } from '../discounts/discount-display.js';
 
 const reportTypeValues = Object.values(REPORT_TYPE) as [ReportType, ...ReportType[]];
 const transactionStatusValues = Object.values(TRANSACTION_STATUS) as [TransactionStatus, ...TransactionStatus[]];
@@ -30,8 +31,24 @@ export const ReportFiltersSchema = z.object({
   payment_method: z.enum(paymentMethodValues).optional(),
   status: z.enum(transactionStatusValues).optional(),
   search: z.string().max(100).optional(),
+  // POS-PERF-P59 — Discount Report's type filter (see discountIdentityKey). Other reports ignore it.
+  discount_key: discountKeySchema.optional(),
 });
 export type ReportFiltersInput = z.infer<typeof ReportFiltersSchema>;
+
+/** POS-PERF-P59 — the user-facing name of a report. The report_type code and its URL stay as they were. */
+const REPORT_TYPE_DISPLAY_NAMES: Partial<Record<ReportType, string>> = {
+  DAILY_SALES: 'Daily Sales Report (DSR)',
+  DISCOUNT_COMPLIANCE: 'Discount Report',
+  INVENTORY_CONSUMPTION_SUMMARY: 'Stock Used Summary Report',
+};
+
+export function reportTypeDisplayName(reportType: ReportType): string {
+  const named = REPORT_TYPE_DISPLAY_NAMES[reportType];
+  if (named) return named;
+  const words = reportType.split('_').map((word) => word.charAt(0) + word.slice(1).toLowerCase());
+  return `${words.join(' ')} Report`;
+}
 
 export const ExportRequestSchema = z.object({
   report_type: z.enum(reportTypeValues),
@@ -167,6 +184,21 @@ export const DiscountComplianceReportRowSchema = z.object({
    * discount types. Optional only because an older API omits it.
    */
   total_vat_exempt_sales: z.number().nullable().optional(),
+  /** POS-PERF-P59 — group and filter by this (discountIdentityKey), never by name. Optional only because an older API omits them. */
+  discount_key: z.string().optional(),
+  /** The manual type's id; null for anything else, or a manual sale with no saved type. */
+  discount_type_id: z.string().nullable().optional(),
+  /** The saved name on the newest sale in this row (discountDisplayName). */
+  discount_name: z.string().optional(),
+  /** Other saved names of this same type in the period, after a rename. */
+  discount_other_names: z.array(z.string()).optional(),
+  /** From each sale's saved evidence (discountProofRequirement): sales that required proof, those with and without it, and sales where nothing saved says. */
+  proof_required_count: z.number().int().optional(),
+  proof_available_count: z.number().int().optional(),
+  proof_missing_count: z.number().int().optional(),
+  proof_unknown_count: z.number().int().optional(),
+  /** proofCompletionPercent: null means N/A (no sale in this row required proof). */
+  proof_completion_percent: z.number().nullable().optional(),
 });
 export type DiscountComplianceReportRow = z.infer<typeof DiscountComplianceReportRowSchema>;
 

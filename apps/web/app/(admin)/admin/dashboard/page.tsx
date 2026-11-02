@@ -115,7 +115,7 @@ function AdminDashboardPageContent() {
           tooltip="Expenses recorded for the Manila business day, across every branch in scope."
         />
         <KpiCard
-          title="Staff Clocked In"
+          title="Crew on Duty"
           value={staffClockedIn ?? 0}
           isLoading={isLoadingBranchStats}
           icon={Users}

@@ -2,6 +2,7 @@ import type { Prisma } from '@prisma/client';
 import type { ImageProofType, PaymentMethod } from '@potato-corner/shared';
 import { prisma } from '../../lib/prisma.js';
 import { resolveDateRangeBoundary } from '../../lib/manila-time.js';
+import { discountKeyWhere } from '../../lib/discount-key-where.js';
 import type { TransactionListFilters } from './transactions.types.js';
 import type { DiscountAuditFilters } from './transactions.types.js';
 import type { PromotionLineSnapshot } from '../discounts/discounts.types.js';
@@ -136,6 +137,8 @@ function buildListWhere(filters: TransactionListFilters): Prisma.TransactionWher
     ...(filters.status && { status: filters.status }),
     ...(filters.paymentMethod && { paymentMethod: filters.paymentMethod }),
     ...(filters.receiptSearch && { transactionNumber: { contains: filters.receiptSearch, mode: 'insensitive' as const } }),
+    ...(filters.discountedOnly && { discountType: { not: null } }),
+    ...discountKeyWhere(filters.discountKey),
     ...((filters.dateFrom || filters.dateTo) && {
       createdAt: {
         // dateFrom/dateTo are bare Manila business dates (YYYY-MM-DD) —
@@ -179,6 +182,7 @@ export const transactionsRepository = {
       status: 'completed',
       ...(filters.branchIds !== 'all' ? { branchId: { in: filters.branchIds } } : {}),
       ...(filters.discountType ? { discountType: filters.discountType } : {}),
+      ...discountKeyWhere(filters.discountKey),
       ...(filters.dateFrom || filters.dateTo
         ? {
             createdAt: {
@@ -199,6 +203,8 @@ export const transactionsRepository = {
           discountType: true,
           discountAmount: true,
           discountRateUsed: true,
+          manualDiscountTypeId: true,
+          manualDiscountSnapshot: true,
           discountCustomerIdEncrypted: true,
           discountCustomerIdHash: true,
           // Task 209.16 — existence flag + capture mode for the Discount

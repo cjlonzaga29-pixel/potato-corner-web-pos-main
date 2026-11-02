@@ -145,13 +145,13 @@ afterEach(() => {
 });
 
 describe('BranchDashboardPage', () => {
-  it("renders Today's Expenses and Staff Clocked In from the branch stats row", () => {
+  it("renders Today's Expenses and Crew on Duty from the branch stats row", () => {
     setup(statsRow({ todayExpenses: 175 }));
     render(<BranchDashboardPage />);
 
     expect(screen.getByText("Today's Expenses")).toBeInTheDocument();
     expect(screen.getByText('₱175')).toBeInTheDocument();
-    expect(screen.getByText('Staff Clocked In')).toBeInTheDocument();
+    expect(screen.getByText('Crew on Duty')).toBeInTheDocument();
     expect(screen.getByText('2')).toBeInTheDocument();
   });
 

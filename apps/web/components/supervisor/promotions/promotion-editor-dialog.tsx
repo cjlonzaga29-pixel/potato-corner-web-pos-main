@@ -5,7 +5,6 @@ import { AlertTriangle, Info, Loader2 } from 'lucide-react';
 import {
   createPromotionSchema,
   PRODUCT_CLASSIFICATION_LABELS,
-  VAT_RATE_PERCENT,
   type ProductClassification,
   type PromotionApplicationMode,
   type PromotionDiscountKind,
@@ -344,7 +343,7 @@ export function PromotionEditorDialog({ open, onOpenChange, promotion, allPromot
               <legend className="text-sm font-medium">Products</legend>
               <p className="text-xs text-muted-foreground">
                 {isAutomatic ? 'Only products classified Promotional or Seasonal can be selected. ' : ''}Every size of a selected product is discounted
-                from its own price. Flavor premiums and add-ons are never discounted. Sizes with a VATable price cap cannot be discounted.
+                from its own price. Flavor premiums and add-ons are never discounted. Sizes with a price cap cannot be discounted.
               </p>
               <Input
                 aria-label="Search products"
@@ -437,18 +436,6 @@ export function PromotionEditorDialog({ open, onOpenChange, promotion, allPromot
                 <p className="text-sm text-muted-foreground">Enter the discount to see original, discount and final prices.</p>
               )}
             </section>
-
-            <Alert data-testid="promotion-vat-treatment">
-              <Info className="h-4 w-4" />
-              <AlertTitle>VAT treatment: taxable discount</AlertTitle>
-              <AlertDescription className="space-y-1 text-xs">
-                <p>
-                  The discount comes off the price with VAT; VAT ({VAT_RATE_PERCENT}%) is then charged on what remains. It never makes a sale VAT-exempt and
-                  never adds VAT to an exempt sale. Only the statutory PWD and Senior Citizen discounts are VAT-exempt, and they are set in Settings, not
-                  here.
-                </p>
-              </AlertDescription>
-            </Alert>
 
             <Alert>
               <Info className="h-4 w-4" />

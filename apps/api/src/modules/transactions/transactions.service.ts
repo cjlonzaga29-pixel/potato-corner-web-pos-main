@@ -20,7 +20,10 @@ import {
   resolveCalculationMode,
   LEGACY_VAT_CALCULATION,
   MANUAL_TOTAL_CALCULATION,
-  TAX_NOT_CALCULATED_LABEL,
+  discountDisplayName,
+  discountIdentityKey,
+  discountProofRequirement,
+  readManualDiscountEvidence,
   MANUAL_DISCOUNT_FLOW,
   MANUAL_DISCOUNT_TYPE,
   type ImageProofType,
@@ -1216,7 +1219,7 @@ function assertCalculationMode(data: CreateTransactionData, isManualFlow: boolea
   if (isStatutory && isManualTotal) {
     throw new TransactionError(
       'STATUTORY_DISCOUNT_REQUIRES_TAX_CALCULATION',
-      'The PWD/Senior Citizen discount keeps its statutory VAT-exempt calculation and cannot be charged as a manual total. Reload the POS, then charge again.',
+      'The PWD/Senior Citizen discount keeps its statutory calculation and cannot be charged as a manual total. Reload the POS, then charge again.',
       422,
     );
   }
@@ -1224,7 +1227,7 @@ function assertCalculationMode(data: CreateTransactionData, isManualFlow: boolea
     throw new TransactionError(
       'CALCULATION_MODE_REQUIRED',
       data.isOfflineTransaction
-        ? 'This offline sale was rung by a POS version that calculated VAT for the manual-discount checkout. It was not recorded, so the amount collected was not changed. Ask a supervisor to review it.'
+        ? 'This offline sale was rung by an older POS version that calculated the manual-discount checkout differently. It was not recorded, so the amount collected was not changed. Ask a supervisor to review it.'
         : 'This POS version calculates the sale differently from the server. It was not charged. Reload the POS, then charge again.',
       422,
     );
@@ -1383,8 +1386,8 @@ function assertTaxBasisUnchanged(
   throw new TransactionError(
     'TAX_SETTINGS_CHANGED',
     isOffline
-      ? `This offline sale was rung with ${percent(taxBasis.discountRate)} (VAT ${taxBasis.vatRate}%), but checkout now uses ${percent(currentDiscountRate)} (VAT ${VAT_RATE_PERCENT}%). It was not recorded, so the amount collected was not changed.`
-      : 'VAT or discount settings changed since this total was shown, so the sale was not charged. Confirm the new total, then charge again.',
+      ? `${taxBasis.discountRate === currentDiscountRate ? 'This offline sale was rung under older settings.' : `This offline sale was rung with ${percent(taxBasis.discountRate)}, but checkout now uses ${percent(currentDiscountRate)}.`} It was not recorded, so the amount collected was not changed.`
+      : 'Discount settings changed since this total was shown, so the sale was not charged. Confirm the new total, then charge again.',
     409,
     {
       shown: { vat_rate: taxBasis.vatRate, discount_rate: taxBasis.discountRate },
@@ -2079,6 +2082,8 @@ export const transactionsService = {
         }
       }
 
+      const evidence = readManualDiscountEvidence(row.manualDiscountSnapshot);
+
       // Task 209.16 — built field-by-field rather than `...row` so two raw
       // values never leak into the response: `discountProofKey` (the report's
       // privacy rule is proof existence only, never the storage key — same
@@ -2098,6 +2103,10 @@ export const transactionsService = {
         // of a number.
         discountAmount: row.discountAmount.toNumber(),
         discountRateUsed: row.discountRateUsed?.toNumber() ?? null,
+        // POS-PERF-P59 — from the saved sale only, never the current type.
+        discountName: discountDisplayName(row.discountType, evidence.name),
+        discountKey: row.discountType ? discountIdentityKey(row.discountType, row.manualDiscountTypeId) : null,
+        discountProofRequirement: discountProofRequirement(row.discountType, evidence.require_proof),
         discountCustomerId,
         discountCustomerIdHash: row.discountCustomerIdHash,
         hasDiscountProof: Boolean(row.discountProofKey),
@@ -2233,10 +2242,9 @@ export const transactionsService = {
         payment: humanize(row.paymentMethod),
         reference: row.gcashReference ?? dash,
         subtotal: money(row.subtotal),
-        // POS-PERF-P55R2 — a manual-total sale has no VAT figure (not ₱0.00).
-        vat: resolveCalculationMode(row.calculationMode) === MANUAL_TOTAL_CALCULATION ? TAX_NOT_CALCULATED_LABEL : money(row.vatAmount),
         discount: row.discountAmount.toNumber() > 0 ? money(row.discountAmount) : dash,
-        discount_type: row.discountType ? humanize(row.discountType) : dash,
+        // POS-PERF-P59 — the saved name, not the stored code.
+        discount_type: discountDisplayName(row.discountType, readManualDiscountEvidence(row.manualDiscountSnapshot).name) ?? dash,
         customer_id: customerId,
         total: money(row.totalAmount),
         status: humanize(row.status),

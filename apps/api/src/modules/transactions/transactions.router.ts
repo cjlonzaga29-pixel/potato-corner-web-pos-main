@@ -565,6 +565,8 @@ router.get('/', authenticate, allRoles, requireActiveEmployee, requirePasswordCh
       dateFrom: parsed.data.date_from,
       dateTo: parsed.data.date_to,
       receiptSearch: parsed.data.receipt_search,
+      discountedOnly: parsed.data.discounted_only === 'true',
+      discountKey: parsed.data.discount_key,
       page: parsed.data.page,
       limit: parsed.data.limit,
     });
@@ -662,6 +664,7 @@ router.get('/discount-audit', authenticate, adminOrSupervisor, requirePasswordCh
         discountType: parsed.data.discount_type,
         dateFrom: parsed.data.date_from,
         dateTo: parsed.data.date_to,
+        discountKey: parsed.data.discount_key,
         page: parsed.data.page,
         limit: parsed.data.limit,
       },

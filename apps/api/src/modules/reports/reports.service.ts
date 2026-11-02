@@ -46,6 +46,7 @@ function toWireFilters(filters: ReportFilters) {
     date_to: filters.dateTo?.toISOString(),
     page: filters.page,
     limit: filters.limit,
+    ...(filters.discountKey && { discount_key: filters.discountKey }),
   };
 }
 
@@ -399,7 +400,7 @@ export const reportsService = {
       return { kind: 'file', buffer, filename, contentType };
     }
 
-    // The Supervisor/Branch Reports page's Discount Compliance tab
+    // The Supervisor/Branch Reports page's Discount Report tab
     // (branch-ops/reports-view.tsx) does not render getDiscountCompliance's
     // output — it filters the same per-transaction rows the Daily Sales tab
     // uses (completedTransactions.filter(t => t.discount_type !== null)) to
@@ -410,10 +411,14 @@ export const reportsService = {
     // powers the Daily Sales PDF/CSV above) and DAILY_SALES_TRANSACTION_COLUMNS,
     // filtered to discounted rows, so no new repository query, report type, or
     // column set is introduced. Gated to non-super_admin: Admin's Discount
-    // Compliance CSV/PDF stay on the generic aggregate path below/unchanged.
+    // Report CSV/PDF stay on the generic aggregate path below/unchanged.
     if (reportType === 'DISCOUNT_COMPLIANCE' && requesterRole !== ROLES.SUPER_ADMIN) {
       const resolvedFilters = defaultRealtimeFilters(filters);
-      const rows = (await reportsRepository.getDailySalesTransactions(resolvedFilters)).filter((row) => row.discount_type !== null);
+      // POS-PERF-P59 — filtered in the query, not after it: taking the newest
+      // sales first and filtering afterwards could leave exported rows short of
+      // the totals on screen. The limit is this format's sync ceiling, not the
+      // screen's page size.
+      const rows = await reportsRepository.getDailySalesTransactions({ ...resolvedFilters, discountedOnly: true, limit: SYNC_ROW_LIMIT[format] });
       const filename = buildExportFilename(reportType, format, resolvedFilters);
       const columns = scopeDiscountIdColumn(DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS, requesterRole);
 

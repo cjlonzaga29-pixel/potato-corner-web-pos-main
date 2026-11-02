@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { ColumnDef, PaginationState } from '@tanstack/react-table';
 import type {
   AttendanceResponse,
@@ -10,7 +10,7 @@ import type {
   TransactionResponse,
 } from '@potato-corner/shared';
 import { toast } from 'sonner';
-import { ROLES } from '@potato-corner/shared';
+import { DISCOUNT_PROOF_REQUIREMENT_LABELS, ROLES, reportTypeDisplayName } from '@potato-corner/shared';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -28,8 +28,12 @@ import { ViewPaymentProofDialog } from '@/components/shared/transactions/view-pa
 import { ViewDiscountProofDialog } from '@/components/shared/transactions/view-discount-proof-dialog';
 import { ViewTransactionItemsDialog } from '@/components/shared/transactions/view-transaction-items-dialog';
 import { ViewTransactionDetailDialog } from '@/components/shared/transactions/view-transaction-detail-dialog';
+import { DiscountProofSummary } from '@/components/reports/discount-proof-summary';
+import { ALL_DISCOUNT_TYPES, DiscountTypeFilter } from '@/components/reports/discount-type-filter';
+import { getDiscountBreakdownColumns } from '@/components/reports/discount-type-breakdown-columns';
 import { MOVEMENT_TYPE_LABELS } from '@/lib/inventory-movement-labels';
-import { formatCurrency, formatVatAmount, formatDateTime, formatDuration, formatInventoryQuantity, formatTimeAgo } from '@/lib/utils';
+import { discountTypeOptions, mergeDiscountRows, saleDiscountName, saleProofRequirement, summarizeDiscountProof } from '@/lib/discount-report';
+import { formatCurrency, formatDateTime, formatDuration, formatInventoryQuantity, formatTimeAgo } from '@/lib/utils';
 import { manilaEndOfDayISO, manilaStartOfDayISO } from '@/lib/manila-date';
 import { useAuthStore } from '@/stores/auth.store';
 import { useBranchStore } from '@/stores/branch.store';
@@ -41,6 +45,7 @@ import { useDiscountComplianceReport, useRequestExport, useReportsRealtimeSync }
 
 const DEFAULT_RANGE_DAYS = 7;
 const QUERY_LIMIT = 100;
+const DISCOUNT_DETAIL_PAGE_SIZE = 25;
 const REFRESH_COOLDOWN_SECONDS = 60;
 
 const TAB_TO_REPORT_TYPE: Record<string, ExportRequestInput['report_type']> = {
@@ -70,7 +75,7 @@ const consumptionSummaryColumns: ColumnDef<ConsumptionSummaryRow>[] = [
   { accessorKey: 'inventory_item_name', header: 'Ingredient' },
   {
     id: 'quantity_consumed',
-    header: 'Consumed',
+    header: 'Stock Used',
     cell: ({ row }) => formatInventoryQuantity(row.original.quantity_consumed, row.original.unit),
   },
   { accessorKey: 'movement_count', header: 'Sales Movements' },
@@ -135,12 +140,11 @@ function getDailySalesColumns(
       cell: ({ row }) => <Badge variant="outline">{humanizeSnake(row.original.payment_method)}</Badge>,
     },
     { id: 'total_amount', header: 'Total', cell: ({ row }) => formatCurrency(row.original.total_amount) },
-    { id: 'vat_amount', header: 'VAT', cell: ({ row }) => formatVatAmount(row.original.vat_amount) },
     { id: 'discount_amount', header: 'Discount', cell: ({ row }) => formatCurrency(row.original.discount_amount) },
     {
       id: 'discount_type',
       header: 'Discount Type',
-      cell: ({ row }) => (row.original.discount_type ? humanizeSnake(row.original.discount_type) : '—'),
+      cell: ({ row }) => saleDiscountName(row.original) ?? '—',
     },
     { id: 'created_at', header: 'Date', cell: ({ row }) => formatDateTime(row.original.created_at) },
   ];
@@ -150,7 +154,7 @@ function getDailySalesColumns(
     {
       // Same PII-visibility boundary as Cashier/Proof Available below
       // (withActions === supervisor only) — sourced from the discount-audit
-      // trail endpoint already fetched for the Discount Compliance tab, not
+      // trail endpoint already fetched for the Discount Report tab, not
       // a new query.
       id: 'customer_id',
       header: 'Customer ID / Reference',
@@ -189,7 +193,7 @@ function getDailySalesColumns(
 
 /**
  * Sold Product Transactions (Reports §10) — one row per transaction (never
- * per product line, so Subtotal/VAT/Discount/Total are never duplicated);
+ * per product line, so Subtotal/Discount/Total are never duplicated);
  * the Items cell opens ViewTransactionItemsDialog for the product/variant/
  * quantity/unit-price breakdown, per the report's "expandable row OR a View
  * Items action" allowance.
@@ -230,7 +234,6 @@ function getSoldProductTransactionsColumns(
       },
     },
     { id: 'subtotal', header: 'Subtotal', cell: ({ row }) => formatCurrency(row.original.subtotal) },
-    { id: 'vat_amount', header: 'VAT', cell: ({ row }) => formatVatAmount(row.original.vat_amount) },
     { id: 'discount_amount', header: 'Discount', cell: ({ row }) => formatCurrency(row.original.discount_amount) },
     { id: 'total_amount', header: 'Total', cell: ({ row }) => formatCurrency(row.original.total_amount) },
     {
@@ -319,8 +322,10 @@ function getDiscountComplianceColumns(
     {
       id: 'discount_type',
       header: 'Discount Type',
-      cell: ({ row }) =>
-        row.original.discount_type ? <Badge variant="secondary">{humanizeSnake(row.original.discount_type)}</Badge> : '—',
+      cell: ({ row }) => {
+        const name = saleDiscountName(row.original);
+        return name ? <Badge variant="secondary">{name}</Badge> : '—';
+      },
     },
     { id: 'discount_amount', header: 'Discount', cell: ({ row }) => formatCurrency(row.original.discount_amount) },
     { id: 'total_amount', header: 'Total', cell: ({ row }) => formatCurrency(row.original.total_amount) },
@@ -341,6 +346,11 @@ function getDiscountComplianceColumns(
       id: 'customer_id',
       header: 'Customer ID / Reference',
       cell: ({ row }) => discountCustomerIdByTransaction.get(row.original.id) ?? '—',
+    },
+    {
+      id: 'proof_requirement',
+      header: 'Proof Requirement',
+      cell: ({ row }) => DISCOUNT_PROOF_REQUIREMENT_LABELS[saleProofRequirement(row.original)],
     },
     {
       id: 'discount_proof',
@@ -423,10 +433,10 @@ function createInventoryStockMovementColumns(
 function createAttendanceSummaryColumns(employeeNames: Map<string, string>): ColumnDef<AttendanceResponse>[] {
   return [
     { id: 'employee', header: 'Employee', cell: ({ row }) => employeeNames.get(row.original.employee_id) ?? row.original.employee_id },
-    { id: 'clock_in_server_time', header: 'Clock In', cell: ({ row }) => formatDateTime(row.original.clock_in_server_time) },
+    { id: 'clock_in_server_time', header: 'Time In', cell: ({ row }) => formatDateTime(row.original.clock_in_server_time) },
     {
       id: 'clock_out_server_time',
-      header: 'Clock Out',
+      header: 'Time Out',
       cell: ({ row }) => (row.original.clock_out_server_time ? formatDateTime(row.original.clock_out_server_time) : 'Still clocked in'),
     },
     { id: 'break_minutes', header: 'Break', cell: ({ row }) => formatDuration(row.original.break_minutes) },
@@ -472,7 +482,7 @@ export function ReportsView() {
 
   const currentUserId = useAuthStore((s) => s.user?.id);
   const isSupervisor = useAuthStore((s) => s.user?.role === ROLES.SUPERVISOR);
-  // Task 209.16 — Discount Compliance's Proof Available/View Proof column
+  // Task 209.16 — the Discount Report's Proof Available/View Proof column
   // and KPIs were supervisor-only; the owner explicitly requires Admin
   // (super_admin) to see discount ID proof here too. Scoped to just this
   // tab's `withActions` gate (see getDiscountComplianceColumns below), not
@@ -491,6 +501,8 @@ export function ReportsView() {
   const [discountProofTransactionId, setDiscountProofTransactionId] = useState<string | null>(null);
   const [viewItemsTransaction, setViewItemsTransaction] = useState<TransactionResponse | null>(null);
   const [viewDetailTransaction, setViewDetailTransaction] = useState<TransactionResponse | null>(null);
+  const [discountTypeFilter, setDiscountTypeFilter] = useState(ALL_DISCOUNT_TYPES);
+  const [discountPagination, setDiscountPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: DISCOUNT_DETAIL_PAGE_SIZE });
   const { data: receiptTransaction } = useTransaction(receiptTransactionId);
 
   // Sold Product Transactions filters (client-side over the fetched page —
@@ -506,7 +518,7 @@ export function ReportsView() {
   useReportsRealtimeSync((payload: ExportReadyPayload) => {
     if (payload.requester_id !== currentUserId) return;
     toast.success('Export ready', {
-      description: `Your ${payload.report_type} export is ready`,
+      description: `Your ${reportTypeDisplayName(payload.report_type)} export is ready`,
       action: { label: 'Download', onClick: () => window.open(payload.download_url, '_blank') },
       duration: 30_000,
     });
@@ -547,27 +559,26 @@ export function ReportsView() {
     date_to: dateRange.to,
     limit: QUERY_LIMIT,
   });
-  // Task 209.56E — the Discount Compliance tab's headline KPIs (total
-  // discount amount, discounted-transaction count, PWD/Senior counts) used
+  // Task 209.56E — the Discount Report tab's headline KPIs (total discount
+  // amount, discounted-transaction count) used
   // to be reduced client-side from completedQuery's rows, which are capped
   // at QUERY_LIMIT (100). Any branch/date-range with more than 100 completed
   // transactions silently undercounted every one of those numbers — the
   // same reused reducer must've felt consistent internally but is a real
   // financial-reporting gap. getDiscountCompliance is a SQL groupBy over
   // the full date range (already what Admin Reports uses for the same
-  // numbers), so switching these 4 KPIs to it removes the cap without a
+  // numbers), so switching these KPIs to it removes the cap without a
   // second discount formula: it's the same discountAmount/discountType
   // columns, aggregated server-side instead of paginated-then-reduced.
-  // The detail table and proof-compliance stats below still read from
-  // completedQuery, since they need per-transaction rows the aggregate
-  // doesn't carry — that page-sized scope is unchanged by this fix.
+  // POS-PERF-P59 — the proof summary reads it too, and the detail table has its
+  // own server-paginated query below, so neither stops at the newest 100 sales.
   const discountComplianceQuery = useDiscountComplianceReport({
     branch_id: activeBranchId ?? undefined,
     date_from: dateRange.from,
     date_to: dateRange.to,
-    limit: 25,
+    limit: QUERY_LIMIT,
   });
-  // Task: Discount Compliance parity — reuses the same discount-audit trail
+  // Task: Discount Report parity — reuses the same discount-audit trail
   // endpoint the Admin drilldown already calls (GET /transactions/discount-audit)
   // purely to source discountCustomerId per transaction id, not as this tab's
   // row source (discountedTransactions below is unchanged, so KPIs/detail-row
@@ -578,6 +589,35 @@ export function ReportsView() {
     { branchId: activeBranchId ?? undefined, dateFrom: dateRange.from, dateTo: dateRange.to, page: 1, limit: QUERY_LIMIT },
     canViewDiscountProof,
   );
+  // POS-PERF-P59 — the Discount Report's own rows: same filter as its KPIs and
+  // export, one page at a time, every discounted sale reachable.
+  const activeDiscountKey = discountTypeFilter === ALL_DISCOUNT_TYPES ? undefined : discountTypeFilter;
+  const discountDetailQuery = useTransactions({
+    branch_id: activeBranchId ?? undefined,
+    status: 'completed',
+    discounted_only: 'true',
+    discount_key: activeDiscountKey,
+    date_from: dateRange.from,
+    date_to: dateRange.to,
+    page: discountPagination.pageIndex + 1,
+    limit: discountPagination.pageSize,
+  });
+  const discountDetailAuditQuery = useDiscountAuditTrail(
+    {
+      branchId: activeBranchId ?? undefined,
+      discountKey: activeDiscountKey,
+      dateFrom: dateRange.from,
+      dateTo: dateRange.to,
+      page: discountPagination.pageIndex + 1,
+      limit: discountPagination.pageSize,
+    },
+    canViewDiscountProof && activeTab === 'discount-compliance',
+  );
+  const discountRows = useMemo(() => mergeDiscountRows(discountComplianceQuery.data?.data ?? []), [discountComplianceQuery.data]);
+  // A chosen type can drop out when the branch or dates change: back to all types rather than an empty report.
+  useEffect(() => {
+    if (activeDiscountKey && discountComplianceQuery.data && !discountRows.some((r) => r.discount_key === activeDiscountKey)) setDiscountTypeFilter(ALL_DISCOUNT_TYPES);
+  }, [activeDiscountKey, discountComplianceQuery.data, discountRows]);
   // Sold Product Transactions — deliberately not status-filtered (unlike
   // completedQuery above) so the tab's own Status filter can show voided/
   // refunded rows too.
@@ -613,6 +653,7 @@ export function ReportsView() {
 
   function handleRefresh() {
     setDateRange({ from: fromInput, to: toInput });
+    setDiscountPagination((p) => ({ ...p, pageIndex: 0 }));
     setRefreshDisabled(true);
     setRefreshCooldown(REFRESH_COOLDOWN_SECONDS);
   }
@@ -644,6 +685,7 @@ export function ReportsView() {
         page: 1,
         limit: QUERY_LIMIT,
         ...soldTabFilters,
+        ...(activeTab === 'discount-compliance' && activeDiscountKey ? { discount_key: activeDiscountKey } : {}),
       },
       format,
     };
@@ -661,13 +703,6 @@ export function ReportsView() {
   // formula change, out of scope here) — instead labeled "Total Sales"
   // below so it no longer claims to be the same metric.
   const totalSalesCollected = completedTransactions.reduce((sum, t) => sum + t.total_amount, 0);
-  // POS-PERF-P55R2/R3 — VAT of the VAT-calculated sales only; a manual-total sale has no VAT figure and is counted apart.
-  const taxNotCalculated = completedTransactions.filter((t) => t.vat_amount === null);
-  const vatCollected = completedTransactions.reduce((sum, t) => sum + (t.vat_amount ?? 0), 0);
-  const taxNotCalculatedCount = taxNotCalculated.length;
-  const taxNotCalculatedSales = taxNotCalculated.reduce((sum, t) => sum + t.total_amount, 0);
-  const vatCalculatedCount = totalTransactions - taxNotCalculatedCount;
-  const manualTotalSalesLabel = `${taxNotCalculatedCount} manual-total sale${taxNotCalculatedCount === 1 ? '' : 's'}`;
   const discountsGiven = completedTransactions.reduce((sum, t) => sum + t.discount_amount, 0);
 
   // Sold Product Transactions
@@ -703,33 +738,21 @@ export function ReportsView() {
   const voidRefundLoading = voidedQuery.isLoading || refundedQuery.isLoading;
   const voidRefundError = voidedQuery.isError || refundedQuery.isError;
 
-  // Discount Compliance — headline KPIs come from the server-side groupBy
-  // aggregate (see discountComplianceQuery above), not the page-capped
-  // completedTransactions list. discountedTransactions itself is still
-  // needed below for the per-transaction detail table and proof-compliance
-  // stats, which the aggregate's rows don't carry.
-  const discountedTransactions = completedTransactions.filter((t) => t.discount_type !== null);
+  // Discount Report — every figure comes from the server-side aggregate (see
+  // discountComplianceQuery above), filtered here by discount identity. The
+  // choices come from the unfiltered rows, so a filter can always be changed.
+  const discountOptions = discountTypeOptions(discountRows);
+  const visibleDiscountRows = activeDiscountKey ? discountRows.filter((r) => r.discount_key === activeDiscountKey) : discountRows;
+  const discountedTransactions = (discountDetailQuery.data?.transactions ?? []).filter((t) => t.discount_type !== null);
   const discountCustomerIdByTransaction = new Map(
     (discountAuditQuery.data?.data ?? []).map((row) => [row.id, row.discountCustomerId]),
   );
-  const discountComplianceRows = discountComplianceQuery.data?.data ?? [];
-  const totalDiscountedTransactions = discountComplianceRows.reduce((sum, r) => sum + r.transaction_count, 0);
-  const pwdDiscounts = discountComplianceRows
-    .filter((r) => r.discount_type === 'pwd')
-    .reduce((sum, r) => sum + r.transaction_count, 0);
-  const seniorCitizenDiscounts = discountComplianceRows
-    .filter((r) => r.discount_type === 'senior_citizen')
-    .reduce((sum, r) => sum + r.transaction_count, 0);
-  const totalDiscountAmount = discountComplianceRows.reduce((sum, r) => sum + r.total_discount_amount, 0);
-  // Task 209.5 — compact proof-compliance summary, added to this tab's
-  // existing KPI row (no new dashboard widget, no redesign). Proof is only
-  // ever meaningful for PWD/Senior Citizen rows — Employee/Promotional
-  // discounts have no proof-capture UI, so they're excluded from the
-  // denominator rather than counted as "missing".
-  const proofEligibleDiscounts = discountedTransactions.filter((t) => t.discount_type === 'pwd' || t.discount_type === 'senior_citizen');
-  const proofAvailableCount = proofEligibleDiscounts.filter((t) => t.has_discount_proof).length;
-  const proofMissingCount = proofEligibleDiscounts.length - proofAvailableCount;
-  const proofComplianceRate = proofEligibleDiscounts.length > 0 ? (proofAvailableCount / proofEligibleDiscounts.length) * 100 : 0;
+  const discountDetailCustomerIds = new Map(
+    (discountDetailAuditQuery.data?.data ?? []).map((row) => [row.id, row.discountCustomerId]),
+  );
+  const totalDiscountedTransactions = visibleDiscountRows.reduce((sum, r) => sum + r.transaction_count, 0);
+  const totalDiscountAmount = visibleDiscountRows.reduce((sum, r) => sum + r.total_discount_amount, 0);
+  const proofSummary = summarizeDiscountProof(visibleDiscountRows);
 
   // Inventory Movement
   const movements = movementsQuery.data?.movements ?? [];
@@ -740,7 +763,7 @@ export function ReportsView() {
   const unitCodes = new Map((unitsQuery.data ?? []).map((u) => [u.id, u.code]));
   const itemSkus = new Map((inventoryItemsQuery.data ?? []).map((i) => [i.id, i.sku]));
 
-  // Inventory Consumption Summary — aggregated client-side from the same
+  // Stock Used Summary — aggregated client-side from the same
   // movements fetch as Inventory Movement above (SALE type only), consistent
   // with this view's client-composed tier. Export still goes through the
   // real backend INVENTORY_CONSUMPTION_SUMMARY aggregate, same relationship
@@ -812,12 +835,12 @@ export function ReportsView() {
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList className="flex-wrap h-auto">
-          <TabsTrigger value="daily-sales">Daily Sales</TabsTrigger>
+          <TabsTrigger value="daily-sales">Daily Sales Report (DSR)</TabsTrigger>
           <TabsTrigger value="sold-product-transactions">Sold Product Transactions</TabsTrigger>
           <TabsTrigger value="void-refund">Void/Refund</TabsTrigger>
-          <TabsTrigger value="discount-compliance">Discount Compliance</TabsTrigger>
+          <TabsTrigger value="discount-compliance">Discount Report</TabsTrigger>
           <TabsTrigger value="inventory-movement">Inventory Movement</TabsTrigger>
-          <TabsTrigger value="consumption-summary">Consumption Summary</TabsTrigger>
+          <TabsTrigger value="consumption-summary">Stock Used Summary</TabsTrigger>
           <TabsTrigger value="attendance-summary">Attendance Summary</TabsTrigger>
         </TabsList>
 
@@ -826,7 +849,7 @@ export function ReportsView() {
             timestamp={completedQuery.dataUpdatedAt ? new Date(completedQuery.dataUpdatedAt).toISOString() : undefined}
             isLoading={completedQuery.isLoading}
           />
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
             <KpiCard title="Total Transactions" value={totalTransactions} isLoading={completedQuery.isLoading} />
             <KpiCard
               title="Total Sales — Selected Period"
@@ -835,36 +858,6 @@ export function ReportsView() {
               isLoading={completedQuery.isLoading}
               tooltip={`Completed transaction totals, after discounts, from ${fromInput} to ${toInput}. For pre-discount Gross Sales, see Admin Reports > Financial Summary.`}
             />
-            {/* POS-PERF-P55R3 — never a VAT figure that reads as covering every sale: a period with manual-total sales says so on screen, and one with only manual-total sales has no VAT figure at all (not ₱0). */}
-            <KpiCard
-              title="VAT Collected"
-              value={vatCollected}
-              prefix="₱"
-              isLoading={completedQuery.isLoading}
-              valueText={taxNotCalculatedCount > 0 && vatCalculatedCount === 0 ? 'Not calculated' : undefined}
-              caption={
-                taxNotCalculatedCount === 0
-                  ? undefined
-                  : vatCalculatedCount === 0
-                    ? `${manualTotalSalesLabel} — the manual-total checkout does not calculate VAT`
-                    : `VAT-calculated sales only — excludes ${manualTotalSalesLabel}`
-              }
-              tooltip={
-                taxNotCalculatedCount > 0
-                  ? 'Manual-total sales do not calculate VAT. Their tax is not shown here — it is unknown, not ₱0.'
-                  : undefined
-              }
-            />
-            {taxNotCalculatedCount > 0 && (
-              <KpiCard
-                title="Without VAT Calculation"
-                value={taxNotCalculatedSales}
-                prefix="₱"
-                isLoading={completedQuery.isLoading}
-                caption={`${manualTotalSalesLabel}, amount paid`}
-                tooltip="Completed manual-total sales (VAT not calculated). They are included in Total Sales."
-              />
-            )}
             <KpiCard title="Discounts Given" value={discountsGiven} prefix="₱" isLoading={completedQuery.isLoading} />
           </div>
           <DataTable
@@ -1035,29 +1028,40 @@ export function ReportsView() {
 
         <TabsContent value="discount-compliance" className="space-y-4">
           <ReportLastUpdated
-            timestamp={completedQuery.dataUpdatedAt ? new Date(completedQuery.dataUpdatedAt).toISOString() : undefined}
-            isLoading={completedQuery.isLoading}
+            timestamp={discountComplianceQuery.dataUpdatedAt ? new Date(discountComplianceQuery.dataUpdatedAt).toISOString() : undefined}
+            isLoading={discountComplianceQuery.isLoading}
           />
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+          <DiscountTypeFilter
+            options={discountOptions}
+            value={discountTypeFilter}
+            onChange={(value) => {
+              setDiscountTypeFilter(value);
+              setDiscountPagination((p) => ({ ...p, pageIndex: 0 }));
+            }}
+          />
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             <KpiCard title="Total Discounted Transactions" value={totalDiscountedTransactions} isLoading={discountComplianceQuery.isLoading} />
-            <KpiCard title="PWD Discounts" value={pwdDiscounts} isLoading={discountComplianceQuery.isLoading} />
-            <KpiCard title="Senior Citizen Discounts" value={seniorCitizenDiscounts} isLoading={discountComplianceQuery.isLoading} />
             <KpiCard title="Total Discount Amount" value={totalDiscountAmount} prefix="₱" isLoading={discountComplianceQuery.isLoading} />
           </div>
-          {canViewDiscountProof && (
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-              <KpiCard title="Proof Available" value={proofAvailableCount} isLoading={completedQuery.isLoading} />
-              <KpiCard title="Proof Missing" value={proofMissingCount} isLoading={completedQuery.isLoading} />
-              <KpiCard title="Proof Compliance Rate" value={proofComplianceRate} suffix="%" isLoading={completedQuery.isLoading} />
-            </div>
-          )}
+          {canViewDiscountProof && <DiscountProofSummary summary={proofSummary} isLoading={discountComplianceQuery.isLoading} />}
+          <DataTable
+            columns={getDiscountBreakdownColumns({ showBranch: false, showProof: canViewDiscountProof })}
+            data={visibleDiscountRows}
+            isLoading={discountComplianceQuery.isLoading}
+            isError={discountComplianceQuery.isError}
+            onRetry={() => void discountComplianceQuery.refetch()}
+            emptyState={<EmptyState title="No discount types" description="No discounted sales in this date range." />}
+          />
           <DataTable
             stickyHeader
-            columns={getDiscountComplianceColumns(canViewDiscountProof, setDiscountProofTransactionId, employeeNames, discountCustomerIdByTransaction)}
+            columns={getDiscountComplianceColumns(canViewDiscountProof, setDiscountProofTransactionId, employeeNames, discountDetailCustomerIds)}
             data={discountedTransactions}
-            isLoading={completedQuery.isLoading}
-            isError={completedQuery.isError}
-            onRetry={() => void completedQuery.refetch()}
+            isLoading={discountDetailQuery.isLoading}
+            isError={discountDetailQuery.isError}
+            onRetry={() => void discountDetailQuery.refetch()}
+            pagination={discountPagination}
+            onPaginationChange={setDiscountPagination}
+            rowCount={discountDetailQuery.data?.total ?? discountedTransactions.length}
             emptyState={<EmptyState title="No discounted transactions" description="No discounted transactions in this date range." />}
           />
         </TabsContent>
@@ -1069,7 +1073,7 @@ export function ReportsView() {
           />
           <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
             <KpiCard title="Total Movements" value={totalMovements} isLoading={movementsQuery.isLoading} />
-            <KpiCard title="Receiving" value={receivingCount} isLoading={movementsQuery.isLoading} />
+            <KpiCard title="Deliveries / Received" value={receivingCount} isLoading={movementsQuery.isLoading} />
             <KpiCard title="Waste" value={wasteCount} isLoading={movementsQuery.isLoading} />
             <KpiCard title="Adjustments" value={adjustmentsCount} isLoading={movementsQuery.isLoading} />
           </div>
@@ -1090,7 +1094,7 @@ export function ReportsView() {
             isLoading={movementsQuery.isLoading}
           />
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <KpiCard title="Ingredients Consumed" value={consumptionRows.length} isLoading={movementsQuery.isLoading} />
+            <KpiCard title="Ingredients Used" value={consumptionRows.length} isLoading={movementsQuery.isLoading} />
             <KpiCard title="Sales Movements" value={totalConsumptionMovements} isLoading={movementsQuery.isLoading} />
           </div>
           <DataTable
@@ -1100,7 +1104,7 @@ export function ReportsView() {
             isLoading={movementsQuery.isLoading}
             isError={movementsQuery.isError}
             onRetry={() => void movementsQuery.refetch()}
-            emptyState={<EmptyState title="No consumption recorded" description="No sale-driven inventory consumption in this date range." />}
+            emptyState={<EmptyState title="No stock used" description="No stock used by sales in this date range." />}
           />
         </TabsContent>
 
@@ -1111,7 +1115,7 @@ export function ReportsView() {
           />
           <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
             <KpiCard title="Total Staff Today" value={totalStaffToday} isLoading={attendanceQuery.isLoading} />
-            <KpiCard title="Clocked In Now" value={clockedInNow} isLoading={attendanceQuery.isLoading} />
+            <KpiCard title="Crew on Duty" value={clockedInNow} isLoading={attendanceQuery.isLoading} />
             <KpiCard title="Total Hours Worked" value={totalWorkMinutes / 60} suffix="h" isLoading={attendanceQuery.isLoading} />
             <KpiCard title="Overtime Hours" value={overtimeMinutesSum / 60} suffix="h" isLoading={attendanceQuery.isLoading} />
           </div>
@@ -1122,7 +1126,7 @@ export function ReportsView() {
             isLoading={attendanceQuery.isLoading}
             isError={attendanceQuery.isError}
             onRetry={() => void attendanceQuery.refetch()}
-            emptyState={<EmptyState title="No attendance records" description="No clock-in/out records in this date range." />}
+            emptyState={<EmptyState title="No attendance records" description="No time in or time out records in this date range." />}
           />
         </TabsContent>
       </Tabs>

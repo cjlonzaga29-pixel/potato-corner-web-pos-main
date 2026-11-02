@@ -112,6 +112,9 @@ export interface TransactionListFilters {
   dateTo?: string;
   /** POS-PERF-P40 — case-insensitive receipt-number substring. */
   receiptSearch?: string;
+  /** POS-PERF-P59 — Discount Report's detail table. */
+  discountedOnly?: boolean;
+  discountKey?: string;
   page: number;
   limit: number;
 }
@@ -121,6 +124,7 @@ export interface DiscountAuditFilters {
   discountType?: 'pwd' | 'senior_citizen' | 'employee' | 'manager_override' | 'promotional' | 'manual';
   dateFrom?: string;
   dateTo?: string;
+  discountKey?: string;
   page: number;
   limit: number;
 }

@@ -266,7 +266,7 @@ describe('AdminAttendancePage', () => {
     expect(lastFilters()).toMatchObject({ open_only: true });
     expect(screen.queryByLabelText('From')).not.toBeInTheDocument();
     expect(screen.getByText(/everyone still clocked in, any start date/)).toBeInTheDocument();
-    const note = screen.getByText(/Staff Clocked In" for this scope/);
+    const note = screen.getByText(/Crew on Duty" for this scope/);
     expect(note).toHaveTextContent('for this scope: 2.');
     expect(note).toHaveTextContent('1 count toward it and 1 do not');
   });

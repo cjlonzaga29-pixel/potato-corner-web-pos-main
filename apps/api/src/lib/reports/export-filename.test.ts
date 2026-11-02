@@ -5,6 +5,12 @@ import { manilaDateKey } from '../manila-time.js';
 import type { ReportFilters } from '../../modules/reports/reports.types.js';
 
 describe('buildExportFilename', () => {
+  it('P59 — a renamed report downloads under its new name; the report type code is unchanged', () => {
+    const filters = { dateFrom: new Date('2026-07-23T16:00:00.000Z'), dateTo: new Date('2026-07-30T15:59:59.999Z'), page: 1, limit: 25 };
+    expect(buildExportFilename('DISCOUNT_COMPLIANCE', 'csv', filters)).toBe('DiscountReport_2026-07-24_to_2026-07-30.csv');
+    expect(buildExportFilename('INVENTORY_CONSUMPTION_SUMMARY', 'pdf', filters)).toBe('StockUsedSummary_2026-07-24_to_2026-07-30.pdf');
+  });
+
   it('builds a PascalCase report name with a from_to date range stamp when both bounds are known', () => {
     const filters: ReportFilters = { dateFrom: new Date('2026-07-24'), dateTo: new Date('2026-07-30'), page: 1, limit: 100 };
     expect(buildExportFilename('DAILY_SALES', 'csv', filters)).toBe('DailySales_2026-07-24_to_2026-07-30.csv');

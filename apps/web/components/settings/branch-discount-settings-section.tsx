@@ -10,10 +10,9 @@ import { useBranchDiscountSettings } from '@/hooks/queries/use-settings';
 import { BranchDiscountSettingsForm } from './branch-discount-settings-form';
 
 /**
- * POS-PERF-P50R — Settings → Discounts & VAT, one branch at a time. A
- * supervisor sees only branches they manage (the server re-checks every
- * read and save against live assignments); a Super Admin sees every active
- * branch and can also record VAT registration.
+ * POS-PERF-P50R — Settings → Discounts, one branch at a time. A supervisor
+ * sees only branches they manage (the server re-checks every read and save
+ * against live assignments); a Super Admin sees every active branch.
  */
 export function BranchDiscountSettingsSection({ statutoryOnly = false }: { statutoryOnly?: boolean }) {
   const { availableBranches } = useSelectedBranch();
@@ -30,10 +29,10 @@ export function BranchDiscountSettingsSection({ statutoryOnly = false }: { statu
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{statutoryOnly ? 'Statutory discounts & VAT registration by branch' : 'Discounts & VAT by branch'}</CardTitle>
+        <CardTitle>{statutoryOnly ? 'Statutory discounts by branch' : 'Discounts by branch'}</CardTitle>
         <CardDescription>
           {statutoryOnly
-            ? 'PWD and Senior Citizen discounts are set by law and keep their VAT-exempt calculation. The POS does not calculate VAT on any other sale (subtotal − discount = amount to pay). Saving here changes only the selected branch.'
+            ? 'PWD and Senior Citizen discounts are set by law and keep their own calculation. Every other sale is subtotal − discount = amount to pay. Saving here changes only the selected branch.'
             : 'Each branch follows the organization default unless you set a rate for that branch. Saving here changes only the selected branch.'}
         </CardDescription>
       </CardHeader>

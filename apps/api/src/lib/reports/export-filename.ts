@@ -2,8 +2,16 @@ import type { ReportType } from '@potato-corner/shared';
 import type { ReportFilters } from '../../modules/reports/reports.types.js';
 import { manilaDateKey } from '../manila-time.js';
 
+/** POS-PERF-P59 — reports whose user-facing name changed. The report_type code stays. */
+const RENAMED_REPORT_FILENAMES: Partial<Record<ReportType, string>> = {
+  DISCOUNT_COMPLIANCE: 'DiscountReport',
+  INVENTORY_CONSUMPTION_SUMMARY: 'StockUsedSummary',
+};
+
 /** DAILY_SALES -> DailySales */
 function pascalCase(reportType: ReportType): string {
+  const renamed = RENAMED_REPORT_FILENAMES[reportType];
+  if (renamed) return renamed;
   return reportType
     .split('_')
     .map((word) => word.charAt(0) + word.slice(1).toLowerCase())

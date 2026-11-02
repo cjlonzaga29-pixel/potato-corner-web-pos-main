@@ -13,7 +13,7 @@ interface ViewTransactionItemsDialogProps {
 /**
  * Per-product breakdown for one receipt, opened from the Sold Product
  * Transactions report's "View Items" action — keeps that table to one row
- * per transaction (so Subtotal/VAT/Discount/Total are never repeated per
+ * per transaction (so Subtotal/Discount/Total are never repeated per
  * product line) while still exposing product/variant/quantity/unit price.
  */
 export function ViewTransactionItemsDialog({ transaction, onClose }: ViewTransactionItemsDialogProps) {

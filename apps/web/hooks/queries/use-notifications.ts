@@ -2,7 +2,7 @@
 
 import { useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { SOCKET_EVENTS, ROLES } from '@potato-corner/shared';
+import { SOCKET_EVENTS, ROLES, discountDisplayName } from '@potato-corner/shared';
 import {
   ShoppingCart,
   Undo2,
@@ -137,7 +137,7 @@ function describe(row: NotificationRow): { icon: LucideIcon; severity: Notificat
         icon: ShieldAlert,
         severity: 'warning',
         title: 'Discount Missing Proof',
-        detail: `${str(p, 'discountType') || 'Discount'} • ${str(p, 'transactionNumber')}`,
+        detail: `${discountDisplayName(str(p, 'discountType')) ?? 'Discount'} • ${str(p, 'transactionNumber')}`,
       };
     case 'expense_created':
       return { icon: Receipt, severity: 'normal', title: 'Expense Added', detail: `${formatCurrency(num(p, 'amount'))} • ${str(p, 'category') || 'Expense'}` };

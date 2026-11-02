@@ -163,7 +163,7 @@ export default function BranchDashboardPage() {
           isLoading={isLoadingStats}
           icon={TrendingDown}
         />
-        <KpiCard title="Staff Clocked In" value={todayStats?.staffTimedInCount ?? 0} isLoading={isLoadingStats} icon={Users} />
+        <KpiCard title="Crew on Duty" value={todayStats?.staffTimedInCount ?? 0} isLoading={isLoadingStats} icon={Users} />
         <KpiCard
           title={alertsData || isAlertsLoading ? 'Items Needing Stock' : 'Items At Stock Threshold'}
           value={alertsData ? alertCount : (todayStats?.lowStockIngredientCount ?? 0)}

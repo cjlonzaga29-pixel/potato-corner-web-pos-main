@@ -263,7 +263,7 @@ describe('AdminDashboardPage', () => {
     expect(screen.queryByText(/Profit/)).not.toBeInTheDocument();
   });
 
-  it("renders Today's Expenses and Staff Clocked In, and no inventory widgets (POS-PERF-P47)", () => {
+  it("renders Today's Expenses and Crew on Duty, and no inventory widgets (POS-PERF-P47)", () => {
     mockUseAllBranchStats.mockReturnValue({
       data: [
         branchStat({ branchId: 'b1', todayExpenses: 500, staffTimedInCount: 4, lowStockIngredientCount: 3 }),
@@ -282,7 +282,7 @@ describe('AdminDashboardPage', () => {
 
     expect(screen.getByText("Today's Expenses")).toBeInTheDocument();
     expect(screen.getByText('₱700')).toBeInTheDocument();
-    expect(screen.getByText('Staff Clocked In')).toBeInTheDocument();
+    expect(screen.getByText('Crew on Duty')).toBeInTheDocument();
     expect(screen.getByText('6')).toBeInTheDocument();
     expect(screen.queryByText('Low Stock Items')).not.toBeInTheDocument();
     expect(screen.queryByText('Inventory Alerts')).not.toBeInTheDocument();

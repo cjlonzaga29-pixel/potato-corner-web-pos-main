@@ -99,19 +99,19 @@ const fullSplit = split({
 });
 
 describe('generateInventorySummaryCsv', () => {
-  it('renders exactly two sections — Ingredient Weight Consumption (KG) then Packaging Consumption (PC)', () => {
+  it('renders exactly two sections — Ingredient Stock Used (KG) then Packaging Stock Used (PC)', () => {
     const csv = generateInventorySummaryCsv(fullSplit).toString('utf-8');
 
-    expect(csv).toContain('Ingredient Weight Consumption (KG)');
-    expect(csv).toContain('Packaging Consumption (PC)');
-    expect(csv.indexOf('Ingredient Weight Consumption (KG)')).toBeLessThan(csv.indexOf('Packaging Consumption (PC)'));
+    expect(csv).toContain('Ingredient Stock Used (KG)');
+    expect(csv).toContain('Packaging Stock Used (PC)');
+    expect(csv.indexOf('Ingredient Stock Used (KG)')).toBeLessThan(csv.indexOf('Packaging Stock Used (PC)'));
   });
 
   it('renders KG rows with the Ingredient/Base Unit/native/KG/Status header', () => {
     const csv = generateInventorySummaryCsv(fullSplit).toString('utf-8');
 
     expect(csv).toContain(
-      'Ingredient,Base Unit,Opening Stock,Consumed Today,Consumed This Month,Remaining,Opening Stock (KG),Consumed Today (KG),Consumed This Month (KG),Remaining (KG),Status',
+      'Ingredient,Base Unit,Beginning Stock (Beg.),Stock Used Today (Sales),Stock Used This Month (Sales),Remaining,Beginning Stock (KG),Stock Used Today - Sales (KG),Stock Used This Month - Sales (KG),Remaining (KG),Status',
     );
     expect(csv).toContain('Raw Fries,g,12500,2300,54100,10200,12.5,2.3,54.1,10.2,Converted');
     expect(csv).toContain('Cheese Powder,tbsp,42,18,260,160,0.294,0.126,1.82,1.12,Converted');
@@ -126,7 +126,7 @@ describe('generateInventorySummaryCsv', () => {
   it('renders PC rows with the Packaging header and no g/kg/tbsp/tsp rows mixed in', () => {
     const csv = generateInventorySummaryCsv(fullSplit).toString('utf-8');
 
-    expect(csv).toContain('Packaging,Opening Stock (PC),Consumed Today (PC),Consumed This Month (PC),Remaining (PC)');
+    expect(csv).toContain('Packaging,Beginning Stock (PC),Stock Used Today - Sales (PC),Stock Used This Month - Sales (PC),Remaining (PC)');
     expect(csv).toContain('Regular Cup,300,20,240,240');
     expect(csv).toContain('Kraft Bag No. 2,500,40,300,460');
   });

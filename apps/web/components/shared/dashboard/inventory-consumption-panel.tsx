@@ -14,7 +14,7 @@ const TOP_CONSUMED_COUNT = 5;
 
 const columns: ColumnDef<InventoryConsumptionSummaryReportRow>[] = [
   { accessorKey: 'ingredient_name', header: 'Ingredient' },
-  { id: 'quantity_consumed', header: 'Consumed Today', cell: ({ row }) => `${row.original.quantity_consumed} ${row.original.unit}` },
+  { id: 'quantity_consumed', header: 'Stock Used Today (Sales)', cell: ({ row }) => `${row.original.quantity_consumed} ${row.original.unit}` },
 ];
 
 interface InventoryConsumptionPanelProps {
@@ -34,7 +34,7 @@ export function InventoryConsumptionPanel({ branchId }: InventoryConsumptionPane
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-sm font-medium">Inventory Consumption</CardTitle>
+        <CardTitle className="text-sm font-medium">Stock Used (Sales)</CardTitle>
       </CardHeader>
       <CardContent>
         {consumption.isError ? (

@@ -3,7 +3,7 @@ import { render, screen, cleanup, fireEvent, within } from '@testing-library/rea
 import type { BranchDiscountSettingsResponse } from '@potato-corner/shared';
 
 /**
- * POS-PERF-P50R — one branch's Discounts & VAT form: organization default vs
+ * POS-PERF-P50R — one branch's Discounts form: organization default vs
  * branch value per field, statutory bounds explained, the required-choice
  * switch, VAT registration shown as an explicit assumption (Super Admin
  * records it; non-VAT cannot be chosen), stale-save explanation.
@@ -87,7 +87,7 @@ describe('BranchDiscountSettingsForm (P50R)', () => {
     );
   });
 
-  it('PWD can be raised but not set below 20%; the preview shows the VAT-exempt total', () => {
+  it('PWD can be raised but not set below 20%; the preview shows the amount to pay', () => {
     render(<BranchDiscountSettingsForm data={data()} />);
     fireEvent.click(screen.getByRole('checkbox', { name: 'PWD uses the organization default' }));
     fireEvent.change(screen.getByLabelText('PWD'), { target: { value: '15' } });
@@ -95,7 +95,7 @@ describe('BranchDiscountSettingsForm (P50R)', () => {
     expect(screen.getByRole('button', { name: 'Save for Main' })).toBeDisabled();
 
     fireEvent.change(screen.getByLabelText('PWD'), { target: { value: '25' } });
-    // ₱112 → ₱100 without VAT → 25% off → ₱75.00, VAT ₱0.00.
+    // ₱112 → 25% statutory calculation → ₱75.00 (computeSaleTax, unchanged).
     const preview = screen.getByTestId('discount-preview');
     const pwdRow = within(preview).getByText('PWD (25%)').closest('tr') as HTMLElement;
     expect(pwdRow).toHaveTextContent('₱75.00');
@@ -114,20 +114,11 @@ describe('BranchDiscountSettingsForm (P50R)', () => {
     expect(mockSave).toHaveBeenCalledWith({ pwdPercentage: null, employee: null, requireDiscountChoice: false, expectedUpdatedAt: SAVED_AT }, expect.any(Object));
   });
 
-  it('VAT registration: an unconfirmed assumption is stated; supervisors cannot record it', () => {
-    render(<BranchDiscountSettingsForm data={data()} />);
-    expect(screen.getByTestId('vat-registration-status')).toHaveTextContent('Not confirmed');
-    expect(screen.getByRole('note')).toHaveTextContent('Assumption, not yet confirmed');
-    expect(screen.getByText(/Only a Super Admin records/)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Record' })).not.toBeInTheDocument();
-  });
-
-  it('a Super Admin records VAT registration with the version loaded; non-VAT is listed but not selectable', () => {
+  it('POS-PERF-P59 — no VAT registration section or VAT wording, for a Super Admin either', () => {
     render(<BranchDiscountSettingsForm data={data({ canEditTaxProfile: true })} />);
-    expect(screen.getByText(/Non-VAT registration cannot be chosen/)).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('Where it was confirmed (optional)'), { target: { value: 'COR seen' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Record' }));
-    expect(mockSaveTax).toHaveBeenCalledWith({ vatRegistration: 'unconfirmed', note: 'COR seen', expectedUpdatedAt: null }, expect.any(Object));
+    expect(screen.queryByText(/registration/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Record' })).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/\bVAT\b|VAT-exempt/);
   });
 
   it('a stale save explains that someone else changed the branch', () => {

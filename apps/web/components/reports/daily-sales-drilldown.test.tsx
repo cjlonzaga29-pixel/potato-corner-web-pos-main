@@ -189,7 +189,7 @@ describe('DailySalesDrilldown', () => {
     const row = screen.getByText('PC-GMA-001-20260731-000003').closest('tr');
     expect(row).not.toBeNull();
     expect(within(row as HTMLElement).getByText('1234567890')).toBeInTheDocument();
-    expect(within(row as HTMLElement).getByText('Pwd')).toBeInTheDocument();
+    expect(within(row as HTMLElement).getByText('PWD')).toBeInTheDocument();
   });
 
   it('renders "—" for Customer ID / Reference when the transaction has no discount', () => {

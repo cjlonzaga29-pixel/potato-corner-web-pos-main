@@ -21,7 +21,6 @@ export interface TransactionExportRow extends Record<string, unknown> {
   payment: string;
   reference: string;
   subtotal: string;
-  vat: string;
   discount: string;
   discount_type: string;
   customer_id: string;
@@ -37,7 +36,6 @@ export const TRANSACTION_EXPORT_COLUMNS: ReportColumn<TransactionExportRow>[] = 
   { key: 'payment', header: 'Payment' },
   { key: 'reference', header: 'Reference' },
   { key: 'subtotal', header: 'Subtotal' },
-  { key: 'vat', header: 'VAT' },
   { key: 'discount', header: 'Discount' },
   { key: 'discount_type', header: 'Discount Type' },
   { key: 'customer_id', header: 'Customer ID' },

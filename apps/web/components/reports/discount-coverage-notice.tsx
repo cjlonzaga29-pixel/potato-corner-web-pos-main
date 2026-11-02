@@ -1,4 +1,4 @@
-import { REPORT_EXPORT_ROW_LIMITS } from '@potato-corner/shared';
+import { ExportLimitNotice } from '@/components/reports/export-limit-notice';
 
 interface DiscountCoverageNoticeProps {
   /** Rows in this response against the API's own total for the same filters. */
@@ -12,9 +12,6 @@ interface DiscountCoverageNoticeProps {
 /** POS-PERF-P59 — says whether the figures below describe every matching sale, and warns before an export would be cut short. */
 export function DiscountCoverageNotice({ rowsReturned, rowsTotal, transactionCount, showExportLimits = false }: DiscountCoverageNoticeProps) {
   const totalsArePartial = rowsTotal > rowsReturned;
-  const limitedFormats = showExportLimits
-    ? (['pdf', 'csv'] as const).filter((format) => transactionCount > REPORT_EXPORT_ROW_LIMITS[format])
-    : [];
   const count = transactionCount.toLocaleString('en-PH');
 
   return (
@@ -27,11 +24,7 @@ export function DiscountCoverageNotice({ rowsReturned, rowsTotal, transactionCou
       ) : (
         <p className="text-muted-foreground">Totals cover all {count} matching discounted sales.</p>
       )}
-      {limitedFormats.length > 0 && (
-        <p role="status" className="rounded-md border border-warning bg-warning/10 p-3">
-          <strong>Exports will be partial.</strong> {limitedFormats.map((format) => `${format.toUpperCase()} holds the newest ${REPORT_EXPORT_ROW_LIMITS[format].toLocaleString('en-PH')} sales`).join('; ')}, and {count} match. A partial file says so at the top and in its name. Choose a shorter date range to export them all.
-        </p>
-      )}
+      {showExportLimits && <ExportLimitNotice count={transactionCount} noun="sales" />}
     </div>
   );
 }

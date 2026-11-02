@@ -70,6 +70,9 @@ function buildQueryString(filters: TransactionFilters): string {
   if (filters.receipt_search) params.set('receipt_search', filters.receipt_search);
   if (filters.discounted_only) params.set('discounted_only', filters.discounted_only);
   if (filters.discount_key) params.set('discount_key', filters.discount_key);
+  if (filters.cashier_id) params.set('cashier_id', filters.cashier_id);
+  if (filters.product_name) params.set('product_name', filters.product_name);
+  if (filters.status_group) params.set('status_group', filters.status_group);
   params.set('page', String(filters.page ?? 1));
   params.set('limit', String(filters.limit ?? 25));
   return params.toString();
@@ -282,6 +285,8 @@ export interface DiscountAuditTrailFilters {
   discountType?: string;
   /** POS-PERF-P59 — one discount identity (discountIdentityKey); same-named types never share one. */
   discountKey?: string;
+  /** POS-PERF-P59 — exactly the discounted sales on one page of another report. */
+  transactionIds?: string[];
   dateFrom?: string;
   dateTo?: string;
   page?: number;
@@ -305,6 +310,7 @@ export function useDiscountAuditTrail(filters: DiscountAuditTrailFilters, enable
       if (filters.discountKey) params.set('discount_key', filters.discountKey);
       if (filters.dateFrom) params.set('date_from', filters.dateFrom);
       if (filters.dateTo) params.set('date_to', filters.dateTo);
+      if (filters.transactionIds) params.set('transaction_ids', filters.transactionIds.join(','));
       params.set('page', String(filters.page ?? 1));
       params.set('limit', String(filters.limit ?? 100));
       const response = await apiClient<DiscountAuditTrailResponse>(`/api/transactions/discount-audit?${params.toString()}`);

@@ -18,10 +18,10 @@ describe('DiscountCoverageNotice', () => {
   });
 
   it.each([
-    [2_000, null],
-    [2_001, 'PDF holds the newest 2,000 sales, and 2,001 match'],
-    [10_000, 'PDF holds the newest 2,000 sales, and 10,000 match'],
-    [10_001, 'PDF holds the newest 2,000 sales; CSV holds the newest 10,000 sales, and 10,001 match'],
+    [100, null],
+    [101, 'PDF holds the newest 100 sales, and 101 match'],
+    [10_000, 'PDF holds the newest 100 sales, and 10,000 match'],
+    [10_001, 'PDF holds the newest 100 sales; CSV holds the newest 10,000 sales, and 10,001 match'],
   ])('warns about export limits only above them: %i sales', (transactionCount, expected) => {
     render(<DiscountCoverageNotice rowsReturned={1} rowsTotal={1} transactionCount={transactionCount} showExportLimits />);
     if (expected) expect(screen.getByRole('status')).toHaveTextContent(expected);

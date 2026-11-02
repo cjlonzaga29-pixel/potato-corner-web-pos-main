@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import {
   PARTIAL_EXPORT_FILENAME_MARKER,
   SOCKET_EVENTS,
+  type ReportPeriodSummary,
   type ReportType,
   type ReportResponse,
   type SnapshotResponse,
@@ -86,6 +87,37 @@ function useRealtimeReport<T>(reportType: ReportType, filters: ReportQueryFilter
     enabled,
     staleTime: 60_000,
   });
+}
+
+/** POS-PERF-P59 — figures across every matching record for the Supervisor/Branch Reports tabs; their tables page separately. */
+export function useReportPeriodSummary(filters: Pick<ReportQueryFilters, 'branch_id' | 'date_from' | 'date_to'>, enabled = true) {
+  return useQuery({
+    queryKey: ['reports', 'PERIOD_SUMMARY', filters],
+    queryFn: async () => {
+      const response = await apiClient<ReportPeriodSummary>(`/api/reports/period-summary?${buildReportQueryString(filters)}`);
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load report totals'));
+      return response.data;
+    },
+    enabled: enabled && Boolean(filters.branch_id),
+    staleTime: 60_000,
+  });
+}
+
+export function useReportPeriodSummaryRealtimeSync(): void {
+  useRealtimeInvalidate(
+    [
+      SOCKET_EVENTS.TRANSACTION_COMPLETED,
+      SOCKET_EVENTS.TRANSACTION_REFUNDED,
+      SOCKET_EVENTS.VOID_REQUESTED,
+      SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED,
+      SOCKET_EVENTS.ATTENDANCE_CLOCKED_IN,
+      SOCKET_EVENTS.ATTENDANCE_CLOCKED_OUT,
+    ],
+    [
+      ['reports', 'PERIOD_SUMMARY'],
+      ['reports', 'INVENTORY_CONSUMPTION_SUMMARY'],
+    ],
+  );
 }
 
 export function useDailySalesReport(filters: ReportQueryFilters, enabled = true) {
@@ -282,7 +314,7 @@ export function useRequestExport() {
         triggerBrowserDownload(outcome.file.blob, outcome.file.filename);
         if (outcome.file.filename.includes(PARTIAL_EXPORT_FILENAME_MARKER)) {
           toast.warning(`Partial ${formatLabel(variables.format)} downloaded`, {
-            description: 'More sales match these filters than this file can hold. The file says which rows it covers.',
+            description: 'More records match these filters than this file can hold. The file says which rows it covers.',
             duration: 15_000,
           });
         } else {

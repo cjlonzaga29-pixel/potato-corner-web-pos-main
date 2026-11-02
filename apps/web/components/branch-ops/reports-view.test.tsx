@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, within, cleanup, fireEvent, act } from '@testing-library/react';
-import type { InventoryStockMovementResponse, UnitOfMeasureResponse, InventoryItemResponse, TransactionResponse } from '@potato-corner/shared';
+import { render, screen, within, cleanup, fireEvent, act, waitFor } from '@testing-library/react';
+import type { InventoryConsumptionSummaryReportRow, InventoryStockMovementResponse, ReportPeriodSummary, UnitOfMeasureResponse, InventoryItemResponse, TransactionResponse } from '@potato-corner/shared';
 import { ReportsView } from './reports-view';
 
 const {
@@ -20,6 +20,8 @@ const {
   mockUseReportsRealtimeSync,
   mockUseDiscountComplianceReport,
   mockUseDiscountAuditTrail,
+  mockUseReportPeriodSummary,
+  mockUseInventoryConsumptionSummaryReport,
 } = vi.hoisted(() => ({
   mockUseBranchStore: vi.fn(),
   mockUseTransactions: vi.fn(),
@@ -37,6 +39,8 @@ const {
   mockUseReportsRealtimeSync: vi.fn(),
   mockUseDiscountComplianceReport: vi.fn(),
   mockUseDiscountAuditTrail: vi.fn(),
+  mockUseReportPeriodSummary: vi.fn(),
+  mockUseInventoryConsumptionSummaryReport: vi.fn(),
 }));
 
 vi.mock('@/stores/branch.store', () => ({
@@ -88,6 +92,9 @@ vi.mock('@/hooks/queries/use-reports', () => ({
   useRequestExport: mockUseRequestExport,
   useReportsRealtimeSync: mockUseReportsRealtimeSync,
   useDiscountComplianceReport: mockUseDiscountComplianceReport,
+  useReportPeriodSummary: mockUseReportPeriodSummary,
+  useReportPeriodSummaryRealtimeSync: vi.fn(),
+  useInventoryConsumptionSummaryReport: mockUseInventoryConsumptionSummaryReport,
 }));
 
 /** Swaps Framer Motion's async NumberTicker for a synchronous text node — same approach as the supervisor/admin reports page tests. */
@@ -171,6 +178,24 @@ function inventoryItem(overrides: Partial<InventoryItemResponse> = {}): Inventor
   };
 }
 
+function periodSummary(overrides: Partial<ReportPeriodSummary> = {}): ReportPeriodSummary {
+  return {
+    sales: { completed_count: 0, completed_total_amount: 0, completed_discount_amount: 0, voided_count: 0, voided_total_amount: 0, refunded_count: 0, refunded_total_amount: 0 },
+    movements: { total_count: 0, receiving_count: 0, waste_count: 0, adjustment_count: 0, sale_count: 0 },
+    attendance: { record_count: 0, open_count: 0, work_minutes: 0, overtime_minutes: 0 },
+    sold_product_names: [],
+    ...overrides,
+  };
+}
+
+function consumptionRow(overrides: Partial<InventoryConsumptionSummaryReportRow>): InventoryConsumptionSummaryReportRow {
+  return { ingredient_id: 'item-1', ingredient_name: 'Cheese Flavor', branch_id: 'branch-1', branch_name: 'Main Branch', unit: 'g', quantity_consumed: 0, unit_cost: null, consumption_value: null, has_unknown_cost: false, movement_count: 1, ...overrides };
+}
+
+function mockConsumption(rows: InventoryConsumptionSummaryReportRow[]) {
+  mockUseInventoryConsumptionSummaryReport.mockReturnValue({ data: { data: rows, total: rows.length }, isLoading: false, isError: false, refetch: vi.fn() });
+}
+
 function mockMovements(movements: InventoryStockMovementResponse[], overrides: Partial<{ isLoading: boolean; isError: boolean }> = {}) {
   mockUseInventoryStockMovements.mockReturnValue({
     data: { movements, total: movements.length, page: 1, limit: 100 },
@@ -210,6 +235,8 @@ beforeEach(() => {
   // the Admin drilldown already calls; default empty so tests that don't
   // care about it still render without crashing.
   mockUseDiscountAuditTrail.mockReturnValue({ data: { data: [] }, isLoading: false });
+  mockUseReportPeriodSummary.mockReturnValue({ data: periodSummary(), isLoading: false, isError: false });
+  mockUseInventoryConsumptionSummaryReport.mockReturnValue({ data: { data: [], total: 0 }, isLoading: false, isError: false, refetch: vi.fn() });
 });
 
 afterEach(() => {
@@ -226,7 +253,7 @@ describe('ReportsView — Inventory Movement tab (aligned InventoryStockMovement
     render(<ReportsView />);
     openInventoryMovementTab();
 
-    expect(mockUseInventoryStockMovements).toHaveBeenCalledWith('branch-1', expect.objectContaining({ page: 1, limit: 100 }));
+    expect(mockUseInventoryStockMovements).toHaveBeenCalledWith('branch-1', expect.objectContaining({ page: 1, limit: 25 }));
   });
 
   it('TEST B — renders a RECEIVING movement row with before/change/after quantities and unit', () => {
@@ -315,14 +342,7 @@ function openConsumptionSummaryTab() {
 
 describe('ReportsView — Consumption Summary tab (TASK 209.9 mixed-unit total removal)', () => {
   it('TEST G — never renders a combined quantity total across incompatible units', () => {
-    mockUseUnitsOfMeasure.mockReturnValue({
-      data: [unitOfMeasure({ id: 'unit-g', code: 'g', dimension: 'WEIGHT' }), unitOfMeasure({ id: 'unit-pc', code: 'pc', dimension: 'COUNT' })],
-      isLoading: false,
-    });
-    mockMovements([
-      stockMovement({ id: 'm1', inventory_item_id: 'item-flavor', inventory_item_name: 'Cheese Flavor', movement_type: 'SALE', quantity_change: -13620, unit_id: 'unit-g' }),
-      stockMovement({ id: 'm2', inventory_item_id: 'item-packaging', inventory_item_name: 'Paper Bag', movement_type: 'SALE', quantity_change: -135, unit_id: 'unit-pc' }),
-    ]);
+    mockConsumption([consumptionRow({ ingredient_name: 'Cheese Flavor', quantity_consumed: 13620, unit: 'g' }), consumptionRow({ ingredient_id: 'item-2', ingredient_name: 'Paper Bag', quantity_consumed: 135, unit: 'pc' })]);
 
     render(<ReportsView />);
     openConsumptionSummaryTab();
@@ -332,10 +352,7 @@ describe('ReportsView — Consumption Summary tab (TASK 209.9 mixed-unit total r
   });
 
   it('TEST H — auto-converts a gram quantity at or above 1000g to kg, exactly (13620g -> 13.62 kg)', () => {
-    mockUseUnitsOfMeasure.mockReturnValue({ data: [unitOfMeasure({ id: 'unit-g', code: 'g', dimension: 'WEIGHT' })], isLoading: false });
-    mockMovements([
-      stockMovement({ id: 'm1', inventory_item_id: 'item-flavor', inventory_item_name: 'Cheese Flavor', movement_type: 'SALE', quantity_change: -13620, unit_id: 'unit-g' }),
-    ]);
+    mockConsumption([consumptionRow({ quantity_consumed: 13620, unit: 'g' })]);
 
     render(<ReportsView />);
     openConsumptionSummaryTab();
@@ -344,10 +361,7 @@ describe('ReportsView — Consumption Summary tab (TASK 209.9 mixed-unit total r
   });
 
   it('TEST I — a sub-1000g quantity stays in grams (999g stays "999 g")', () => {
-    mockUseUnitsOfMeasure.mockReturnValue({ data: [unitOfMeasure({ id: 'unit-g', code: 'g', dimension: 'WEIGHT' })], isLoading: false });
-    mockMovements([
-      stockMovement({ id: 'm1', inventory_item_id: 'item-flavor', inventory_item_name: 'Cheese Flavor', movement_type: 'SALE', quantity_change: -999, unit_id: 'unit-g' }),
-    ]);
+    mockConsumption([consumptionRow({ quantity_consumed: 999, unit: 'g' })]);
 
     render(<ReportsView />);
     openConsumptionSummaryTab();
@@ -356,15 +370,19 @@ describe('ReportsView — Consumption Summary tab (TASK 209.9 mixed-unit total r
   });
 
   it('TEST J — count-based (pc) inventory is never converted, stays in its own unit', () => {
-    mockUseUnitsOfMeasure.mockReturnValue({ data: [unitOfMeasure({ id: 'unit-pc', code: 'pc', dimension: 'COUNT' })], isLoading: false });
-    mockMovements([
-      stockMovement({ id: 'm1', inventory_item_id: 'item-packaging', inventory_item_name: 'Paper Bag', movement_type: 'SALE', quantity_change: -135, unit_id: 'unit-pc' }),
-    ]);
+    mockConsumption([consumptionRow({ quantity_consumed: 135, unit: 'pc' })]);
 
     render(<ReportsView />);
     openConsumptionSummaryTab();
 
     expect(screen.getByText('135 pc')).toBeInTheDocument();
+  });
+
+  it('reads the server aggregate only while the tab is open, not the movements on one page', () => {
+    render(<ReportsView />);
+    expect(mockUseInventoryConsumptionSummaryReport).toHaveBeenLastCalledWith(expect.objectContaining({ branch_id: 'branch-1' }), false);
+    openConsumptionSummaryTab();
+    expect(mockUseInventoryConsumptionSummaryReport).toHaveBeenLastCalledWith(expect.objectContaining({ branch_id: 'branch-1' }), true);
   });
 });
 
@@ -453,7 +471,7 @@ describe('ReportsView — Reports §8/§9/§10 (shift removal, Sold Product Tran
     expect(screen.getByText('1x Regular Fries')).toBeInTheDocument();
   });
 
-  it('filters Sold Product Transactions by receipt number', () => {
+  it('filters Sold Product Transactions by receipt number, on the server', async () => {
     mockUseTransactions.mockReturnValue({
       data: {
         transactions: [transaction({ id: 'txn-1', receipt_number: 'PC-0001' }), transaction({ id: 'txn-2', receipt_number: 'PC-0002' })],
@@ -473,8 +491,7 @@ describe('ReportsView — Reports §8/§9/§10 (shift removal, Sold Product Tran
 
     fireEvent.change(screen.getByPlaceholderText('Search receipt number'), { target: { value: 'PC-0002' } });
 
-    expect(screen.queryByText('PC-0001')).not.toBeInTheDocument();
-    expect(screen.getByText('PC-0002')).toBeInTheDocument();
+    await waitFor(() => expect(mockUseTransactions).toHaveBeenCalledWith(expect.objectContaining({ receipt_search: 'PC-0002', page: 1 })));
   });
 
   it('TASK 209.10 — export parity: includes the active Sold Product Transactions search filter in the export request', () => {
@@ -796,12 +813,114 @@ describe('ReportsView — Daily Sales tab Customer ID / Reference and cashier na
   });
 });
 
+describe('ReportsView — report coverage (POS-PERF-P59)', () => {
+  const page = (total: number, rows: TransactionResponse[] = [transaction()]) => ({ data: { transactions: rows, total, page: 1, limit: 25 }, isLoading: false, isError: false, refetch: vi.fn() });
+  const fullPeriod = () => periodSummary({ sales: { completed_count: 5000, completed_total_amount: 900000, completed_discount_amount: 1234, voided_count: 60, voided_total_amount: 777, refunded_count: 41, refunded_total_amount: 888 } });
+
+  it('Daily Sales cards read the full-period aggregate, never the sum of the rows on this page', () => {
+    mockUseTransactions.mockReturnValue(page(5000));
+    mockUseReportPeriodSummary.mockReturnValue({ data: fullPeriod(), isLoading: false, isError: false });
+    render(<ReportsView />);
+
+    expect(screen.getByText('5000')).toBeInTheDocument();
+    expect(screen.getByText('900000')).toBeInTheDocument();
+    expect(screen.getByText('1234')).toBeInTheDocument();
+    expect(screen.getByText(/Totals cover all 5,000 completed sales in this period/)).toBeInTheDocument();
+    expect(mockUseTransactions).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed', page: 1, limit: 25 }));
+  });
+
+  it.each([
+    [100, null],
+    [101, 'PDF holds the newest 100 completed sales, and 101 match'],
+    [10_001, 'PDF holds the newest 100 completed sales; CSV holds the newest 10,000 completed sales, and 10,001 match'],
+  ])('warns before a Daily Sales export would be cut short: %i sales', (total, expected) => {
+    mockUseTransactions.mockReturnValue(page(total));
+    render(<ReportsView />);
+    if (expected) expect(screen.getByRole('status')).toHaveTextContent(expected);
+    else expect(screen.queryByText(/Exports will be partial/)).not.toBeInTheDocument();
+  });
+
+  it('a failed aggregate says Unavailable on every card, never a false 0 or a claim about totals', () => {
+    mockUseTransactions.mockReturnValue(page(3));
+    mockUseReportPeriodSummary.mockReturnValue({ data: undefined, isLoading: false, isError: true });
+    render(<ReportsView />);
+    expect(screen.getAllByText('Unavailable')).toHaveLength(3);
+    expect(screen.queryByText(/Totals cover all/)).not.toBeInTheDocument();
+    expect(screen.getByText(/3 completed sales match/)).toBeInTheDocument();
+  });
+
+  it('staff: the aggregate is never requested, and their cards say Unavailable', () => {
+    mockUseAuthStore.mockImplementation((selector: (s: { user: { id: string; role: string } }) => unknown) => selector({ user: { id: 'staff-1', role: 'staff' } }));
+    mockUseTransactions.mockReturnValue(page(3));
+    mockUseReportPeriodSummary.mockReturnValue({ data: undefined, isLoading: false, isError: false });
+    render(<ReportsView />);
+    expect(mockUseReportPeriodSummary).toHaveBeenLastCalledWith(expect.objectContaining({ branch_id: 'branch-1' }), false);
+    expect(screen.getAllByText('Unavailable')).toHaveLength(3);
+  });
+
+  it('Void/Refund pages one combined list, and its cards read the aggregate', () => {
+    mockUseTransactions.mockReturnValue(page(101, [transaction({ id: 'v1', receipt_number: 'V-1', status: 'voided' }), transaction({ id: 'r1', receipt_number: 'R-1', status: 'refunded' })]));
+    mockUseReportPeriodSummary.mockReturnValue({ data: fullPeriod(), isLoading: false, isError: false });
+    render(<ReportsView />);
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Void/Refund' }));
+
+    expect(mockUseTransactions).toHaveBeenCalledWith(expect.objectContaining({ status_group: 'void_refund', page: 1, limit: 25 }));
+    expect(screen.getByText('777')).toBeInTheDocument();
+    expect(screen.getByText('888')).toBeInTheDocument();
+    expect(within(screen.getByText('V-1').closest('tr') as HTMLElement).getByText('Void')).toBeInTheDocument();
+    expect(within(screen.getByText('R-1').closest('tr') as HTMLElement).getByText('Refund')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('PDF holds the newest 100 voided or refunded sales, and 101 match');
+  });
+
+  it('Inventory Movement and Attendance cards read the aggregate, and their tables report the true total', () => {
+    mockUseInventoryStockMovements.mockReturnValue({ data: { movements: [], total: 250, page: 1, limit: 25 }, isLoading: false, isError: false, refetch: vi.fn() });
+    mockUseAttendanceByBranch.mockReturnValue({ data: { records: [], total: 130, page: 1, limit: 25 }, isLoading: false, isError: false, refetch: vi.fn() });
+    mockUseReportPeriodSummary.mockReturnValue({
+      data: periodSummary({ movements: { total_count: 250, receiving_count: 11, waste_count: 22, adjustment_count: 33, sale_count: 184 }, attendance: { record_count: 130, open_count: 4, work_minutes: 6000, overtime_minutes: 120 } }),
+      isLoading: false,
+      isError: false,
+    });
+    render(<ReportsView />);
+
+    openInventoryMovementTab();
+    expect(screen.getByText('250')).toBeInTheDocument();
+    expect(screen.getByText('33')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('PDF holds the newest 100 stock movements, and 250 match');
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Attendance Summary' }));
+    expect(screen.getByText('Attendance Records')).toBeInTheDocument();
+    expect(screen.queryByText('Total Staff Today')).not.toBeInTheDocument();
+    expect(screen.getByText('100')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('PDF holds the newest 100 attendance records, and 130 match');
+  });
+
+  it('Daily Sales asks for the customer IDs of exactly this page, so a row on any page finds its own', () => {
+    mockUseAuthStore.mockImplementation((selector: (s: { user: { id: string; role: string } }) => unknown) => selector({ user: { id: 'sup-1', role: 'supervisor' } }));
+    mockUseTransactions.mockReturnValue(page(200, [transaction({ id: 'd1', discount_type: 'pwd', discount_amount: 5 }), transaction({ id: 'p1', receipt_number: 'PC-2' })]));
+    render(<ReportsView />);
+    expect(mockUseDiscountAuditTrail).toHaveBeenCalledWith(expect.objectContaining({ transactionIds: ['d1'] }), true);
+  });
+
+  it('Sold Product Transactions sends its filters to the server and its export, with its own view', () => {
+    const mutate = vi.fn();
+    mockUseRequestExport.mockReturnValue({ mutate, isPending: false });
+    mockUseTransactions.mockReturnValue(page(1));
+    render(<ReportsView />);
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Sold Product Transactions' }));
+    fireEvent.click(screen.getByRole('button', { name: /Export CSV/ }));
+
+    expect(mockUseTransactions).toHaveBeenCalledWith(expect.not.objectContaining({ status: expect.anything() }));
+    expect(mutate.mock.calls[0]?.[0].filters).toMatchObject({ report_view: 'sold_product_transactions' });
+  });
+});
+
 describe('ReportsView — no visible VAT (POS-PERF-P59)', () => {
   const legacy = transaction({ id: 'L1', receipt_number: 'L1', total_amount: 500, vat_amount: 53.57, discount_type: null, discount_amount: 0 });
   const manual = transaction({ id: 'M1', receipt_number: 'M1', total_amount: 450, calculation_mode: 'manual_total_v1', vat_amount: null, vat_exempt_amount: null, discount_type: null, discount_amount: 0 });
 
   it('legacy and manual-total sales keep their totals, with no VAT card, column or "Not calculated" message', () => {
     mockUseTransactions.mockReturnValue({ data: { transactions: [legacy, manual], total: 2, page: 1, limit: 100 }, isLoading: false, isError: false, refetch: vi.fn() });
+    mockUseReportPeriodSummary.mockReturnValue({ data: periodSummary({ sales: { ...periodSummary().sales, completed_count: 2, completed_total_amount: 950 } }), isLoading: false, isError: false });
     render(<ReportsView />);
     expect(screen.getByText('950')).toBeInTheDocument();
     for (const gone of ['VAT Collected', 'Without VAT Calculation', 'VAT', 'Not calculated', '53.57']) {

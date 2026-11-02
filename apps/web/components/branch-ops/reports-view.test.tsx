@@ -915,6 +915,25 @@ describe('ReportsView — Discount Report (POS-PERF-P59)', () => {
     expect(mutate.mock.calls[0]?.[0]).toMatchObject({ report_type: 'DISCOUNT_COMPLIANCE', filters: { discount_key: 'manual:bbbbbbbb-1111-4111-8111-111111111111' } });
   });
 
+  it('staff: the report API refuses them, so no summary, filter or false ₱0, and the sales they may read still show', () => {
+    mockUseAuthStore.mockImplementation((selector: (s: { user: { id: string; role: string } }) => unknown) => selector({ user: { id: 'staff-1', role: 'staff' } }));
+    mockUseDiscountComplianceReport.mockReturnValue({ data: undefined, isLoading: false, isError: true, refetch: vi.fn() });
+    mockUseTransactions.mockReturnValue({ data: { transactions: [customPwd()], total: 1, page: 1, limit: 100 }, isLoading: false, isError: false, refetch: vi.fn() });
+    render(<ReportsView />);
+    expect(mockUseDiscountComplianceReport).toHaveBeenCalledWith(expect.anything(), false);
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Discount Report' }));
+    expect(screen.queryByText('Total Discounted Transactions')).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Discount Type' })).not.toBeInTheDocument();
+    expect(within(screen.getByText('PC-M1').closest('tr') as HTMLElement).getByText('PWD')).toBeInTheDocument();
+  });
+
+  it('a failed summary says Unavailable, never a false 0', () => {
+    mockUseDiscountComplianceReport.mockReturnValue({ data: undefined, isLoading: false, isError: true, refetch: vi.fn() });
+    render(<ReportsView />);
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Discount Report' }));
+    expect(screen.getAllByText('Unavailable')).toHaveLength(2);
+  });
+
   it('only the Discount tab sends the type filter on export', () => {
     const mutate = vi.fn();
     mockUseRequestExport.mockReturnValue({ mutate, isPending: false });

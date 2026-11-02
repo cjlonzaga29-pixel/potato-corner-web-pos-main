@@ -637,12 +637,13 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
 
   it('reports and refunds: manual sales are their own group and stored totals reconcile', async () => {
     const rows = await reportsRepository.getDiscountCompliance({ branchId: ids.branchA } as Parameters<typeof reportsRepository.getDiscountCompliance>[0]);
-    const manualRow = rows.find((r) => r.discount_type === 'manual');
+    // P59 — one row per discount type, by identity; together they cover every manual sale.
+    const manualRows = rows.filter((r) => r.discount_type === 'manual');
     const manualSales = await prisma.transaction.findMany({ where: { branchId: ids.branchA, discountType: 'manual', status: 'completed' } });
-    expect(manualRow?.transaction_count).toBe(manualSales.length);
-    expect(manualRow?.total_discount_amount).toBeCloseTo(manualSales.reduce((s, t) => s + t.discountAmount.toNumber(), 0), 2);
+    expect(manualRows.reduce((s, r) => s + r.transaction_count, 0)).toBe(manualSales.length);
+    expect(manualRows.reduce((s, r) => s + r.total_discount_amount, 0)).toBeCloseTo(manualSales.reduce((s, t) => s + t.discountAmount.toNumber(), 0), 2);
     // P55R2 — VAT not calculated: no exempt/non-VATable figure (null), not ₱0.
-    expect(manualRow).toMatchObject({ calculation_mode: 'manual_total_v1', total_vat_exempt_sales: null, total_vat_exempt_amount: null });
+    for (const manualRow of manualRows) expect(manualRow).toMatchObject({ calculation_mode: 'manual_total_v1', total_vat_exempt_sales: null, total_vat_exempt_amount: null });
     expect(rows.find((r) => r.discount_type === 'pwd')).toMatchObject({ calculation_mode: 'legacy_vat_v1' });
     // Daily Sales: VAT totals only VAT-calculated sales; manual-total sales are counted apart.
     const completed = await prisma.transaction.findMany({ where: { branchId: ids.branchA, status: 'completed' } });

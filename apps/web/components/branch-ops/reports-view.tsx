@@ -490,6 +490,8 @@ export function ReportsView() {
   // unrelated actions this task doesn't touch.
   const isSuperAdmin = useAuthStore((s) => s.user?.role === ROLES.SUPER_ADMIN);
   const canViewDiscountProof = isSupervisor || isSuperAdmin;
+  // POS-PERF-P59 — the report API refuses the staff role, so staff get the sales list they may read, never a false ₱0 summary.
+  const canReadDiscountSummary = useAuthStore((s) => s.user?.role !== ROLES.STAFF);
   const requestExport = useRequestExport();
   const [activeTab, setActiveTab] = useState('daily-sales');
   const [refreshDisabled, setRefreshDisabled] = useState(false);
@@ -577,7 +579,7 @@ export function ReportsView() {
     date_from: dateRange.from,
     date_to: dateRange.to,
     limit: QUERY_LIMIT,
-  });
+  }, canReadDiscountSummary);
   // Task: Discount Report parity — reuses the same discount-audit trail
   // endpoint the Admin drilldown already calls (GET /transactions/discount-audit)
   // purely to source discountCustomerId per transaction id, not as this tab's
@@ -1027,31 +1029,35 @@ export function ReportsView() {
         </TabsContent>
 
         <TabsContent value="discount-compliance" className="space-y-4">
-          <ReportLastUpdated
-            timestamp={discountComplianceQuery.dataUpdatedAt ? new Date(discountComplianceQuery.dataUpdatedAt).toISOString() : undefined}
-            isLoading={discountComplianceQuery.isLoading}
-          />
-          <DiscountTypeFilter
-            options={discountOptions}
-            value={discountTypeFilter}
-            onChange={(value) => {
-              setDiscountTypeFilter(value);
-              setDiscountPagination((p) => ({ ...p, pageIndex: 0 }));
-            }}
-          />
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <KpiCard title="Total Discounted Transactions" value={totalDiscountedTransactions} isLoading={discountComplianceQuery.isLoading} />
-            <KpiCard title="Total Discount Amount" value={totalDiscountAmount} prefix="₱" isLoading={discountComplianceQuery.isLoading} />
-          </div>
-          {canViewDiscountProof && <DiscountProofSummary summary={proofSummary} isLoading={discountComplianceQuery.isLoading} />}
-          <DataTable
-            columns={getDiscountBreakdownColumns({ showBranch: false, showProof: canViewDiscountProof })}
-            data={visibleDiscountRows}
-            isLoading={discountComplianceQuery.isLoading}
-            isError={discountComplianceQuery.isError}
-            onRetry={() => void discountComplianceQuery.refetch()}
-            emptyState={<EmptyState title="No discount types" description="No discounted sales in this date range." />}
-          />
+          {canReadDiscountSummary && (
+            <>
+              <ReportLastUpdated
+                timestamp={discountComplianceQuery.dataUpdatedAt ? new Date(discountComplianceQuery.dataUpdatedAt).toISOString() : undefined}
+                isLoading={discountComplianceQuery.isLoading}
+              />
+              <DiscountTypeFilter
+                options={discountOptions}
+                value={discountTypeFilter}
+                onChange={(value) => {
+                  setDiscountTypeFilter(value);
+                  setDiscountPagination((p) => ({ ...p, pageIndex: 0 }));
+                }}
+              />
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <KpiCard title="Total Discounted Transactions" value={totalDiscountedTransactions} valueText={discountComplianceQuery.isError ? 'Unavailable' : undefined} isLoading={discountComplianceQuery.isLoading} />
+                <KpiCard title="Total Discount Amount" value={totalDiscountAmount} prefix="₱" valueText={discountComplianceQuery.isError ? 'Unavailable' : undefined} isLoading={discountComplianceQuery.isLoading} />
+              </div>
+              {canViewDiscountProof && !discountComplianceQuery.isError && <DiscountProofSummary summary={proofSummary} isLoading={discountComplianceQuery.isLoading} />}
+              <DataTable
+                columns={getDiscountBreakdownColumns({ showBranch: false, showProof: canViewDiscountProof })}
+                data={visibleDiscountRows}
+                isLoading={discountComplianceQuery.isLoading}
+                isError={discountComplianceQuery.isError}
+                onRetry={() => void discountComplianceQuery.refetch()}
+                emptyState={<EmptyState title="No discount types" description="No discounted sales in this date range." />}
+              />
+            </>
+          )}
           <DataTable
             stickyHeader
             columns={getDiscountComplianceColumns(canViewDiscountProof, setDiscountProofTransactionId, employeeNames, discountDetailCustomerIds)}

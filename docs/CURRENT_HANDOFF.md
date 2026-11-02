@@ -9,9 +9,9 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
 ## Observed state
 
 - **Observed:** 2026-11-02
-- **Branch:** `feat/pos-perf-p58-custom-product-types`. Local only: nothing pushed, merged or deployed.
-- **Tested code:** `cd862cf`, on `3e0df7b`, `b9d3de4`. Local `origin/main` was `a92c587`; no fetch was run.
-- **Docs:** the runbook, this handoff, `PROJECT_MAP.md` and `.claude/CLAUDE.md` are in one docs commit directly after `cd862cf`.
+- **Branch:** `feat/pos-perf-p58-custom-product-types`, on `origin/main` `a92c587` (fetched 2026-11-02). Pushed for review through a PR: not merged or deployed.
+- **Tested code:** `cd862cf`, on `3e0df7b`, `b9d3de4`. Every commit after it changes docs only.
+- **Docs:** the review, the rollout steps and the limitation triage are in a second docs commit after `8137321`.
 - **Working tree after that commit:** only `.vscode/settings.json` should remain modified. It is unrelated; never stage it with P58.
 - **Other worktrees:** six older P51–P55R3 worktrees, all marked `prunable`. Nothing here authorizes removing them.
 
@@ -20,12 +20,14 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
 P58 custom product types and the P58R race fix are finished on this branch. See
 [`runbooks/pos-perf-p58-custom-product-types.md`](runbooks/pos-perf-p58-custom-product-types.md), §11 for the evidence and limits.
 
-**Remaining, each needing your go-ahead:** review, push, open a PR, CI, deployment. Run the read-only check in §11.7 before deploying.
+The pre-PR review changed no code (§11.9). Neither reported limitation blocks the release (§11.10).
+
+**Remaining, each needing your go-ahead:** human review, merge, production approval. Follow the release steps in §8, including the read-only check in §11.7 before and after the deployment. Check the PR itself for its URL and CI result.
 
 ## Read next
 
 1. [`PROJECT_MAP.md`](PROJECT_MAP.md), "Products, builder, product types" section
-2. Runbook §11, then §8 for overlap and rollback
+2. Runbook §8 for overlap, release steps and rollback, then §11 including the review in §11.9 and §11.10
 3. `lockAndAssertMayEnable` in `apps/api/src/modules/products/products.service.ts`
 
 ## Verification evidence
@@ -54,7 +56,7 @@ All on local disposable databases, on `cd862cf`'s code.
 
 **Permitted:** read code; run local tests against disposable databases; update this handoff and the affected map entries.
 
-**Needs separate authorization:** push, merge, PR, deployment, production access, branch switches, stashes, removing
-worktrees, migrations outside a verified local database.
+**Needs separate authorization:** further pushes, merge, deployment, production access, branch switches, stashes,
+removing worktrees, migrations outside a verified local database.
 
 Record the code SHA that was actually observed or tested, never a guess at a future docs commit.

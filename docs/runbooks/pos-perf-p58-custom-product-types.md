@@ -113,6 +113,23 @@ Manual discount code was not changed and doesn't read the type. P58R applied man
 | Old API branch copy of a custom-typed product | The copy has no custom type and reads as its classification |
 | New web → old API | Built-ins work. No custom types are listed. Create Product Type is refused visibly and writes nothing; the message is the raw 404 text |
 
+**Old and new API overlap.** The scope invariant is enforced by the app, so an old API instance doesn't enforce it. It only matters once a product has a custom type, and only the new API can assign one. That confines the risk to three windows:
+
+| Window | Exposure | Mitigation |
+|---|---|---|
+| Migrations applied, old API still serving | None: no custom type can exist yet | None needed |
+| Render switching from old API to new | In-flight requests on the old instance only, and the old web has no way to create a type | `deploy-production.yml` promotes the new web only after Render reports this deploy live at this SHA. `apps/web/vercel.json` keeps Git deploys of `main` off, so the workflow is the only publisher |
+| Code rolled back after types exist | Real, for as long as the rollback lasts: the old API enables outside the scope | Avoid availability changes on custom-typed products while rolled back, and repeat the §11.7 check before redeploying |
+
+**Release steps.** They use only the existing workflow and its `production` environment approval; no setting changes.
+
+1. Run the §11.7 check, read-only, before approving the deployment. Don't approve while it reports an unexplained row.
+2. Approve the run and let it finish through "Verify production web is serving this commit". Don't create or assign a custom type before then. A supervisor calling the API directly could, which is the remaining risk this procedure can't remove.
+3. Run the §11.7 check again, then allow custom types to be used.
+4. Report any row to the owner. Nothing repairs rows automatically.
+
+This relies on Render stopping traffic to the old instance once the new one is live, which the repository can't prove. It has not been observed on a real deployment.
+
 **Rollback limits once custom types exist.** Roll back the code only, and leave the tables and column in place.
 
 - The old code ignores them. Custom-typed products show their classification label until the new code returns, and assignments survive.
@@ -264,7 +281,7 @@ The migration rehearsal was not re-run, because P58R changes no schema.
 
 **Rollback:** `cd862cf` can be reverted on its own with no data step. That reopens the race and the §11.1 gaps. Limits from §8 still apply: roll back code only, and don't drop the column or tables, because that permanently loses custom assignments.
 
-**Rows from before this fix aren't repaired.** Before deploying, a read-only check can look for products available outside their type's scope. It has not been run on production:
+**Rows from before this fix aren't repaired.** A release prerequisite (§8) is a read-only check for products available outside their type's scope. It has not been run on production, and has not been executed anywhere; its column names were checked against the schema and migration only:
 
 ```sql
 SELECT p.id, a.branch_id FROM products p
@@ -273,15 +290,68 @@ WHERE p.product_type_id IS NOT NULL AND NOT EXISTS (
   SELECT 1 FROM product_type_branches s WHERE s.product_type_id = p.product_type_id AND s.branch_id = a.branch_id);
 ```
 
+| Result | Meaning |
+|---|---|
+| `column p.product_type_id does not exist` | P58's migrations aren't applied, so no custom type can exist. Nothing to check; this is the expected first result |
+| No rows | The invariant holds |
+| Any row | Stop and report it to the owner. Don't repair it automatically |
+
+The workflow applies migrations and deploys the API in one approved run, so the check can't run between them. That's why §8 runs it before approval and again after the run finishes.
+
 ### 11.8 Remaining limitations
 
 - **Not tested:** a physical camera (gallery upload only), an installed PWA, real iOS or Android devices, a deployed cutover, screen readers, and the rate limits under load.
 - **Enforced in the app, not the database.** An older API instance during a rolling deploy, or a direct database write, can still break the invariant.
 - **Stock cascade and disable aren't locked,** so they can race an assignment. The worst case is an unavailable row outside the scope.
 - **Discontinue and archive don't take the lock.** An enable that passed its check just before can leave an available row on a discontinued product. POS hides it by status, and it isn't a scope problem. This predates P58R and wasn't changed.
-- **Offline saves:** the app reloads on reconnect (`reloadOnOnline`). A waiting save is either dropped by that reload or reaches the server first and is validated. One run saw a waiting built-in type change applied after reconnecting. The dialog gives no separate warning.
+- **Offline saves:** the app reloads on reconnect (`reloadOnOnline`). A waiting save is either dropped by that reload or reaches the server first and is validated. One run saw a waiting built-in type change applied after reconnecting. The dialog gives no separate warning. See §11.9.
 - **Offline lists:** `/api/*` reads are cached by URL for up to 24 hours (16 entries), not per user, so an offline reload can show an older list. The server still decides every write. Two people sharing a device offline wasn't tested.
-- **Queued sale identity** is branch, device and provisional number. A replay with a different device id created a second sale in an earlier run. The app always sends its own id; a forged one isn't defended against here.
+- **Queued sale identity** is branch, device and provisional number. A replay with a different device id created a second sale in an earlier run. The app always sends its own id; a forged one isn't defended against here. See §11.9.
 - **Integration tests only, not browser:** the forced races themselves, bulk, restore and copy replacement. The notice in the editor's Details form has a component test; the browser drove the Edit Product dialog.
 - **`.env.example`** describes `ENCRYPTION_KEY` as hex, but the code decodes it as base64. Not changed; worth correcting separately.
 - **Scratch only:** the browser drivers aren't committed. `apps/api/scripts/p58r-browser-fixtures.ts` is.
+
+### 11.9 Pre-PR code review
+
+A code review before the PR, by reading the code. It changed no code and ran no new tests, so the evidence in §11.5 still stands for `cd862cf`. The findings below weren't reproduced at runtime.
+
+**Can the unlocked disable invalidate an enable or type check? No, for this invariant.**
+
+- The scope check reads the type's branches and never reads `is_available`, so turning a row off can't make a passed check wrong.
+- On an existing row, enable and disable end with the row on or off. The branch was in scope either way.
+- With no row, a disable creates an unavailable one, even while an assignment holds the lock. The assignment can miss it, leaving an unavailable row outside the scope. Every path that turns a row on refuses or skips it, so it can't become sellable.
+
+**Findings, none blocking this release:**
+
+| Finding | Effect | Origin |
+|---|---|---|
+| A disable can add an out-of-scope row, by racing or simply in sequence | Later assignments to a type that doesn't cover that branch get `PRODUCT_TYPE_BRANCH_MISMATCH`, and the app can't remove a row. Choose or widen a type that covers it | P58 |
+| A disable has no branch-selection guard, so it creates a row at a branch a selection-scoped product wasn't created for. That row then satisfies `PRODUCT_BRANCH_NOT_SELECTED` | A supervisor assigned to that branch can then enable the product there. A custom type's scope is checked separately and still refuses. The extra row may also change who has catalog authority over the product | Predates P58; the row creation and the guard are both older than it |
+| `assertSupervisorMayEnableAtBranch` returns early for non-supervisors, skipping the scope check | Not reachable: every enable and publish route is `supervisorOnly`. It would matter if a route were opened to another role | The early return predates P58 |
+
+**Checked, no problem found:**
+
+- **Lock order:** always product lock, then type row. Type updates and deactivation hold only the type row, and a copy or new product takes only the type row, so there's no cycle.
+- **Same transaction:** `lockActive` re-evaluates after waiting, so a committed deactivation refuses the assignment.
+- **Availability writers:** every code path that writes `is_available = true` was traced. Only publish, toggle, bulk, status change, restore and copy replacement do, and a copy's one row is at a branch its type covers.
+- **Permissions and history:** type writes are `supervisorOnly` and scope-checked. Deactivation writes only the type row, and the foreign key restricts deleting a referenced type.
+
+### 11.10 Triage of the two reported limitations
+
+Neither is a release blocker, and P58 changed none of the code behind them. It does add new forms that can hit the first one.
+
+**Offline saves dropped or sent without warning**
+
+- **Path:** product and product type dialogs use TanStack mutations with its default `networkMode`, so a save made offline pauses in memory. No persister is configured. On reconnect, `reloadOnOnline` (since `30999d1`, 2026-07-15) reloads the page while paused mutations resume.
+- **Trigger:** a supervisor saves while offline and stays on the page until the connection returns.
+- **Effect:** the save is lost, or it reaches the server, which applies the usual version, scope and active-type checks. An invalid write isn't possible, but the supervisor may not know which happened.
+- **Not affected:** queued sales are in IndexedDB and the cart store is persisted, so both are meant to survive the reload. The queued sale's survival is tested in §11.4.
+- **Follow-up:** show that the save is waiting or was lost. Not done here.
+
+**A queued-sale replay with a different device ID creates another sale**
+
+- **Path:** `syncOfflineTransactions` looks a sale up by branch, `X-Device-ID` and provisional number, backed by a unique index (`61ac959`, 2026-08-10). The queued row doesn't store the device id, so it comes from `localStorage` at send time.
+- **Trigger, all needed:** an earlier attempt committed, its response was lost, and `pc_device_id` then changed while IndexedDB kept the row. Nothing in the web app removes that key, and clearing all site data removes the queue too. So it takes partial storage loss, or an authenticated client sending a forged header.
+- **Effect if it happens:** a second receipt and a second stock deduction for one real sale.
+- **New sale or replay:** the device has to stay in the key. Provisional numbers are per device, so two tablets at a branch can both hold the same number for different real sales, and `transactions.service.test.ts` requires those to stay separate. The server can't tell a replay under a new id from such a sale.
+- **Follow-up:** store a sale identity on the queued row, generated when it's queued, for a separate reviewed change touching the sale path.

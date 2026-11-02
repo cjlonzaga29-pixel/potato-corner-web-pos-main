@@ -2494,6 +2494,31 @@ describe('TerminalPage — uncertain checkout resolution (POS-PERF-P15R2)', () =
     expect(mockClearPendingCheckoutAttempt).toHaveBeenCalled();
   });
 
+  it('P59 — a sale recovered after a reload clears the cart that survived it, so it cannot be charged a second time', async () => {
+    mockClearCart.mockClear();
+    mockReadPendingCheckoutAttempt.mockReturnValue({ idempotencyKey: 'key-from-before-reload', savedAt: Date.now(), orderRef: 1 });
+    mockResolveAndFenceCheckoutAttempt.mockResolvedValueOnce({
+      status: 'found',
+      transaction: { id: 'txn-9', receipt_number: 'BR-009', subtotal: 50, discount_amount: 0, discount_type: null, total_amount: 50, payment_method: 'cash', cash_tendered: 50, change_given: 0, items: [] },
+    });
+
+    render(<TerminalPage />);
+
+    await waitFor(() => expect(screen.getByText('Sale completed')).toBeInTheDocument());
+    expect(mockClearCart).toHaveBeenCalledTimes(1);
+  });
+
+  it('P59 — a reload whose attempt never committed keeps the cart, which is still unsold', async () => {
+    mockClearCart.mockClear();
+    mockReadPendingCheckoutAttempt.mockReturnValue({ idempotencyKey: 'key-never-committed', savedAt: Date.now(), orderRef: 1 });
+    mockResolveAndFenceCheckoutAttempt.mockResolvedValueOnce({ status: 'not-found' });
+
+    render(<TerminalPage />);
+
+    await waitFor(() => expect(mockClearPendingCheckoutAttempt).toHaveBeenCalled());
+    expect(mockClearCart).not.toHaveBeenCalled();
+  });
+
   it('clears the pending record on mount when the recovered attempt resolves not-found', async () => {
     mockReadPendingCheckoutAttempt.mockReturnValue({ idempotencyKey: 'key-never-committed', savedAt: Date.now(), orderRef: 1 });
     mockResolveAndFenceCheckoutAttempt.mockResolvedValueOnce({ status: 'not-found' });

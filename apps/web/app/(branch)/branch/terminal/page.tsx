@@ -1196,8 +1196,11 @@ export default function TerminalPage() {
   // succeed, time out, or the tab will close mid-flight. On the next mount
   // of this page, any attempt left pending for this branch is resolved
   // against the server exactly like an in-session dropped response is
-  // (same bounded poll) — this tab's own cart/payment state is gone after a
-  // reload, but the server's record of what actually happened is not.
+  // (same bounded poll). POS-PERF-P59 — the cart survives a reload in
+  // sessionStorage, so a confirmed attempt clears it here exactly as
+  // handleCharge's own resolve does: otherwise "Next Customer" or Escape leaves
+  // the sold items in the cart, and charging them mints a new key and a second
+  // real sale.
   useEffect(() => {
     if (!branchId) return;
     const pending = readPendingCheckoutAttempt(branchId);
@@ -1212,6 +1215,8 @@ export default function TerminalPage() {
         clearPendingCheckoutAttempt(branchId);
         idempotencyKeyRef.current = null;
         lastChargeFingerprintRef.current = null;
+        clearCart();
+        resetPaymentFields();
         // POS-PERF-P21 — a pre-existing pending record saved before orderRef
         // existed has none; mint a fresh one rather than show a fake "#01".
         setSaleSnapshot(transactionToSaleSnapshot(outcome.transaction, pending.orderRef ?? nextOrderRef(branchId)));
@@ -1246,6 +1251,8 @@ export default function TerminalPage() {
         setUnresolvedAttemptNotice(false);
         idempotencyKeyRef.current = null;
         lastChargeFingerprintRef.current = null;
+        clearCart();
+        resetPaymentFields();
         setSaleSnapshot(transactionToSaleSnapshot(outcome.transaction, pending.orderRef ?? nextOrderRef(branchId)));
         setSaleTransaction(outcome.transaction);
         setSalePhase('success');

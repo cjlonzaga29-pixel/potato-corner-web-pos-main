@@ -53,6 +53,17 @@ async function main(): Promise<void> {
   const open = await prisma.attendanceRecord.findFirst({ where: { employeeId: ana.id, branchId: mainBranch.id, clockOutServerTime: null, deletedAt: null } });
   if (!open) await prisma.attendanceRecord.create({ data: { employeeId: ana.id, branchId: mainBranch.id, clockInServerTime: new Date(Date.now() - 3600_000), clockInGpsStatus: 'within_radius' } });
 
+  // A supervisor of another branch: must not be able to view this branch's proof.
+  const elsewhere = await prisma.branch.upsert({ where: { code: 'P59RX1' }, update: { status: 'active' }, create: { name: 'P59R Elsewhere', code: 'P59RX1', address: 'x', city: 'x', status: 'active' } });
+  const seededSupervisor = await prisma.user.findFirstOrThrow({ where: { email: 'supervisor@potatocorner.test' } });
+  const otherSupervisor = await prisma.user.upsert({
+    where: { email: 'p59r-other-supervisor@potatocorner.test' },
+    update: {},
+    create: { email: 'p59r-other-supervisor@potatocorner.test', passwordHash: seededSupervisor.passwordHash, role: 'supervisor', firstName: 'Other', lastName: 'Supervisor', employmentType: 'regular', mustChangePassword: false },
+  });
+  const otherAssigned = await prisma.userBranchAssignment.findFirst({ where: { userId: otherSupervisor.id, branchId: elsewhere.id, removedAt: null } });
+  if (!otherAssigned) await prisma.userBranchAssignment.create({ data: { userId: otherSupervisor.id, branchId: elsewhere.id } });
+
   console.warn(JSON.stringify({ main: mainBranch.id, item: item.id, product: product.id, variant: variant.id, ana: ana.id }));
 }
 

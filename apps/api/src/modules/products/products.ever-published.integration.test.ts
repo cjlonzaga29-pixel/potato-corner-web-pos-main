@@ -295,7 +295,8 @@ describe.skipIf(!isLocalDatabase)('POS-PERF-P39R2 ever-published marker (real Po
       faults.markerDown = true;
       await expect(productsService.publishProductToBranches(id, [branchA], supervisor, null)).rejects.toThrow('simulated marker write failure');
       expect(await state(id)).toEqual({ status: 'active', everPublished: false, on: [] });
-      expect(await prisma.inventoryStock.count({ where: { inventoryItemId: item } })).toBe(0);
+      // Only the published branch: a branch created by a test file running in parallel provisions a row for every tracked item.
+      expect(await prisma.inventoryStock.count({ where: { inventoryItemId: item, branchId: branchA } })).toBe(0);
       const rowIds = (await prisma.branchProductAvailability.findMany({ where: { productId: id }, select: { id: true } })).map((r) => r.id);
       expect(await prisma.auditOutbox.count({ where: { entityId: { in: rowIds } } })).toBe(0);
     }, 60_000);

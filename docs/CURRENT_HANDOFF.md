@@ -9,7 +9,8 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
 ## Observed state
 
 - **Observed:** 2026-11-02
-- **Branch:** `feat/pos-perf-p58-custom-product-types`, on `origin/main` `a92c587` (fetched 2026-11-02). Pushed for review through a PR: not merged or deployed.
+- **Branch:** `fix/pos-perf-p58-ever-published-test-isolation`, on `origin/main` `6931b10`, which merged PR #43 (P58/P58R).
+- **Deployment:** run 41473432473's first attempt failed in `validate` on the test this branch fixes, so its production job was skipped. Failed jobs were re-run; check the run for its current state. Nothing here says P58 is deployed.
 - **Tested code:** `cd862cf`, on `3e0df7b`, `b9d3de4`. Every commit after it changes docs only.
 - **Docs:** the review, the rollout steps and the limitation triage are in a second docs commit after `8137321`.
 - **Working tree after that commit:** only `.vscode/settings.json` should remain modified. It is unrelated; never stage it with P58.
@@ -22,7 +23,9 @@ P58 custom product types and the P58R race fix are finished on this branch. See
 
 The pre-PR review changed no code (§11.9). Neither reported limitation blocks the release (§11.10).
 
-**Remaining, each needing your go-ahead:** human review, merge, production approval. Follow the release steps in §8, including the read-only check in §11.7 before and after the deployment. Check the PR itself for its URL and CI result.
+**Test flake, fixed on this branch:** `products.ever-published.integration.test.ts` counted an item's stock rows at every branch, so a branch created by a parallel test file could fail it. Reproduced by simulating that branch creation. The count now covers the published branch only, and the test still fails if the stock write escapes the transaction.
+
+**Remaining, each needing your go-ahead:** production approval, following the release steps in §8, including the read-only check in §11.7 before and after the deployment. Merging this branch starts a new production run, and an older run skips itself once a newer commit reaches `main`.
 
 ## Read next
 

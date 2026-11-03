@@ -1,5 +1,6 @@
 'use client';
 
+import { expenseDisplayName } from '@potato-corner/shared';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { AlertTriangle, Loader2 } from 'lucide-react';
@@ -9,13 +10,6 @@ import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { formatCurrency, formatDate } from '@/lib/utils';
 import { useDeleteExpense, type ExpenseRow } from '@/hooks/queries/use-expenses';
-
-const CATEGORY_LABELS: Record<string, string> = {
-  utilities: 'Utilities',
-  supplies: 'Supplies',
-  staff_meals: 'Staff Meals',
-  miscellaneous: 'Miscellaneous',
-};
 
 const CONFIRM_TEXT = 'DELETE';
 
@@ -57,7 +51,7 @@ export function ExpenseDeleteDialog({ open, onOpenChange, expense }: ExpenseDele
 
         <div className="space-y-1 rounded-md border p-3 text-sm">
           <p className="font-medium">
-            {CATEGORY_LABELS[expense.category] ?? expense.category} — {formatCurrency(expense.amount)}
+            {expenseDisplayName(expense)} — {formatCurrency(expense.amount)}
           </p>
           <p className="text-muted-foreground">{expense.branch_name}</p>
           <p className="text-muted-foreground">{formatDate(expense.incurred_at)}</p>

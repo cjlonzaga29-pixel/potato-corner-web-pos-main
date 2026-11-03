@@ -9,6 +9,7 @@ import { useSelectedBranch } from '@/hooks/use-selected-branch';
 import { useDashboardSalesTrendReport } from '@/hooks/queries/use-reports';
 import { useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
 import { useExpensesRealtimeSync } from '@/hooks/queries/use-expenses';
+import { ExpenseBreakdownCard } from '@/components/reports/expense-breakdown-card';
 import { manilaToday, manilaMonthStart } from '@/lib/manila-date';
 import { BranchSelector } from '@/components/admin/branch-selector';
 import { DashboardKpiRow } from '@/components/admin/dashboard-kpi-row';
@@ -128,6 +129,14 @@ function AdminDashboardPageContent() {
           isLoading={activeTotal.isLoading || inactiveTotal.isLoading || closedTotal.isLoading}
         />
       </div>
+
+      <ExpenseBreakdownCard
+        title="Today's Expenses by Type"
+        branchId={branchFilter}
+        dateFrom={manilaToday()}
+        dateTo={manilaToday()}
+        ledgerPath="/admin/expenses"
+      />
 
       <WidgetErrorBoundary label="Sales Trend">
         <SalesAnalyticsSection branchId={branchFilter} />

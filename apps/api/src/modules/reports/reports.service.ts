@@ -1,4 +1,4 @@
-import { REPORT_EXPORT_ROW_LIMITS, ROLES } from '@potato-corner/shared';
+import { REPORT_EXPORT_ROW_LIMITS, ROLES, expenseDisplayName } from '@potato-corner/shared';
 import type { ReportType, InventorySummaryResponse, ReportPeriodSummary } from '@potato-corner/shared';
 import type { $Enums } from '@prisma/client';
 import { reportsRepository } from './reports.repository.js';
@@ -9,9 +9,9 @@ import { ReportError } from './reports.types.js';
 import { generateCsv } from '../../lib/reports/csv.js';
 import { generatePdf } from '../../lib/reports/pdf.js';
 import { generateInventorySummaryCsv, generateInventorySummaryPdf } from '../../lib/reports/inventory-summary-export.js';
-import { generateExpensesPdf, formatPhp, type ExpensesExportRow } from '../../lib/reports/expenses-export.js';
+import { generateExpensesPdf, formatPhp, EXPENSES_EXPORT_COLUMNS, type ExpensesExportRow } from '../../lib/reports/expenses-export.js';
 import { buildExportFilename } from '../../lib/reports/export-filename.js';
-import { dailySalesExportCoverage, discountExportCoverage, exportCoverage, soldProductsExportCoverage, voidRefundExportCoverage, type ExportCoverage } from '../../lib/reports/export-coverage.js';
+import { dailySalesExportCoverage, discountExportCoverage, expensesExportCoverage, exportCoverage, soldProductsExportCoverage, voidRefundExportCoverage, type ExportCoverage } from '../../lib/reports/export-coverage.js';
 import { prisma } from '../../lib/prisma.js';
 import { enqueueGenerateExport, enqueueRefreshSnapshot } from '../../queues/report.queue.js';
 import { expensesRepository } from '../expenses/expenses.repository.js';
@@ -464,42 +464,53 @@ export const reportsService = {
       if (plan) return runBoundedExport(reportType, defaultRealtimeFilters(filters), format, requesterId, requesterRole, branchId, plan);
     }
 
-    // EXPENSES has no ReportSnapshot-backed data source and, before this
-    // fix, no registered report_type on this endpoint at all — the Reports
-    // page's Expenses tab used to hard-block PDF with a toast and never
-    // call requestExport for it. CSV stays exactly as it was (client-side,
-    // built from the same Expenses tab fetch, never routed through this
-    // endpoint) — only PDF is wired here. Redirected regardless of role,
-    // same as INVENTORY_SUMMARY below: non-super-admin branch access was
+    // EXPENSES has no ReportSnapshot-backed data source. POS-PERF-P60 — both
+    // formats come from the query behind the ledger's own totals, with the type
+    // filter, stopping at the record-level row limits and saying so inside the
+    // file. A browser-built CSV only ever held the page on screen. Redirected
+    // regardless of role, same as INVENTORY_SUMMARY below: non-super-admin branch access was
     // already enforced by the /export route's inline hasBranchAccess check
     // before reaching this function, so branchIds: 'all' here only means
     // "don't re-restrict a branch that access control already validated."
     if (reportType === 'EXPENSES') {
-      if (format === 'csv') {
-        throw new ReportError('UNSUPPORTED_FORMAT', "Use the Expenses tab's Export CSV button for Expenses CSV export", 400);
-      }
-      const resolvedFilters = defaultRealtimeFilters(filters);
+      // No default window: no dates means every date, as on the ledger whose totals this file must match.
+      const resolvedFilters = filters;
+      const rowLimit = SYNC_ROW_LIMIT[format];
       const expenseFilters: ExpenseFilters = {
         branchIds: 'all',
         branch_id: resolvedFilters.branchId,
+        expense_type_id: resolvedFilters.expenseTypeId,
+        category: resolvedFilters.expenseCategory,
+        unassigned: resolvedFilters.expenseUnassigned,
         dateFrom: resolvedFilters.dateFrom ? manilaDateKey(resolvedFilters.dateFrom) : undefined,
         dateTo: resolvedFilters.dateTo ? manilaDateKey(resolvedFilters.dateTo) : undefined,
-        page: resolvedFilters.page,
-        limit: resolvedFilters.limit,
+        page: 1,
+        limit: rowLimit,
       };
       const { expenses, total, totalAmount } = await expensesRepository.findAll(expenseFilters);
       const rows: ExpensesExportRow[] = expenses.map((row) => ({
         incurred_at: row.incurredAt.toISOString(),
         branch: row.branch.name,
-        category: row.category,
+        expense_type: expenseDisplayName({ expense_type_id: row.expenseTypeId, expense_type_name: row.expenseTypeName, category: row.category }),
+        current_type_name: row.expenseType && row.expenseType.name !== row.expenseTypeName ? row.expenseType.name : '',
         vendor_name: row.vendorName ?? '',
-        amount: formatPhp(row.amount.toNumber()),
+        // A CSV keeps the number, for spreadsheets: see generateCsv.
+        amount: format === 'csv' ? row.amount.toNumber() : formatPhp(row.amount.toNumber()),
         created_by_name: `${row.creator.firstName} ${row.creator.lastName}`,
         proof_available: row.receiptKey ? 'Yes' : 'No',
       }));
-      const filename = buildExportFilename(reportType, format, resolvedFilters);
-      const branch = branchId ? await prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } }) : null;
-      const buffer = await generateExpensesPdf(resolvedFilters, rows, total, totalAmount, branch?.name ?? null, 'POTATO CORNER');
+      const coverage = expensesExportCoverage(
+        expenses.map((row) => ({ amount: row.amount.toNumber(), incurred_at: row.incurredAt.toISOString() })),
+        total > expenses.length,
+      );
+      const filename = buildExportFilename(reportType, format, resolvedFilters, { partial: coverage.partial });
+      let buffer: Buffer;
+      if (format === 'csv') {
+        buffer = generateCsv(rows, EXPENSES_EXPORT_COLUMNS, coverage.partial ? `${coverage.note} All ${total} matching expenses total ${formatPhp(totalAmount)}.` : undefined);
+      } else {
+        const branch = branchId ? await prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } }) : null;
+        buffer = await generateExpensesPdf(resolvedFilters, rows, total, totalAmount, branch?.name ?? null, 'POTATO CORNER', coverage.partial ? coverage.note : undefined);
+      }
 
       await recordAuditLog({
         action: 'REPORT_EXPORTED',
@@ -508,9 +519,9 @@ export const reportsService = {
         actorId: requesterId,
         actorRole: requesterRole,
         branchId,
-        afterState: { reportType, format, async: false, rowCount: rows.length },
+        afterState: { reportType, format, async: false, rowCount: rows.length, partial: coverage.partial },
       });
-      return { kind: 'file', buffer, filename, contentType: 'application/pdf' };
+      return { kind: 'file', buffer, filename, contentType: format === 'csv' ? 'text/csv' : 'application/pdf' };
     }
 
     // INVENTORY_SUMMARY (TASK 157) renders as two independently-dimensioned

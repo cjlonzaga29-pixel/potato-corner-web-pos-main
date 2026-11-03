@@ -25,6 +25,7 @@ import { useBranchInventoryStockAlerts, useInventoryStockRealtimeSync } from '@/
 import { stockAlertCounts, stockAlertRows } from '@/lib/inventory-stock-status';
 import { useAttendanceSummary, useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
 import { useExpensesRealtimeSync } from '@/hooks/queries/use-expenses';
+import { ExpenseBreakdownCard } from '@/components/reports/expense-breakdown-card';
 import { MAX_LIST_LIMIT } from '@potato-corner/shared';
 
 const RECENT_TRANSACTIONS_LIMIT = 10;
@@ -212,6 +213,15 @@ export default function SupervisorDashboardPage() {
           tooltip="Tracked inventory items needing attention: out of stock, insufficient for one serving of something on the POS, critical and low. Counts each item once, not products or sizes."
         />
       </div>
+
+      <ExpenseBreakdownCard
+        title="Today's Expenses by Type"
+        branchId={activeBranchId ?? undefined}
+        dateFrom={manilaToday()}
+        dateTo={manilaToday()}
+        ledgerPath="/supervisor/expenses"
+        enabled={Boolean(activeBranchId)}
+      />
 
       <WidgetErrorBoundary label="Sales Trend">
         <SalesAnalyticsSection branchId={activeBranchId} />

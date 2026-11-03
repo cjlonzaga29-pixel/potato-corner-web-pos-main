@@ -6,7 +6,8 @@ import { generateExpensesPdf, formatPhp, EXPENSES_EXPORT_COLUMNS, type ExpensesE
 const SAMPLE_ROW: ExpensesExportRow = {
   incurred_at: '2026-07-30T04:00:00.000Z',
   branch: 'SM North',
-  category: 'utilities',
+  expense_type: 'Utilities (legacy)',
+  current_type_name: '',
   vendor_name: 'Meralco',
   amount: formatPhp(1234.5),
   created_by_name: 'Juan Dela Cruz',
@@ -87,10 +88,10 @@ describe('generateExpensesPdf', () => {
     expect(extractPdfText(buffer)).toContain('HENLIN');
   });
 
-  it('renders the row data (branch, category, vendor, formatted amount, recorded by) in the table', async () => {
+  it('renders the row data (branch, type, vendor, formatted amount, recorded by) in the table', async () => {
     const buffer = await generateExpensesPdf({ page: 1, limit: 100 }, [SAMPLE_ROW], 1, 1234.5, 'SM North', 'POTATO CORNER');
     const text = extractPdfText(buffer);
-    expect(text).toContain('utilities');
+    expect(text).toContain('Utilities (legacy)');
     expect(text).toContain('Meralco');
     expect(text).toContain('PHP 1,234.50');
     expect(text).toContain('Juan Dela Cruz');
@@ -107,7 +108,8 @@ describe('generateExpensesPdf', () => {
       {
         incurred_at: '2026-07-30T04:00:00.000Z',
         branch: 'SM North',
-        category: 'utilities',
+        expense_type: 'Utilities (legacy)',
+        current_type_name: '',
         vendor_name: 'A Very Long Vendor Company Name Incorporated Philippines',
         amount: formatPhp(1234.5),
         created_by_name: 'A Very Long Employee Full Name Dela Cruz',
@@ -122,7 +124,8 @@ describe('generateExpensesPdf', () => {
     const rows: ExpensesExportRow[] = Array.from({ length: 100 }, (_, i) => ({
       incurred_at: '2026-07-30T04:00:00.000Z',
       branch: 'SM North',
-      category: 'utilities',
+      expense_type: 'Utilities (legacy)',
+  current_type_name: '',
       vendor_name: `Vendor ${i}`,
       amount: formatPhp(100 + i),
       created_by_name: 'Juan Dela Cruz',
@@ -134,11 +137,12 @@ describe('generateExpensesPdf', () => {
     expect(boxCount).toBeGreaterThan(1);
   }, 60000);
 
-  it('exports exactly the seven required columns in the required order: Date, Branch, Category, Vendor, Amount, Recorded By, Proof Available', () => {
+  it('exports exactly these columns in this order: Date, Branch, Type, Type Now Called, Vendor, Amount, Recorded By, Proof Available', () => {
     expect(EXPENSES_EXPORT_COLUMNS.map((c) => c.header)).toEqual([
       'Date',
       'Branch',
-      'Category',
+      'Type',
+      'Type Now Called',
       'Vendor',
       'Amount',
       'Recorded By',

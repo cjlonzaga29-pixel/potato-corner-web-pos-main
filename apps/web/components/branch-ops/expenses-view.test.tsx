@@ -1,6 +1,8 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import { ExpensesView } from './expenses-view';
+
+const TYPE_ID = '223e4567-e89b-12d3-a456-426614174000';
 
 const {
   mockUseBranchStore,
@@ -8,6 +10,10 @@ const {
   mockUseCreateExpense,
   mockUseUploadExpenseReceiptForExpense,
   mockUseExpensesRealtimeSync,
+  mockUseExpenseSummary,
+  mockUseExpenseTypes,
+  mockUseSearchParams,
+  mockExportMutate,
   mockMutateAsync,
   mockUploadMutateAsync,
 } = vi.hoisted(() => ({
@@ -16,6 +22,10 @@ const {
   mockUseCreateExpense: vi.fn(),
   mockUseUploadExpenseReceiptForExpense: vi.fn(),
   mockUseExpensesRealtimeSync: vi.fn(),
+  mockUseExpenseSummary: vi.fn(),
+  mockUseExpenseTypes: vi.fn(),
+  mockUseSearchParams: vi.fn(),
+  mockExportMutate: vi.fn(),
   mockMutateAsync: vi.fn().mockResolvedValue({ id: 'expense-1' }),
   mockUploadMutateAsync: vi.fn().mockResolvedValue(undefined),
 }));
@@ -29,6 +39,27 @@ vi.mock('@/hooks/queries/use-expenses', () => ({
   useCreateExpense: mockUseCreateExpense,
   useUploadExpenseReceiptForExpense: mockUseUploadExpenseReceiptForExpense,
   useExpensesRealtimeSync: mockUseExpensesRealtimeSync,
+  useExpenseSummary: mockUseExpenseSummary,
+}));
+
+vi.mock('@/hooks/queries/use-expense-types', () => ({
+  useExpenseTypes: mockUseExpenseTypes,
+  useCreateExpenseType: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useUpdateExpenseType: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useSetExpenseTypeActive: () => ({ mutateAsync: vi.fn(), isPending: false }),
+}));
+
+vi.mock('@/hooks/queries/use-reports', () => ({
+  useRequestExport: () => ({ mutate: mockExportMutate, isPending: false }),
+}));
+
+vi.mock('next/navigation', () => ({
+  useSearchParams: mockUseSearchParams,
+}));
+
+vi.mock('@tanstack/react-query', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@tanstack/react-query')>()),
+  useQueryClient: () => ({ invalidateQueries: vi.fn() }),
 }));
 
 // ImageUpload's own capture/compress/validate/retry behavior (camera, canvas,
@@ -43,6 +74,17 @@ vi.mock('@/components/shared/forms/image-upload', () => ({
 }));
 
 const BRANCH_ID = '123e4567-e89b-12d3-a456-426614174000';
+
+function activeType(overrides: Record<string, unknown> = {}) {
+  return { id: TYPE_ID, name: 'Bills', description: null, is_active: true, version: 1, branches: [{ branch_id: BRANCH_ID, branch_name: 'Main' }], other_branch_count: 0, can_manage: false, expense_count: 0, ...overrides };
+}
+
+beforeEach(() => {
+  // Add Expense from a type's own view preselects that type.
+  mockUseSearchParams.mockReturnValue(new URLSearchParams(`expense_type_id=${TYPE_ID}`));
+  mockUseExpenseTypes.mockReturnValue({ data: [activeType()], isLoading: false, isSuccess: true, isError: false, refetch: vi.fn() });
+  mockUseExpenseSummary.mockReturnValue({ data: { total: 0, total_amount: 0, groups: [] }, isLoading: false, isError: false, refetch: vi.fn() });
+});
 
 afterEach(() => {
   cleanup();
@@ -68,6 +110,7 @@ describe('ExpensesView — create expense', () => {
       expect(mockMutateAsync).toHaveBeenCalledWith(
         expect.objectContaining({
           branch_id: BRANCH_ID,
+          expense_type_id: TYPE_ID,
           incurred_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
         }),
       );
@@ -208,5 +251,164 @@ describe('ExpensesView — receipt proof viewing', () => {
     expect(windowOpenSpy).not.toHaveBeenCalled();
 
     windowOpenSpy.mockRestore();
+  });
+});
+
+describe('ExpensesView — expense types', () => {
+  function setup(activeBranchId = BRANCH_ID) {
+    mockUseBranchStore.mockImplementation((selector: (s: { activeBranchId: string | null }) => unknown) => selector({ activeBranchId }));
+    mockUseExpenses.mockReturnValue({ data: { expenses: [], total: 0, total_amount: 0 }, isLoading: false, isError: false, refetch: vi.fn() });
+    mockMutateAsync.mockResolvedValue({ id: 'expense-1' });
+    mockUseCreateExpense.mockReturnValue({ mutateAsync: mockMutateAsync, isPending: false });
+    mockUseUploadExpenseReceiptForExpense.mockReturnValue({ mutateAsync: mockUploadMutateAsync, isPending: false });
+    return render(<ExpensesView />);
+  }
+
+  function fillAndSave() {
+    fireEvent.click(screen.getByRole('button', { name: /add expense/i }));
+    fireEvent.change(screen.getByLabelText('Amount'), { target: { value: '250' } });
+    fireEvent.click(screen.getByRole('button', { name: /^save expense$/i }));
+  }
+
+  it('asks the server for the selected view, with its filters, its own page and its full total', () => {
+    mockUseExpenses.mockReturnValue({ data: { expenses: [], total: 73, total_amount: 9000.5 }, isLoading: false, isError: false, refetch: vi.fn() });
+    mockUseBranchStore.mockImplementation((selector: (s: { activeBranchId: string | null }) => unknown) => selector({ activeBranchId: BRANCH_ID }));
+    mockUseCreateExpense.mockReturnValue({ mutateAsync: mockMutateAsync, isPending: false });
+    mockUseUploadExpenseReceiptForExpense.mockReturnValue({ mutateAsync: mockUploadMutateAsync, isPending: false });
+    render(<ExpensesView />);
+
+    expect(mockUseExpenses).toHaveBeenCalledWith(expect.objectContaining({ branch_id: BRANCH_ID, expense_type_id: TYPE_ID, page: 1, limit: 25 }));
+    expect(screen.getByTestId('expense-view-total')).toHaveTextContent('across 73 records');
+    expect(screen.getByTestId('expense-view-total')).toHaveTextContent('9,000.50');
+  });
+
+  it('All Expenses drops the type filter; a type card sets it', () => {
+    setup();
+    fireEvent.click(screen.getByRole('button', { name: /all expenses/i }));
+    const lastFilters = mockUseExpenses.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(lastFilters.expense_type_id).toBeUndefined();
+    expect(lastFilters.unassigned).toBeUndefined();
+    fireEvent.click(screen.getByRole('button', { name: /bills/i }));
+    expect(mockUseExpenses.mock.calls.at(-1)?.[0]).toMatchObject({ expense_type_id: TYPE_ID });
+  });
+
+  it('shows a Legacy / Unassigned card only when such records exist, and it filters to them', () => {
+    mockUseExpenseSummary.mockReturnValue({
+      data: { total: 2, total_amount: 300, groups: [{ key: 'legacy:utilities', kind: 'legacy', expense_type_id: null, category: 'utilities', name: 'Utilities (legacy)', is_active: null, count: 2, total_amount: 300 }] },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    setup();
+    fireEvent.click(screen.getByRole('button', { name: /legacy \/ unassigned/i }));
+    expect(mockUseExpenses.mock.calls.at(-1)?.[0]).toMatchObject({ unassigned: true });
+  });
+
+  it('a failed type list or summary never reads as zero, and All Expenses still works', () => {
+    mockUseExpenseTypes.mockReturnValue({ data: undefined, isLoading: false, isSuccess: false, isError: true, refetch: vi.fn() });
+    mockUseExpenseSummary.mockReturnValue({ data: undefined, isLoading: false, isError: true, refetch: vi.fn() });
+    mockUseSearchParams.mockReturnValue(new URLSearchParams());
+    setup();
+    expect(screen.getByTestId('expense-types-error')).toBeInTheDocument();
+    expect(screen.getByTestId('expense-summary-error')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /all expenses/i })).toHaveTextContent('Total unavailable');
+  });
+
+  it('labels a deactivated type and keeps it reachable', () => {
+    mockUseExpenseTypes.mockReturnValue({ data: [activeType({ is_active: false })], isLoading: false, isSuccess: true, isError: false, refetch: vi.fn() });
+    setup();
+    expect(screen.getByTestId('expense-view-header')).toHaveTextContent('Deactivated');
+    expect(screen.getByTestId('expense-view-header')).toHaveTextContent('Its records stay here and in every total');
+  });
+
+  it('shows who can act when a branch has no active types, without offering a fake category', () => {
+    mockUseExpenseTypes.mockReturnValue({ data: [], isLoading: false, isSuccess: true, isError: false, refetch: vi.fn() });
+    mockUseSearchParams.mockReturnValue(new URLSearchParams());
+    setup();
+    fireEvent.click(screen.getByRole('button', { name: /add expense/i }));
+    expect(screen.getByTestId('no-active-expense-types')).toHaveTextContent('Ask your Supervisor');
+    expect(screen.getByRole('button', { name: /^save expense$/i })).toBeDisabled();
+  });
+
+  it('does not preselect a type that is not active here', () => {
+    mockUseExpenseTypes.mockImplementation(({ includeInactive }: { includeInactive: boolean }) => ({
+      data: includeInactive ? [activeType({ is_active: false })] : [],
+      isLoading: false,
+      isSuccess: true,
+      isError: false,
+      refetch: vi.fn(),
+    }));
+    setup();
+    fireEvent.click(screen.getByRole('button', { name: /add expense/i }));
+    fireEvent.change(screen.getByLabelText('Amount'), { target: { value: '250' } });
+    expect(screen.getByRole('button', { name: /^save expense$/i })).toBeDisabled();
+  });
+
+  it('two fast clicks submit once', async () => {
+    let resolve!: (value: { id: string }) => void;
+    setup();
+    mockMutateAsync.mockImplementationOnce(() => new Promise((r) => (resolve = r)));
+    fireEvent.click(screen.getByRole('button', { name: /add expense/i }));
+    fireEvent.change(screen.getByLabelText('Amount'), { target: { value: '250' } });
+    const save = screen.getByRole('button', { name: /^save expense$/i });
+    fireEvent.click(save);
+    fireEvent.click(save);
+    await waitFor(() => expect(mockMutateAsync).toHaveBeenCalledTimes(1));
+    resolve({ id: 'expense-1' });
+    await waitFor(() => expect(screen.queryByRole('button', { name: /^save expense$/i })).not.toBeInTheDocument());
+    expect(mockMutateAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it('after a failure the form keeps what was typed, shows why, and a retry reuses the same key', async () => {
+    setup();
+    mockMutateAsync.mockRejectedValueOnce(new Error('Network request failed'));
+    fillAndSave();
+    expect(await screen.findByTestId('expense-save-error')).toHaveTextContent('Network request failed');
+    expect(screen.getByLabelText('Amount')).toHaveValue(250);
+
+    fireEvent.click(screen.getByRole('button', { name: /^save expense$/i }));
+    await waitFor(() => expect(mockMutateAsync).toHaveBeenCalledTimes(2));
+    const [first, second] = mockMutateAsync.mock.calls as [[{ idempotencyKey: string }], [{ idempotencyKey: string }]];
+    expect(first[0].idempotencyKey).toBeTruthy();
+    expect(second[0].idempotencyKey).toBe(first[0].idempotencyKey);
+  });
+
+  it('a new dialog gets a new key', async () => {
+    setup();
+    fillAndSave();
+    await waitFor(() => expect(mockMutateAsync).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByRole('button', { name: /^save expense$/i })).not.toBeInTheDocument());
+    fillAndSave();
+    await waitFor(() => expect(mockMutateAsync).toHaveBeenCalledTimes(2));
+    const [first, second] = mockMutateAsync.mock.calls as [[{ idempotencyKey: string }], [{ idempotencyKey: string }]];
+    expect(second[0].idempotencyKey).not.toBe(first[0].idempotencyKey);
+  });
+
+  it('switching branches starts over: no type filter or open dialog carries across', () => {
+    const OTHER_BRANCH = '323e4567-e89b-12d3-a456-426614174000';
+    const view = setup();
+    fireEvent.click(screen.getByRole('button', { name: /add expense/i }));
+    expect(screen.getByRole('button', { name: /^save expense$/i })).toBeInTheDocument();
+
+    mockUseSearchParams.mockReturnValue(new URLSearchParams(`branch_id=${BRANCH_ID}&expense_type_id=${TYPE_ID}`));
+    mockUseBranchStore.mockImplementation((selector: (s: { activeBranchId: string | null }) => unknown) => selector({ activeBranchId: OTHER_BRANCH }));
+    view.rerender(<ExpensesView />);
+
+    expect(screen.queryByRole('button', { name: /^save expense$/i })).not.toBeInTheDocument();
+    const lastFilters = mockUseExpenses.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(lastFilters.branch_id).toBe(OTHER_BRANCH);
+    expect(lastFilters.expense_type_id).toBeUndefined();
+  });
+
+  it('exports what the view shows, through the server', () => {
+    mockUseExpenses.mockReturnValue({ data: { expenses: [], total: 5, total_amount: 50 }, isLoading: false, isError: false, refetch: vi.fn() });
+    mockUseBranchStore.mockImplementation((selector: (s: { activeBranchId: string | null }) => unknown) => selector({ activeBranchId: BRANCH_ID }));
+    mockUseCreateExpense.mockReturnValue({ mutateAsync: mockMutateAsync, isPending: false });
+    mockUseUploadExpenseReceiptForExpense.mockReturnValue({ mutateAsync: mockUploadMutateAsync, isPending: false });
+    render(<ExpensesView />);
+    fireEvent.click(screen.getByRole('button', { name: /^csv$/i }));
+    expect(mockExportMutate).toHaveBeenCalledWith(
+      expect.objectContaining({ report_type: 'EXPENSES', format: 'csv', filters: expect.objectContaining({ branch_id: BRANCH_ID, expense_type_id: TYPE_ID }) }),
+    );
   });
 });

@@ -250,7 +250,8 @@ export const REPORT_COLUMNS: Record<ReportType, ReportColumn<Record<string, unkn
   EXPENSES: [
     { key: 'incurred_at', header: 'Date' },
     { key: 'branch', header: 'Branch' },
-    { key: 'category', header: 'Category' },
+    { key: 'expense_type', header: 'Type' },
+    { key: 'current_type_name', header: 'Type Now Called' },
     { key: 'vendor_name', header: 'Vendor' },
     { key: 'amount', header: 'Amount' },
     { key: 'created_by_name', header: 'Recorded By' },

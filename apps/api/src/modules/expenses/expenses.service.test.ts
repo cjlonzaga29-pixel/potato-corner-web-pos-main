@@ -9,8 +9,6 @@ vi.mock('./expenses.repository.js', () => ({
     update: vi.fn(),
     updateReceipt: vi.fn(),
     softDelete: vi.fn(),
-    findIdempotencyKey: vi.fn(),
-    recordIdempotencyKey: vi.fn(),
   },
 }));
 
@@ -101,7 +99,7 @@ beforeEach(() => {
 
 describe('expensesService.createExpense', () => {
   it('happy path creates the expense and records an audit log', async () => {
-    vi.mocked(expensesRepository.create).mockResolvedValue(buildExpenseRow() as never);
+    vi.mocked(expensesRepository.create).mockResolvedValue({ created: buildExpenseRow(), replayOf: null } as never);
 
     const result = await expensesService.createExpense(
       { branch_id: 'branch-a', category: 'utilities', amount: 1500, incurred_at: '2026-07-01' },
@@ -114,12 +112,10 @@ describe('expensesService.createExpense', () => {
   });
 
   it('idempotency key returns the existing expense on a duplicate submission', async () => {
-    vi.mocked(expensesRepository.findIdempotencyKey).mockResolvedValue({
-      id: 'key-1',
-      key: 'dup-key',
-      userId: 'sup-1',
-      expenseId: 'expense-1',
-      createdAt: new Date(),
+    vi.mocked(expensesRepository.create).mockResolvedValue({
+      created: null,
+      // No hash: a row an older API wrote.
+      replayOf: { id: 'key-1', key: 'dup-key', userId: 'sup-1', expenseId: 'expense-1', requestHash: null, createdAt: new Date() },
     } as never);
     vi.mocked(expensesRepository.findById).mockResolvedValue(buildExpenseRow() as never);
 
@@ -131,7 +127,7 @@ describe('expensesService.createExpense', () => {
     );
 
     expect(result.id).toBe('expense-1');
-    expect(expensesRepository.create).not.toHaveBeenCalled();
+    expect(recordAuditLog).not.toHaveBeenCalled();
   });
 
   it('supervisor without access to the branch throws 403', async () => {

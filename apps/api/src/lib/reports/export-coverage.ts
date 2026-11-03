@@ -72,6 +72,17 @@ export function dailySalesExportCoverage(rows: Array<{ total_amount: number; dis
   });
 }
 
+/** Rows are newest first by business date. */
+export function expensesExportCoverage(rows: Array<{ amount: number; incurred_at: string }>, hasMore: boolean): ExportCoverage {
+  return exportCoverage(rows.length, hasMore, {
+    noun: 'expenses',
+    screen: 'Expenses',
+    newestAt: rows[0]?.incurred_at,
+    oldestAt: rows[rows.length - 1]?.incurred_at,
+    totals: [{ label: 'Amount', amount: sumAmounts(rows, (row) => row.amount) }],
+  });
+}
+
 /** Voided and refunded rows can share this file, so its total is only the sales still completed. */
 export function soldProductsExportCoverage(rows: Array<{ total_amount: number; status: string; created_at: string }>, hasMore: boolean): ExportCoverage {
   return exportCoverage(rows.length, hasMore, {

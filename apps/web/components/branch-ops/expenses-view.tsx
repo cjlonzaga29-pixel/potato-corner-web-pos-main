@@ -1,213 +1,47 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import type { ColumnDef } from '@tanstack/react-table';
-import { Loader2, Plus, Receipt } from 'lucide-react';
+import { useSearchParams } from 'next/navigation';
+import type { ColumnDef, PaginationState } from '@tanstack/react-table';
+import { Download, Pencil, Plus, Power, Receipt, Tags } from 'lucide-react';
+import { ROLES, expenseDisplayName, type ExpenseTypeResponse } from '@potato-corner/shared';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { ImageUpload } from '@/components/shared/forms/image-upload';
 import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { ViewExpenseReceiptDialog, type ExpenseReceiptProofData } from '@/components/shared/transactions/view-expense-receipt-dialog';
+import { CreateExpenseDialog } from '@/components/branch-ops/create-expense-dialog';
+import { ExpenseTypeActiveDialog } from '@/components/branch-ops/expense-type-active-dialog';
+import { ExpenseTypeBoard, type ExpenseLedgerView } from '@/components/branch-ops/expense-type-board';
+import { ExpenseTypeFormDialog } from '@/components/branch-ops/expense-type-form-dialog';
 import { useBranchStore } from '@/stores/branch.store';
+import { useAuthStore } from '@/stores/auth.store';
 import { formatCurrency, formatDate } from '@/lib/utils';
-import { manilaToday } from '@/lib/manila-date';
-import {
-  useExpenses,
-  useCreateExpense,
-  useUploadExpenseReceiptForExpense,
-  useExpensesRealtimeSync,
-  type ExpenseCategory,
-  type ExpenseRow,
-} from '@/hooks/queries/use-expenses';
+import { useExpenseTypes } from '@/hooks/queries/use-expense-types';
+import { useExpenses, useExpenseSummary, useExpensesRealtimeSync, type ExpenseFilters, type ExpenseRow } from '@/hooks/queries/use-expenses';
+import { useRequestExport } from '@/hooks/queries/use-reports';
 
-const CATEGORY_LABEL: Record<ExpenseCategory, string> = {
-  utilities: 'Utilities',
-  supplies: 'Supplies',
-  staff_meals: 'Staff Meals',
-  miscellaneous: 'Miscellaneous',
-};
-
-function CreateExpenseDialog({ branchId, onOpenChange }: { branchId: string; onOpenChange: (open: boolean) => void }) {
-  const createExpense = useCreateExpense();
-  const uploadReceipt = useUploadExpenseReceiptForExpense();
-  const [category, setCategory] = useState<ExpenseCategory>('supplies');
-  const [amount, setAmount] = useState('');
-  const [vendorName, setVendorName] = useState('');
-  const [description, setDescription] = useState('');
-  const [incurredAt, setIncurredAt] = useState(() => manilaToday());
-
-  // Task: expense receipt upload — a receipt needs an expense id, which
-  // doesn't exist until createExpense resolves. handleCreate stages the
-  // create first, then uploads the receipt as a second, isolated step.
-  // createdExpenseId only becomes non-null if that second step fails, so the
-  // dialog can stay open and retry the upload (same expense id) without ever
-  // re-creating the expense — same shape as CreateProductDialog (Task 209.6).
-  const [pendingReceipt, setPendingReceipt] = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [createdExpenseId, setCreatedExpenseId] = useState<string | null>(null);
-  const [receiptError, setReceiptError] = useState<string | null>(null);
-
-  function handleReceiptStaged(file: File) {
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-    setPendingReceipt(file);
-    setPreviewUrl(URL.createObjectURL(file));
-    setReceiptError(null);
-  }
-
-  function handleReceiptRemove() {
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-    setPendingReceipt(null);
-    setPreviewUrl(null);
-    setReceiptError(null);
-  }
-
-  async function handleCreate() {
-    let expenseId = createdExpenseId;
-
-    if (!expenseId) {
-      const created = await createExpense.mutateAsync({
-        branch_id: branchId,
-        category,
-        amount: Number(amount),
-        vendor_name: vendorName || undefined,
-        description: description || undefined,
-        incurred_at: incurredAt,
-      });
-      expenseId = created.id;
-      setCreatedExpenseId(created.id);
-    }
-
-    if (pendingReceipt) {
-      try {
-        await uploadReceipt.mutateAsync({ expenseId, file: pendingReceipt });
-      } catch (error) {
-        // The expense itself is already recorded — only the receipt step
-        // failed. Keep the dialog open (createdExpenseId is now set) so
-        // retrying re-uses this same expense instead of creating another.
-        setReceiptError(error instanceof Error ? error.message : 'Receipt upload failed — try again.');
-        return;
-      }
-    }
-
-    onOpenChange(false);
-  }
-
-  function handleContinueWithoutPhoto() {
-    onOpenChange(false);
-  }
-
-  const isRetryingReceipt = Boolean(createdExpenseId) && Boolean(receiptError);
-  const isSubmitting = createExpense.isPending || uploadReceipt.isPending;
-
-  return (
-    <Dialog open onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Add Expense</DialogTitle>
-        </DialogHeader>
-        <div className="space-y-3">
-          <div className="space-y-1">
-            <Label>Category</Label>
-            <Select value={category} onValueChange={(v) => setCategory(v as ExpenseCategory)} disabled={Boolean(createdExpenseId)}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {Object.entries(CATEGORY_LABEL).map(([value, label]) => (
-                  <SelectItem key={value} value={value}>
-                    {label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <Label>Amount</Label>
-              <Input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} disabled={Boolean(createdExpenseId)} />
-            </div>
-            <div className="space-y-1">
-              <Label>Date Incurred</Label>
-              <Input type="date" value={incurredAt} onChange={(e) => setIncurredAt(e.target.value)} disabled={Boolean(createdExpenseId)} />
-            </div>
-          </div>
-          <div className="space-y-1">
-            <Label>Vendor (optional)</Label>
-            <Input value={vendorName} onChange={(e) => setVendorName(e.target.value)} disabled={Boolean(createdExpenseId)} />
-          </div>
-          <div className="space-y-1">
-            <Label>Description (optional)</Label>
-            <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} disabled={Boolean(createdExpenseId)} />
-          </div>
-
-          {!isRetryingReceipt && (
-            <div className="space-y-2">
-              {!pendingReceipt ? (
-                <ImageUpload
-                  label="Receipt / Expense Proof"
-                  description="Optional — JPEG, PNG, or WebP, up to 5MB."
-                  onImageSelected={handleReceiptStaged}
-                />
-              ) : (
-                <div className="space-y-2">
-                  <p className="text-sm font-medium">Receipt / Expense Proof</p>
-                  {/* eslint-disable-next-line @next/next/no-img-element -- local object URL preview of a not-yet-uploaded file */}
-                  {previewUrl && <img src={previewUrl} alt="Receipt preview" className="max-h-[200px] w-full rounded-md border object-contain" />}
-                  <div className="flex gap-2">
-                    <Button type="button" variant="outline" size="sm" onClick={handleReceiptRemove} disabled={isSubmitting}>
-                      Replace
-                    </Button>
-                    <Button type="button" variant="outline" size="sm" onClick={handleReceiptRemove} disabled={isSubmitting}>
-                      Remove
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {isRetryingReceipt && (
-            <Alert variant="destructive" className="px-3 py-2">
-              <AlertDescription>
-                Expense was recorded, but the receipt photo could not be uploaded.
-                {receiptError ? ` (${receiptError})` : ''}
-              </AlertDescription>
-            </Alert>
-          )}
-        </div>
-        <DialogFooter>
-          {isRetryingReceipt ? (
-            <Button variant="outline" onClick={handleContinueWithoutPhoto}>
-              Continue Without Photo
-            </Button>
-          ) : (
-            <Button variant="outline" onClick={() => onOpenChange(false)} disabled={Boolean(createdExpenseId)}>
-              Cancel
-            </Button>
-          )}
-          <Button
-            onClick={() => void handleCreate()}
-            disabled={(!createdExpenseId && (!amount || Number(amount) <= 0)) || isSubmitting}
-          >
-            {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            {isRetryingReceipt ? 'Retry Photo Upload' : 'Save Expense'}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
+const PAGE_SIZE = 25;
 
 function createColumns(onViewReceipt: (expense: ExpenseRow) => void): ColumnDef<ExpenseRow>[] {
   return [
     { id: 'incurred_at', header: 'Date', cell: ({ row }) => formatDate(row.original.incurred_at) },
-    { id: 'category', header: 'Category', cell: ({ row }) => CATEGORY_LABEL[row.original.category] },
+    {
+      id: 'expense_type',
+      header: 'Type',
+      cell: ({ row }) => {
+        const { expense_type_id: typeId, expense_type_name: recorded, expense_type_current_name: current } = row.original;
+        return (
+          <span className="block min-w-24 [overflow-wrap:anywhere]">
+            {expenseDisplayName(row.original)}
+            {typeId && current && current !== recorded && <span className="block text-xs text-muted-foreground">now called {current}</span>}
+          </span>
+        );
+      },
+    },
     { id: 'vendor_name', header: 'Vendor', cell: ({ row }) => row.original.vendor_name ?? '—' },
     {
       id: 'description',
@@ -235,14 +69,277 @@ function createColumns(onViewReceipt: (expense: ExpenseRow) => void): ColumnDef<
   ];
 }
 
+function viewFilters(view: ExpenseLedgerView): Pick<ExpenseFilters, 'expense_type_id' | 'category' | 'unassigned'> {
+  if (view.kind === 'type') return { expense_type_id: view.id };
+  if (view.kind === 'legacy') return view.category ? { category: view.category as ExpenseFilters['category'] } : { unassigned: true };
+  return {};
+}
+
+interface ExpensesLedgerProps {
+  branchId: string;
+  initialView: ExpenseLedgerView;
+  initialDateFrom: string;
+  initialDateTo: string;
+}
+
+/**
+ * Keyed by branch below: switching branches starts this over, so no filter, open
+ * dialog or row from the last branch ever shows under the new one.
+ */
+function ExpensesLedger({ branchId, initialView, initialDateFrom, initialDateTo }: ExpensesLedgerProps) {
+  useExpensesRealtimeSync();
+  const canManageTypes = useAuthStore((s) => s.user?.role === ROLES.SUPERVISOR);
+  const [view, setView] = useState<ExpenseLedgerView>(initialView);
+  const [dateFrom, setDateFrom] = useState(initialDateFrom);
+  const [dateTo, setDateTo] = useState(initialDateTo);
+  const [page, setPage] = useState(1);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [typeForm, setTypeForm] = useState<{ type: ExpenseTypeResponse | null } | null>(null);
+  const [activeDialogType, setActiveDialogType] = useState<ExpenseTypeResponse | null>(null);
+  const [selectedExpenseId, setSelectedExpenseId] = useState<string | null>(null);
+
+  const dates = { date_from: dateFrom || undefined, date_to: dateTo || undefined };
+  const typeList = useExpenseTypes({ branchId, includeInactive: true });
+  const summary = useExpenseSummary({ branch_id: branchId, ...dates });
+  const { data, isLoading, isError, refetch } = useExpenses({ branch_id: branchId, ...dates, ...viewFilters(view), page, limit: PAGE_SIZE });
+  const requestExport = useRequestExport();
+  const columns = useMemo(() => createColumns((row) => setSelectedExpenseId(row.id)), []);
+
+  const types = typeList.data ?? [];
+  const selectedType = view.kind === 'type' ? types.find((type) => type.id === view.id) : undefined;
+  const viewGroup = view.kind === 'type' ? summary.data?.groups.find((group) => group.expense_type_id === view.id) : undefined;
+  const viewName = view.kind === 'all' ? 'All Expenses' : view.kind === 'legacy' ? 'Legacy / Unassigned' : (selectedType?.name ?? viewGroup?.name ?? 'Expense type');
+  const viewDeactivated = selectedType ? !selectedType.is_active : viewGroup?.is_active === false;
+
+  const expenses = data?.expenses ?? [];
+  const selectedExpense = expenses.find((row) => row.id === selectedExpenseId) ?? null;
+  const selectedExpenseReceipt: ExpenseReceiptProofData | null =
+    selectedExpense && selectedExpense.receipt_url
+      ? {
+          id: selectedExpense.id,
+          receiptUrl: selectedExpense.receipt_url,
+          branchName: selectedExpense.branch_name,
+          categoryLabel: expenseDisplayName(selectedExpense),
+          vendorName: selectedExpense.vendor_name,
+          amount: selectedExpense.amount,
+          incurredAt: selectedExpense.incurred_at,
+          createdByName: selectedExpense.created_by_name,
+        }
+      : null;
+
+  const pagination: PaginationState = { pageIndex: page - 1, pageSize: PAGE_SIZE };
+
+  function selectView(next: ExpenseLedgerView) {
+    setView(next);
+    setPage(1);
+    setSelectedExpenseId(null);
+  }
+
+  function handleExport(format: 'csv' | 'pdf') {
+    const filters = viewFilters(view);
+    requestExport.mutate({
+      report_type: 'EXPENSES',
+      filters: {
+        branch_id: branchId,
+        ...dates,
+        expense_type_id: filters.expense_type_id,
+        expense_category: filters.category,
+        expense_unassigned: filters.unassigned,
+        page: 1,
+        limit: PAGE_SIZE,
+      },
+      format,
+    });
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <h1 className="text-2xl font-bold">Expenses</h1>
+          <p className="text-sm text-muted-foreground">Branch expense ledger.</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {canManageTypes && (
+            <Button size="sm" variant="outline" onClick={() => setTypeForm({ type: null })}>
+              <Tags className="mr-2 h-4 w-4" />
+              Create Expense Type
+            </Button>
+          )}
+          <Button size="sm" onClick={() => setCreateOpen(true)}>
+            <Plus className="mr-2 h-4 w-4" />
+            Add Expense
+          </Button>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="space-y-1">
+          <Label htmlFor="ledger-date-from">From</Label>
+          <Input
+            id="ledger-date-from"
+            type="date"
+            className="w-[160px]"
+            value={dateFrom}
+            onChange={(e) => {
+              setDateFrom(e.target.value);
+              setPage(1);
+            }}
+          />
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor="ledger-date-to">To</Label>
+          <Input
+            id="ledger-date-to"
+            type="date"
+            className="w-[160px]"
+            value={dateTo}
+            onChange={(e) => {
+              setDateTo(e.target.value);
+              setPage(1);
+            }}
+          />
+        </div>
+        {(dateFrom || dateTo) && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setDateFrom('');
+              setDateTo('');
+              setPage(1);
+            }}
+          >
+            All dates
+          </Button>
+        )}
+      </div>
+
+      {typeList.isError && (
+        <Alert variant="destructive" className="px-3 py-2" data-testid="expense-types-error">
+          <AlertDescription>
+            Expense types could not be loaded, so their cards may be missing. All Expenses below is still complete.{' '}
+            <button type="button" className="underline underline-offset-2" onClick={() => void typeList.refetch()}>
+              Try again
+            </button>
+          </AlertDescription>
+        </Alert>
+      )}
+      {summary.isError && (
+        <Alert variant="destructive" className="px-3 py-2" data-testid="expense-summary-error">
+          <AlertDescription>
+            Totals by type are unavailable.{' '}
+            <button type="button" className="underline underline-offset-2" onClick={() => void summary.refetch()}>
+              Try again
+            </button>
+          </AlertDescription>
+        </Alert>
+      )}
+
+      <ExpenseTypeBoard types={types} summary={summary.data} view={view} onSelect={selectView} />
+
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between" data-testid="expense-view-header">
+        <div className="min-w-0">
+          <h2 className="flex flex-wrap items-center gap-2 text-lg font-semibold [overflow-wrap:anywhere]">
+            {viewName}
+            {viewDeactivated && <Badge variant="inactive">Deactivated</Badge>}
+          </h2>
+          {selectedType?.description && <p className="text-sm text-muted-foreground [overflow-wrap:anywhere]">{selectedType.description}</p>}
+          {viewDeactivated && <p className="text-sm text-muted-foreground">New expenses can&apos;t use this type. Its records stay here and in every total.</p>}
+          {view.kind === 'legacy' && <p className="text-sm text-muted-foreground">Recorded before expense types, under their original categories.</p>}
+          <p className="mt-1 text-sm text-muted-foreground" data-testid="expense-view-total">
+            {isError || !data ? (
+              isLoading ? 'Loading total…' : 'Total unavailable'
+            ) : (
+              <>
+                Total: <span className="font-medium text-foreground">{formatCurrency(data.total_amount)}</span> across {data.total} {data.total === 1 ? 'record' : 'records'}
+              </>
+            )}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {selectedType?.can_manage && (
+            <>
+              <Button size="sm" variant="outline" onClick={() => setTypeForm({ type: selectedType })}>
+                <Pencil className="mr-2 h-4 w-4" />
+                Edit Type
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => setActiveDialogType(selectedType)}>
+                <Power className="mr-2 h-4 w-4" />
+                {selectedType.is_active ? 'Deactivate' : 'Reactivate'}
+              </Button>
+            </>
+          )}
+          <Button size="sm" variant="outline" onClick={() => handleExport('csv')} disabled={requestExport.isPending || !data?.total}>
+            <Download className="mr-2 h-4 w-4" />
+            CSV
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => handleExport('pdf')} disabled={requestExport.isPending || !data?.total}>
+            <Download className="mr-2 h-4 w-4" />
+            PDF
+          </Button>
+        </div>
+      </div>
+
+      <DataTable
+        columns={columns}
+        data={expenses}
+        isLoading={isLoading}
+        isError={isError}
+        onRetry={() => void refetch()}
+        pagination={pagination}
+        onPaginationChange={(next) => setPage(next.pageIndex + 1)}
+        rowCount={data?.total ?? 0}
+        getRowId={(row) => row.id}
+        emptyState={
+          <EmptyState
+            icon={Receipt}
+            title={view.kind === 'all' ? 'No expenses yet' : 'No expenses of this type'}
+            description={dateFrom || dateTo ? 'Nothing was recorded in this date range.' : 'Expenses recorded for this branch will appear here.'}
+          />
+        }
+      />
+
+      {createOpen && (
+        <CreateExpenseDialog
+          branchId={branchId}
+          preselectedTypeId={view.kind === 'type' ? view.id : null}
+          canManageTypes={canManageTypes}
+          onCreateType={() => {
+            setCreateOpen(false);
+            setTypeForm({ type: null });
+          }}
+          onOpenChange={setCreateOpen}
+        />
+      )}
+
+      {typeForm && (
+        <ExpenseTypeFormDialog
+          type={typeForm.type}
+          defaultBranchId={branchId}
+          onOpenChange={(open) => !open && setTypeForm(null)}
+          onSaved={(saved) => {
+            setTypeForm(null);
+            if (saved.branches.some((branch) => branch.branch_id === branchId)) selectView({ kind: 'type', id: saved.id });
+          }}
+        />
+      )}
+
+      {activeDialogType && <ExpenseTypeActiveDialog type={activeDialogType} onOpenChange={(open) => !open && setActiveDialogType(null)} />}
+
+      <ViewExpenseReceiptDialog
+        expense={selectedExpenseReceipt}
+        onOpenChange={(o) => !o && setSelectedExpenseId(null)}
+        onRetry={() => void refetch()}
+      />
+    </div>
+  );
+}
+
 /** Shared body behind both `/supervisor/expenses` and `/branch/expenses`. */
 export function ExpensesView() {
   const activeBranchId = useBranchStore((s) => s.activeBranchId);
-  useExpensesRealtimeSync();
-  const [createOpen, setCreateOpen] = useState(false);
-  const [selectedExpenseId, setSelectedExpenseId] = useState<string | null>(null);
-  const { data, isLoading, isError, refetch } = useExpenses({ branch_id: activeBranchId ?? undefined, limit: 25 });
-  const columns = useMemo(() => createColumns((row) => setSelectedExpenseId(row.id)), []);
+  const searchParams = useSearchParams();
 
   if (!activeBranchId) {
     return (
@@ -256,59 +353,20 @@ export function ExpensesView() {
     );
   }
 
-  const expenses = data?.expenses ?? [];
-  const selectedExpense = expenses.find((row) => row.id === selectedExpenseId) ?? null;
-  const selectedExpenseReceipt: ExpenseReceiptProofData | null =
-    selectedExpense && selectedExpense.receipt_url
-      ? {
-          id: selectedExpense.id,
-          receiptUrl: selectedExpense.receipt_url,
-          branchName: selectedExpense.branch_name,
-          categoryLabel: CATEGORY_LABEL[selectedExpense.category],
-          vendorName: selectedExpense.vendor_name,
-          amount: selectedExpense.amount,
-          incurredAt: selectedExpense.incurred_at,
-          createdByName: selectedExpense.created_by_name,
-        }
-      : null;
+  // A drill-through link's filters apply only to the branch they were made for.
+  const linkBranch = searchParams.get('branch_id');
+  const linkApplies = !linkBranch || linkBranch === activeBranchId;
+  const linkedType = linkApplies ? searchParams.get('expense_type_id') : null;
+  const linkedCategory = linkApplies ? searchParams.get('category') : null;
+  const initialView: ExpenseLedgerView = linkedType ? { kind: 'type', id: linkedType } : linkedCategory ? { kind: 'legacy', category: linkedCategory } : { kind: 'all' };
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Expenses</h1>
-          <p className="text-sm text-muted-foreground">Branch expense ledger.</p>
-        </div>
-        <Button size="sm" onClick={() => setCreateOpen(true)}>
-          <Plus className="mr-2 h-4 w-4" />
-          Add Expense
-        </Button>
-      </div>
-
-      {expenses.length > 0 && (
-        <p className="text-sm text-muted-foreground">
-          Total: <span className="font-medium text-foreground">{formatCurrency(data?.total_amount ?? 0)}</span>
-        </p>
-      )}
-
-      <DataTable
-        columns={columns}
-        data={expenses}
-        isLoading={isLoading}
-        isError={isError}
-        onRetry={() => void refetch()}
-        emptyState={
-          <EmptyState icon={Receipt} title="No expenses yet" description="Expenses recorded for this branch will appear here." />
-        }
-      />
-
-      {createOpen && <CreateExpenseDialog branchId={activeBranchId} onOpenChange={setCreateOpen} />}
-
-      <ViewExpenseReceiptDialog
-        expense={selectedExpenseReceipt}
-        onOpenChange={(o) => !o && setSelectedExpenseId(null)}
-        onRetry={() => void refetch()}
-      />
-    </div>
+    <ExpensesLedger
+      key={activeBranchId}
+      branchId={activeBranchId}
+      initialView={initialView}
+      initialDateFrom={(linkApplies && searchParams.get('date_from')) || ''}
+      initialDateTo={(linkApplies && searchParams.get('date_to')) || ''}
+    />
   );
 }

@@ -1,7 +1,7 @@
 // packages/shared/src/schemas/reports.schema.ts
 import { z } from 'zod';
 import { SALE_CALCULATION_MODES } from '../tax/sale-tax.js';
-import { REPORT_TYPE, TRANSACTION_STATUS, PAYMENT_METHOD, type ReportType, type TransactionStatus, type PaymentMethod } from '../constants/status.js';
+import { EXPENSE_CATEGORY, REPORT_TYPE, TRANSACTION_STATUS, PAYMENT_METHOD, type ReportType, type TransactionStatus, type PaymentMethod } from '../constants/status.js';
 import { MAX_LIST_LIMIT } from '../constants/pagination.js';
 import { discountKeySchema } from '../discounts/discount-display.js';
 
@@ -33,6 +33,10 @@ export const ReportFiltersSchema = z.object({
   search: z.string().max(100).optional(),
   // POS-PERF-P59 — Discount Report's type filter (see discountIdentityKey). Other reports ignore it.
   discount_key: discountKeySchema.optional(),
+  // POS-PERF-P60 — the Expenses report's type filter, as GET /api/expenses. Other reports ignore these.
+  expense_type_id: z.uuid().optional(),
+  expense_category: z.enum(Object.values(EXPENSE_CATEGORY) as [string, ...string[]]).optional(),
+  expense_unassigned: z.boolean().optional(),
   // POS-PERF-P59 — the Sold Product Transactions tab shares DAILY_SALES's report_type.
   // This tells its export apart, so it holds every status unless one is chosen, and
   // carries the tab's product filter, its own title and its own file name.

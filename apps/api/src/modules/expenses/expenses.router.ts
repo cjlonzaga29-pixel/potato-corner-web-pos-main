@@ -1,6 +1,6 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import multer from 'multer';
-import { createExpenseSchema, updateExpenseSchema, expenseListQuerySchema } from '@potato-corner/shared';
+import { createExpenseSchema, updateExpenseSchema, expenseListQuerySchema, expenseSummaryQuerySchema } from '@potato-corner/shared';
 import { expensesService } from './expenses.service.js';
 import { ExpenseError } from './expenses.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
@@ -63,6 +63,26 @@ router.post('/', authenticate, adminSupervisorOrBranch, requirePasswordChange, v
     const idempotencyKey = req.headers['idempotency-key'] as string | undefined;
     const expense = await expensesService.createExpense(req.body, req.user, req.ip ?? null, idempotencyKey);
     res.status(201).json({ data: expense, error: null, meta: null });
+  } catch (error) {
+    handleModuleError(error, res, next);
+  }
+});
+
+// POS-PERF-P60 — before /:expenseId. Totals and the breakdown over the same filters as the list.
+router.get('/summary', authenticate, adminSupervisorOrBranch, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireUser(req, res)) return;
+    const parsed = expenseSummaryQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(422).json({
+        data: null,
+        error: { code: 'VALIDATION_ERROR', fields: parsed.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message })) },
+        meta: null,
+      });
+      return;
+    }
+    const result = await expensesService.getSummary(req.user, parsed.data);
+    res.status(200).json({ data: result, error: null, meta: null });
   } catch (error) {
     handleModuleError(error, res, next);
   }

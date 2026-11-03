@@ -70,6 +70,7 @@ export default function ExpenseDetailPage({ params }: ExpenseDetailPageProps) {
         <CardContent>
           <ExpenseForm
             mode="edit"
+            recordedTypeName={expense.expense_type_id ? expense.expense_type_name : null}
             initialValues={{
               branch_id: expense.branch_id,
               category: expense.category,

@@ -80,6 +80,7 @@ vi.mock('@/hooks/queries/use-reports', () => ({
 
 vi.mock('@/hooks/queries/use-expenses', () => ({
   useExpensesRealtimeSync: vi.fn(),
+  useExpenseSummary: vi.fn(() => ({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() })),
 }));
 
 vi.mock('@/components/shared/dashboard/sales-analytics-section', () => ({

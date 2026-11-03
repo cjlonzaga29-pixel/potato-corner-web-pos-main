@@ -32,6 +32,7 @@ vi.mock('@/hooks/queries/use-reports', () => {
 vi.mock('@/hooks/queries/use-expenses', () => ({
   useExpenses: vi.fn(() => ({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() })),
   useExpensesRealtimeSync: vi.fn(),
+  useExpenseSummary: vi.fn(() => ({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() })),
 }));
 
 // Backs the Inventory Movement tab's "View Proof" dialog — not under test here.
@@ -415,25 +416,16 @@ describe('AdminReportsPage', () => {
       vi.mocked(expensesHooks.useExpenses).mockReturnValue({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() } as never);
     });
 
-    it('never calls the export-job endpoint for Export CSV on the Expenses tab — CSV stays client-side', () => {
-      render(<AdminReportsPage />);
-      selectReportTab('Expenses');
-      fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
-      expect(mockUseRequestExport.mutate).not.toHaveBeenCalled();
-    });
-
-    it('downloads a client-side CSV of the currently-loaded expense rows on Export CSV', () => {
+    it('asks the server for the CSV, which holds every matching row and not only the page on screen', () => {
       render(<AdminReportsPage />);
       selectReportTab('Expenses');
       fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
 
-      expect(mockDownloadCsv).toHaveBeenCalledTimes(1);
-      expect(mockDownloadCsv).toHaveBeenCalledWith(
-        expect.stringMatching(/\.csv$/),
-        [expect.objectContaining({ branch: 'Main Branch', category: 'supplies', vendor_name: 'Acme Corp', amount: 500 })],
-        expect.anything(),
+      expect(mockDownloadCsv).not.toHaveBeenCalled();
+      expect(mockUseRequestExport.mutate).toHaveBeenCalledWith(
+        expect.objectContaining({ report_type: 'EXPENSES', format: 'csv' }),
+        expect.objectContaining({ onSettled: expect.any(Function) }),
       );
-      expect(toast.success).toHaveBeenCalledWith('CSV downloaded');
     });
 
     it('no longer shows the removed "not available" toast on Export PDF', () => {

@@ -107,6 +107,26 @@ describe('ExpenseForm', () => {
     });
   });
 
+  it('shows a typed expense\'s recorded name instead of a category, and sends no category', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(
+      <ExpenseForm
+        mode="edit"
+        recordedTypeName="Bills"
+        initialValues={{ branch_id: BRANCH_ID, category: 'miscellaneous', amount: 100, incurred_at: '2026-07-01T00:00:00.000Z' }}
+        onSubmit={onSubmit}
+        isSubmitting={false}
+        onCancel={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('expense-recorded-type')).toHaveTextContent('Bills');
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(onSubmit.mock.calls[0]?.[0]).not.toHaveProperty('category');
+  });
+
   it('derives the date field from the Manila calendar day, not the UTC calendar day, near midnight', async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     // 2026-07-01T23:00:00.000Z is already 2026-07-02 07:00 in Manila (UTC+8) —

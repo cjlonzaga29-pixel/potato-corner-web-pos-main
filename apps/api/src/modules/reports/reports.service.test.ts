@@ -83,6 +83,10 @@ vi.mock('../../lib/reports/pdf.js', () => ({
 vi.mock('../../lib/reports/expenses-export.js', () => ({
   generateExpensesPdf: vi.fn(),
   formatPhp: (amount: number) => `PHP ${amount.toFixed(2)}`,
+  EXPENSES_EXPORT_COLUMNS: [
+    { key: 'expense_type', header: 'Type' },
+    { key: 'amount', header: 'Amount' },
+  ],
 }));
 vi.mock('../expenses/expenses.repository.js', () => ({
   expensesRepository: { findAll: vi.fn() },
@@ -906,7 +910,8 @@ describe('reportsService.requestExport', () => {
           {
             incurred_at: '2026-07-30T04:00:00.000Z',
             branch: 'SM North',
-            category: 'utilities',
+            expense_type: 'Utilities (legacy)',
+            current_type_name: '',
             vendor_name: 'Meralco',
             amount: 'PHP 1234.50',
             created_by_name: 'Juan Dela Cruz',
@@ -917,6 +922,7 @@ describe('reportsService.requestExport', () => {
         1234.5,
         'SM North',
         'POTATO CORNER',
+        undefined,
       );
     });
 
@@ -927,7 +933,7 @@ describe('reportsService.requestExport', () => {
 
       await reportsService.requestExport('EXPENSES', { branchId: 'b1', page: 1, limit: 100 }, 'pdf', 'admin-1', 'super_admin', 'b1');
 
-      expect(generateExpensesPdf).toHaveBeenCalledWith(expect.any(Object), [], 250, 987654.32, expect.any(String), 'POTATO CORNER');
+      expect(generateExpensesPdf).toHaveBeenCalledWith(expect.any(Object), [], 250, 987654.32, expect.any(String), 'POTATO CORNER', expect.stringContaining('PARTIAL EXPORT'));
     });
 
     it('handles an empty dataset by generating a PDF with zero rows instead of throwing', async () => {
@@ -941,12 +947,26 @@ describe('reportsService.requestExport', () => {
       expect(result).toEqual({ kind: 'file', buffer: pdfBuffer, filename: expect.stringMatching(/\.pdf$/), contentType: 'application/pdf' });
     });
 
-    it('rejects a CSV export request for report_type EXPENSES — CSV stays on the Expenses tab\'s own client-side export, unrouted through this endpoint', async () => {
-      await expect(
-        reportsService.requestExport('EXPENSES', { branchId: 'b1', page: 1, limit: 100 }, 'csv', 'admin-1', 'super_admin', 'b1'),
-      ).rejects.toMatchObject({ code: 'UNSUPPORTED_FORMAT' });
-      const { expensesRepository } = await import('../expenses/expenses.repository.js');
-      expect(expensesRepository.findAll).not.toHaveBeenCalled();
+    it('builds a CSV on the server with the row limit, not the request\'s page size, and labels a cut-short file', async () => {
+      const expensesRepository = await mockExpensesRepository({ total: 20000 });
+
+      const result = await reportsService.requestExport('EXPENSES', { branchId: 'b1', expenseTypeId: 'type-1', page: 1, limit: 25 }, 'csv', 'admin-1', 'super_admin', 'b1');
+
+      expect(expensesRepository.findAll).toHaveBeenCalledWith(expect.objectContaining({ expense_type_id: 'type-1', page: 1, limit: 10000 }));
+      expect(result).toMatchObject({ kind: 'file', contentType: 'text/csv' });
+      if (result.kind !== 'file') throw new Error('expected a file');
+      const text = result.buffer.toString('utf-8');
+      expect(text.split('\n')[0]).toContain('PARTIAL EXPORT');
+      expect(text).toContain('Utilities (legacy)');
+      expect(result.filename).toMatch(/\.csv$/);
+    });
+
+    it('sends no date window of its own when none was chosen, so the file matches an all-dates ledger', async () => {
+      const expensesRepository = await mockExpensesRepository();
+
+      await reportsService.requestExport('EXPENSES', { branchId: 'b1', page: 1, limit: 25 }, 'csv', 'admin-1', 'super_admin', 'b1');
+
+      expect(expensesRepository.findAll).toHaveBeenCalledWith(expect.objectContaining({ dateFrom: undefined, dateTo: undefined }));
     });
 
     it('writes a REPORT_EXPORTED audit log entry', async () => {

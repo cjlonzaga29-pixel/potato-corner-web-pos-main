@@ -70,6 +70,10 @@ export interface ReportFilters {
   search?: string;
   // POS-PERF-P59 — Discount Report's type filter, plus its transaction-level export's discounted-only scope.
   discountKey?: string;
+  // POS-PERF-P60 — the Expenses report's type filter, as GET /api/expenses.
+  expenseTypeId?: string;
+  expenseCategory?: string;
+  expenseUnassigned?: boolean;
   discountedOnly?: boolean;
   // POS-PERF-P59 — Sold Product Transactions export: every status unless one is chosen, and its product filter.
   reportView?: 'sold_product_transactions';

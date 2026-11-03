@@ -16,7 +16,7 @@ import type {
   ExportReadyPayload,
   ExportRequestInput,
 } from '@potato-corner/shared';
-import { reportTypeDisplayName } from '@potato-corner/shared';
+import { expenseDisplayName, reportTypeDisplayName } from '@potato-corner/shared';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DataTable } from '@/components/shared/data-table/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
@@ -38,10 +38,11 @@ import { FinancialSummaryPanel } from '@/components/reports/financial-summary-pa
 import { InventoryAnalyticsPanel } from '@/components/reports/inventory-analytics-panel';
 import { WidgetErrorBoundary } from '@/components/shared/widget-error-boundary';
 import { DashboardConnectionBadge } from '@/components/shared/dashboard/dashboard-page-header';
-import { createExpenseColumns, categoryLabel } from '@/components/admin/expense-columns';
+import { createExpenseColumns } from '@/components/admin/expense-columns';
+import { ExpenseBreakdownCard } from '@/components/reports/expense-breakdown-card';
 import { ViewInventoryMovementProofDialog } from '@/components/shared/transactions/view-inventory-movement-proof-dialog';
 import { ViewExpenseReceiptDialog, type ExpenseReceiptProofData } from '@/components/shared/transactions/view-expense-receipt-dialog';
-import { downloadCsv, formatCurrency, formatDateTime } from '@/lib/utils';
+import { formatCurrency, formatDateTime } from '@/lib/utils';
 import { discountTypeOptions, mergeDiscountRows, summarizeDiscountProof } from '@/lib/discount-report';
 import { movementTypeLabel } from '@/lib/inventory-movement-labels';
 import { manilaToday, manilaDaysAgo } from '@/lib/manila-date';
@@ -63,6 +64,7 @@ import {
 
 const REFRESH_COOLDOWN_SECONDS = 60;
 const DEFAULT_RANGE_DAYS = 7;
+const EXPENSES_PAGE_SIZE = 25;
 
 /** Below `md`, Inventory Summary renders one card per row instead of the wide KG/PC tables — same breakpoint hook as Universal Inventory's column-hiding. Defaults to desktop (matches before mount, and in non-browser test environments). */
 function useIsDesktop() {
@@ -406,12 +408,15 @@ function AdminReportsPageContent() {
   const inventoryMovement = useInventoryMovementReport(realtimeFilters, activeReport === 'INVENTORY_MOVEMENT');
   const inventorySummary = useInventorySummaryReport(realtimeFilters, activeReport === 'INVENTORY_SUMMARY');
   const attendanceSummary = useAttendanceSummaryReport(realtimeFilters, activeReport === 'ATTENDANCE_SUMMARY');
+  const [expensesPage, setExpensesPage] = useState(1);
+  // Dates or branch changing starts the list over, so a later page can't read as empty.
+  useEffect(() => setExpensesPage(1), [selectedBranchId, dateFrom, dateTo]);
   const expenses = useExpenses({
     branch_id: selectedBranchId ?? undefined,
     date_from: dateFrom,
     date_to: dateTo,
-    page: 1,
-    limit: 100,
+    page: expensesPage,
+    limit: EXPENSES_PAGE_SIZE,
   });
   const expenseColumns = useMemo(() => createExpenseColumns((row) => setSelectedExpenseId(row.id)), []);
   // Stable so opening/closing the transactions panel doesn't remount View Transactions, which the panel returns focus to.
@@ -423,7 +428,7 @@ function AdminReportsPageContent() {
           id: selectedExpense.id,
           receiptUrl: selectedExpense.receipt_url,
           branchName: selectedExpense.branch_name,
-          categoryLabel: categoryLabel(selectedExpense.category),
+          categoryLabel: expenseDisplayName(selectedExpense),
           vendorName: selectedExpense.vendor_name,
           amount: selectedExpense.amount,
           incurredAt: selectedExpense.incurred_at,
@@ -450,51 +455,24 @@ function AdminReportsPageContent() {
   const exportBranchRequired = BRANCH_REQUIRED_REPORTS.has(activeReport) && !selectedBranchId;
 
   /**
-   * Expenses' CSV export stays client-side, built from the same rows
-   * already fetched for this tab (`expenses`, filtered by the same
-   * branch/date inputs as every other report tab) via the dedicated
-   * downloadCsv() call also used on its own page (admin/expenses/page.tsx)
-   * — unchanged by the PDF fix below. PDF is now routed through the same
-   * requestExport() mutation every other report tab uses (report_type
-   * 'EXPENSES'), which re-fetches the identical branch/date-filtered rows
-   * server-side (expensesRepository.findAll, the same query behind this
-   * tab's screen and CSV) rather than recomputing anything — see
+   * POS-PERF-P60 — both formats go through the same requestExport() mutation
+   * every other report tab uses (report_type 'EXPENSES'), which re-fetches the
+   * identical branch/date-filtered rows server-side (expensesRepository.findAll,
+   * the same query behind this tab's screen) rather than recomputing anything.
+   * A browser-built CSV only ever held the rows on screen. See
    * reports.service.ts's EXPENSES branch.
    */
   function handleExportExpenses(format: 'csv' | 'pdf') {
-    if (format === 'pdf') {
-      setIsExportingPdf(true);
-      requestExport.mutate(
-        {
-          report_type: 'EXPENSES',
-          filters: { branch_id: selectedBranchId ?? undefined, date_from: dateFrom, date_to: dateTo, page: 1, limit: 100 },
-          format: 'pdf',
-        },
-        { onSettled: () => setIsExportingPdf(false) },
-      );
-      return;
-    }
-    const rows = expenses.data?.expenses ?? [];
-    downloadCsv(
-      `expenses-${dateFrom}-to-${dateTo}.csv`,
-      rows.map((row) => ({
-        incurred_at: row.incurred_at,
-        branch: row.branch_name,
-        category: row.category,
-        vendor_name: row.vendor_name ?? '',
-        amount: row.amount,
-        created_by_name: row.created_by_name,
-      })),
-      [
-        { key: 'incurred_at', label: 'Date' },
-        { key: 'branch', label: 'Branch' },
-        { key: 'category', label: 'Category' },
-        { key: 'vendor_name', label: 'Vendor' },
-        { key: 'amount', label: 'Amount' },
-        { key: 'created_by_name', label: 'Recorded By' },
-      ],
+    const setIsExporting = format === 'csv' ? setIsExportingCsv : setIsExportingPdf;
+    setIsExporting(true);
+    requestExport.mutate(
+      {
+        report_type: 'EXPENSES',
+        filters: { branch_id: selectedBranchId ?? undefined, date_from: dateFrom, date_to: dateTo, page: 1, limit: 100 },
+        format,
+      },
+      { onSettled: () => setIsExporting(false) },
     );
-    toast.success('CSV downloaded');
   }
 
   function handleExport(format: 'csv' | 'pdf') {
@@ -626,11 +604,24 @@ function AdminReportsPageContent() {
                 <KpiCard title="Expenses" value={expenses.data?.total ?? 0} isLoading={expenses.isLoading} />
                 <KpiCard title="Total Amount" value={expenses.data?.total_amount ?? 0} isLoading={expenses.isLoading} />
               </div>
+              <div className="mb-4">
+                <ExpenseBreakdownCard
+                  title="Expenses by Type"
+                  branchId={selectedBranchId ?? undefined}
+                  dateFrom={dateFrom}
+                  dateTo={dateTo}
+                  ledgerPath="/admin/expenses"
+                  enabled={activeReport === 'EXPENSES'}
+                />
+              </div>
               <DataTable
                 stickyHeader
                 columns={expenseColumns}
                 data={expenses.data?.expenses ?? []}
                 isLoading={expenses.isLoading}
+                pagination={{ pageIndex: expensesPage - 1, pageSize: EXPENSES_PAGE_SIZE }}
+                onPaginationChange={(next) => setExpensesPage(next.pageIndex + 1)}
+                rowCount={expenses.data?.total ?? 0}
                 emptyState={
                   <EmptyState
                     title="No expenses recorded"

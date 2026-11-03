@@ -357,6 +357,8 @@ model User {
   createdProducts                  Product[]
   createdProductTypes              ProductType[]          @relation("ProductTypeCreatedBy")
   updatedProductTypes              ProductType[]          @relation("ProductTypeUpdatedBy")
+  createdExpenseTypes              ExpenseType[]          @relation("ExpenseTypeCreatedBy")
+  updatedExpenseTypes              ExpenseType[]          @relation("ExpenseTypeUpdatedBy")
   cashierTransactions              Transaction[]
   voidedTransactions               Transaction[]          @relation("TransactionVoidedBy")
   refundedTransactions             Transaction[]          @relation("TransactionRefundedBy")
@@ -432,6 +434,7 @@ model User {
 model Branch {
   id                  String              @id @default(uuid())
   productTypeBranches ProductTypeBranch[]
+  expenseTypeBranches ExpenseTypeBranch[]
   name                String
   code                String              @unique
   address             String
@@ -2952,14 +2955,66 @@ model Expense {
   createdAt   DateTime        @default(now()) @map("created_at")
   updatedAt   DateTime        @updatedAt @map("updated_at")
   deletedAt   DateTime?       @map("deleted_at")
+  /// POS-PERF-P60 — null marks a legacy expense, read through `category`. When set,
+  /// `category` is only a compatibility value for an older API: see EXPENSE_TYPED_CATEGORY.
+  expenseTypeId   String? @map("expense_type_id")
+  /// The type's name when it was recorded. A rename or deactivation never rewrites it.
+  expenseTypeName String? @map("expense_type_name")
 
-  branch  Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  creator User   @relation(fields: [createdBy], references: [id])
+  branch      Branch       @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  creator     User         @relation(fields: [createdBy], references: [id])
+  expenseType ExpenseType? @relation(fields: [expenseTypeId], references: [id], onDelete: Restrict)
 
   @@index([branchId, incurredAt])
   @@index([createdBy])
   @@index([deletedAt])
+  @@index([expenseTypeId, incurredAt])
   @@map("expenses")
+}
+
+/// POS-PERF-P60 — a supervisor-created expense type (Bills, Rent, ...). Only a label:
+/// it never moves stock, payroll or cash. Never hard-deleted by the app;
+/// expenses.expense_type_id restricts deleting a referenced row.
+model ExpenseType {
+  id             String    @id @default(uuid())
+  name           String
+  /// See normalizeExpenseTypeName (packages/shared). Copied to ExpenseTypeBranch by the composite FK.
+  normalizedName String    @map("normalized_name")
+  description    String?
+  isActive       Boolean   @default(true) @map("is_active")
+  version        Int       @default(1)
+  createdById    String    @map("created_by_id")
+  updatedById    String?   @map("updated_by_id")
+  deactivatedAt  DateTime? @map("deactivated_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  /// Not @updatedAt: lockUsable's no-op update takes the row lock without counting as an edit.
+  updatedAt      DateTime  @default(now()) @map("updated_at")
+
+  creator  User                @relation("ExpenseTypeCreatedBy", fields: [createdById], references: [id])
+  updater  User?               @relation("ExpenseTypeUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  branches ExpenseTypeBranch[]
+  expenses Expense[]
+
+  @@unique([id, normalizedName, isActive])
+  @@map("expense_types")
+}
+
+/// POS-PERF-P60 — the branches an expense type may be used at. normalizedName and
+/// isActive follow expense_types through the composite FK (ON UPDATE CASCADE), so
+/// the partial unique index expense_type_branches_active_name_key (raw SQL: one
+/// active type per name per branch) also decides renames and reactivations.
+model ExpenseTypeBranch {
+  expenseTypeId  String  @map("expense_type_id")
+  branchId       String  @map("branch_id")
+  normalizedName String  @map("normalized_name")
+  isActive       Boolean @map("is_active")
+
+  expenseType ExpenseType @relation(fields: [expenseTypeId, normalizedName, isActive], references: [id, normalizedName, isActive], onDelete: Cascade, onUpdate: Cascade)
+  branch      Branch      @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@id([expenseTypeId, branchId])
+  @@index([branchId])
+  @@map("expense_type_branches")
 }
 
 model ExpenseIdempotencyKey {
@@ -2967,6 +3022,8 @@ model ExpenseIdempotencyKey {
   key       String   @unique
   userId    String   @map("user_id")
   expenseId String?  @map("expense_id")
+  /// POS-PERF-P60 — what was submitted, so a reused key with different details is refused. Null on rows an older API wrote.
+  requestHash String? @map("request_hash")
   createdAt DateTime @default(now()) @map("created_at")
 
   @@index([userId, createdAt])

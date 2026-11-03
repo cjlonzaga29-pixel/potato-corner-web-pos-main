@@ -127,15 +127,17 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 
 ## Dashboards, reports and stock alerts
 
-- **UI:** `WEB/app/(admin)/admin/dashboard/page.tsx`, `WEB/app/(supervisor)/supervisor/dashboard/page.tsx`,
-  `WEB/app/(branch)/branch/dashboard/page.tsx`, `WEB/components/admin/dashboard-low-stock-summary.tsx`,
-  `WEB/components/supervisor/dashboard-inventory-alerts.tsx`, `WEB/app/(admin)/admin/reports/page.tsx`, `WEB/components/branch-ops/reports-view.tsx`, `WEB/components/reports/`
-- **API:** `API/reports/` (exports in `apps/api/src/lib/reports/`); partial-file labelling in `export-coverage.ts`; shortage counts in
-  `API/stock-availability/stock-availability.service.ts`
+- **UI:** `WEB/app/(admin)/admin/dashboard/page.tsx`, `WEB/app/(supervisor)/supervisor/dashboard/page.tsx`, `WEB/app/(branch)/branch/dashboard/page.tsx`, `WEB/components/admin/dashboard-low-stock-summary.tsx`, `WEB/components/supervisor/dashboard-inventory-alerts.tsx`, `WEB/app/(admin)/admin/reports/page.tsx`, `WEB/components/branch-ops/reports-view.tsx`, `WEB/components/reports/`
+- **API:** `API/reports/` (exports in `apps/api/src/lib/reports/`); partial-file labelling in `export-coverage.ts`; shortage counts in `API/stock-availability/stock-availability.service.ts`
 - **Schema:** `SHARED/reports.schema.ts`
-- **Tests:** `WEB/components/admin/dashboard-low-stock-summary.test.tsx`,
-  `WEB/components/supervisor/dashboard-inventory-alerts.test.tsx`, `API/reports/reports.service.test.ts`, `API/reports/p59-discount-report.integration.test.ts`, `API/reports/p59-export-coverage.integration.test.ts`, `API/reports/p59-report-coverage.integration.test.ts`
+- **Tests:** `WEB/components/admin/dashboard-low-stock-summary.test.tsx`, `WEB/components/supervisor/dashboard-inventory-alerts.test.tsx`, `API/reports/reports.service.test.ts`, `API/reports/p59-discount-report.integration.test.ts`, `API/reports/p59-export-coverage.integration.test.ts`, `API/reports/p59-report-coverage.integration.test.ts`
 - **Runbooks:** `RUN/pos-perf-p47-dashboard-and-management.md`, `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§2), `RUN/pos-perf-p59-reports-and-ui-cleanup.md`
+
+## Expenses and expense types
+
+- **UI:** `WEB/components/branch-ops/expenses-view.tsx`, `create-expense-dialog.tsx`, `expense-type-*.tsx` (same folder), `WEB/components/admin/expense-*.tsx`, `WEB/app/(admin)/admin/expenses/`, `WEB/components/reports/expense-breakdown-card.tsx`, `WEB/lib/expense-ledger-link.ts`, `WEB/hooks/queries/use-expenses.ts`, `use-expense-types.ts`
+- **API and schema:** `API/expenses/`, `API/expense-types/`, `apps/api/src/lib/reports/expenses-export.ts`, `SHARED/expense.schema.ts`, `SHARED/expense-type.schema.ts`
+- **Tests and runbook:** `API/expense-types/p60-expense-types.integration.test.ts`, `apps/api/scripts/test-p60-migration-on-populated-data.ts`, `RUN/pos-perf-p60-expense-types.md`
 
 ## Stock transfers
 
@@ -162,8 +164,7 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 
 - **Schema and history:** `apps/api/prisma/schema.prisma`, `apps/api/prisma/migrations/`
 - **Safety rules:** "Database & Migration Safety" in [`.claude/CLAUDE.md`](../.claude/CLAUDE.md). Read it before any `prisma migrate` command.
-- **Rehearsals on disposable data:** `apps/api/scripts/with-test-postgres.ts`, `apps/api/scripts/test-p57-migration-on-populated-data.ts`,
-  and the other `apps/api/scripts/test-*-migration*-on-populated-data.ts` scripts
+- **Rehearsals on disposable data:** `apps/api/scripts/with-test-postgres.ts`, `apps/api/scripts/test-p57-migration-on-populated-data.ts`, and the other `apps/api/scripts/test-*-migration*-on-populated-data.ts` scripts
 - **Rollback notes:** `docs/migrations/`
 - **Runbook example:** `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§9)
 

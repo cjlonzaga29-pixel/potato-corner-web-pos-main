@@ -9,13 +9,31 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
 ## Observed state
 
 - **Observed:** 2026-11-03
-- **Branch:** `feat/pos-perf-p59-reports-and-ui-cleanup`, from `origin/main` `6931b10`. Local only: not pushed, no PR.
-- **Tested code:** `0d86464`, for the PDF cap and report coverage (runbook §11). Starting SHA `c198137`. The readiness follow-up was `61b4df1` on `050056d`, and the original P59 run `e6a4d1a`. Later commits are docs only.
+- **Branch:** `feat/pos-perf-p60-expense-types`, from the P59 tip `6794333`. Local only: not pushed, no PR.
+- **Ancestry:** P60 depends on unpushed P59 (`feat/pos-perf-p59-reports-and-ui-cleanup`), which came from `origin/main` `6931b10`. Merging P60 brings in all of P59.
+- **Tested code:** P60 `6694e05`. Later commits are docs only.
 - **PR #44** (`fix/pos-perf-p58-ever-published-test-isolation`, `7f7cf35`) is separate and not included. This handoff doesn't record its status or P58's deployment state, so check GitHub.
 - **Working tree after the docs commit:** only `.vscode/settings.json` should remain modified. It is unrelated; never stage it.
 - **Other worktrees:** six older P51–P55R3 worktrees, marked `prunable`. Nothing here authorizes removing them.
 
-## Task status: P59, verified locally
+## Task status: P60, verified locally
+
+Supervisors create expense types for their branches and sort expenses into filtered views over one ledger. Existing expenses stay legacy: no backfill, seeds or guessing. Two additive migrations. Dashboards and Admin Reports get a type breakdown that drills into the ledger, and exports are server-made. It also fixes expense route bugs that predate P60, including a cross-branch read through `branch_id`. See [`runbooks/pos-perf-p60-expense-types.md`](runbooks/pos-perf-p60-expense-types.md).
+
+| Check, on disposable local databases, sequential | Result |
+| --- | --- |
+| Full API suite, real Postgres, final code | 3,733 passed, 5 skipped, 0 failed. **The first run, before the final code, had 1 failed test and 1 failed suite; the cause was not proved (runbook §6)** |
+| Shared suite | 83 passed |
+| Full web suite | 1,670 passed, 0 failed |
+| Typecheck, production builds | Clean; pass |
+| Lint | 0 errors |
+| Migration rehearsal, 20,000 expenses | Pass; 85 tables byte-identical, no drift |
+| Browser, final builds, service worker active | 86 / 86 on a complete run, plus 11 / 11 for checks it read too early. Earlier runs in runbook §6, one of which found a real stale-rows bug |
+| Real devices, camera, printing, offline, hosted Storage, realtime, mixed old/new versions | **Not tested** |
+
+**Rollout:** migrations, API, then web. **Rollback:** code only; never drop the schema. Supervisors must create types before branch accounts can save expenses in the new web (runbook §5, §8).
+
+## Earlier: P59, verified locally
 
 Visible VAT removed, saved discount names shown everywhere, Discount Report with proof over required sales only, DSR wording,
 and "Managed by Super Admin" removed. Presentation only, with no migration. See
@@ -29,11 +47,12 @@ and "Managed by Super Admin" removed. Presentation only, with no migration. See
 
 ## Read next
 
-1. The runbook's owner decisions, §11 for the latest work and its rollout order, §10 for the follow-up, then §8 for limits
+0. For P60: its runbook §1 for scope rules, §5 for compatibility, §8 for rollout. The rest of this list is P59.
+1. The P59 runbook's owner decisions, §11 for the latest work and its rollout order, §10 for the follow-up, then §8 for limits
 2. `packages/shared/src/discounts/discount-display.ts` for the name, identity and proof rules
 3. [`PROJECT_MAP.md`](PROJECT_MAP.md), "Manual discounts and proof uploads" and "Dashboards, reports and stock alerts"
 
-## Verification evidence
+## P59 verification evidence
 
 On a new disposable database, sequential. The full API run is at `3172435`; `0d86464` changes web tests only. Everything else is at `0d86464`.
 
@@ -77,6 +96,8 @@ Earlier failures are recorded in runbook §7 and §10.
 
 ## Known blockers and notes
 
+- **Still open from P59, not fixed by P60:** the three items below on PDF blocking, the uncapped routes and the owner decisions block release.
+- **Found in P60, not changed:** see runbook §7.
 - No failing checks. Production was not accessed, and local Git says nothing about what is deployed.
 - **Unresolved: PDF rendering still blocks the API.** A 100-row PDF stalls every branch's checkout for up to about 2s here, down from 17.4s. Accept that, or move rendering off the request thread in the performance batch. Hosted timing wasn't measured.
 - **Unresolved: the Transaction PDF route is uncapped.** `GET /api/transactions/export/pdf`, behind the Daily Sales drill-down, took 9.6s and stalled `/health` for 8.4s at about 267 rows, and allows 2,000. Admin's synchronous PDFs also stay uncapped below 2,000 rows. Decide before release. See runbook §11.
@@ -86,7 +107,7 @@ Earlier failures are recorded in runbook §7 and §10.
 - **One unexplained stop:** a PIN step stalled once in the 86/90 run and did not recur. Cause not established.
 - **Found, not changed:** the service worker can't install while logged out (`/apple-touch-icon.png` redirects). See runbook §10.
 - **Cleanup:** `C:\p59r` and `C:\p59c` (browser profiles from these local runs) are still there; a safety check blocked removing them. Safe to delete by hand.
-- **Next batches:** Supervisor-created Expense Types, then Extra Supplies, then performance last. The Discount Report aggregate's cost belongs in the performance review (runbook §8).
+- **Next batches:** Extra Supplies setup, terminal, and inventory and history integration, then performance and PDF isolation last, before release. The Discount Report aggregate's cost belongs in the performance review (runbook §8).
 - **Test setup:** the API environment needs a base64 `ENCRYPTION_KEY` and `TEST_REDIS_URL` set, or tests fail or skip. Set every value explicitly. Docker Desktop was off and had to be started for the disposable database.
 - **Browser setup:** keep Chromium profile paths short on Windows; a long one breaks `CacheStorage`. Ports 55158 to 55557 are reserved here. With only local Storage running, `supabase status` omits the keys.
 - **Found, not changed:** staff get 403 from Export on `/branch/reports`, which isn't in their sidebar.

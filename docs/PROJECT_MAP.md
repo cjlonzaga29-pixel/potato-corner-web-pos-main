@@ -138,6 +138,10 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 - **API and schema:** `API/expenses/`, `API/expense-types/`, `apps/api/src/lib/reports/expenses-export.ts`, `SHARED/expense.schema.ts`, `SHARED/expense-type.schema.ts`
 - **Tests and runbook:** `API/expense-types/p60-expense-types.integration.test.ts`, `apps/api/scripts/test-p60-migration-on-populated-data.ts`, `RUN/pos-perf-p60-expense-types.md`
 
+## Extra Supplies
+
+- **All:** `API/extra-supplies/`, `SHARED/extra-supply.schema.ts`, `WEB/components/pos/extra-supplies-panel.tsx`, `WEB/components/extra-supplies/`, `WEB/hooks/queries/use-extra-supplies.ts`, `WEB/stores/extra-supply-draft.store.ts`, `apps/api/scripts/test-p61-migration-on-populated-data.ts`, `RUN/pos-perf-p61-extra-supplies.md`
+
 ## Stock transfers
 
 - **UI:** `WEB/app/(branch)/branch/inventory/transfer/page.tsx`, `WEB/app/(supervisor)/supervisor/inventory/transfer/page.tsx`,
@@ -169,11 +173,7 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 
 ## Deployment and rollout
 
-- **Workflows:** `.github/workflows/ci.yml` (PRs), `.github/workflows/deploy-production.yml` (push to `main`; it has
-  no manual trigger), `.github/workflows/deploy-staging.yml`
-- **Rollout script:** `.github/scripts/deploy-rollout.mjs` (`render-preflight`, `render`, `vercel-promote`, `vercel-verify`);
-  tests in `.github/scripts/deploy-rollout.test.mjs`
-- **Smoke tests:** `tests/e2e/production-smoke.spec.ts`, `tests/e2e/playwright.production-smoke.config.ts`,
-  `tests/e2e/pilot-smoke.spec.ts`, `tests/e2e/playwright.pilot.config.ts`
-- **Runbooks:** `RUN/pos-perf-p42r-production-test-gate.md`, `RUN/pos-perf-p43-gated-web-and-rollout-verification.md`,
-  `RUN/pos-perf-p44-pilot-and-e2e-readiness.md`, `RUN/pilot-on-call.md`, `RUN/backup-and-restore.md`
+- **Workflows:** `.github/workflows/ci.yml` (PRs), `.github/workflows/deploy-production.yml` (push to `main`; it has no manual trigger), `.github/workflows/deploy-staging.yml`
+- **Rollout script:** `.github/scripts/deploy-rollout.mjs` (`render-preflight`, `render`, `vercel-promote`, `vercel-verify`); tests in `.github/scripts/deploy-rollout.test.mjs`
+- **Smoke tests:** `tests/e2e/production-smoke.spec.ts`, `tests/e2e/playwright.production-smoke.config.ts`, `tests/e2e/pilot-smoke.spec.ts`, `tests/e2e/playwright.pilot.config.ts`
+- **Runbooks:** `RUN/pos-perf-p42r-production-test-gate.md`, `RUN/pos-perf-p43-gated-web-and-rollout-verification.md`, `RUN/pos-perf-p44-pilot-and-e2e-readiness.md`, `RUN/pilot-on-call.md`, `RUN/backup-and-restore.md`

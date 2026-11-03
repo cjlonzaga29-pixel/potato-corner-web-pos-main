@@ -9,14 +9,36 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
 ## Observed state
 
 - **Observed:** 2026-11-03
-- **Branch:** `feat/pos-perf-p60-expense-types`, from the P59 tip `6794333`. Local only: not pushed, no PR.
-- **Ancestry:** P60 depends on unpushed P59 (`feat/pos-perf-p59-reports-and-ui-cleanup`), which came from `origin/main` `6931b10`. Merging P60 brings in all of P59.
-- **Tested code:** P60 `6694e05`. Later commits are docs only.
+- **Branch:** `feat/pos-perf-p61-extra-supplies`, from the P60 tip `500e97e`. Local only: not pushed, no PR.
+- **Ancestry:** P61 depends on unpushed P60 and P59 (`feat/pos-perf-p59-reports-and-ui-cleanup`), which came from `origin/main` `6931b10`. Merging P61 brings in both.
+- **Tested code:** P61 `95c7b5e`. Later commits are docs only. P60's tested code was `6694e05`.
 - **PR #44** (`fix/pos-perf-p58-ever-published-test-isolation`, `7f7cf35`) is separate and not included. This handoff doesn't record its status or P58's deployment state, so check GitHub.
 - **Working tree after the docs commit:** only `.vscode/settings.json` should remain modified. It is unrelated; never stage it.
 - **Other worktrees:** six older P51–P55R3 worktrees, marked `prunable`. Nothing here authorizes removing them.
 
-## Task status: P60, verified locally
+## Task status: P61, verified locally
+
+Supervisors set up Extra Supplies cards on existing inventory items. Cashiers give them free or for payment from a terminal tab, with exactly-once retries. History, reports and Inventory Movements read the same records. One additive migration; no reversal exists. See [`runbooks/pos-perf-p61-extra-supplies.md`](runbooks/pos-perf-p61-extra-supplies.md).
+
+| Check on `95c7b5e`, disposable local databases, sequential | Result |
+| --- | --- |
+| Full API suite, default parallel | **1 failed** (`flavors`), 3,775 passed, 5 skipped |
+| Full API suite, one file at a time | 3,776 passed, 5 skipped, 0 failed |
+| Full web suite, 5s timeout | **2 failed** (timeouts: `admin/attendance`, `dialog-host`), 1,688 passed |
+| Full web suite, 20s timeout | 1,690 passed, 0 failed |
+| Shared suite | 83 passed |
+| Typecheck, lint, production builds | Clean; 0 errors; pass |
+| Migration rehearsal, 20,000 sales | Pass; 87 tables byte-identical, no drift |
+| Browser, final builds, service worker active | 73 / 73, after 14 earlier runs; four found real bugs (runbook §8) |
+| Real devices, camera, hosted Storage, realtime, a real old API, rollback | **Not tested** |
+
+**Rollout:** migration, API, then web. **Rollback:** code only, and an open shift would lose cash supply collections from expected cash (runbook §7).
+
+**New findings, not fixed (runbook §10):** a reload during a slow token refresh can sign a user out; the API suite fails intermittently in parallel, cause not proved; the global rate limit is shared per IP.
+
+**Next:** performance diagnosis across Admin, Supervisor and Branch, including PDF rendering isolation, before combined release.
+
+## Earlier: P60, verified locally
 
 Supervisors create expense types for their branches and sort expenses into filtered views over one ledger. Existing expenses stay legacy: no backfill, seeds or guessing. Two additive migrations. Dashboards and Admin Reports get a type breakdown that drills into the ledger, and exports are server-made. It also fixes expense route bugs that predate P60, including a cross-branch read through `branch_id`. See [`runbooks/pos-perf-p60-expense-types.md`](runbooks/pos-perf-p60-expense-types.md).
 
@@ -47,7 +69,7 @@ and "Managed by Super Admin" removed. Presentation only, with no migration. See
 
 ## Read next
 
-0. For P60: its runbook §1 for scope rules, §5 for compatibility, §8 for rollout. The rest of this list is P59.
+0. For P61: its runbook §5 for recovery, §7 for rollback, §10 for release blockers. For P60: its runbook §1 for scope rules, §5 for compatibility, §8 for rollout. The rest of this list is P59.
 1. The P59 runbook's owner decisions, §11 for the latest work and its rollout order, §10 for the follow-up, then §8 for limits
 2. `packages/shared/src/discounts/discount-display.ts` for the name, identity and proof rules
 3. [`PROJECT_MAP.md`](PROJECT_MAP.md), "Manual discounts and proof uploads" and "Dashboards, reports and stock alerts"

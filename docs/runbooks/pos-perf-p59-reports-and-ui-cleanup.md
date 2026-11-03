@@ -181,7 +181,7 @@ On the same data the on-screen ₱184.29 matched the export.
 **Known limits:**
 
 - **Report cost:** the aggregate loads each discounted sale's snapshot, and `eligible_product_ids` can make those large. It should be fine for a branch and a normal date range, but it wasn't measured. Worth reviewing in the performance batch.
-- **Export ceiling:** the Supervisor and Branch Discount Report export holds the newest 10,000 rows (CSV) or 2,000 (PDF), and now says so when it stops short. See §10.
+- **Export ceiling:** Supervisor and Branch record-level exports hold the newest 10,000 rows (CSV) or 100 (PDF), and say so when they stop short. See §11, which replaces the 2,000-row PDF limit in §10.
 - **Breakdown** reads up to 100 summary rows per request, so totals undercount beyond that. The screens now say so. See §10.
 - **Limiter:** the Reports page adds one request on load and one on the Discount tab, against the existing 100 a minute per IP.
 
@@ -284,10 +284,105 @@ Lost replies were real network cuts: a one-shot proxy in front of the API either
 ### Found, not changed
 
 - **The worker can't install while logged out.** `/apple-touch-icon.png` is precached, but the middleware redirects it to login, so install fails on the login page. It installs on the next page load after signing in, and it was active within 10s. A terminal that has signed in is fine. Fix is one matcher entry, in a separate batch.
-- **Other Supervisor tabs still stop at 100 without saying so.** Daily Sales, Sold Products, Void/Refund, Inventory Movement and Attendance, including Daily Sales KPIs and its export. `reports-view.tsx` documents this ceiling, but users can't see it. The same is true of the customer IDs read by the Daily Sales drill-down.
+- **Other Supervisor tabs still stop at 100 without saying so.** Daily Sales, Sold Products, Void/Refund, Inventory Movement and Attendance, including Daily Sales KPIs and its export. `reports-view.tsx` documents this ceiling, but users can't see it. The same is true of the customer IDs read by the Daily Sales drill-down. **Fixed in §11.**
 
 ### Still not tested
 
 Real phones or tablets, a physical camera, printing, offline sales in this run, hosted Supabase Storage, mixed old and new versions, production data volume and the hosted API's PDF timing.
 
 The fixture is `apps/api/scripts/p59r-browser-fixtures.ts`. The driver and proxy were session scratch and are not committed.
+
+## 11. PDF cap and report coverage
+
+Starting SHA `c198137`. Code tested `0d86464`. Everything here is local. **Production was not accessed, and nothing here says what is deployed.**
+
+### What each report does now
+
+Supervisor and Branch only. Tables page 25 rows at a time through the server. Cards read `GET /api/reports/period-summary`, database aggregates over every matching record.
+
+| Tab | Before | Screen now | CSV (newest 10,000) | PDF (newest 100) |
+|---|---|---|---|---|
+| Daily Sales | Rows and cards stopped at 100; file stopped at 100, unlabelled | All rows reachable, full-period cards | Yes, labelled if cut short | Yes, labelled if cut short |
+| Sold Product Transactions | Filtered only the newest 100. File ignored the product filter and held completed sales only | Filters run on the server | Same filters, every status unless one is chosen, a Status column, own file name | Same, and its own title |
+| Void/Refund | 100 voided plus 100 refunded, summed; same in the file | One newest-first list, full-period cards | Yes, labelled | Yes, voided and refunded totals kept apart |
+| Discount Report | PDF 2,000 | Unchanged apart from the limit shown | Yes, labelled | Yes, labelled |
+| Inventory Movement | Rows and cards stopped at 100. File complete up to 1,999 PDF rows, then a job that silently wrote one page | All rows reachable, full-period cards | Yes, labelled | Yes, labelled |
+| Stock Used Summary | Summed from the newest 100 movements, so screen and file disagreed | Reads the same aggregate as its file | Complete: one row per ingredient | Complete |
+| Attendance Summary | Rows and cards stopped at 100 | All rows reachable, full-period cards. `Total Staff Today` is now `Attendance Records`, because it counts the period | Yes, labelled | Yes, labelled |
+
+- **Detection:** one row past the limit is fetched, so exactly 100 or 10,000 reads as complete. A request's own `limit` no longer matters to these exports.
+- **In the file:** a partial CSV's first line, and a partial PDF's boxed notice and every footer, say `PARTIAL EXPORT`, and the file name ends `_PARTIAL`. Totals inside say `for these exported rows only`. A complete CSV is unchanged. A complete PDF gets a one-line coverage note; its layout is unchanged.
+- **On screen:** each tab says what its totals cover and warns before an export would be partial, using the same limits.
+- **Order:** newest first, with `id` as tie-break, on the exports and the tables, so equal timestamps can't repeat or vanish between pages.
+- **Failure:** a card whose aggregate fails, or that staff can't read, says `Unavailable`, never 0.
+- **Also fixed:** Daily Sales customer IDs are read for exactly the page shown. The transaction dialog looks up the cashier's session directly. Attendance now uses Manila day boundaries, like its export. An async export job now gets every row, not the request's page size.
+- **A direct request can't bypass this:** Supervisor and Branch requests for those reports, Shift Summary and Cash Reconciliation always take the bounded path.
+
+**Everyday effect, owner to note:** the default range is 7 days, so a branch with more than 100 sales a week gets a partial PDF by default. CSV stays complete up to 10,000 rows.
+
+### Measured blocking
+
+Final built API (`NODE_ENV=production`) on this laptop, local Postgres in Docker, no proxy in the path. Independent connections. Every PDF below hit the 100-row limit.
+
+| Request | Idle baseline | During a 100-row Discount PDF (5 runs) |
+|---|---|---|
+| Discount PDF itself | n/a | 1.65s to 2.38s |
+| `GET /health`, worst | 6ms (median 3ms) | **1.35s to 1.79s** |
+| Authenticated transaction list, worst | 49ms (median 32ms) | **1.01s to 1.64s** |
+| Real checkout, overlapping the PDF | median 128ms, worst 191ms | **1.42s to 2.04s**, all 201 |
+
+- **Ledger:** 10 sales (5 idle, 5 during a PDF), stock down 50 at 5 a sale, 10 SALE movements, and exactly one per sale for the 5 sales made during a PDF.
+- **Other tabs at 100 rows:** Daily Sales PDF 0.95s, worst `/health` 0.73s. Inventory Movement PDF 1.66s, worst `/health` 1.28s.
+- **Compared with §10:** the worst stall fell from 17.4s to about 1.8s. **This is reduced, not resolved.** Each PDF still stalls every branch's checkout for up to about 2s here, and several at once would add up. Hosted API timing was not measured.
+
+### Terminal recovery
+
+Final builds, fresh database, API behind a one-shot proxy that really cut the reply, service worker active and controlling. Both paths passed:
+
+| Path | Result |
+|---|---|
+| Lost reply, reload, Next Customer | `Sale completed`, Checkout disabled with an empty cart, one sale, stock down once |
+| Lost reply, reload, Escape | Same |
+
+### Checks at the tested code, sequential
+
+| Check | SHA | Result |
+|---|---|---|
+| Full API suite, real Postgres, serial | `3172435`; `0d86464` changes web tests only | 3,700 passed, 5 skipped, 0 failed |
+| Full web suite | `0d86464` | 1,655 passed, 0 failed (178 files) |
+| Shared suite | `0d86464` | 73 passed |
+| Typecheck, production builds | `0d86464` | Clean; pass |
+| Lint | `0d86464` | 0 errors; warnings only (API 397, web 1) |
+| Browser, final builds | `0d86464` | **44 / 44**, on a complete re-run |
+| Generated files | `0d86464` | All 5 tabs' CSVs and 6 PDFs read. Each PDF holds exactly 100 rows, with `PARTIAL EXPORT` in every footer and no VAT |
+
+The 5 skipped tests are the opt-in `PUBLICATION_BUDGET_MEASURE` measurement, not missing setup. `p59-report-coverage.integration.test.ts` reads real downloaded CSV and PDF bytes at 99, 100 and 101 rows, with another branch's rows present and that branch's supervisor refused.
+
+PDFs were read by extracting their text, because no PDF renderer was installed. Page appearance wasn't inspected. The screens were checked in screenshots.
+
+**Failures along the way, in order:**
+
+- **First full API run:** 3,699 passed, 1 failed. A test pinned the old attendance sort. Fixed in `3172435`, then the whole suite was re-run.
+- **First full web run:** 1,620 passed, 35 failed, all in `supervisor/reports/page.test.tsx`, whose mock lacked the new hooks. After that, 5 asserted the old row-summed cards and were rewritten in `0d86464`, then the whole suite was re-run.
+- **First browser run:** 43 / 44. Attendance reached page 2, but copied fixture rows looked identical. With distinct times, and the API confirming no shared records across pages, the full re-run was 44 / 44.
+- **Driver setup:** a missing `device_id` on login and a wrong table name. Development mode logs every query, so the API was restarted in production mode before anything was measured.
+
+### Found, not changed
+
+- **The older Transaction PDF route is still uncapped.** `GET /api/transactions/export/pdf`, behind the Daily Sales drill-down, allows 2,000 rows on one `Page`. **At about 267 rows it took 9.6s and stalled `/health` for 8.4s**, far worse than the capped exports. One unrepeated measurement, on sales mostly without item rows, so a real file may be slower.
+- **Admin's exports are not capped.** They stay complete and synchronous below 2,000 PDF rows, so a large Admin Inventory Movement or Void/Refund PDF can stall the API as it did before. Above that they use a job that renders in the same process. Not measured.
+- **Admin Audit Log export** counts through a paged query, so it can stop at the request's limit. Admin-only and not a Supervisor tab.
+- **Stock Used Summary** loads the period's sale movements on the server. It now runs only while that tab is open, and belongs in the performance batch.
+- The Sold tab's product menu lists at most 500 names. Void/Refund PDFs are titled `Void Refund Report`.
+
+### Rollout
+
+**Deploy the API before the web.** An older API ignores `status_group`, so the new Void/Refund tab would list every sale until the API is updated, and `period-summary` would fail, showing `Unavailable`. An older web on the new API keeps its capped screens, and its PDFs become labelled at 100 rows. No migration or data step.
+
+Rollback: revert `fd623d3`, `9e13f15`, `3172435` and `0d86464`, web first. That restores the 2,000-row PDF and its stall.
+
+### Still not tested
+
+Real phones or tablets, printing, hosted API timing, production data volume, mixed old and new versions, PDF exports from the staff and Branch roles in a browser, and the `Request never arrived` path, which §10 covers at `61b4df1`.
+
+The driver, proxy and fixtures were session scratch and are not committed.

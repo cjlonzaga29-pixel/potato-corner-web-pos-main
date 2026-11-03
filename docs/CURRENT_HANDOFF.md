@@ -10,7 +10,7 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
 
 - **Observed:** 2026-11-03
 - **Branch:** `feat/pos-perf-p59-reports-and-ui-cleanup`, from `origin/main` `6931b10`. Local only: not pushed, no PR.
-- **Tested code:** `61b4df1`, on `050056d`, for the readiness follow-up. The original P59 run was on `e6a4d1a`. Later commits add one lint comment and docs only.
+- **Tested code:** `0d86464`, for the PDF cap and report coverage (runbook §11). Starting SHA `c198137`. The readiness follow-up was `61b4df1` on `050056d`, and the original P59 run `e6a4d1a`. Later commits are docs only.
 - **PR #44** (`fix/pos-perf-p58-ever-published-test-isolation`, `7f7cf35`) is separate and not included. This handoff doesn't record its status or P58's deployment state, so check GitHub.
 - **Working tree after the docs commit:** only `.vscode/settings.json` should remain modified. It is unrelated; never stage it.
 - **Other worktrees:** six older P51–P55R3 worktrees, marked `prunable`. Nothing here authorizes removing them.
@@ -25,15 +25,31 @@ and "Managed by Super Admin" removed. Presentation only, with no migration. See
 
 **Readiness follow-up, also local only:** report limits now label partial results, the Admin drill-down pages through the server, and the real terminal was verified with the service worker active. It found and fixed a reload-recovery bug that could charge a sale twice. See runbook §10.
 
+**PDF cap and report coverage, also local only:** Supervisor and Branch record-level PDFs stop at 100 rows and CSVs at 10,000, labelled inside the file when cut short. Every Supervisor tab now pages through the server, and its cards read full-period aggregates. See runbook §11.
+
 ## Read next
 
-1. The runbook's owner decisions, §10 for the follow-up, then §8 for limits and §9 for rollout
+1. The runbook's owner decisions, §11 for the latest work and its rollout order, §10 for the follow-up, then §8 for limits
 2. `packages/shared/src/discounts/discount-display.ts` for the name, identity and proof rules
 3. [`PROJECT_MAP.md`](PROJECT_MAP.md), "Manual discounts and proof uploads" and "Dashboards, reports and stock alerts"
 
 ## Verification evidence
 
-On a disposable local database, at `e6a4d1a`, run sequentially.
+On a new disposable database, sequential. The full API run is at `3172435`; `0d86464` changes web tests only. Everything else is at `0d86464`.
+
+| Check | Result |
+| --- | --- |
+| Full API suite, real Postgres | 3,700 passed, 5 skipped (opt-in measurement), 0 failed |
+| Shared suite | 73 passed |
+| Full web suite | 1,655 passed, 0 failed |
+| Typecheck, production builds | Clean; pass |
+| Lint | 0 errors |
+| Browser, final builds, service worker active | 44 / 44, on a complete re-run; the first run was 43 / 44 (runbook §11) |
+| Generated CSV and PDF files | Read; PDF text extracted, appearance not inspected |
+
+**Blocking, on one laptop, 100-row Discount PDF against idle:** PDF 1.65s to 2.38s. Worst `/health` 1.35s to 1.79s (idle 6ms). Checkout 1.42s to 2.04s (idle median 128ms). Each sale and deduction happened exactly once.
+
+Earlier: on a disposable local database, at `e6a4d1a`, run sequentially.
 
 | Check | Result |
 | --- | --- |
@@ -61,13 +77,16 @@ Earlier failures are recorded in runbook §7 and §10.
 
 ## Known blockers and notes
 
-- No code blockers. Production was not accessed, and local Git says nothing about what is deployed.
-- **Owner decision before release:** a 2,000-row Discount Report PDF stalled other API requests for up to 17.4s on a laptop, and checkout would wait too. Accept that, or lower the PDF limit. Moving rendering off the request thread belongs in the performance batch.
+- No failing checks. Production was not accessed, and local Git says nothing about what is deployed.
+- **Unresolved: PDF rendering still blocks the API.** A 100-row PDF stalls every branch's checkout for up to about 2s here, down from 17.4s. Accept that, or move rendering off the request thread in the performance batch. Hosted timing wasn't measured.
+- **Unresolved: the Transaction PDF route is uncapped.** `GET /api/transactions/export/pdf`, behind the Daily Sales drill-down, took 9.6s and stalled `/health` for 8.4s at about 267 rows, and allows 2,000. Admin's synchronous PDFs also stay uncapped below 2,000 rows. Decide before release. See runbook §11.
+- **Owner to note:** a branch with more than 100 sales a week gets a partial PDF on the default 7-day range. CSV stays complete up to 10,000 rows.
+- **Deploy order:** API before web, or the new Void/Refund tab lists every sale during the overlap. See runbook §11.
 - **Ship soon:** the double-charge fix (`61b4df1`). The bug predates P59, so a deployed build probably has it. Not checked.
 - **One unexplained stop:** a PIN step stalled once in the 86/90 run and did not recur. Cause not established.
-- **Found, not changed:** the service worker can't install while logged out (`/apple-touch-icon.png` redirects), and other Supervisor report tabs still stop at 100 rows without saying so. See runbook §10.
-- **Cleanup:** `C:\p59r` (115 MB of browser profiles) is still there; a safety check blocked removing it. Safe to delete by hand.
-- **Next batches:** Expense Types, then Extra Supplies, then performance last. The Discount Report aggregate's cost belongs in the performance review (runbook §8).
+- **Found, not changed:** the service worker can't install while logged out (`/apple-touch-icon.png` redirects). See runbook §10.
+- **Cleanup:** `C:\p59r` and `C:\p59c` (browser profiles from these local runs) are still there; a safety check blocked removing them. Safe to delete by hand.
+- **Next batches:** Supervisor-created Expense Types, then Extra Supplies, then performance last. The Discount Report aggregate's cost belongs in the performance review (runbook §8).
 - **Test setup:** the API environment needs a base64 `ENCRYPTION_KEY` and `TEST_REDIS_URL` set, or tests fail or skip. Set every value explicitly. Docker Desktop was off and had to be started for the disposable database.
 - **Browser setup:** keep Chromium profile paths short on Windows; a long one breaks `CacheStorage`. Ports 55158 to 55557 are reserved here. With only local Storage running, `supabase status` omits the keys.
 - **Found, not changed:** staff get 403 from Export on `/branch/reports`, which isn't in their sidebar.

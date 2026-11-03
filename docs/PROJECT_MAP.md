@@ -134,7 +134,7 @@ Playwright config at `tests/e2e/playwright.config.ts`.
   `API/stock-availability/stock-availability.service.ts`
 - **Schema:** `SHARED/reports.schema.ts`
 - **Tests:** `WEB/components/admin/dashboard-low-stock-summary.test.tsx`,
-  `WEB/components/supervisor/dashboard-inventory-alerts.test.tsx`, `API/reports/reports.service.test.ts`, `API/reports/p59-discount-report.integration.test.ts`, `API/reports/p59-export-coverage.integration.test.ts`
+  `WEB/components/supervisor/dashboard-inventory-alerts.test.tsx`, `API/reports/reports.service.test.ts`, `API/reports/p59-discount-report.integration.test.ts`, `API/reports/p59-export-coverage.integration.test.ts`, `API/reports/p59-report-coverage.integration.test.ts`
 - **Runbooks:** `RUN/pos-perf-p47-dashboard-and-management.md`, `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§2), `RUN/pos-perf-p59-reports-and-ui-cleanup.md`
 
 ## Stock transfers

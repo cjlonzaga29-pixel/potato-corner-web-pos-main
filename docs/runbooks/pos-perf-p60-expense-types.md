@@ -17,9 +17,9 @@ Supervisors create expense types for their branches and use them to sort expense
 
 | Role | Types | Expenses |
 | --- | --- | --- |
-| Supervisor | Create, edit, deactivate and reactivate, within the rules below | Create and read in assigned branches |
-| Branch account | Read | Create and read in its own branch |
-| Super Admin | Read only | Read across all branches |
+| Supervisor | Create, edit, deactivate and reactivate, within the rules below | Create and read in assigned branches. Edit through the API only, with no screen |
+| Branch account | Read | Create and read in its own branch. Edit through the API only, with no screen |
+| Super Admin | Read only | Read, edit and delete across all branches |
 
 **Scope, checked against live assignments:**
 
@@ -60,7 +60,7 @@ Supervisors create expense types for their branches and use them to sort expense
 
 ## 4. Ledger, dashboards and reports
 
-**One ledger, filtered views.** The All Expenses card holds everything. Each type has its own card, with count and total from `GET /api/expenses/summary`, not from the rows on the page. Ten or more types stay in a bounded board that scrolls within itself.
+**One ledger, filtered views.** The All Expenses card holds everything. Each type has its own card, with count and total from `GET /api/expenses/summary`, not from the rows on the page. Many types stay in a bounded board that scrolls within itself (tested with 26).
 
 | Surface | What it gets |
 | --- | --- |

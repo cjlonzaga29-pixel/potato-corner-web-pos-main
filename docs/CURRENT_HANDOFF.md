@@ -96,7 +96,7 @@ Earlier failures are recorded in runbook §7 and §10.
 
 ## Known blockers and notes
 
-- **Still open from P59, not fixed by P60:** the three items below on PDF blocking, the uncapped routes and the owner decisions block release.
+- **Still open from P59, not fixed by P60:** PDF blocking and the uncapped routes (both below) and the owner decisions (P59 section) block release.
 - **Found in P60, not changed:** see runbook §7.
 - No failing checks. Production was not accessed, and local Git says nothing about what is deployed.
 - **Unresolved: PDF rendering still blocks the API.** A 100-row PDF stalls every branch's checkout for up to about 2s here, down from 17.4s. Accept that, or move rendering off the request thread in the performance batch. Hosted timing wasn't measured.

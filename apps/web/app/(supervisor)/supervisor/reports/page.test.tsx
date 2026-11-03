@@ -3,8 +3,10 @@ import { render, screen, fireEvent, cleanup, act, within } from '@testing-librar
 import type {
   AttendanceResponse,
   EmployeeResponse,
+  InventoryConsumptionSummaryReportRow,
   InventoryItemResponse,
   InventoryStockMovementResponse,
+  ReportPeriodSummary,
   TransactionResponse,
   UnitOfMeasureResponse,
 } from '@potato-corner/shared';
@@ -28,6 +30,8 @@ const {
   mockUseDiscountComplianceReport,
   mockUseInventoryValueSummaryReport,
   mockUseDiscountAuditTrail,
+  mockUseReportPeriodSummary,
+  mockUseInventoryConsumptionSummaryReport,
 } = vi.hoisted(() => ({
   mockUseBranchStore: vi.fn(),
   mockUseTransactions: vi.fn(),
@@ -46,6 +50,8 @@ const {
   mockUseDiscountComplianceReport: vi.fn(),
   mockUseInventoryValueSummaryReport: vi.fn(),
   mockUseDiscountAuditTrail: vi.fn(),
+  mockUseReportPeriodSummary: vi.fn(),
+  mockUseInventoryConsumptionSummaryReport: vi.fn(),
 }));
 
 vi.mock('@/stores/branch.store', () => ({
@@ -95,6 +101,9 @@ vi.mock('@/hooks/queries/use-reports', () => ({
   useReportsRealtimeSync: mockUseReportsRealtimeSync,
   useDiscountComplianceReport: mockUseDiscountComplianceReport,
   useInventoryValueSummaryReport: mockUseInventoryValueSummaryReport,
+  useReportPeriodSummary: mockUseReportPeriodSummary,
+  useReportPeriodSummaryRealtimeSync: vi.fn(),
+  useInventoryConsumptionSummaryReport: mockUseInventoryConsumptionSummaryReport,
 }));
 
 /**
@@ -117,6 +126,24 @@ vi.mock('@/components/shared/charts/kpi-card', () => ({
 interface BranchState {
   activeBranchId: string | null;
   activeBranch: { id: string; name: string } | null;
+}
+
+function periodSummary(overrides: Partial<ReportPeriodSummary> = {}): ReportPeriodSummary {
+  return {
+    sales: { completed_count: 0, completed_total_amount: 0, completed_discount_amount: 0, voided_count: 0, voided_total_amount: 0, refunded_count: 0, refunded_total_amount: 0 },
+    movements: { total_count: 0, receiving_count: 0, waste_count: 0, adjustment_count: 0, sale_count: 0 },
+    attendance: { record_count: 0, open_count: 0, work_minutes: 0, overtime_minutes: 0 },
+    sold_product_names: [],
+    ...overrides,
+  };
+}
+
+function mockPeriodSummary(overrides: Partial<ReportPeriodSummary>) {
+  mockUseReportPeriodSummary.mockReturnValue({ data: periodSummary(overrides), isLoading: false, isError: false });
+}
+
+function mockConsumption(rows: InventoryConsumptionSummaryReportRow[]) {
+  mockUseInventoryConsumptionSummaryReport.mockReturnValue({ data: { data: rows, total: rows.length }, isLoading: false, isError: false, refetch: vi.fn() });
 }
 
 function mockBranchState(state: BranchState) {
@@ -279,6 +306,7 @@ function employee(overrides: Partial<EmployeeResponse> = {}): EmployeeResponse {
 
 interface TransactionFiltersArg {
   status?: 'completed' | 'voided' | 'refunded';
+  status_group?: 'void_refund';
 }
 
 interface QueryState<T> {
@@ -290,7 +318,7 @@ interface QueryState<T> {
 function mockTransactionsByStatus(map: Partial<Record<'completed' | 'voided' | 'refunded', QueryState<TransactionResponse[]>>>) {
   mockUseTransactions.mockImplementation((filters: TransactionFiltersArg) => {
     const entry = filters.status ? map[filters.status] : undefined;
-    const transactions = entry?.data ?? [];
+    const transactions = filters.status_group === 'void_refund' ? [...(map.voided?.data ?? []), ...(map.refunded?.data ?? [])] : (entry?.data ?? []);
     return {
       data: { transactions, total: transactions.length, page: 1, limit: 100 },
       isLoading: entry?.isLoading ?? false,
@@ -301,6 +329,8 @@ function mockTransactionsByStatus(map: Partial<Record<'completed' | 'voided' | '
 }
 
 beforeEach(() => {
+  mockUseReportPeriodSummary.mockReturnValue({ data: periodSummary(), isLoading: false, isError: false });
+  mockConsumption([]);
   mockBranchState({ activeBranchId: 'branch-1', activeBranch: { id: 'branch-1', name: 'Main Branch' } });
   mockUseTransactionsRealtimeSync.mockReturnValue(undefined);
   mockUseInventoryStockRealtimeSync.mockReturnValue(undefined);
@@ -344,15 +374,16 @@ describe('SupervisorReportsPage', () => {
     expect(screen.queryByRole('tab', { name: 'Cash Reconciliation' })).not.toBeInTheDocument();
   });
 
-  it('renders Daily Sales KPI sums computed from completed transactions', () => {
+  it('renders Daily Sales KPIs from the full-period aggregate, never from the rows on one page', () => {
     mockTransactionsByStatus({
       completed: {
         data: [
-          transaction({ id: 't1', total_amount: 100, vat_amount: 10, discount_amount: 5 }),
-          transaction({ id: 't2', total_amount: 200, vat_amount: 20, discount_amount: 0 }),
+          transaction({ id: 't1', total_amount: 1, vat_amount: 10, discount_amount: 1 }),
+          transaction({ id: 't2', total_amount: 1, vat_amount: 20, discount_amount: 1 }),
         ],
       },
     });
+    mockPeriodSummary({ sales: { ...periodSummary().sales, completed_count: 2, completed_total_amount: 300, completed_discount_amount: 5 } });
 
     render(<SupervisorReportsPage />);
 
@@ -589,7 +620,8 @@ describe('SupervisorReportsPage', () => {
     expect(screen.getByText('PC-REFUND-0001')).toBeInTheDocument();
   });
 
-  it('shows the correct clocked-in count on the Attendance Summary tab', () => {
+  it('shows the full-period clocked-in count on the Attendance Summary tab', () => {
+    mockPeriodSummary({ attendance: { record_count: 2, open_count: 7, work_minutes: 0, overtime_minutes: 0 } });
     mockUseAttendanceByBranch.mockReturnValue({
       data: {
         records: [
@@ -609,10 +641,11 @@ describe('SupervisorReportsPage', () => {
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Attendance Summary' }));
 
     expect(screen.getByText('Crew on Duty')).toBeInTheDocument();
-    expect(screen.getByText('1')).toBeInTheDocument();
+    expect(screen.getByText('7')).toBeInTheDocument();
   });
 
-  it('renders movement-type KPI counts and rows on the Inventory Movement tab', () => {
+  it('renders full-period movement-type KPI counts and page rows on the Inventory Movement tab', () => {
+    mockPeriodSummary({ movements: { total_count: 345, receiving_count: 1, waste_count: 1, adjustment_count: 1, sale_count: 0 } });
     mockUseInventoryStockMovements.mockReturnValue({
       data: {
         movements: [
@@ -633,7 +666,7 @@ describe('SupervisorReportsPage', () => {
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Inventory Movement' }));
 
     expect(screen.getByText('Total Movements')).toBeInTheDocument();
-    expect(screen.getByText('3')).toBeInTheDocument();
+    expect(screen.getByText('345')).toBeInTheDocument();
     // Movement-type badges render the humanized label (lib/inventory-movement-labels.ts),
     // not the raw enum value — "Deliveries / Received"/"Waste" also appear as KPI card
     // titles, so more than one match is expected here.
@@ -675,11 +708,11 @@ describe('SupervisorReportsPage', () => {
   it('renders each tab-scoped loading state independently', () => {
     mockTransactionsByStatus({ completed: { data: [], isLoading: true }, voided: { data: [], isLoading: false }, refunded: { data: [], isLoading: false } });
 
-    render(<SupervisorReportsPage />);
-    expect(screen.getAllByText('loading').length).toBeGreaterThan(0);
+    const { container } = render(<SupervisorReportsPage />);
+    expect(container.querySelector('.animate-spin')).not.toBeNull();
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Void/Refund' }));
-    expect(screen.queryAllByText('loading')).toHaveLength(0);
+    expect(container.querySelector('.animate-spin')).toBeNull();
   });
 
   it('renders an EmptyState on every tab when its data is empty', () => {

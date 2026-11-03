@@ -15,6 +15,7 @@ import {
   ChevronDown,
   LogOut,
   Loader2,
+  PackagePlus,
 } from 'lucide-react';
 import { ROLE_LABELS } from '@potato-corner/shared';
 import { cn, generateInitials } from '@/lib/utils';
@@ -54,6 +55,7 @@ export const ADMIN_NAV_ITEMS: ReadonlyArray<NavItem> = [
   { label: 'Branches', href: '/admin/branches', icon: Building2, activePrefixes: ['/admin/branch-accounts'] },
   { label: 'Supervisors', href: '/admin/supervisors', icon: Users, activePrefixes: ['/admin/employees'] },
   { label: 'Attendance', href: '/admin/attendance', icon: ClipboardCheck },
+  { label: 'Extra Supplies', href: '/admin/extra-supplies', icon: PackagePlus },
   { label: 'Reports', href: '/admin/reports', icon: BarChart3 },
   { label: 'Settings', href: '/admin/settings', icon: Settings },
 ];

@@ -37,6 +37,10 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(),
 }));
 
+vi.mock('@/components/extra-supplies/extra-supply-summary-card', () => ({
+  ExtraSupplySummaryCard: () => <div data-testid="extra-supply-summary-card" />,
+}));
+
 vi.mock('@/hooks/use-selected-branch', () => ({
   useSelectedBranch: mockUseSelectedBranch,
 }));

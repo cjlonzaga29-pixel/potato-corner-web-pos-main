@@ -18,6 +18,7 @@ import { prisma } from '../../lib/prisma.js';
 import { manilaDateKey, dayBounds, monthBounds } from '../../lib/manila-time.js';
 import { availableStock, classifyStockStatus } from '../universal-inventory/stock-classification.js';
 import { universalInventoryRepository } from '../universal-inventory/universal-inventory.repository.js';
+import { EXTRA_SUPPLY_MOVEMENT_REFERENCE } from '../universal-inventory/universal-inventory.types.js';
 import { convertQuantity, UnitConversionError } from '../product-components/unit-conversion.util.js';
 import { computeFinancialMetrics } from '../../lib/financial-metrics.js';
 import { decryptField } from '../../lib/encryption.js';
@@ -765,7 +766,7 @@ export const reportsRepository = {
 
     const [sales, movements, attendance, openCount, products] = await Promise.all([
       prisma.transaction.groupBy({ by: ['status'], where: createdWhere, _count: { _all: true }, _sum: { totalAmount: true, discountAmount: true } }),
-      prisma.inventoryStockMovement.groupBy({ by: ['movementType'], where: createdWhere, _count: { _all: true } }),
+      prisma.inventoryStockMovement.groupBy({ by: ['movementType', 'referenceType'], where: createdWhere, _count: { _all: true } }),
       prisma.attendanceRecord.aggregate({ where: attendanceWhere, _count: { _all: true }, _sum: { actualWorkMinutes: true, overtimeMinutes: true } }),
       prisma.attendanceRecord.count({ where: { ...attendanceWhere, clockOutServerTime: null } }),
       prisma.transactionItem.findMany({
@@ -778,6 +779,7 @@ export const reportsRepository = {
     ]);
 
     const sale = (status: string) => sales.find((row) => row.status === status);
+    const extraSupplyMovements = movements.filter((row) => row.referenceType === EXTRA_SUPPLY_MOVEMENT_REFERENCE).reduce((sum, row) => sum + row._count._all, 0);
     const movementCount = (...types: string[]) => movements.filter((row) => types.includes(row.movementType)).reduce((sum, row) => sum + row._count._all, 0);
     return {
       sales: {
@@ -793,7 +795,8 @@ export const reportsRepository = {
         total_count: movements.reduce((sum, row) => sum + row._count._all, 0),
         receiving_count: movementCount('RECEIVING'),
         waste_count: movementCount('WASTE'),
-        adjustment_count: movementCount('ADJUSTMENT_IN', 'ADJUSTMENT_OUT'),
+        adjustment_count: movementCount('ADJUSTMENT_IN', 'ADJUSTMENT_OUT') - extraSupplyMovements,
+        extra_supply_count: extraSupplyMovements,
         sale_count: movementCount('SALE'),
       },
       attendance: {
@@ -818,10 +821,15 @@ export const reportsRepository = {
     const range = dateRangeFilter(filters);
     const branchWhere = filters.branchId ? { branchId: filters.branchId } : {};
 
-    const [movementSums, stockRows] = await Promise.all([
+    const [movementSums, extraSupplySum, stockRows] = await Promise.all([
       prisma.inventoryStockMovement.groupBy({
         by: ['movementType'],
         where: { ...branchWhere, ...(range && { createdAt: range }) },
+        _sum: { totalCost: true },
+      }),
+      // POS-PERF-P61 — stored as ADJUSTMENT_OUT for old-API compatibility, reported apart from manual adjustments.
+      prisma.inventoryStockMovement.aggregate({
+        where: { ...branchWhere, ...(range && { createdAt: range }), referenceType: EXTRA_SUPPLY_MOVEMENT_REFERENCE },
         _sum: { totalCost: true },
       }),
       prisma.inventoryStock.findMany({
@@ -842,7 +850,8 @@ export const reportsRepository = {
       stock_received_value: round2(sumFor('RECEIVING')),
       waste_cost: round2(Math.abs(sumFor('WASTE'))),
       adjustment_in_value: round2(sumFor('ADJUSTMENT_IN')),
-      adjustment_out_value: round2(Math.abs(sumFor('ADJUSTMENT_OUT'))),
+      adjustment_out_value: round2(Math.abs(sumFor('ADJUSTMENT_OUT')) - Math.abs(extraSupplySum?._sum.totalCost?.toNumber() ?? 0)),
+      extra_supply_value: round2(Math.abs(extraSupplySum?._sum.totalCost?.toNumber() ?? 0)),
       transfer_in_value: round2(sumFor('TRANSFER_IN')),
       transfer_out_value: round2(Math.abs(sumFor('TRANSFER_OUT'))),
     };

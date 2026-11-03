@@ -359,6 +359,9 @@ model User {
   updatedProductTypes              ProductType[]          @relation("ProductTypeUpdatedBy")
   createdExpenseTypes              ExpenseType[]          @relation("ExpenseTypeCreatedBy")
   updatedExpenseTypes              ExpenseType[]          @relation("ExpenseTypeUpdatedBy")
+  createdExtraSupplies             ExtraSupply[]          @relation("ExtraSupplyCreatedBy")
+  updatedExtraSupplies             ExtraSupply[]          @relation("ExtraSupplyUpdatedBy")
+  extraSupplyIssues                ExtraSupplyIssue[]
   cashierTransactions              Transaction[]
   voidedTransactions               Transaction[]          @relation("TransactionVoidedBy")
   refundedTransactions             Transaction[]          @relation("TransactionRefundedBy")
@@ -435,6 +438,10 @@ model Branch {
   id                  String              @id @default(uuid())
   productTypeBranches ProductTypeBranch[]
   expenseTypeBranches ExpenseTypeBranch[]
+  extraSupplyBranches ExtraSupplyBranch[]
+  extraSupplyIssues   ExtraSupplyIssue[]
+  extraSupplyLines    ExtraSupplyIssueLine[]
+  extraSupplyOperations ExtraSupplyOperation[]
   name                String
   code                String              @unique
   address             String
@@ -1465,6 +1472,8 @@ model UnitOfMeasure {
   optionDeductionMappings   ProductOptionInventoryMapping[]
   itemConversionsFrom       InventoryItemUnitConversion[]   @relation("InventoryItemUnitConversionFrom")
   itemConversionsTo         InventoryItemUnitConversion[]   @relation("InventoryItemUnitConversionTo")
+  extraSupplyEnteredUnits   ExtraSupply[]                   @relation("ExtraSupplyEnteredUnit")
+  extraSupplyBaseUnits      ExtraSupply[]                   @relation("ExtraSupplyBaseUnit")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1561,6 +1570,7 @@ model InventoryItem {
   identityMappings  InventoryIdentityMapping[]
   optionMappings    ProductOptionInventoryMapping[]
   unitConversions   InventoryItemUnitConversion[]
+  extraSupplies     ExtraSupply[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -2588,6 +2598,7 @@ model Shift {
   transactions  Transaction[]
   holdOrders    HoldOrder[]
   reviews       ShiftReview[]
+  extraSupplyIssues ExtraSupplyIssue[]
 
   startedAt DateTime  @map("started_at")
   closedAt  DateTime? @map("closed_at")
@@ -3015,6 +3026,175 @@ model ExpenseTypeBranch {
   @@id([expenseTypeId, branchId])
   @@index([branchId])
   @@map("expense_type_branches")
+}
+
+/// POS-PERF-P61 — a card a cashier can issue: additional cups, tissue, bags. It owns
+/// no balance. Every issue deducts the linked InventoryItem's InventoryStock at the
+/// branch. Never hard-deleted by the app: issue lines restrict deleting a referenced row.
+model ExtraSupply {
+  id                  String    @id @default(uuid())
+  name                String
+  /// See normalizeExtraSupplyName (packages/shared). Copied to ExtraSupplyBranch by the composite FK.
+  normalizedName      String    @map("normalized_name")
+  /// A storage key in product-images, unique per upload. Never a URL.
+  imagePath           String?   @map("image_path")
+  inventoryItemId     String    @map("inventory_item_id")
+  /// What the cashier counts: "cup", "pack of 10". A label, not a unit of measure.
+  issueUnitName       String    @map("issue_unit_name")
+  /// What the supervisor entered per issued unit, kept so the form shows it back unchanged.
+  enteredQuantity     Decimal   @map("entered_quantity") @db.Decimal(12, 4)
+  enteredUnitId       String    @map("entered_unit_id")
+  /// The same quantity in the item's base unit, converted once at save with the
+  /// conversion the supervisor reviewed. A later conversion edit can't change it silently.
+  baseQuantity        Decimal   @map("base_quantity") @db.Decimal(10, 3)
+  /// The item's base unit at save. An issue refuses to run if the item's has moved since.
+  baseUnitId          String    @map("base_unit_id")
+  /// Used only when the inventory carries no cost. A stated figure, not an accounting cost.
+  configuredIssueCost Decimal?  @map("configured_issue_cost") @db.Decimal(10, 4)
+  /// Null means the card can only be given free.
+  sellingPrice        Decimal?  @map("selling_price") @db.Decimal(10, 2)
+  applyToPos          Boolean   @default(true) @map("apply_to_pos")
+  isActive            Boolean   @default(true) @map("is_active")
+  version             Int       @default(1)
+  createdById         String    @map("created_by_id")
+  updatedById         String?   @map("updated_by_id")
+  deactivatedAt       DateTime? @map("deactivated_at")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  /// Not @updatedAt: an issue's no-op row lock must not count as an edit.
+  updatedAt           DateTime  @default(now()) @map("updated_at")
+
+  inventoryItem InventoryItem          @relation(fields: [inventoryItemId], references: [id], onDelete: Restrict)
+  enteredUnit   UnitOfMeasure          @relation("ExtraSupplyEnteredUnit", fields: [enteredUnitId], references: [id], onDelete: Restrict)
+  baseUnit      UnitOfMeasure          @relation("ExtraSupplyBaseUnit", fields: [baseUnitId], references: [id], onDelete: Restrict)
+  creator       User                   @relation("ExtraSupplyCreatedBy", fields: [createdById], references: [id])
+  updater       User?                  @relation("ExtraSupplyUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  branches      ExtraSupplyBranch[]
+  lines         ExtraSupplyIssueLine[]
+
+  @@unique([id, normalizedName, isActive])
+  @@index([inventoryItemId])
+  @@map("extra_supplies")
+}
+
+/// POS-PERF-P61 — where a card may be issued. normalizedName and isActive follow
+/// extra_supplies through the composite FK, so the partial unique index
+/// extra_supply_branches_active_name_key (raw SQL) also decides renames and reactivations.
+model ExtraSupplyBranch {
+  extraSupplyId  String  @map("extra_supply_id")
+  branchId       String  @map("branch_id")
+  normalizedName String  @map("normalized_name")
+  isActive       Boolean @map("is_active")
+
+  extraSupply ExtraSupply @relation(fields: [extraSupplyId, normalizedName, isActive], references: [id, normalizedName, isActive], onDelete: Cascade, onUpdate: Cascade)
+  branch      Branch      @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@id([extraSupplyId, branchId])
+  @@index([branchId])
+  @@map("extra_supply_branches")
+}
+
+enum ExtraSupplyIssueKind {
+  free
+  paid
+
+  @@map("extra_supply_issue_kind")
+}
+
+/// POS-PERF-P61 — one confirmed issue. Posted once and never edited: no status column
+/// and no update path. Written in one transaction with its lines, stock movements and
+/// operation row. Not a Transaction: no sale, receipt, VAT or discount is involved.
+model ExtraSupplyIssue {
+  id               String               @id @default(uuid())
+  referenceNumber  String               @unique @map("reference_number")
+  branchId         String               @map("branch_id")
+  shiftId          String?              @map("shift_id")
+  cashierId        String               @map("cashier_id")
+  kind             ExtraSupplyIssueKind
+  paymentMethod    PaymentMethod?       @map("payment_method")
+  /// Calculated by the server from the selling prices at confirmation. Zero when free.
+  amountCollected  Decimal              @default(0) @map("amount_collected") @db.Decimal(10, 2)
+  amountTendered   Decimal?             @map("amount_tendered") @db.Decimal(10, 2)
+  changeAmount     Decimal?             @map("change_amount") @db.Decimal(10, 2)
+  paymentReference String?              @map("payment_reference")
+  /// Storage key in payment-proofs, as Transaction.paymentProofKey.
+  paymentProofKey  String?              @map("payment_proof_key")
+  paymentProofType ImageProofType?      @map("payment_proof_type")
+  reason           String?
+  /// Typed by the cashier and not checked against any sale.
+  orderReference   String?              @map("order_reference")
+  createdAt        DateTime             @default(now()) @map("created_at")
+
+  branch    Branch                 @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  shift     Shift?                 @relation(fields: [shiftId], references: [id], onDelete: SetNull)
+  cashier   User                   @relation(fields: [cashierId], references: [id])
+  lines     ExtraSupplyIssueLine[]
+  operation ExtraSupplyOperation?
+
+  @@index([branchId, createdAt(sort: Desc), id])
+  @@index([shiftId, paymentMethod])
+  @@index([cashierId])
+  @@map("extra_supply_issues")
+}
+
+/// POS-PERF-P61 — the historical record of one card in an issue. Everything a report
+/// shows is a snapshot here, so a rename, price change or deactivation rewrites nothing.
+/// branchId, kind, paymentMethod, cashierId and createdAt copy the immutable issue so
+/// report aggregates group on one table.
+model ExtraSupplyIssueLine {
+  id                String               @id @default(uuid())
+  issueId           String               @map("issue_id")
+  extraSupplyId     String               @map("extra_supply_id")
+  supplyName        String               @map("supply_name")
+  supplyVersion     Int                  @map("supply_version")
+  issueUnitName     String               @map("issue_unit_name")
+  quantity          Int
+  inventoryItemId   String               @map("inventory_item_id")
+  inventoryItemName String               @map("inventory_item_name")
+  baseUnitCode      String               @map("base_unit_code")
+  baseQuantityEach  Decimal              @map("base_quantity_each") @db.Decimal(10, 3)
+  baseQuantityTotal Decimal              @map("base_quantity_total") @db.Decimal(12, 3)
+  /// Null on a free line.
+  unitPrice         Decimal?             @map("unit_price") @db.Decimal(10, 2)
+  lineAmount        Decimal              @default(0) @map("line_amount") @db.Decimal(10, 2)
+  /// inventory: the stock's carrying cost. configured: the card's stated cost. unknown: neither existed.
+  costSource        String               @map("cost_source")
+  /// Per issued unit. Null only when costSource is unknown, which never reads as zero.
+  unitCost          Decimal?             @map("unit_cost") @db.Decimal(12, 4)
+  lineCost          Decimal?             @map("line_cost") @db.Decimal(14, 4)
+  branchId          String               @map("branch_id")
+  kind              ExtraSupplyIssueKind
+  paymentMethod     PaymentMethod?       @map("payment_method")
+  cashierId         String               @map("cashier_id")
+  createdAt         DateTime             @map("created_at")
+
+  issue  ExtraSupplyIssue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  supply ExtraSupply      @relation(fields: [extraSupplyId], references: [id], onDelete: Restrict)
+  branch Branch           @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@index([issueId])
+  @@index([branchId, createdAt])
+  @@index([extraSupplyId, createdAt])
+  @@map("extra_supply_issue_lines")
+}
+
+/// POS-PERF-P61 — the fate of one client-generated operation id. A committed row is
+/// written in the same transaction as its issue, so a refused attempt leaves nothing
+/// behind. An abandoned row permanently fences an id whose outcome the client gave up on.
+model ExtraSupplyOperation {
+  id          String   @id @map("operation_id")
+  branchId    String   @map("branch_id")
+  cashierId   String   @map("cashier_id")
+  requestHash String?  @map("request_hash")
+  /// committed | abandoned. A database check enforces the pairing with issueId.
+  status      String
+  issueId     String?  @unique @map("issue_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  branch Branch            @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  issue  ExtraSupplyIssue? @relation(fields: [issueId], references: [id], onDelete: Cascade)
+
+  @@index([branchId])
+  @@map("extra_supply_operations")
 }
 
 model ExpenseIdempotencyKey {

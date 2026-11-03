@@ -32,6 +32,9 @@ vi.mock('../../lib/prisma.js', () => {
       count: vi.fn(),
       aggregate: vi.fn(),
     },
+    extraSupplyIssue: {
+      count: vi.fn(),
+    },
     user: {
       findUnique: vi.fn(),
     },
@@ -383,13 +386,15 @@ describe('cashRepository.sumCashRefundsProcessedDuringShift', () => {
 });
 
 describe('cashRepository.countAnyTransactionsForShift', () => {
-  it('counts every transaction regardless of status', async () => {
+  it('counts every transaction regardless of status, and extra supply issues too', async () => {
     vi.mocked(prisma.transaction.count).mockResolvedValue(2);
+    vi.mocked(prisma.extraSupplyIssue.count).mockResolvedValue(1);
 
     const result = await cashRepository.countAnyTransactionsForShift('shift-1');
 
     expect(prisma.transaction.count).toHaveBeenCalledWith({ where: { shiftId: 'shift-1' } });
-    expect(result).toBe(2);
+    expect(prisma.extraSupplyIssue.count).toHaveBeenCalledWith({ where: { shiftId: 'shift-1' } });
+    expect(result).toBe(3);
   });
 });
 

@@ -14,7 +14,9 @@ import { ViewPaymentProofDialog } from '@/components/shared/transactions/view-pa
 import { formatDateTime } from '@/lib/utils';
 import { useBranchStore } from '@/stores/branch.store';
 import { useBranchInventoryStock, useInventoryStockMovements } from '@/hooks/queries/use-universal-inventory';
-import { MOVEMENT_TYPE_LABELS } from '@/lib/inventory-movement-labels';
+import { usePathname } from 'next/navigation';
+import { extraSuppliesHistoryPath } from '@/lib/extra-supply-labels';
+import { EXTRA_SUPPLY_REFERENCE_TYPE, MOVEMENT_TYPE_LABELS, movementDisplayLabel } from '@/lib/inventory-movement-labels';
 
 interface InventoryMovementsViewProps {
   /** Overrides useBranchStore's activeBranchId — used by the Admin cross-branch screen, which has no single "active branch" of its own. Omitted (the default) everywhere else, preserving the existing branch-store-driven behavior exactly. */
@@ -32,6 +34,7 @@ interface InventoryMovementsViewProps {
  * so Supervisor/Admin retain full audit visibility exactly as before.
  */
 export function InventoryMovementsView({ branchId }: InventoryMovementsViewProps = {}) {
+  const pathname = usePathname();
   const storeActiveBranchId = useBranchStore((s) => s.activeBranchId);
   const activeBranchId = branchId !== undefined ? branchId : storeActiveBranchId;
   const { data: stock } = useBranchInventoryStock(activeBranchId);
@@ -69,7 +72,7 @@ export function InventoryMovementsView({ branchId }: InventoryMovementsViewProps
       header: 'Type',
       cell: ({ row }) => (
         <div className="flex items-center gap-1.5">
-          <Badge variant="secondary">{MOVEMENT_TYPE_LABELS[row.original.movement_type]}</Badge>
+          <Badge variant="secondary">{movementDisplayLabel(row.original)}</Badge>
           {row.original.recorded_as_supervisor_direct && (
             <Badge variant="pending">
               Recorded by {row.original.performed_by_role === 'super_admin' ? 'Admin' : 'Supervisor'} — Applied
@@ -132,6 +135,13 @@ export function InventoryMovementsView({ branchId }: InventoryMovementsViewProps
       header: 'Reference',
       cell: ({ row }) => {
         const movement = row.original;
+        if (movement.reference_type === EXTRA_SUPPLY_REFERENCE_TYPE && movement.reference_id) {
+          return (
+            <a href={`${extraSuppliesHistoryPath(pathname)}?issue=${movement.reference_id}`} className="font-medium text-primary underline-offset-2 hover:underline" data-testid="movement-extra-supply-link">
+              View issue
+            </a>
+          );
+        }
         if (movement.reference_type === 'transaction' && movement.receipt_number) {
           return (
             <a href={`/r/${movement.receipt_number}`} target="_blank" rel="noreferrer" className="text-primary underline">

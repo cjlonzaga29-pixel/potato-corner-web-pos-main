@@ -34,6 +34,10 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: mockPush }),
 }));
 
+vi.mock('@/components/extra-supplies/extra-supply-summary-card', () => ({
+  ExtraSupplySummaryCard: () => <div data-testid="extra-supply-summary-card" />,
+}));
+
 vi.mock('@/hooks/use-auth', () => ({
   useAuth: mockUseAuth,
 }));

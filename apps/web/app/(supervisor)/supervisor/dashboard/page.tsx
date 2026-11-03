@@ -26,6 +26,7 @@ import { stockAlertCounts, stockAlertRows } from '@/lib/inventory-stock-status';
 import { useAttendanceSummary, useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
 import { useExpensesRealtimeSync } from '@/hooks/queries/use-expenses';
 import { ExpenseBreakdownCard } from '@/components/reports/expense-breakdown-card';
+import { ExtraSupplySummaryCard } from '@/components/extra-supplies/extra-supply-summary-card';
 import { MAX_LIST_LIMIT } from '@potato-corner/shared';
 
 const RECENT_TRANSACTIONS_LIMIT = 10;
@@ -222,6 +223,8 @@ export default function SupervisorDashboardPage() {
         ledgerPath="/supervisor/expenses"
         enabled={Boolean(activeBranchId)}
       />
+
+      <ExtraSupplySummaryCard title="Today's Extra Supplies" branchId={activeBranchId ?? undefined} dateFrom={manilaToday()} dateTo={manilaToday()} historyPath="/supervisor/extra-supplies" enabled={Boolean(activeBranchId)} />
 
       <WidgetErrorBoundary label="Sales Trend">
         <SalesAnalyticsSection branchId={activeBranchId} />

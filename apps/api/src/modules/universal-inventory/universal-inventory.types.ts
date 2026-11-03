@@ -103,9 +103,13 @@ export type InventoryStockMovementType =
  * bucket (not in the brief's named filter list) and only ever appears under
  * "All".
  */
-export type InventoryStockMovementCategory = 'order_deductions' | 'adjustments' | 'stock_in' | 'waste' | 'transfers';
+export type InventoryStockMovementCategory = 'order_deductions' | 'adjustments' | 'stock_in' | 'waste' | 'transfers' | 'extra_supplies';
+
+/** POS-PERF-P61 — referenceType of an Extra Supplies deduction, stored as ADJUSTMENT_OUT. See that module's migration for why. */
+export const EXTRA_SUPPLY_MOVEMENT_REFERENCE = 'extra_supply_issue';
 
 export const STOCK_MOVEMENT_CATEGORY_TYPES: Record<InventoryStockMovementCategory, InventoryStockMovementType[]> = {
+  extra_supplies: ['ADJUSTMENT_OUT'],
   order_deductions: ['SALE', 'SALE_REVERSAL'],
   adjustments: ['ADJUSTMENT_IN', 'ADJUSTMENT_OUT'],
   stock_in: ['RECEIVING'],

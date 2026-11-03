@@ -18,6 +18,7 @@ vi.mock('./cash.repository.js', () => ({
     sumTransactionsForShift: vi.fn(),
     sumTransactionCountsForShift: vi.fn(),
     sumCashRefundsProcessedDuringShift: vi.fn(),
+    sumExtraSupplyCollectionsForShift: vi.fn(),
     countAnyTransactionsForShift: vi.fn(),
     closeShift: vi.fn(),
     approveVariance: vi.fn(),
@@ -194,6 +195,7 @@ beforeEach(() => {
   // term) keeps computing the same expected_cash/expectedClosingCash it did
   // before; the dedicated describe block below overrides this per-test.
   vi.mocked(cashRepository.sumCashRefundsProcessedDuringShift).mockResolvedValue(new Prisma.Decimal(0));
+  vi.mocked(cashRepository.sumExtraSupplyCollectionsForShift).mockResolvedValue({ cash: new Prisma.Decimal(0), total: new Prisma.Decimal(0) });
 });
 
 describe('cashService.openShift', () => {

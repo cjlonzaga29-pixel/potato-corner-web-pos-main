@@ -43,6 +43,8 @@ import { CartLineItem, type CartLine } from '@/components/pos/cart-line-item';
 import type { DiscountChoice } from '@/components/pos/payment-footer';
 import type { ManualDiscountFooterState, ManualDiscountMode } from '@/components/pos/manual-discount-fields';
 import { CheckoutWorkspace } from '@/components/pos/checkout-workspace';
+import { ExtraSuppliesPanel } from '@/components/pos/extra-supplies-panel';
+import { extraSupplyDraftKey, useExtraSupplyDraftStore } from '@/stores/extra-supply-draft.store';
 import { splitAddOnLines, isAddOnsGroup, chosenQuantity, type AddOnAssignments } from '@/lib/pos/split-add-ons';
 import { cartLineKey, type PosCartItem, type PosCartSelectedOption } from '@/stores/cart.store';
 import { toAvailabilityLines, useCartStockValidation } from '@/hooks/use-cart-stock-validation';
@@ -1010,7 +1012,12 @@ export default function TerminalPage() {
   // POS-PERF-P24 — the former separate "Needs Action" tab was removed;
   // failed/uncertain orders ('error' status) now stay persistently visible
   // inside Pending (see pendingOrderEntries below) instead of a fourth tab.
-  const [activeMainTab, setActiveMainTab] = useState<'products' | 'pending' | 'done'>('products');
+  const [activeMainTab, setActiveMainTab] = useState<'products' | 'supplies' | 'pending' | 'done'>('products');
+  // The panel only checks an unresolved issue while it is open, so a reload or reconnect must not leave it unseen behind Products.
+  const hasUnresolvedSupplyIssue = useExtraSupplyDraftStore((state) => Boolean(branchId && operatorId && state.drafts[extraSupplyDraftKey(branchId, operatorId)]?.pending));
+  useEffect(() => {
+    if (hasUnresolvedSupplyIssue) setActiveMainTab('supplies');
+  }, [hasUnresolvedSupplyIssue]);
   // "View Receipt" from the order tabs — see
   // handleViewDetachedSaleReceipt's doc comment for why this is deliberately
   // separate from saleTransaction/isReceiptViewOpen.
@@ -3710,6 +3717,7 @@ export default function TerminalPage() {
         <Tabs value={activeMainTab} onValueChange={(value) => setActiveMainTab(value as typeof activeMainTab)}>
           <TabsList aria-label="POS sections" className="app-control w-full items-stretch justify-start overflow-x-auto sm:w-auto">
             <TabsTrigger value="products" className="h-full">Products</TabsTrigger>
+            <TabsTrigger value="supplies" className="h-full">Extra Supplies</TabsTrigger>
             <TabsTrigger value="pending" className="h-full">
               Pending{pendingTabCount > 0 ? ` (${pendingTabCount})` : ''}
             </TabsTrigger>
@@ -3834,7 +3842,20 @@ export default function TerminalPage() {
         </>
         )}
 
-        {activeMainTab !== 'products' && (
+        {/* POS-PERF-P61 — its own draft, separate from this page's cart, which the cart
+            panel keeps intact below. Keyed so a cashier change can't carry state over. */}
+        {activeMainTab === 'supplies' && branchId && operatorId && (
+          <ExtraSuppliesPanel
+            key={`${branchId}:${operatorId}`}
+            branchId={branchId}
+            cashierId={operatorId}
+            isOnline={isOnline}
+            operatorToken={operatorToken}
+            refreshOperatorToken={operatorToken ? refreshEmployeeToken : undefined}
+          />
+        )}
+
+        {(activeMainTab === 'pending' || activeMainTab === 'done') && (
           <div className="lg:flex-1 lg:overflow-y-auto">
             <OfflineSalesList
               status={activeMainTab}
@@ -4013,7 +4034,7 @@ export default function TerminalPage() {
           compact header (`.app-pos-cart-header`) and the checkout footer
           (`checkoutBarElement`) stay `flex-shrink-0` so Checkout is never
           pushed offscreen by a long cart. */}
-      {isDesktop && (
+      {isDesktop && activeMainTab !== 'supplies' && (
         <div className="app-pos-cart-width hidden min-h-0 flex-col border-t lg:flex lg:min-h-0 lg:flex-none lg:overflow-hidden lg:border-t-0">
           <div className="app-pos-cart-header flex shrink-0 items-center justify-between gap-2 border-b bg-card px-3">
             <h2 className="text-sm font-semibold">Cart</h2>
@@ -4047,7 +4068,7 @@ export default function TerminalPage() {
           compact subtotal + Checkout), same as the desktop panel; Checkout
           closes the Sheet and opens the full-screen/step CheckoutWorkspace
           instead of squeezing payment UI into the bottom sheet. */}
-      {!isDesktop && (
+      {!isDesktop && activeMainTab !== 'supplies' && (
         <>
           <div className="sticky bottom-0 z-20 border-t bg-card p-3 lg:hidden">
             <Button

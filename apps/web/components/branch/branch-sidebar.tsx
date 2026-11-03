@@ -15,6 +15,7 @@ import {
   ChevronsRight,
   LogOut,
   Loader2,
+  PackagePlus,
 } from 'lucide-react';
 import { ROLE_LABELS, type Role } from '@potato-corner/shared';
 import { cn, generateInitials } from '@/lib/utils';
@@ -68,6 +69,7 @@ export const BRANCH_NAV_ITEMS = [
   // sale-linked deductions/returns (see order-deductions-view.tsx), not the
   // full movement ledger.
   { label: 'Order Deductions', href: '/branch/inventory/movements', icon: ArrowLeftRight, group: 'Overview' },
+  { label: 'Extra Supplies', href: '/branch/extra-supplies', icon: PackagePlus, group: 'Overview' },
 
   // POS-PERF-P26 — Products, Employees, Attendance, Reports, and Branch
   // Settings were removed entirely for the Branch Account: they were

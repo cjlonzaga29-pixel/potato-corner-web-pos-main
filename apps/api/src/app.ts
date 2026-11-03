@@ -27,6 +27,7 @@ import { auditRouter } from './modules/audit/audit.router.js';
 import { fraudRouter } from './modules/fraud/fraud.router.js';
 import { expensesRouter } from './modules/expenses/expenses.router.js';
 import { expenseTypesRouter } from './modules/expense-types/expense-types.router.js';
+import { extraSuppliesRouter } from './modules/extra-supplies/extra-supplies.router.js';
 import { settingsRouter, branchReceiptConfigRouter } from './modules/settings/settings.router.js';
 import { productInventoryRouter } from './modules/product-inventory/product-inventory.router.js';
 import { universalInventoryRouter, inventoryStockBranchRouter } from './modules/universal-inventory/universal-inventory.router.js';
@@ -98,6 +99,7 @@ app.use('/api/audit', auditRouter);
 app.use('/api/fraud', fraudRouter);
 app.use('/api/expenses', expensesRouter);
 app.use('/api/expense-types', expenseTypesRouter);
+app.use('/api/extra-supplies', extraSuppliesRouter);
 app.use('/api/settings', settingsRouter);
 // Same prefix as branchesRouter — no path collision (branchesRouter owns
 // /:branchId; this owns /:branchId/receipt-config).

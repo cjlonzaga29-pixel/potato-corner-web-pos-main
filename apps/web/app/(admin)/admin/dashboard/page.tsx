@@ -10,6 +10,7 @@ import { useDashboardSalesTrendReport } from '@/hooks/queries/use-reports';
 import { useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
 import { useExpensesRealtimeSync } from '@/hooks/queries/use-expenses';
 import { ExpenseBreakdownCard } from '@/components/reports/expense-breakdown-card';
+import { ExtraSupplySummaryCard } from '@/components/extra-supplies/extra-supply-summary-card';
 import { manilaToday, manilaMonthStart } from '@/lib/manila-date';
 import { BranchSelector } from '@/components/admin/branch-selector';
 import { DashboardKpiRow } from '@/components/admin/dashboard-kpi-row';
@@ -137,6 +138,8 @@ function AdminDashboardPageContent() {
         dateTo={manilaToday()}
         ledgerPath="/admin/expenses"
       />
+
+      <ExtraSupplySummaryCard title="Today's Extra Supplies" branchId={branchFilter} dateFrom={manilaToday()} dateTo={manilaToday()} historyPath="/admin/extra-supplies" />
 
       <WidgetErrorBoundary label="Sales Trend">
         <SalesAnalyticsSection branchId={branchFilter} />

@@ -5,6 +5,7 @@ export * from './branch.schema.js';
 export * from './product.schema.js';
 export * from './product-type.schema.js';
 export * from './expense-type.schema.js';
+export * from './extra-supply.schema.js';
 export * from './flavor.schema.js';
 export * from './inventory.schema.js';
 export * from './recipe-override.schema.js';

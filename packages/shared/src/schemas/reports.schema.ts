@@ -182,6 +182,7 @@ export const ReportPeriodSummarySchema = z.object({
     receiving_count: z.number().int(),
     waste_count: z.number().int(),
     adjustment_count: z.number().int(),
+    extra_supply_count: z.number().int().optional(),
     sale_count: z.number().int(),
   }),
   attendance: z.object({
@@ -290,6 +291,8 @@ export const InventoryValueSummarySchema = z.object({
   waste_cost: z.number(),
   adjustment_in_value: z.number(),
   adjustment_out_value: z.number(),
+  /** POS-PERF-P61 — carrying cost of stock given out through Extra Supplies. Not in adjustment_out_value. */
+  extra_supply_value: z.number().optional(),
   transfer_in_value: z.number(),
   transfer_out_value: z.number(),
 });

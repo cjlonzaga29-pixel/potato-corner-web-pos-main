@@ -34,6 +34,10 @@ const {
 }));
 
 
+vi.mock('@/components/extra-supplies/extra-supply-summary-card', () => ({
+  ExtraSupplySummaryCard: () => <div data-testid="extra-supply-summary-card" />,
+}));
+
 vi.mock('@/hooks/queries/use-products', () => ({
 }));
 

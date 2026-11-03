@@ -157,6 +157,9 @@ export function ShiftDetailView() {
             <div><p className="text-xs text-muted-foreground">Refunded</p><p className="font-semibold tabular-nums">{summary.refunded_count}</p></div>
             <div><p className="text-xs text-muted-foreground">Total Discounts</p><p className="font-semibold tabular-nums">{formatCurrency(summary.total_discount_amount)}</p></div>
             <div><p className="text-xs text-muted-foreground">PWD/SC Transactions</p><p className="font-semibold tabular-nums">{summary.pwd_sc_transaction_count}</p></div>
+            {/* POS-PERF-P61 — not sales. Expected cash already includes the cash part, once. */}
+            <div><p className="text-xs text-muted-foreground">Extra Supply Collections</p><p className="font-semibold tabular-nums">{formatCurrency(summary.extra_supply_collections_total ?? 0)} ({formatCurrency(summary.extra_supply_cash_total ?? 0)} cash)</p></div>
+            <div><p className="text-xs text-muted-foreground">Sales + Supply Collections</p><p className="font-semibold tabular-nums">{formatCurrency(summary.total_collections ?? summary.total_sales)}</p></div>
             {summary.actual_cash !== null && (
               <>
                 <div><p className="text-xs text-muted-foreground">Expected Cash</p><p className="font-semibold tabular-nums">{formatCurrency(summary.expected_cash)}</p></div>

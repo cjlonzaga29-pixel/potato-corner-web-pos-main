@@ -40,6 +40,7 @@ import { WidgetErrorBoundary } from '@/components/shared/widget-error-boundary';
 import { DashboardConnectionBadge } from '@/components/shared/dashboard/dashboard-page-header';
 import { createExpenseColumns } from '@/components/admin/expense-columns';
 import { ExpenseBreakdownCard } from '@/components/reports/expense-breakdown-card';
+import { ExtraSupplySummaryCard } from '@/components/extra-supplies/extra-supply-summary-card';
 import { ViewInventoryMovementProofDialog } from '@/components/shared/transactions/view-inventory-movement-proof-dialog';
 import { ViewExpenseReceiptDialog, type ExpenseReceiptProofData } from '@/components/shared/transactions/view-expense-receipt-dialog';
 import { formatCurrency, formatDateTime } from '@/lib/utils';
@@ -605,6 +606,7 @@ function AdminReportsPageContent() {
                 <KpiCard title="Total Amount" value={expenses.data?.total_amount ?? 0} isLoading={expenses.isLoading} />
               </div>
               <div className="mb-4">
+                <ExtraSupplySummaryCard title="Extra Supplies" branchId={selectedBranchId ?? undefined} dateFrom={dateFrom} dateTo={dateTo} historyPath="/admin/extra-supplies" />
                 <ExpenseBreakdownCard
                   title="Expenses by Type"
                   branchId={selectedBranchId ?? undefined}

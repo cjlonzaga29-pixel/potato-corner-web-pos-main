@@ -16,7 +16,7 @@ import type {
   InventoryProofType,
   CreateInventoryCostCorrectionData,
 } from './universal-inventory.types.js';
-import { STOCK_MOVEMENT_CATEGORY_TYPES } from './universal-inventory.types.js';
+import { EXTRA_SUPPLY_MOVEMENT_REFERENCE, STOCK_MOVEMENT_CATEGORY_TYPES } from './universal-inventory.types.js';
 
 const inventoryItemInclude = {
   category: { select: { id: true, name: true } },
@@ -571,7 +571,15 @@ export const universalInventoryRepository = {
       ...(filters.inventoryItemId && { inventoryItemId: filters.inventoryItemId }),
       ...(filters.movementType
         ? { movementType: filters.movementType }
-        : filters.category && { movementType: { in: STOCK_MOVEMENT_CATEGORY_TYPES[filters.category] } }),
+        : filters.category === 'extra_supplies'
+          ? { referenceType: EXTRA_SUPPLY_MOVEMENT_REFERENCE }
+          : filters.category && {
+              movementType: { in: STOCK_MOVEMENT_CATEGORY_TYPES[filters.category] },
+              // POS-PERF-P61 — an Extra Supplies deduction is stored as ADJUSTMENT_OUT for
+              // old-API compatibility, but it isn't a manual adjustment. The null arm
+              // matters: SQL's NOT (x = y) is not true when x is NULL.
+              ...(filters.category === 'adjustments' && { OR: [{ referenceType: null }, { referenceType: { not: EXTRA_SUPPLY_MOVEMENT_REFERENCE } }] }),
+            }),
       ...((filters.fromDate ?? filters.toDate) && {
         createdAt: {
           ...(filters.fromDate && { gte: filters.fromDate }),

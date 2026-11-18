@@ -34,5 +34,6 @@
     "**/dist": true,
     "**/.prisma": true,
     "**/.turbo": true
-  }
+  },
+  "python.terminal.useEnvFile": true
 }

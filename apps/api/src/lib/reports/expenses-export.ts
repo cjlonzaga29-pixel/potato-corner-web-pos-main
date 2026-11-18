@@ -16,6 +16,7 @@ import { Document, Page, Text, View, StyleSheet, renderToBuffer } from '@react-p
 import type { ReportColumn, ReportFilters } from '../../modules/reports/reports.types.js';
 import { computeColumnLayout, formatCellValue } from './pdf.js';
 import { manilaDateKey } from '../manila-time.js';
+import { renderPdfIsolated } from './pdf-render-pool.js';
 
 const e = React.createElement;
 
@@ -72,7 +73,8 @@ const styles = StyleSheet.create({
   footer: { position: 'absolute', bottom: 16, left: 24, right: 24, fontSize: 8, textAlign: 'center', color: '#666666' },
 });
 
-export async function generateExpensesPdf(
+/** Runs in the PDF worker (pdf-render.worker.ts) only. Everything else calls generateExpensesPdf. */
+export async function renderExpensesPdf(
   filters: ReportFilters,
   rows: ExpensesExportRow[],
   totalCount: number,
@@ -138,4 +140,8 @@ export async function generateExpensesPdf(
   );
 
   return renderToBuffer(doc as never);
+}
+
+export function generateExpensesPdf(...args: Parameters<typeof renderExpensesPdf>): Promise<Buffer> {
+  return renderPdfIsolated('expenses', args);
 }

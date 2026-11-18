@@ -4,6 +4,7 @@ import { Document, Page, Text, View, StyleSheet, renderToBuffer } from '@react-p
 import { columnsForRows, type ReportColumn, type ReportFilters } from '../../modules/reports/reports.types.js';
 import { reportTypeDisplayName, type ReportType } from '@potato-corner/shared';
 import { manilaDateKey, formatManilaDateTime } from '../manila-time.js';
+import { renderPdfIsolated } from './pdf-render-pool.js';
 
 const e = React.createElement;
 
@@ -52,8 +53,8 @@ const FONT_SIZE_CANDIDATES = [9, 8, 7] as const;
 // threshold keep their exact one-Page layout. A Page element that overflows just
 // continues on the next sheet, so a group ends on a part-empty sheet at worst and
 // no row is lost; 24 is three full sheets of the Discount Report's wrapped rows.
-const ONE_PAGE_ROW_THRESHOLD = 100;
-const ROWS_PER_SPLIT_PAGE = 24;
+export const ONE_PAGE_ROW_THRESHOLD = 100;
+export const ROWS_PER_SPLIT_PAGE = 24;
 
 /**
  * Rough Helvetica glyph widths (em units — multiply by font size for pt),
@@ -168,8 +169,10 @@ export function computeColumnLayout<T extends Record<string, unknown>>(
  * `coverage`, when given, sits under the header, and a partial file also says
  * so in every page's footer, so a single printed page can't pass as complete.
  * `title` replaces the report type's name for a view that shares its type.
+ *
+ * Runs in the PDF worker (pdf-render.worker.ts) only. Everything else calls generatePdf.
  */
-export async function generatePdf<T extends Record<string, unknown>>(
+export async function renderReportPdf<T extends Record<string, unknown>>(
   reportType: ReportType,
   filters: ReportFilters,
   data: T[],
@@ -241,4 +244,8 @@ export async function generatePdf<T extends Record<string, unknown>>(
   );
 
   return renderToBuffer(e(Document, null, ...pages) as never);
+}
+
+export function generatePdf<T extends Record<string, unknown>>(...args: Parameters<typeof renderReportPdf<T>>): Promise<Buffer> {
+  return renderPdfIsolated('report', args);
 }

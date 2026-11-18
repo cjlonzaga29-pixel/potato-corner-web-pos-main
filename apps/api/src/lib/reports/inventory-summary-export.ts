@@ -15,6 +15,7 @@ import type { IngredientWeightKgRow, PackagingPcRow, IngredientWeightTotalsKg, P
 import type { ReportFilters } from '../../modules/reports/reports.types.js';
 import { escapeCsvField } from './csv.js';
 import { manilaDateKey } from '../manila-time.js';
+import { renderPdfIsolated } from './pdf-render-pool.js';
 
 const MISSING_CONVERSION_WARNING = 'Some ingredients have no weight conversion configured — shown in native units only, excluded from the KG totals.';
 
@@ -167,7 +168,8 @@ function buildTable(headers: string[], rows: (string | number)[][], totalRow: (s
  * missing-conversion warning line when applicable. No duplicate summary
  * cards.
  */
-export async function generateInventorySummaryPdf(
+/** Runs in the PDF worker (pdf-render.worker.ts) only. Everything else calls generateInventorySummaryPdf. */
+export async function renderInventorySummaryPdf(
   filters: ReportFilters,
   split: InventorySummarySplit,
   branchName: string | null,
@@ -242,4 +244,8 @@ export async function generateInventorySummaryPdf(
   );
 
   return renderToBuffer(doc as never);
+}
+
+export function generateInventorySummaryPdf(...args: Parameters<typeof renderInventorySummaryPdf>): Promise<Buffer> {
+  return renderPdfIsolated('inventorySummary', args);
 }

@@ -1,4 +1,5 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
+import { cancelPdfWhenClientLeaves } from '../../lib/reports/pdf-render-pool.js';
 import { ExportRequestSchema, InventoryAnalyticsQuerySchema, ReportFiltersSchema, ROLES, type ExportRequestInput, type ReportType } from '@potato-corner/shared';
 import { reportsService } from './reports.service.js';
 import { ReportError } from './reports.types.js';
@@ -208,7 +209,7 @@ router.get('/inventory-analytics', authenticate, adminSupervisorOrBranch, requir
 // branch_id under `filters`. The same allow/deny rule is applied inline
 // instead, reading `body.filters.branch_id` — mirroring the existing
 // precedent in inventory.router.ts for routes branchGuard can't cover.
-router.post('/export', authenticate, adminSupervisorOrBranch, requirePasswordChange, validate(ExportRequestSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/export', authenticate, adminSupervisorOrBranch, requirePasswordChange, validate(ExportRequestSchema), cancelPdfWhenClientLeaves, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const body = req.body as ExportRequestInput;

@@ -3,6 +3,7 @@ import { Document, Page, Text, View, StyleSheet, renderToBuffer } from '@react-p
 import type { PayrollEmployeeResult, PayrollRunDetail } from '@potato-corner/shared';
 import { formatDuration, msToMinutesText } from './payroll-money.js';
 import { formatBusinessDateTime } from './payroll-time.js';
+import { renderPdfIsolated } from '../../lib/reports/pdf-render-pool.js';
 
 /**
  * POS-PERF-P52 — payroll CSV/PDF. Both are rendered from the same
@@ -225,7 +226,8 @@ function table(cols: Col[], rows: string[][], totalRow?: string[]) {
   );
 }
 
-export async function buildPayrollPdf(detail: PayrollRunDetail): Promise<Buffer> {
+/** Runs in the PDF worker (pdf-render.worker.ts) only. Everything else calls buildPayrollPdf. */
+export async function renderPayrollPdf(detail: PayrollRunDetail): Promise<Buffer> {
   const zone = tz(detail);
   const label = statusLabel(detail);
   const isDraft = detail.status === 'draft' || detail.status === 'discarded';
@@ -380,4 +382,8 @@ export function payrollExportFilename(detail: PayrollRunDetail, format: 'csv' | 
   const status = detail.status === 'draft' || detail.status === 'discarded' ? 'DRAFT' : detail.status === 'superseded' ? 'SUPERSEDED' : 'FINAL';
   const branch = detail.branch_name.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'branch';
   return `Payroll_${branch}_${detail.period_start}_to_${detail.period_end}_r${detail.revision_number}_${status}.${format}`;
+}
+
+export function buildPayrollPdf(...args: Parameters<typeof renderPayrollPdf>): Promise<Buffer> {
+  return renderPdfIsolated('payroll', args);
 }

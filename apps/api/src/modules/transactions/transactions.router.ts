@@ -1,4 +1,5 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
+import { cancelPdfWhenClientLeaves } from '../../lib/reports/pdf-render-pool.js';
 import multer from 'multer';
 import {
   createTransactionSchema,
@@ -584,7 +585,7 @@ router.get('/', authenticate, allRoles, requireActiveEmployee, requirePasswordCh
 // A chosen branch must be accessible; without one, the export is limited to
 // the caller's accessible branches. A single transaction_id is checked
 // against its own branch. Declared before '/:transactionId'.
-router.get('/export/pdf', authenticate, adminOrSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/export/pdf', authenticate, adminOrSupervisor, requirePasswordChange, cancelPdfWhenClientLeaves, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const parsed = transactionExportQuerySchema.safeParse(req.query);

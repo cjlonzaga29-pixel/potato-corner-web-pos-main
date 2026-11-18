@@ -41,6 +41,7 @@ import { productTypesRouter } from './modules/product-types/product-types.router
 import { productOptionsRouter } from './modules/product-options/product-options.router.js';
 import { catalogAssignmentRouter } from './modules/catalog-assignment/catalog-assignment.router.js';
 import { AuthError } from './modules/auth/auth.types.js';
+import { PdfRenderError } from './lib/reports/pdf-render-pool.js';
 
 export const app: Express = express();
 
@@ -126,6 +127,14 @@ app.use('/{*splat}', (_req: Request, res: Response) => {
 // Express to recognize it as an error handler rather than a normal route.
 app.use((error: unknown, req: Request, res: Response, _next: NextFunction) => {
   if (error instanceof AuthError) {
+    res.status(error.statusCode).json({ data: null, error: { code: error.code, message: error.message }, meta: null });
+    return;
+  }
+
+  // POS-PERF-P62 — a refused or stopped PDF is an answer, never an empty download.
+  if (error instanceof PdfRenderError) {
+    if (res.writableEnded || res.destroyed) return;
+    if (error.retryAfterSeconds !== undefined) res.setHeader('Retry-After', String(error.retryAfterSeconds));
     res.status(error.statusCode).json({ data: null, error: { code: error.code, message: error.message }, meta: null });
     return;
   }

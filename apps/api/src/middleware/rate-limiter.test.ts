@@ -552,3 +552,69 @@ describe('staffPinVerifyFailureLimiter + staffPinVerifyOverallLimiter', () => {
     expect(blocked.status).toBe(429);
   });
 });
+
+/**
+ * POS-PERF-P62 — the global limiter runs before authentication, so it reads a
+ * verified bearer token itself. Several sessions behind one IP get their own
+ * budgets; a single session is still capped; forged, expired and unsigned
+ * identities fall back to the per-IP budget; unauthenticated traffic keeps it.
+ */
+describe('apiLimiter (P62 verified identity)', async () => {
+  const { API_LIMIT_PER_IP_PER_MINUTE, API_LIMIT_PER_USER_PER_MINUTE } = await import('./rate-limiter.js');
+  const { generateTestToken } = await import('../test-utils/auth-tokens.js');
+  const jwt = (await import('jsonwebtoken')).default;
+  const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
+
+  it('gives each verified user behind one IP a budget of its own', async () => {
+    const ip = randomUUID();
+    const tokenA = generateTestToken(ROLES.BRANCH, { userId: randomUUID() });
+    const tokenB = generateTestToken(ROLES.SUPERVISOR, { userId: randomUUID() });
+    for (let i = 0; i < API_LIMIT_PER_IP_PER_MINUTE + 20; i++) {
+      expect((await hit(apiLimiter, mockReq({ ip, headers: bearer(tokenA) }))).allowed).toBe(true);
+    }
+    expect((await hit(apiLimiter, mockReq({ ip, headers: bearer(tokenB) }))).allowed).toBe(true);
+    // The IP's own unauthenticated budget was never touched.
+    expect((await hit(apiLimiter, mockReq({ ip }))).allowed).toBe(true);
+  });
+
+  it('still caps one abusive session, across IPs', async () => {
+    const token = generateTestToken(ROLES.STAFF, { userId: randomUUID() });
+    for (let i = 0; i < API_LIMIT_PER_USER_PER_MINUTE; i++) {
+      expect((await hit(apiLimiter, mockReq({ ip: randomUUID(), headers: bearer(token) }))).allowed).toBe(true);
+    }
+    expect(await hit(apiLimiter, mockReq({ ip: randomUUID(), headers: bearer(token) }))).toEqual({ allowed: false, status: 429 });
+  });
+
+  it('counts forged, unsigned, expired and malformed tokens, and spoofable headers, against the IP', async () => {
+    const ip = randomUUID();
+    const victim = randomUUID();
+    const forged = [
+      jwt.sign({ user_id: victim, role: 'super_admin' }, 'not-the-real-key', { algorithm: 'HS256' }),
+      `${Buffer.from('{"alg":"none"}').toString('base64url')}.${Buffer.from(JSON.stringify({ user_id: victim })).toString('base64url')}.`,
+      generateTestToken(ROLES.STAFF, { userId: victim, expired: true }),
+      'garbage',
+    ];
+    for (let i = 0; i < API_LIMIT_PER_IP_PER_MINUTE; i++) {
+      const headers = { ...bearer(forged[i % forged.length] ?? 'garbage'), 'x-device-id': randomUUID(), 'x-user-id': victim, 'x-forwarded-for': randomUUID() };
+      expect((await hit(apiLimiter, mockReq({ ip, headers }))).allowed).toBe(true);
+    }
+    expect(await hit(apiLimiter, mockReq({ ip, headers: bearer('garbage') }))).toEqual({ allowed: false, status: 429 });
+    expect(await hit(apiLimiter, mockReq({ ip }))).toEqual({ allowed: false, status: 429 });
+    // None of that reached the victim's own budget.
+    expect((await hit(apiLimiter, mockReq({ ip: randomUUID(), headers: bearer(generateTestToken(ROLES.STAFF, { userId: victim })) }))).allowed).toBe(true);
+  });
+
+  it('keeps unauthenticated traffic on the unchanged per-IP budget', async () => {
+    const ip = randomUUID();
+    for (let i = 0; i < API_LIMIT_PER_IP_PER_MINUTE; i++) expect((await hit(apiLimiter, mockReq({ ip }))).allowed).toBe(true);
+    expect(await hit(apiLimiter, mockReq({ ip }))).toEqual({ allowed: false, status: 429 });
+    expect((await hit(apiLimiter, mockReq({ ip: randomUUID() }))).allowed).toBe(true);
+  });
+
+  it('leaves the dedicated login limiter in force for a verified user with budget to spare', async () => {
+    const ip = randomUUID();
+    const deviceId = randomUUID();
+    for (let i = 0; i < 10; i++) expect((await hit(loginLimiter, mockReq({ ip, body: { device_id: deviceId } }))).allowed).toBe(true);
+    expect((await hit(loginLimiter, mockReq({ ip, body: { device_id: deviceId }, headers: bearer(generateTestToken(ROLES.STAFF)) }))).allowed).toBe(false);
+  });
+});

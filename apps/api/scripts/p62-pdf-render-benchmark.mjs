@@ -1,3 +1,4 @@
+/* global process, performance, setInterval, clearInterval, console */
 // POS-PERF-P62 — PDF rendering on the production build: cold start, and the
 // request thread's worst stall while a Transaction PDF renders on it (the old
 // behaviour) versus in the isolated worker (the P62 behaviour).

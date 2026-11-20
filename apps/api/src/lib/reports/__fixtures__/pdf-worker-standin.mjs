@@ -1,3 +1,4 @@
+/* global process, TextEncoder, setTimeout */
 // POS-PERF-P62 test stand-in for pdf-render.worker.ts. The job's `kind` picks a
 // behaviour, so one file can prove crash, hang, environment and size handling.
 import { deserialize } from 'node:v8';

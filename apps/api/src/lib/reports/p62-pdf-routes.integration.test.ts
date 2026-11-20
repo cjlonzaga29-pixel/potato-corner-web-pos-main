@@ -31,6 +31,8 @@ describe.skipIf(!canRunIntegrationTests)('P62 PDF routes', () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
+  // A range with no sales: the other suites' data must not push this past the route's row limit (422).
+  const EMPTY_RANGE = '/api/transactions/export/pdf?date_from=2099-01-01&date_to=2099-01-02';
   const get = (path: string, token: string) => fetch(`${baseUrl}${path}`, { headers: { authorization: `Bearer ${token}` } });
 
   it.each([
@@ -40,7 +42,7 @@ describe.skipIf(!canRunIntegrationTests)('P62 PDF routes', () => {
     ['PDF_FAILED', 500, null],
   ] as const)('answers %s with JSON status %s, never a file', async (code, status, retryAfter) => {
     vi.spyOn(pdfRenderPool, 'render').mockRejectedValue(new PdfRenderError(code));
-    const response = await get('/api/transactions/export/pdf', generateSuperAdminToken());
+    const response = await get(EMPTY_RANGE, generateSuperAdminToken());
     expect(response.status).toBe(status);
     expect(response.headers.get('content-type')).toContain('application/json');
     expect(response.headers.get('retry-after')).toBe(retryAfter);
@@ -49,7 +51,7 @@ describe.skipIf(!canRunIntegrationTests)('P62 PDF routes', () => {
 
   it('renders a real Transaction PDF through the worker', async () => {
     const render = vi.spyOn(pdfRenderPool, 'render');
-    const response = await get('/api/transactions/export/pdf', generateSuperAdminToken());
+    const response = await get(EMPTY_RANGE, generateSuperAdminToken());
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe('application/pdf');
     expect(Buffer.from(await response.arrayBuffer()).subarray(0, 4).toString()).toBe('%PDF');
@@ -58,7 +60,7 @@ describe.skipIf(!canRunIntegrationTests)('P62 PDF routes', () => {
 
   it('refuses an unauthorized role before any render is queued', async () => {
     const render = vi.spyOn(pdfRenderPool, 'render');
-    const response = await get('/api/transactions/export/pdf', generateStaffToken('00000000-0000-0000-0000-000000000000'));
+    const response = await get(EMPTY_RANGE, generateStaffToken('00000000-0000-0000-0000-000000000000'));
     expect(response.status).toBe(403);
     expect(render).not.toHaveBeenCalled();
   });

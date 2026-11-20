@@ -249,6 +249,6 @@ describe.skipIf(!isLocalDatabase)('POS-PERF-P40 admin management (real Postgres)
       // Nothing was decrypted, so no PII-access audit entry is written.
       const audit = await prisma.auditLog.findFirst({ where: { actorId: admin.user_id, action: 'DISCOUNT_AUDIT_PII_ACCESSED' } });
       expect(audit).toBeNull();
-    });
+    }, 90_000); // POS-PERF-P62 — renders a real PDF through the worker, so this includes a cold worker start (about 10s under tsx on the P62 laptop; runbook §3).
   });
 });

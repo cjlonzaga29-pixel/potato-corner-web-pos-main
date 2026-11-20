@@ -129,26 +129,82 @@ describe('apiClient refresh race', () => {
     expect(productCalls.length).toBe(2); // original + exactly one retry, no loop
   });
 
-  it('clears auth and does not throw when refresh itself fails', async () => {
+  // POS-PERF-P62 — this used to assert the opposite: a 500 from the refresh
+  // endpoint signed the user out. Only a definitive rejection may.
+  it.each([
+    ['a 500', () => Promise.resolve(jsonResponse(500, { data: null, error: 'INTERNAL', meta: null }))],
+    ['a 429', () => Promise.resolve(jsonResponse(429, { data: null, error: { code: 'RATE_LIMIT_EXCEEDED' }, meta: null }))],
+    ['a 503 gateway page', () => Promise.resolve(htmlResponse(503, '<html>down</html>'))],
+    ['a network failure', () => Promise.reject(new TypeError('Failed to fetch'))],
+    ['a 401 without a refresh code', () => Promise.resolve(jsonResponse(401, { data: null, error: { code: 'SOMETHING_ELSE' }, meta: null }))],
+  ])('stays signed in and reports SESSION_UNCONFIRMED when the refresh answers with %s', async (_label, refreshAnswer) => {
     const clearAuth = vi.fn();
-    (useAuthStore.getState as ReturnType<typeof vi.fn>).mockReturnValue({
-      accessToken: 'stale-token',
-      user: { id: 'u1' },
-      setAuth: vi.fn(),
-      clearAuth,
-    });
-
+    (useAuthStore.getState as ReturnType<typeof vi.fn>).mockReturnValue({ accessToken: 'stale-token', user: { id: 'u1' }, setAuth: vi.fn(), clearAuth });
     const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
     fetchMock.mockImplementation((url: string) => {
-      if (url.includes('/api/auth/refresh')) {
-        return Promise.resolve(jsonResponse(500, { data: null, error: 'INTERNAL', meta: null }));
-      }
-      return Promise.resolve(jsonResponse(401, { data: null, error: 'TOKEN_MISSING', meta: null }));
+      if (url.includes('/api/auth/refresh')) return refreshAnswer();
+      return Promise.resolve(jsonResponse(401, { data: null, error: { code: 'TOKEN_EXPIRED' }, meta: null }));
     });
 
-    await apiClient('/api/products');
+    const result = await apiClient('/api/transactions', { method: 'POST', body: '{}' });
+
+    expect(clearAuth).not.toHaveBeenCalled();
+    expect(result.error).toMatchObject({ code: 'SESSION_UNCONFIRMED' });
+    // The original request is not sent a second time.
+    expect(fetchMock.mock.calls.filter((call: unknown[]) => (call[0] as string).includes('/api/transactions'))).toHaveLength(1);
+  });
+
+  it.each([
+    [401, 'REFRESH_INVALID'],
+    [401, 'REFRESH_MISSING'],
+    [403, 'ACCOUNT_INACTIVE'],
+    [403, 'BRANCH_INACTIVE'],
+  ])('signs out on a definitive refresh rejection (%s %s)', async (status, code) => {
+    const clearAuth = vi.fn();
+    (useAuthStore.getState as ReturnType<typeof vi.fn>).mockReturnValue({ accessToken: 'stale-token', user: { id: 'u1' }, setAuth: vi.fn(), clearAuth });
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockImplementation((url: string) => {
+      if (url.includes('/api/auth/refresh')) return Promise.resolve(jsonResponse(status, { data: null, error: { code }, meta: null }));
+      return Promise.resolve(jsonResponse(401, { data: null, error: { code: 'TOKEN_EXPIRED' }, meta: null }));
+    });
+
+    const result = await apiClient('/api/products');
 
     expect(clearAuth).toHaveBeenCalled();
+    expect(result.error).toMatchObject({ code: 'SESSION_EXPIRED' });
+  });
+
+  it.each(['INVALID_PIN', 'PIN_INVALID', 'INVALID_PASSWORD', 'INVALID_CREDENTIALS'])(
+    'passes a %s 401 straight back: no refresh, no second attempt, no sign-out',
+    async (code) => {
+      const clearAuth = vi.fn();
+      (useAuthStore.getState as ReturnType<typeof vi.fn>).mockReturnValue({ accessToken: 'live-token', user: { id: 'u1' }, setAuth: vi.fn(), clearAuth });
+      const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+      fetchMock.mockImplementation(() => Promise.resolve(jsonResponse(401, { data: null, error: { code, message: 'Wrong' }, meta: null })));
+
+      const result = await apiClient('/api/auth/pin/verify', { method: 'POST', body: '{}' });
+
+      expect(result.error).toEqual({ code, message: 'Wrong' });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(clearAuth).not.toHaveBeenCalled();
+    },
+  );
+
+  it('drops a response that arrives after the identity changed (user A logs out, user B signs in)', async () => {
+    let epoch = 0;
+    (useAuthStore.getState as ReturnType<typeof vi.fn>).mockImplementation(() => ({ accessToken: 'token-a', user: { id: 'a' }, identityEpoch: epoch, setAuth: vi.fn(), clearAuth: vi.fn() }));
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    let answer!: (response: Response) => void;
+    fetchMock.mockImplementation(() => new Promise<Response>((resolve) => { answer = resolve; }));
+
+    const pending = apiClient('/api/reports/summary');
+    await new Promise((r) => setTimeout(r, 0));
+    epoch += 1; // logout of A, then B's sign-in, while A's request is in flight
+    answer(jsonResponse(200, { data: { owner: 'a' }, error: null, meta: null }));
+
+    const result = await pending;
+    expect(result.data).toBeNull();
+    expect(result.error).toMatchObject({ code: 'IDENTITY_CHANGED' });
   });
 
   it('MANDATORY: 10 simultaneous 401s collapse into exactly 1 refresh call, each original request retrying at most once', async () => {

@@ -16,6 +16,14 @@ interface AuthState {
   accessToken: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
+  /**
+   * POS-PERF-P62 — goes up whenever an identity is left behind: a sign-out, or a
+   * different account signing in. Not when a session is restored after a
+   * reload, nor when the same user's token is refreshed. Providers clears the
+   * query cache on a change, and api-client.ts drops any response that
+   * started under an earlier value.
+   */
+  identityEpoch: number;
   setAuth: (user: AuthUser, accessToken: string) => void;
   clearAuth: () => void;
   setLoading: (isLoading: boolean) => void;
@@ -44,8 +52,21 @@ const initialState = {
  */
 export const useAuthStore = create<AuthState>((set, get) => ({
   ...initialState,
-  setAuth: (user, accessToken) => set({ user, accessToken, isAuthenticated: true, isLoading: false }),
-  clearAuth: () => set({ ...initialState, isLoading: false }),
+  identityEpoch: 0,
+  setAuth: (user, accessToken) =>
+    set((state) => ({
+      user,
+      accessToken,
+      isAuthenticated: true,
+      isLoading: false,
+      identityEpoch: state.user && state.user.id !== user.id ? state.identityEpoch + 1 : state.identityEpoch,
+    })),
+  clearAuth: () =>
+    set((state) => ({
+      ...initialState,
+      isLoading: false,
+      identityEpoch: state.user || state.accessToken ? state.identityEpoch + 1 : state.identityEpoch,
+    })),
   setLoading: (isLoading) => set({ isLoading }),
   updateName: (firstName, lastName) =>
     set((state) => (state.user ? { user: { ...state.user, firstName, lastName } } : {})),

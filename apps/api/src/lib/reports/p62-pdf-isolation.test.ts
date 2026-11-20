@@ -117,11 +117,13 @@ describe('PDF render pool (P62)', () => {
     expect(await codeOf(limited.render(asKind('ok'), []))).toBe('PDF_CANCELLED');
   });
 
-  it('gives the worker no secrets: only NODE_ENV and TZ are in its environment', async () => {
+  it('gives the worker no secrets: NODE_ENV, TZ and OS temp locations only', async () => {
     process.env.P62_CANARY_SECRET = 'must-not-reach-the-worker';
     try {
       const keys = JSON.parse((await pool().render(asKind('env'), [])).toString()) as string[];
-      expect(keys).toEqual(['NODE_ENV', 'TZ']);
+      expect(keys).toEqual(expect.arrayContaining(['NODE_ENV', 'TZ']));
+      expect(keys.every((key) => ['NODE_ENV', 'TZ', 'TEMP', 'TMP', 'TMPDIR', 'SystemRoot'].includes(key))).toBe(true);
+      expect(keys).not.toContain('P62_CANARY_SECRET');
     } finally {
       delete process.env.P62_CANARY_SECRET;
     }

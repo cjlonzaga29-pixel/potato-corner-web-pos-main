@@ -104,6 +104,22 @@ export function toPlainData(value: unknown): unknown {
   return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, toPlainData(entry)]));
 }
 
+/**
+ * Operating-system locations only, never configuration: without them Windows
+ * resolves os.tmpdir() to the relative path "undefined\temp", and tsx (tests,
+ * development) writes its cache into the working directory.
+ */
+const WORKER_OS_VARIABLES = ['TEMP', 'TMP', 'TMPDIR', 'SystemRoot'] as const;
+
+export function workerEnvironment(): Record<string, string> {
+  const env: Record<string, string> = { NODE_ENV: process.env.NODE_ENV ?? 'production', TZ: process.env.TZ ?? 'Asia/Manila' };
+  for (const name of WORKER_OS_VARIABLES) {
+    const value = process.env[name];
+    if (value) env[name] = value;
+  }
+  return env;
+}
+
 function defaultWorkerUrl(): URL {
   return new URL(import.meta.url.endsWith('.ts') ? './pdf-render.worker.ts' : './pdf-render.worker.js', import.meta.url);
 }
@@ -147,7 +163,7 @@ export function createPdfRenderPool(overrides: Partial<PdfRenderPoolOptions> = {
       // Under tsx or vitest the worker is TypeScript too; a production build runs plain JS.
       execArgv: url.pathname.endsWith('.ts') ? ['--import', 'tsx'] : [],
       // Nothing secret reaches the thread. Any import that needs config fails here at once.
-      env: { NODE_ENV: process.env.NODE_ENV ?? 'production', TZ: process.env.TZ ?? 'Asia/Manila' },
+      env: workerEnvironment(),
       resourceLimits: { maxOldGenerationSizeMb: options.maxHeapMb },
     });
     const entry: PoolWorker = { worker, jobs: 0, idleTimer: null, current: null, renderTimer: null, ready: false };

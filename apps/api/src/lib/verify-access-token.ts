@@ -40,6 +40,15 @@ const notRevokedCache = new Map<string, number>(); // tokenHash → cache-entry 
  * masks a *future* revocation, only delays visibility of one by up to
  * NOT_REVOKED_CACHE_TTL_MS on tokens already cached as clean.
  */
+/**
+ * POS-PERF-P62 — called by whatever writes a revocation in this process (logout,
+ * logout-all, password change), so a token checked moments earlier isn't still
+ * accepted from the cache above for up to NOT_REVOKED_CACHE_TTL_MS afterwards.
+ */
+export function forgetNotRevoked(tokenHash: string): void {
+  notRevokedCache.delete(tokenHash);
+}
+
 async function isTokenRevoked(tokenHash: string): Promise<boolean> {
   const now = Date.now();
   const cachedExpiry = notRevokedCache.get(tokenHash);

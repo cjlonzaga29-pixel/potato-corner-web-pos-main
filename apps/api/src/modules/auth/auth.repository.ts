@@ -4,8 +4,17 @@ import { sha256Hex } from '../../lib/hash.js';
 
 const LOCKOUT_THRESHOLD = 5;
 const LOCKOUT_DURATION_MS = 30 * 60 * 1000;
-const ROTATION_CACHE_TTL_MS = 10 * 1000;
-const ROTATION_CACHE_PRUNE_AGE_MS = 60 * 60 * 1000;
+/**
+ * POS-PERF-P62 — how long after a rotation the same device may present the
+ * pre-rotation token again and get the same successor back, provided the
+ * successor is still unused and the session is still live (see
+ * authService.refreshToken). It covers a refresh response that never reached
+ * the browser: the client gives up on a refresh after 15s (auth-refresh.ts),
+ * and the web middleware's two 8s attempts finish within about 16.3s, so 30s
+ * is about twice the longest wait before the old token can come back.
+ * Justified and tested in the P62 runbook, §2.
+ */
+export const ROTATION_GRACE_MS = 30 * 1000;
 
 /**
  * Auth repository. All Prisma calls for this module live here — the
@@ -276,32 +285,50 @@ export const authRepository = {
     return created;
   },
 
-  /** Looks up a still-fresh (within ROTATION_CACHE_TTL_MS) cached rotation result for the pre-rotation token's hash. */
+  /** Looks up a cached rotation result written within ROTATION_GRACE_MS, for the pre-rotation token's hash. */
   findRotationCacheTx(tx: Prisma.TransactionClient, originalTokenHash: string) {
     return tx.refreshTokenRotationCache.findFirst({
       where: {
         originalTokenHash,
-        createdAt: { gt: new Date(Date.now() - ROTATION_CACHE_TTL_MS) },
+        createdAt: { gt: new Date(Date.now() - ROTATION_GRACE_MS) },
       },
     });
   },
 
-  insertRotationCacheTx(
-    tx: Prisma.TransactionClient,
-    originalTokenHash: string,
-    cachedAccessToken: string,
-    cachedRefreshToken: string,
-    cachedExpiresAt: Date,
-  ) {
+  /**
+   * POS-PERF-P62 — stores only the successor refresh token, already encrypted by
+   * the caller; the access token column is left empty, because a replayed
+   * request gets a newly signed access token from the current user record.
+   * createdAt is set here because Postgres now() is the transaction's start,
+   * which a wait for the advisory lock would push into the past.
+   */
+  insertRotationCacheTx(tx: Prisma.TransactionClient, originalTokenHash: string, encryptedRefreshToken: string, cachedExpiresAt: Date) {
     return tx.refreshTokenRotationCache.create({
-      data: { originalTokenHash, cachedAccessToken, cachedRefreshToken, cachedExpiresAt },
+      data: { originalTokenHash, cachedAccessToken: '', cachedRefreshToken: encryptedRefreshToken, cachedExpiresAt, createdAt: new Date() },
     });
   },
 
-  /** Hourly cleanup (see lib/daily-scheduler.ts's scheduleEvery) — cache rows are only ever read within ROTATION_CACHE_TTL_MS, so anything older than this is dead weight. */
+  findRefreshTokenByIdTx(tx: Prisma.TransactionClient, id: string) {
+    return tx.refreshToken.findUnique({ where: { id }, select: { id: true, tokenHash: true, deviceId: true, expiresAt: true, revokedAt: true, replacedBy: true } });
+  },
+
+  /** Identifies a refresh token's session (user and device) without locking, so the caller can lock that session. */
+  findRefreshTokenSession(token: string) {
+    return prisma.refreshToken.findUnique({ where: { tokenHash: sha256Hex(token) }, select: { userId: true, deviceId: true } });
+  },
+
+  /**
+   * POS-PERF-P62 — ends one device's session: every live refresh token of that
+   * user on that device, which includes a successor whose response was lost.
+   */
+  revokeDeviceSessionTx(tx: Prisma.TransactionClient, userId: string, deviceId: string) {
+    return tx.refreshToken.updateMany({ where: { userId, deviceId, revokedAt: null }, data: { revokedAt: new Date() } });
+  },
+
+  /** Hourly cleanup (see lib/daily-scheduler.ts's scheduleEvery). Rows are only read within ROTATION_GRACE_MS, so anything older is deleted. */
   async pruneRotationCache(): Promise<void> {
     await prisma.refreshTokenRotationCache.deleteMany({
-      where: { createdAt: { lt: new Date(Date.now() - ROTATION_CACHE_PRUNE_AGE_MS) } },
+      where: { createdAt: { lt: new Date(Date.now() - ROTATION_GRACE_MS) } },
     });
   },
 

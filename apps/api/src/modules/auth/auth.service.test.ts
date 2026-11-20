@@ -42,6 +42,9 @@ vi.mock('./auth.repository.js', () => ({
     rotateRefreshTokenTx: vi.fn(),
     findRotationCacheTx: vi.fn(),
     insertRotationCacheTx: vi.fn().mockResolvedValue(undefined),
+    findRefreshTokenByIdTx: vi.fn(),
+    findRefreshTokenSession: vi.fn(),
+    revokeDeviceSessionTx: vi.fn().mockResolvedValue({ count: 0 }),
     findTotpFieldsById: vi.fn(),
     setPendingTotpSecret: vi.fn().mockResolvedValue(undefined),
     enableTotp: vi.fn().mockResolvedValue(undefined),
@@ -141,6 +144,8 @@ beforeEach(() => {
   // the "no cache hit" default so a prior test's cached-result mock can't
   // leak into a later refreshToken() test that expects a real rotation.
   vi.mocked(authRepository.findRotationCacheTx).mockResolvedValue(null);
+  vi.mocked(authRepository.findRefreshTokenByIdTx).mockResolvedValue(null);
+  vi.mocked(authRepository.findRefreshTokenSession).mockResolvedValue({ userId: 'user-1', deviceId: 'device-1' });
 });
 
 /** Every test in this describe block logs in a user with totpEnabled falsy (buildUser's default), so login() always resolves to a full session, never a challenge. */
@@ -468,27 +473,43 @@ describe('authService.refreshToken', () => {
     });
   });
 
-  it('logs and rejects when a revoked token is replayed', async () => {
+  it('P62: a replay after the successor was used revokes the device session, logs, and rejects', async () => {
     const storedToken = {
       id: 'rt-1',
       userId: 'user-1',
       deviceId: 'device-1',
       revokedAt: new Date(Date.now() - 60_000),
+      replacedBy: 'rt-2',
       expiresAt: new Date(Date.now() + 60 * 60 * 1000),
       user: buildUser(),
     };
     vi.mocked(authRepository.findRefreshTokenTx).mockResolvedValue(storedToken as never);
+    vi.mocked(authRepository.findRefreshTokenByIdTx).mockResolvedValue({
+      id: 'rt-2', tokenHash: 'h2', deviceId: 'device-1', expiresAt: new Date(Date.now() + 3_600_000), revokedAt: new Date(), replacedBy: 'rt-3',
+    } as never);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     await expect(authService.refreshToken('old-refresh-token', 'device-1')).rejects.toMatchObject({
       code: 'REFRESH_INVALID',
     });
     expect(warnSpy).toHaveBeenCalledWith('Refresh token reuse detected', expect.objectContaining({ userId: 'user-1', tokenId: 'rt-1' }));
+    expect(authRepository.revokeDeviceSessionTx).toHaveBeenCalledWith(fakeTx, 'user-1', 'device-1');
 
     warnSpy.mockRestore();
   });
 
-  it('rotates the token and writes the result to the rotation cache, keyed by the pre-rotation token', async () => {
+  it('P62: a token revoked by logout (no successor) is refused without touching the cache', async () => {
+    vi.mocked(authRepository.findRefreshTokenTx).mockResolvedValue({
+      id: 'rt-1', userId: 'user-1', deviceId: 'device-1', revokedAt: new Date(), replacedBy: null,
+      expiresAt: new Date(Date.now() + 3_600_000), user: buildUser(),
+    } as never);
+
+    await expect(authService.refreshToken('old-refresh-token', 'device-1')).rejects.toMatchObject({ code: 'REFRESH_INVALID' });
+    expect(authRepository.findRotationCacheTx).not.toHaveBeenCalled();
+    expect(authRepository.revokeDeviceSessionTx).not.toHaveBeenCalled();
+  });
+
+  it('rotates the token and caches only the encrypted successor, keyed by the pre-rotation token', async () => {
     const storedToken = {
       id: 'rt-1',
       userId: 'user-1',
@@ -502,31 +523,43 @@ describe('authService.refreshToken', () => {
 
     const result = await authService.refreshToken('old-refresh-token', 'device-1');
 
-    expect(authRepository.insertRotationCacheTx).toHaveBeenCalledWith(
-      fakeTx,
-      expect.any(String),
-      result.access_token,
-      result.refreshToken,
-      expect.any(Date),
-    );
+    expect(authRepository.insertRotationCacheTx).toHaveBeenCalledWith(fakeTx, expect.any(String), `enc:${result.refreshToken}`, expect.any(Date));
   });
 
-  // Restores the Phase 20.5 (commit 9507200) behavior that Phase 21 (commit
-  // 28a2956) dropped along with Redis: a legitimate near-duplicate request
-  // racing right behind the one that already rotated gets that request's
-  // result back instead of REFRESH_INVALID.
-  it('returns the cached rotation result for a near-duplicate request instead of rotating again', async () => {
-    const cached = {
-      cachedAccessToken: 'cached-access-token',
-      cachedRefreshToken: 'cached-refresh-token',
-    };
-    vi.mocked(authRepository.findRotationCacheTx).mockResolvedValue(cached as never);
+  // P62 replaces the Phase 20.5/21.5 shortcut that returned a cached result
+  // before reading the token at all. The same device, with the successor still
+  // unused, gets that successor back after every check has passed.
+  it('P62: returns the unused successor to the same device after checking the presented token', async () => {
+    const { sha256Hex } = await import('../../lib/hash.js');
+    vi.mocked(authRepository.findRefreshTokenTx).mockResolvedValue({
+      id: 'rt-1', userId: 'user-1', deviceId: 'device-1', revokedAt: new Date(), replacedBy: 'rt-2',
+      expiresAt: new Date(Date.now() + 3_600_000), user: buildUser(),
+    } as never);
+    vi.mocked(authRepository.findRefreshTokenByIdTx).mockResolvedValue({
+      id: 'rt-2', tokenHash: sha256Hex('successor-token'), deviceId: 'device-1', expiresAt: new Date(Date.now() + 3_600_000), revokedAt: null, replacedBy: null,
+    } as never);
+    vi.mocked(authRepository.findRotationCacheTx).mockResolvedValue({ cachedAccessToken: '', cachedRefreshToken: 'enc:successor-token' } as never);
 
     const result = await authService.refreshToken('old-refresh-token', 'device-1');
 
-    expect(result).toEqual({ access_token: 'cached-access-token', refreshToken: 'cached-refresh-token' });
-    expect(authRepository.findRefreshTokenTx).not.toHaveBeenCalled();
+    expect(result.refreshToken).toBe('successor-token');
+    expect(result.access_token).toEqual(expect.any(String));
+    expect(authRepository.findRefreshTokenTx).toHaveBeenCalledWith(fakeTx, 'old-refresh-token');
     expect(authRepository.rotateRefreshTokenTx).not.toHaveBeenCalled();
+  });
+
+  it('P62: a cached successor is never returned to another device, an expired token or an inactive user', async () => {
+    const base = { id: 'rt-1', userId: 'user-1', deviceId: 'device-1', revokedAt: new Date(), replacedBy: 'rt-2', expiresAt: new Date(Date.now() + 3_600_000), user: buildUser() };
+    vi.mocked(authRepository.findRotationCacheTx).mockResolvedValue({ cachedAccessToken: '', cachedRefreshToken: 'enc:successor-token' } as never);
+    for (const [stored, device] of [
+      [base, 'device-2'],
+      [{ ...base, expiresAt: new Date(Date.now() - 1000) }, 'device-1'],
+      [{ ...base, user: buildUser({ isActive: false }) }, 'device-1'],
+    ] as const) {
+      vi.mocked(authRepository.findRefreshTokenTx).mockResolvedValue(stored as never);
+      await expect(authService.refreshToken('old-refresh-token', device)).rejects.toMatchObject({ code: 'REFRESH_INVALID' });
+    }
+    expect(authRepository.findRotationCacheTx).not.toHaveBeenCalled();
   });
 
   it('rejects a token presented from a different device', async () => {
@@ -579,6 +612,15 @@ describe('authService.logout', () => {
     await authService.logout(accessToken, undefined);
 
     expect(authRepository.insertRevokedToken).toHaveBeenCalledWith(expect.any(String), expect.any(Date));
+  });
+
+  it('P62: revokes the whole device session, even when the cookie holds an already-rotated token', async () => {
+    const accessToken = authService.generateAccessToken({ id: 'user-1', role: ROLES.STAFF, email: 'staff@potatocorner.test', branchIds: ['branch-1'] });
+
+    await authService.logout(accessToken, 'rotated-cookie-token');
+
+    expect(authRepository.findRefreshTokenSession).toHaveBeenCalledWith('rotated-cookie-token');
+    expect(authRepository.revokeDeviceSessionTx).toHaveBeenCalledWith(fakeTx, 'user-1', 'device-1');
   });
 });
 

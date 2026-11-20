@@ -1,7 +1,9 @@
 // apps/api/src/lib/reports/expenses-export.test.ts
 import { describe, it, expect } from 'vitest';
 import zlib from 'zlib';
-import { generateExpensesPdf, formatPhp, EXPENSES_EXPORT_COLUMNS, type ExpensesExportRow } from './expenses-export.js';
+// POS-PERF-P62 — layout tests call the renderer directly; that requests go through
+// the isolated worker is covered by src/lib/reports/p62-pdf-isolation.test.ts.
+import { renderExpensesPdf as generateExpensesPdf, formatPhp, EXPENSES_EXPORT_COLUMNS, type ExpensesExportRow } from './expenses-export.js';
 
 const SAMPLE_ROW: ExpensesExportRow = {
   incurred_at: '2026-07-30T04:00:00.000Z',

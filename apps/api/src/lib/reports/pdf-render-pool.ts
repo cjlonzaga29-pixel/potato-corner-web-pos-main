@@ -1,9 +1,10 @@
 // apps/api/src/lib/reports/pdf-render-pool.ts
 //
 // POS-PERF-P62 — every PDF is rendered in a worker thread, because react-pdf's
-// layout is synchronous CPU work: on the request thread a 7-day Transaction PDF
-// stopped every branch's checkout and /health for about 300s. A Promise on the same
-// event loop would not help. Each export builder's public function (generatePdf and
+// layout is synchronous CPU work: on the request thread a 100-row Transaction PDF
+// stopped the event loop, and so every branch's checkout and /health, for 7.7s on
+// the P62 test laptop (runbook §3; earlier sessions measured up to 8.4s at about
+// 267 rows). A Promise on the same event loop would not help. Each export builder's public function (generatePdf and
 // friends) goes through here, so no route can reach the renderer directly; see
 // p62-pdf-isolation.test.ts.
 //
@@ -40,12 +41,15 @@ export class PdfRenderError extends Error {
   }
 }
 
-/** Limits for one pool. Defaults below are justified by measurements in the P62 runbook, §4. */
+/** Limits for one pool. The defaults and the measurements behind them are in the P62 runbook, §3. */
 export interface PdfRenderPoolOptions {
   concurrency: number;
   maxQueued: number;
   queueWaitMs: number;
+  /** Counted from the moment the worker has loaded the renderer, so a slow start never eats into it. */
   renderTimeoutMs: number;
+  /** How long a new worker may take to load the renderer before it is given up on. */
+  startupTimeoutMs: number;
   idleMs: number;
   jobsPerWorker: number;
   maxInputBytes: number;
@@ -60,6 +64,7 @@ export const DEFAULT_PDF_POOL_OPTIONS: PdfRenderPoolOptions = {
   maxQueued: 4,
   queueWaitMs: 60_000,
   renderTimeoutMs: 120_000,
+  startupTimeoutMs: 60_000,
   idleMs: 60_000,
   jobsPerWorker: 25,
   maxInputBytes: 32 * 1024 * 1024,
@@ -82,6 +87,8 @@ interface PoolWorker {
   idleTimer: NodeJS.Timeout | null;
   current: Job | null;
   renderTimer: NodeJS.Timeout | null;
+  /** Set by the worker's { ready: true } message, sent once its imports have loaded. */
+  ready: boolean;
 }
 
 /**
@@ -143,9 +150,14 @@ export function createPdfRenderPool(overrides: Partial<PdfRenderPoolOptions> = {
       env: { NODE_ENV: process.env.NODE_ENV ?? 'production', TZ: process.env.TZ ?? 'Asia/Manila' },
       resourceLimits: { maxOldGenerationSizeMb: options.maxHeapMb },
     });
-    const entry: PoolWorker = { worker, jobs: 0, idleTimer: null, current: null, renderTimer: null };
+    const entry: PoolWorker = { worker, jobs: 0, idleTimer: null, current: null, renderTimer: null, ready: false };
     workers.add(entry);
-    worker.on('message', (message: { ok: true; pdf: Uint8Array } | { ok: false }) => {
+    worker.on('message', (message: { ready: true } | { ok: true; pdf: Uint8Array } | { ok: false }) => {
+      if ('ready' in message) {
+        entry.ready = true;
+        if (entry.current) armRenderTimer(entry);
+        return;
+      }
       const job = entry.current;
       if (!job) return;
       if (message.ok && message.pdf.byteLength > options.maxResultBytes) {
@@ -171,6 +183,11 @@ export function createPdfRenderPool(overrides: Partial<PdfRenderPoolOptions> = {
     return entry;
   }
 
+  function armRenderTimer(entry: PoolWorker): void {
+    if (entry.renderTimer) clearTimeout(entry.renderTimer);
+    entry.renderTimer = setTimeout(() => fail(entry, 'PDF_TIMEOUT'), options.renderTimeoutMs);
+  }
+
   function rest(entry: PoolWorker): void {
     entry.worker.unref();
     entry.idleTimer = setTimeout(() => discard(entry), options.idleMs);
@@ -183,7 +200,8 @@ export function createPdfRenderPool(overrides: Partial<PdfRenderPoolOptions> = {
     entry.worker.ref();
     entry.current = job;
     entry.jobs += 1;
-    entry.renderTimer = setTimeout(() => fail(entry, 'PDF_TIMEOUT'), options.renderTimeoutMs);
+    if (entry.ready) armRenderTimer(entry);
+    else entry.renderTimer = setTimeout(() => fail(entry, 'PDF_FAILED'), options.startupTimeoutMs);
     settleAbortListener(job);
     if (job.signal) {
       // terminate() stops the thread even in the middle of synchronous layout.

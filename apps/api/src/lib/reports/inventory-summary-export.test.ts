@@ -1,7 +1,9 @@
 // apps/api/src/lib/reports/inventory-summary-export.test.ts
 import { describe, it, expect } from 'vitest';
 import type { IngredientWeightKgRow, PackagingPcRow } from '@potato-corner/shared';
-import { generateInventorySummaryCsv, generateInventorySummaryPdf, type InventorySummarySplit } from './inventory-summary-export.js';
+// POS-PERF-P62 — layout tests call the renderer directly; that requests go through
+// the isolated worker is covered by src/lib/reports/p62-pdf-isolation.test.ts.
+import { generateInventorySummaryCsv, renderInventorySummaryPdf as generateInventorySummaryPdf, type InventorySummarySplit } from './inventory-summary-export.js';
 
 function kgRow(overrides: Partial<IngredientWeightKgRow>): IngredientWeightKgRow {
   return {

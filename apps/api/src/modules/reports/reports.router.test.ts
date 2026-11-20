@@ -62,6 +62,8 @@ function mockRes(): Response {
   }) as unknown as Response['json'];
   res.send = vi.fn(() => res) as unknown as Response['send'];
   res.setHeader = vi.fn(() => res) as unknown as Response['setHeader'];
+  // POS-PERF-P62 — PDF routes listen for the client leaving (cancelPdfWhenClientLeaves).
+  res.once = vi.fn(() => res) as unknown as Response['once'];
   return res;
 }
 

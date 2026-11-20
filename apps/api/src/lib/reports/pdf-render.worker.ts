@@ -22,6 +22,8 @@ const RENDERERS: Record<PdfRenderKind, (...args: never[]) => Promise<Buffer>> = 
 
 if (!parentPort) throw new Error('pdf-render.worker must run as a worker thread');
 const port = parentPort;
+// Every import above has loaded: from here the pool's render timeout applies.
+port.postMessage({ ready: true });
 
 port.on('message', (payload: Uint8Array) => {
   void (async () => {

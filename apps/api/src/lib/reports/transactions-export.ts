@@ -101,8 +101,9 @@ export async function renderTransactionsPdf(rows: TransactionExportRow[], scope:
       ? 'Scope: one transaction'
       : `Scope: all ${scope.totalCount} transaction(s) matching the filters below (every page, not only the page on screen)`;
 
-  // POS-PERF-P62 — one Page holding everything took about 300s at 1,500 rows, while
-  // pages of ONE_PAGE_ROW_THRESHOLD rows or fewer keep their exact earlier layout.
+  // POS-PERF-P62 — above ONE_PAGE_ROW_THRESHOLD rows the table is split into sheets of
+  // ROWS_PER_SPLIT_PAGE, as the other report PDFs already were, instead of one Page
+  // holding every row; smaller exports keep their exact earlier one-Page layout.
   const rowGroups: React.ReactElement[][] = [];
   const rowsPerGroup = bodyRows.length > ONE_PAGE_ROW_THRESHOLD ? ROWS_PER_SPLIT_PAGE : Math.max(bodyRows.length, 1);
   for (let start = 0; start === 0 || start < bodyRows.length; start += rowsPerGroup) {

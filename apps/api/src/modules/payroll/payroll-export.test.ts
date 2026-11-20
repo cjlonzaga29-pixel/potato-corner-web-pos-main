@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import type { PayrollEmployeeResult, PayrollRunDetail } from '@potato-corner/shared';
-import { buildPayrollCsv, buildPayrollPdf, csvCell, payrollExportFilename, statusLabel, wrapLongTokens } from './payroll-export.js';
+// POS-PERF-P62 — layout tests call the renderer directly; that requests go through
+// the isolated worker is covered by src/lib/reports/p62-pdf-isolation.test.ts.
+import { buildPayrollCsv, renderPayrollPdf as buildPayrollPdf, csvCell, payrollExportFilename, statusLabel, wrapLongTokens } from './payroll-export.js';
 
 function employee(i: number, name: string): PayrollEmployeeResult {
   return {

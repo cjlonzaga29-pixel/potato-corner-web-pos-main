@@ -8,15 +8,30 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
 
 ## Observed state
 
-- **Observed:** 2026-11-03
-- **Branch:** `feat/pos-perf-p61-extra-supplies`, from the P60 tip `500e97e`. Local only: not pushed, no PR.
-- **Ancestry:** P61 depends on unpushed P60 and P59 (`feat/pos-perf-p59-reports-and-ui-cleanup`), which came from `origin/main` `6931b10`. Merging P61 brings in both.
-- **Tested code:** P61 `95c7b5e`. Later commits are docs only. P60's tested code was `6694e05`.
-- **PR #44** (`fix/pos-perf-p58-ever-published-test-isolation`, `7f7cf35`) is separate and not included. This handoff doesn't record its status or P58's deployment state, so check GitHub.
-- **Working tree after the docs commit:** only `.vscode/settings.json` should remain modified. It is unrelated; never stage it.
-- **Other worktrees:** six older P51–P55R3 worktrees, marked `prunable`. Nothing here authorizes removing them.
+- **Observed:** 2026-11-21
+- **Branch:** `feat/pos-perf-p62-performance-and-reliability`, from `42bd3eb` (whose parent is the P61 docs tip `fa31ede`). Local only: not pushed, no PR, nothing deployed, production not accessed.
+- **Ancestry:** P62 → P61 → P60 → P59, all unpushed, from `origin/main` `6931b10`. Merging P62 brings in all of them.
+- **Tested code:** full API suite at `6fd5f8d`, full web suite at `780c5b1`, builds and PDF benchmark at `a0be182`. Later commits are docs only.
+- **Working tree:** only `.vscode/settings.json` is modified (the owner's personal setting). Never stage it. `1be724e` removed it from the committed history.
+- **PR #44** and the six `prunable` P51–P55R3 worktrees: unchanged and not checked; see GitHub.
 
-## Task status: P61, verified locally
+## Task status: P62, partly verified — not release-ready
+
+Fixes refresh-token protocol defects (cache read before checks, logout leaving a live successor, a 60s logged-out token, replay revocation rolled back). Transient refresh failures and wrong-PIN 401s no longer sign users out. User data is isolated across logout and user switch, and the service worker no longer caches authenticated API responses. Rate limits count verified users, not one shared IP. The PDF worker isolation is now tested and packaged. See [`runbooks/pos-perf-p62-performance-and-reliability.md`](runbooks/pos-perf-p62-performance-and-reliability.md).
+
+| Check | Result |
+| --- | --- |
+| Full API suite, default parallel, `6fd5f8d` | **9 failed**, 3,796 passed. 7 fixed in `780c5b1` and passing on rerun; still failing: `payroll-export` multi-page (load), `P61` hook timeout; `P58` race seen once (runbook §7) |
+| Full web suite, 5s timeout, `780c5b1` | **10 failed** (all 5s timeouts in untouched files), 1,697 passed |
+| Shared, typecheck, lint, builds | 83 passed; clean; 0 errors; pass |
+| PDF, production build, loaded laptop | Event-loop stall 2.9–5.8s on the request thread vs 25–161ms in the worker (runbook §3) |
+| Browser with SW, navigation timing, checkout under PDF load, rollback rehearsal | **Not done** (runbook §9) |
+
+**Rollout:** no migration; API and web in either order. A session mid-refresh at deploy or rollback may be signed out once (runbook §5).
+
+**Next:** browser verification with the service worker active, navigation and checkout-under-load measurements, the Extra Supplies rollback rehearsal, and the parallel test failures.
+
+## Earlier: P61, verified locally
 
 Supervisors set up Extra Supplies cards on existing inventory items. Cashiers give them free or for payment from a terminal tab, with exactly-once retries. History, reports and Inventory Movements read the same records. One additive migration; no reversal exists. See [`runbooks/pos-perf-p61-extra-supplies.md`](runbooks/pos-perf-p61-extra-supplies.md).
 
@@ -69,7 +84,7 @@ and "Managed by Super Admin" removed. Presentation only, with no migration. See
 
 ## Read next
 
-0. For P61: its runbook §5 for recovery, §7 for rollback, §10 for release blockers. For P60: its runbook §1 for scope rules, §5 for compatibility, §8 for rollout. The rest of this list is P59.
+0. For P62: its runbook §1 for the auth protocol, §3 for PDF bounds, §7 for test results, §9 for what's missing. For P61: its runbook §5 for recovery, §7 for rollback, §10 for release blockers. For P60: its runbook §1 for scope rules, §5 for compatibility, §8 for rollout. The rest of this list is P59.
 1. The P59 runbook's owner decisions, §11 for the latest work and its rollout order, §10 for the follow-up, then §8 for limits
 2. `packages/shared/src/discounts/discount-display.ts` for the name, identity and proof rules
 3. [`PROJECT_MAP.md`](PROJECT_MAP.md), "Manual discounts and proof uploads" and "Dashboards, reports and stock alerts"
@@ -121,7 +136,8 @@ Earlier failures are recorded in runbook §7 and §10.
 - **Still open from P59, not fixed by P60:** PDF blocking and the uncapped routes (both below) and the owner decisions (P59 section) block release.
 - **Found in P60, not changed:** see runbook §7.
 - No failing checks. Production was not accessed, and local Git says nothing about what is deployed.
-- **Unresolved: PDF rendering still blocks the API.** A 100-row PDF stalls every branch's checkout for up to about 2s here, down from 17.4s. Accept that, or move rendering off the request thread in the performance batch. Hosted timing wasn't measured.
+- **Resolved in P62 at code level:** PDF rendering runs in a bounded worker (P62 runbook §3). Hosted timing still wasn't measured. A 2,000-row Transaction PDF can time out (refused cleanly): owner decision on the cap.
+- **Test environment (P62):** `with-test-postgres.ts` exits 0 even when vitest fails; read vitest's summary.
 - **Unresolved: the Transaction PDF route is uncapped.** `GET /api/transactions/export/pdf`, behind the Daily Sales drill-down, took 9.6s and stalled `/health` for 8.4s at about 267 rows, and allows 2,000. Admin's synchronous PDFs also stay uncapped below 2,000 rows. Decide before release. See runbook §11.
 - **Owner to note:** a branch with more than 100 sales a week gets a partial PDF on the default 7-day range. CSV stays complete up to 10,000 rows.
 - **Deploy order:** API before web, or the new Void/Refund tab lists every sale during the overlap. See runbook §11.

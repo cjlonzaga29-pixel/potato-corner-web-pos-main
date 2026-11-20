@@ -1,0 +1,134 @@
+{
+  "recordedAt": "2026-11-20T19:25:22.038Z",
+  "sha": "a0be182",
+  "workingTreeDirty": false,
+  "node": "v24.18.0",
+  "machine": {
+    "platform": "win32",
+    "cpus": 4,
+    "cpuModel": "Intel(R) Pentium(R) Gold 7505 @ 2.00GHz",
+    "memoryGb": 8,
+    "loadAvg": [
+      0,
+      0,
+      0
+    ]
+  },
+  "builderImportMs": 10117,
+  "firstWorkerJob": {
+    "totalMs": 5321,
+    "worstLoopGapMs": 246,
+    "bytes": 2987,
+    "pages": 1
+  },
+  "results": [
+    {
+      "mode": "request-thread",
+      "rows": 100,
+      "rep": 1,
+      "totalMs": 7040,
+      "worstLoopGapMs": 5786,
+      "bytes": 19679,
+      "pages": 7
+    },
+    {
+      "mode": "worker",
+      "rows": 100,
+      "rep": 1,
+      "totalMs": 7220,
+      "worstLoopGapMs": 161,
+      "bytes": 19679,
+      "pages": 7
+    },
+    {
+      "mode": "request-thread",
+      "rows": 100,
+      "rep": 2,
+      "totalMs": 4291,
+      "worstLoopGapMs": 3789,
+      "bytes": 19679,
+      "pages": 7
+    },
+    {
+      "mode": "worker",
+      "rows": 100,
+      "rep": 2,
+      "totalMs": 5129,
+      "worstLoopGapMs": 138,
+      "bytes": 19679,
+      "pages": 7
+    },
+    {
+      "mode": "request-thread",
+      "rows": 100,
+      "rep": 3,
+      "totalMs": 4001,
+      "worstLoopGapMs": 2906,
+      "bytes": 19679,
+      "pages": 7
+    },
+    {
+      "mode": "worker",
+      "rows": 100,
+      "rep": 3,
+      "totalMs": 5079,
+      "worstLoopGapMs": 25,
+      "bytes": 19679,
+      "pages": 7
+    },
+    {
+      "mode": "request-thread",
+      "rows": 300,
+      "rep": 1,
+      "totalMs": 7331,
+      "worstLoopGapMs": 5029,
+      "bytes": 62172,
+      "pages": 25
+    },
+    {
+      "mode": "worker",
+      "rows": 300,
+      "rep": 1,
+      "totalMs": 7850,
+      "worstLoopGapMs": 110,
+      "bytes": 62172,
+      "pages": 25
+    },
+    {
+      "mode": "request-thread",
+      "rows": 300,
+      "rep": 2,
+      "totalMs": 6624,
+      "worstLoopGapMs": 5052,
+      "bytes": 62172,
+      "pages": 25
+    },
+    {
+      "mode": "worker",
+      "rows": 300,
+      "rep": 2,
+      "totalMs": 6789,
+      "worstLoopGapMs": 80,
+      "bytes": 62172,
+      "pages": 25
+    },
+    {
+      "mode": "request-thread",
+      "rows": 300,
+      "rep": 3,
+      "totalMs": 8114,
+      "worstLoopGapMs": 5567,
+      "bytes": 62172,
+      "pages": 25
+    },
+    {
+      "mode": "worker",
+      "rows": 300,
+      "rep": 3,
+      "totalMs": 7885,
+      "worstLoopGapMs": 95,
+      "bytes": 62172,
+      "pages": 25
+    }
+  ]
+}

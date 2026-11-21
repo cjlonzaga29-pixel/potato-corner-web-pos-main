@@ -4,6 +4,7 @@ import {
   createEmployeeSchema,
   createSupervisorSchema,
   updateEmployeeSchema,
+  deleteEmployeeSchema,
   deactivateEmployeeSchema,
   resetEmployeePasswordSchema,
   updateBranchAccountCredentialsSchema,
@@ -208,18 +209,20 @@ router.get(
   },
 );
 
-// POS-PERF-P47 — permanent delete of an unused account only; anything with
-// sales/attendance/audit history gets 409 EMPLOYEE_HAS_HISTORY. Role/self/
-// branch rules live in employeesService.deleteEmployee.
+// POS-PERF-P66 — permanent delete. History never blocks (it stays,
+// attributed through Person); the body must echo the typed full name and the
+// account version from deletion-eligibility. Role/self/branch rules,
+// prerequisites and repeat handling live in employeesService.deleteEmployee.
 router.delete(
   '/:employeeId',
   authenticate,
   adminOrSupervisor,
   requirePasswordChange,
+  validate(deleteEmployeeSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!requireUser(req, res)) return;
-      const result = await employeesService.deleteEmployee(req.params.employeeId as string, req.user, req.ip ?? null);
+      const result = await employeesService.deleteEmployee(req.params.employeeId as string, req.user, req.ip ?? null, req.body);
       res.status(200).json({ data: result, error: null, meta: null });
     } catch (error) {
       handleEmployeeError(error, res, next);

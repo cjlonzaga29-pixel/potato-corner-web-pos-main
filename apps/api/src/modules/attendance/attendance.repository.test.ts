@@ -190,7 +190,11 @@ describe('attendanceRepository.findByBranch', () => {
         employeeId: 'employee-1',
         clockInServerTime: { gte: new Date('2026-07-01T00:00:00.000Z'), lte: new Date('2026-07-15T23:59:59.000Z') },
       },
-      include: { employee: { select: { firstName: true, lastName: true, employeeId: true, status: true } }, breaks: BREAKS_INCLUDE },
+      // POS-PERF-P66 — the name comes from Person; live status through its account.
+      include: {
+        employee: { select: { firstName: true, lastName: true, employeeCode: true, account: { select: { status: true } } } },
+        breaks: BREAKS_INCLUDE,
+      },
       orderBy: [{ clockInServerTime: 'desc' }, { id: 'desc' }],
       skip: 10,
       take: 10,

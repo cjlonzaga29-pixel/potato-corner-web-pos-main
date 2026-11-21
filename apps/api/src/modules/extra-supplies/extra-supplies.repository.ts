@@ -249,7 +249,8 @@ export const extraSuppliesRepository = {
     return Promise.all([
       prisma.branch.findMany({ where: { id: { in: branchIds } }, select: { id: true, name: true } }),
       prisma.extraSupply.findMany({ where: { id: { in: supplyIds } }, select: { id: true, name: true } }),
-      prisma.user.findMany({ where: { id: { in: cashierIds } }, select: { id: true, firstName: true, lastName: true } }),
+      // POS-PERF-P66 — names come from Person, which outlives a deleted account.
+      prisma.person.findMany({ where: { id: { in: cashierIds } }, select: { id: true, firstName: true, lastName: true } }),
     ]);
   },
 

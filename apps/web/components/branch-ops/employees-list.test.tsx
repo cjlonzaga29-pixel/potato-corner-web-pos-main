@@ -87,7 +87,7 @@ describe('EmployeesList PIN and management actions (POS-PERF-P47)', () => {
   it('shows Edit and Delete for staff rows, and no management actions for a supervisor row', () => {
     render(<EmployeesList basePath="/supervisor" />);
     expect(within(rowOf('Nora')).getByRole('button', { name: 'Edit Nora Test' })).toBeInTheDocument();
-    expect(within(rowOf('Nora')).getByRole('button', { name: 'Delete or deactivate Nora Test' })).toBeInTheDocument();
+    expect(within(rowOf('Nora')).getByRole('button', { name: 'Delete Nora Test permanently' })).toBeInTheDocument();
     const sam = rowOf('Sam');
     // POS-PERF-P59 — no explanatory text, and still no actions: the server refuses these changes either way.
     expect(within(sam).queryByText('Managed by Super Admin')).not.toBeInTheDocument();

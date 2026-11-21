@@ -416,7 +416,8 @@ export const universalInventoryRepository = {
   /** Batch name lookup for movement/correction history display — InventoryStockMovement.performedByUserId/responsibleUserId are loose references, not Prisma relations (the entity referenced varies), so this is a manual findMany + map, same pattern as reports.repository.ts's recorderIds lookup. */
   findUsersByIds(ids: string[]) {
     if (ids.length === 0) return Promise.resolve([]);
-    return prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, firstName: true, lastName: true, role: true } });
+    // POS-PERF-P66 — names come from Person, which outlives a deleted account.
+    return prisma.person.findMany({ where: { id: { in: ids } }, select: { id: true, firstName: true, lastName: true, role: true } });
   },
 
   /**

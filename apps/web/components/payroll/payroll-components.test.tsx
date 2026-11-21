@@ -128,6 +128,7 @@ describe('PayrollPolicyForm', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save policy' }));
     expect(hooks.savePolicy.mutate).toHaveBeenCalledWith(
       expect.objectContaining({ expected_version: 3, break_treatment: 'paid_up_to_limit', paid_break_limit_minutes: 15, period_type: 'semi_monthly', semi_monthly_first_end_day: 15 }),
+      expect.anything(),
     );
   });
 });
@@ -173,7 +174,7 @@ describe('PayrollRunView', () => {
   it('labels a draft as not finalized, lists the exclusions and never calls it net pay', () => {
     show(runDetail());
     expect(screen.getAllByText('Draft — not finalized').length).toBeGreaterThan(0);
-    expect(screen.getByText(/Not included: SSS, PhilHealth and Pag-IBIG contributions; Withholding tax/)).toBeTruthy();
+    expect(screen.getByText(/not included: SSS, PhilHealth and Pag-IBIG contributions; Withholding tax/i)).toBeTruthy();
     expect(screen.getAllByText('Calculated total (before statutory items)').length).toBeGreaterThan(0);
     expect(screen.queryByText(/net pay/i)?.textContent ?? '').toMatch(/not statutory net pay/i);
     expect(screen.queryByRole('button', { name: /Mark as paid/ })).toBeNull();
@@ -181,13 +182,13 @@ describe('PayrollRunView', () => {
 
   it('disables Finalize while blocking items remain', () => {
     show(runDetail({ can_finalize: false, blocking_count: 2, issues: [{ key: 'k', code: 'RATE_MISSING', severity: 'blocking', message: 'No hourly rate', employee_id: 'e1', attendance_record_id: null, business_date: '2026-10-16', resolution: null }] }));
-    expect((screen.getByRole('button', { name: 'Finalize…' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Finalize payroll…' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText(/2 item\(s\) must be resolved/)).toBeTruthy();
   });
 
   it('requires the scope acknowledgement, sends the reviewed fingerprint and explains a stale preview', () => {
     show(runDetail());
-    fireEvent.click(screen.getByRole('button', { name: 'Finalize…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Finalize payroll…' }));
     const dialog = screen.getByRole('dialog');
     const finalize = within(dialog).getByRole('button', { name: 'Finalize' }) as HTMLButtonElement;
     expect(finalize.disabled).toBe(true);
@@ -204,7 +205,7 @@ describe('PayrollRunView', () => {
     expect(screen.getByText('Finalized')).toBeTruthy();
     expect(screen.getByText('Not marked paid')).toBeTruthy();
     expect(screen.getByText(/does not change when attendance, rates or settings change/)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Finalize…' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Finalize payroll…' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Revise…' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Mark as paid…' })).toBeTruthy();
   });
@@ -216,7 +217,7 @@ describe('PayrollRunView', () => {
 
   it('opens the employee drilldown from the keyboard-reachable Details button', () => {
     show(runDetail());
-    fireEvent.click(screen.getByRole('button', { name: 'Details for Ana Reyes' }));
+    fireEvent.click(within(screen.getByTestId('payroll-review-table')).getByRole('button', { name: 'Details for Ana Reyes' }));
     expect(screen.getByRole('region', { name: 'Rate breakdown' })).toBeTruthy();
     expect(screen.getByText(/8h 0m × ₱80.00\/h/)).toBeTruthy();
   });

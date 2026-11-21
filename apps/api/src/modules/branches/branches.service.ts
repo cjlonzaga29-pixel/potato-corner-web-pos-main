@@ -3,6 +3,7 @@ import bcrypt from 'bcrypt';
 import sharp from 'sharp';
 import { ROLES, EMPLOYMENT_TYPE, SOCKET_EVENTS, type BranchStatus, type JwtPayload } from '@potato-corner/shared';
 import { branchesRepository } from './branches.repository.js';
+import { isForeignKeyRestriction } from '../../lib/foreign-key-restriction.js';
 import { BranchError, type BranchListFilters, type CreateBranchData, type UpdateBranchData } from './branches.types.js';
 import { productInventoryRepository } from '../product-inventory/product-inventory.repository.js';
 import { flavorsRepository } from '../flavors/flavors.repository.js';
@@ -502,7 +503,21 @@ export const branchesService = {
       );
     }
 
-    await branchesRepository.delete(branchId);
+    try {
+      await branchesRepository.delete(branchId);
+    } catch (error) {
+      // POS-PERF-P66 — records that are deliberately kept (payroll, pay rates,
+      // product-type assignments, discount types and proofs) refuse the
+      // cascade. Say so instead of a bare 500; nothing was deleted.
+      if (isForeignKeyRestriction(error)) {
+        throw new BranchError(
+          'BRANCH_HAS_PROTECTED_RECORDS',
+          'This branch still has records that must be kept, such as payroll, pay rates, product-type assignments or discount proofs, so it can’t be deleted. Close the branch instead. Nothing was deleted.',
+          409,
+        );
+      }
+      throw error;
+    }
 
     // branchId is intentionally omitted (not before.id): the branch row is
     // already gone by this point, and AuditLog.branchId is a real FK — an

@@ -33,9 +33,15 @@ const {
   mockUseDashboardSalesTrendReport: vi.fn(),
 }));
 
+const { mockUseExpenseSummary, mockUseExtraSupplySummary } = vi.hoisted(() => ({
+  mockUseExpenseSummary: vi.fn(() => ({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() })),
+  mockUseExtraSupplySummary: vi.fn(() => ({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() })),
+}));
 
-vi.mock('@/components/extra-supplies/extra-supply-summary-card', () => ({
-  ExtraSupplySummaryCard: () => <div data-testid="extra-supply-summary-card" />,
+// POS-PERF-P66 — the removed panels' data hooks, mocked (not the panels) so a
+// re-added Expenses by Type / Extra Supplies panel would show up as a call.
+vi.mock('@/hooks/queries/use-extra-supplies', () => ({
+  useExtraSupplySummary: mockUseExtraSupplySummary,
 }));
 
 vi.mock('@/hooks/queries/use-products', () => ({
@@ -84,7 +90,7 @@ vi.mock('@/hooks/queries/use-reports', () => ({
 
 vi.mock('@/hooks/queries/use-expenses', () => ({
   useExpensesRealtimeSync: vi.fn(),
-  useExpenseSummary: vi.fn(() => ({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() })),
+  useExpenseSummary: mockUseExpenseSummary,
 }));
 
 vi.mock('@/components/shared/dashboard/sales-analytics-section', () => ({
@@ -480,6 +486,23 @@ describe('SupervisorDashboardPage', () => {
     mockUseTransactions.mockReturnValue({ data: { transactions: [], total: 0, page: 1, limit: 10 }, isLoading: false });
     render(<SupervisorDashboardPage />);
     expect(screen.getByText('No transactions this shift')).toBeInTheDocument();
+  });
+
+  it("POS-PERF-P66 — no Today's Expenses by Type or Today's Extra Supplies panel, and no request for them", () => {
+    render(<SupervisorDashboardPage />);
+    expect(screen.queryByText("Today's Expenses by Type")).not.toBeInTheDocument();
+    expect(screen.queryByText("Today's Extra Supplies")).not.toBeInTheDocument();
+    expect(screen.queryByText(/View ledger/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/View history/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('expense-breakdown-card')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('extra-supply-summary-card')).not.toBeInTheDocument();
+    expect(mockUseExpenseSummary).not.toHaveBeenCalled();
+    expect(mockUseExtraSupplySummary).not.toHaveBeenCalled();
+    // The small KPI and the other KPI cards stay.
+    expect(screen.getByText("Today's Expenses")).toBeInTheDocument();
+    for (const title of ['Gross Sales Today', 'Gross Sales This Month', "Today's Transactions", 'Average Order Value', 'Crew on Duty']) {
+      expect(screen.getByText(title)).toBeInTheDocument();
+    }
   });
 
   it('calls all 4 realtime sync hooks on mount', () => {

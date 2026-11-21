@@ -128,16 +128,24 @@ describe.skipIf(!isLocalDatabase)('POS-PERF-P47 dashboard and management (real P
   });
 
   describe('delete versus deactivate', () => {
-    it('reports an unused staff member as deletable and one with attendance as history-bound', async () => {
-      await expect(employeesService.getDeletionEligibility(unusedStaff, supervisorA)).resolves.toMatchObject({ can_delete: true });
+    // POS-PERF-P66 — history no longer blocks; an open clock-in still does.
+    async function confirmationFor(id: string, actor: JwtPayload) {
+      const eligibility = await employeesService.getDeletionEligibility(id, actor);
+      if (!eligibility.confirmation) throw new Error('no confirmation offered');
+      return { confirm_name: eligibility.confirmation.name, version: eligibility.confirmation.version };
+    }
+    const anyConfirmation = { confirm_name: 'x', version: new Date().toISOString() };
+
+    it('reports an unused staff member as deletable and one still clocked in as blocked by open work', async () => {
+      await expect(employeesService.getDeletionEligibility(unusedStaff, supervisorA)).resolves.toMatchObject({ can_delete: true, mode: 'permanent' });
       const worked = await employeesService.getDeletionEligibility(workedStaff, supervisorA);
-      expect(worked).toMatchObject({ can_delete: false, blocked_reason: 'has_history' });
-      expect(worked.references.attendance).toBeGreaterThan(0);
+      expect(worked).toMatchObject({ can_delete: false, blocked_reason: 'open_operations' });
+      expect(worked.references?.attendance).toBeGreaterThan(0);
     });
 
-    it('refuses to delete a staff member with attendance and leaves their records attributed', async () => {
-      await expect(employeesService.deleteEmployee(workedStaff, supervisorA, null)).rejects.toMatchObject({
-        code: 'EMPLOYEE_HAS_HISTORY',
+    it('refuses to delete a staff member who is still clocked in and leaves their records attributed', async () => {
+      await expect(employeesService.deleteEmployee(workedStaff, supervisorA, null, await confirmationFor(workedStaff, supervisorA))).rejects.toMatchObject({
+        code: 'EMPLOYEE_HAS_OPEN_OPERATIONS',
         statusCode: 409,
       });
       const record = await prisma.attendanceRecord.findFirst({
@@ -148,10 +156,10 @@ describe.skipIf(!isLocalDatabase)('POS-PERF-P47 dashboard and management (real P
     });
 
     it('rejects cross-branch delete and peer-supervisor delete before touching data', async () => {
-      await expect(employeesService.deleteEmployee(otherBranchStaff, supervisorA, null)).rejects.toMatchObject({
+      await expect(employeesService.deleteEmployee(otherBranchStaff, supervisorA, null, anyConfirmation)).rejects.toMatchObject({
         code: 'EMPLOYEE_ACCESS_DENIED',
       });
-      await expect(employeesService.deleteEmployee(peerSupervisorId, supervisorA, null)).rejects.toMatchObject({
+      await expect(employeesService.deleteEmployee(peerSupervisorId, supervisorA, null, anyConfirmation)).rejects.toMatchObject({
         code: 'TARGET_ROLE_FORBIDDEN',
       });
       expect(await prisma.user.count({ where: { id: { in: [otherBranchStaff, peerSupervisorId] } } })).toBe(2);
@@ -159,7 +167,7 @@ describe.skipIf(!isLocalDatabase)('POS-PERF-P47 dashboard and management (real P
 
     it('permanently deletes an unused staff member (with a PIN) and keeps a named audit entry', async () => {
       await staffPinService.setPin(unusedStaff, '482915', supervisorA, null);
-      await employeesService.deleteEmployee(unusedStaff, supervisorA, null);
+      await employeesService.deleteEmployee(unusedStaff, supervisorA, null, await confirmationFor(unusedStaff, supervisorA));
 
       expect(await prisma.user.findUnique({ where: { id: unusedStaff } })).toBeNull();
       expect(await prisma.staffPin.count({ where: { userId: unusedStaff } })).toBe(0);
@@ -168,14 +176,12 @@ describe.skipIf(!isLocalDatabase)('POS-PERF-P47 dashboard and management (real P
       expect(JSON.stringify(audit?.beforeState)).toContain('P47unused');
     });
 
-    it('turns a former deletable person into history-bound once they act (audit actor)', async () => {
-      // supervisorA acted above (PIN set, deletion audit). POS-PERF-P64: a
-      // Super Admin may now delete a supervisor with history, but only as a
-      // removal that keeps the row (and that attribution) — never a
-      // permanent delete.
+    it('offers a permanent delete of a supervisor with history (audit actor), listing what stays', async () => {
+      // supervisorA acted above (PIN set, deletion audit). POS-PERF-P66: the
+      // history stays attributed through Person, so it never blocks.
       const result = await employeesService.getDeletionEligibility(supervisorA.user_id, admin);
-      expect(result).toMatchObject({ can_delete: true, mode: 'remove_keep_history' });
-      expect(result.references.audit).toBeGreaterThan(0);
+      expect(result).toMatchObject({ can_delete: true, mode: 'permanent' });
+      expect(result.references?.audit).toBeGreaterThan(0);
       // The peer supervisor never acted — deletable by super_admin only.
       await expect(employeesService.getDeletionEligibility(peerSupervisorId, admin)).resolves.toMatchObject({ can_delete: true });
     });

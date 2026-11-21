@@ -21,7 +21,9 @@ vi.mock('./employees.repository.js', () => ({
     hasActiveShift: vi.fn(),
     getActivity: vi.fn(),
     countHistoryReferences: vi.fn(),
-    hardDeleteUnused: vi.fn(),
+    deletePermanently: vi.fn(),
+    getRemovalPrerequisites: vi.fn(),
+    findPerson: vi.fn(),
   },
 }));
 
@@ -1011,7 +1013,7 @@ describe('EmployeeResponse never includes government ID fields', () => {
 
 // POS-PERF-P47 — role/self/privileged-target rules and permanent delete.
 describe('POS-PERF-P47 employee management authorization', () => {
-  const NO_HISTORY = { sales: 0, shifts: 0, attendance: 0, audit: 0, inventory: 0, expenses: 0, catalog: 0, settings: 0, pin_use: 0 };
+  const NO_HISTORY = { sales: 0, shifts: 0, attendance: 0, audit: 0, inventory: 0, expenses: 0, catalog: 0, settings: 0, pin_use: 0, payroll: 0 };
   const supervisorTarget = buildEmployee({ id: 'sup-9', role: ROLES.SUPERVISOR, email: 'peer@example.com' });
 
   it('rejects a supervisor editing a peer supervisor who shares a branch', async () => {
@@ -1044,7 +1046,7 @@ describe('POS-PERF-P47 employee management authorization', () => {
     vi.mocked(employeesRepository.findById).mockResolvedValue(
       buildEmployee({ id: 'admin-2', role: ROLES.SUPER_ADMIN, branchAssignments: [] }) as never,
     );
-    await expect(employeesService.deleteEmployee('admin-2', SUPER_ADMIN_USER, null)).rejects.toMatchObject({
+    await expect(employeesService.deleteEmployee('admin-2', SUPER_ADMIN_USER, null, { confirm_name: 'x', version: new Date().toISOString() })).rejects.toMatchObject({
       code: 'PRIVILEGED_ACCOUNT_PROTECTED',
     });
 
@@ -1054,60 +1056,134 @@ describe('POS-PERF-P47 employee management authorization', () => {
     ).rejects.toMatchObject({ code: 'SELF_ACTION_FORBIDDEN' });
   });
 
-  it('permanently deletes an unused staff member and records an audit snapshot with their name', async () => {
-    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
-    vi.mocked(employeesRepository.hardDeleteUnused).mockResolvedValue({ deleted: true });
+  // POS-PERF-P66 — permanent deletion with a server-checked confirmation.
+  const VERSION = new Date('2026-11-20T03:04:05.678Z');
+  const CONFIRM = { confirm_name: 'Juan Dela Cruz', version: VERSION.toISOString() };
+  const NO_PREREQUISITES = {
+    open_shifts: [],
+    open_attendance: [],
+    held_orders: 0,
+    pending_inventory_approvals: 0,
+    branches: [],
+    branches_left_without_supervisor: [],
+    unpaid_payroll: [],
+  };
 
-    await expect(employeesService.deleteEmployee('emp-1', SUPERVISOR_USER, null)).resolves.toEqual({ deleted: true, outcome: 'permanent' });
-    expect(recordAuditLog).toHaveBeenCalledWith(
-      expect.objectContaining({
-        action: 'EMPLOYEE_DELETED',
-        entityId: 'emp-1',
-        beforeState: expect.objectContaining({ first_name: 'Juan', last_name: 'Dela Cruz' }),
-      }),
-    );
+  it('permanently deletes a staff member with history and records an audit snapshot without contact details', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee({ updatedAt: VERSION }) as never);
+    vi.mocked(employeesRepository.countHistoryReferences).mockResolvedValue({ ...NO_HISTORY, sales: 3 });
+    vi.mocked(employeesRepository.deletePermanently).mockResolvedValue({ outcome: 'deleted', prerequisites: NO_PREREQUISITES });
+
+    await expect(employeesService.deleteEmployee('emp-1', SUPERVISOR_USER, null, CONFIRM)).resolves.toEqual({ deleted: true, outcome: 'deleted' });
+    expect(employeesRepository.deletePermanently).toHaveBeenCalledWith('emp-1', SUPERVISOR_USER.user_id, VERSION, ROLES.STAFF);
+    const entry = vi.mocked(recordAuditLog).mock.calls[0]?.[0];
+    expect(entry).toMatchObject({
+      action: 'EMPLOYEE_DELETED',
+      entityId: 'emp-1',
+      beforeState: expect.objectContaining({ first_name: 'Juan', last_name: 'Dela Cruz' }),
+      afterState: expect.objectContaining({ deleted: true, history_retained: expect.objectContaining({ sales: 3 }) }),
+    });
+    expect(JSON.stringify(entry?.beforeState)).not.toContain('email');
   });
 
-  it('refuses to delete a staff member with history and returns the blocking categories', async () => {
-    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
-    vi.mocked(employeesRepository.hardDeleteUnused).mockResolvedValue({ deleted: false, references: { ...NO_HISTORY, sales: 3 } });
+  it('accepts the typed name regardless of case and spacing, and refuses a mismatch without deleting', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee({ updatedAt: VERSION }) as never);
+    vi.mocked(employeesRepository.countHistoryReferences).mockResolvedValue({ ...NO_HISTORY });
+    vi.mocked(employeesRepository.deletePermanently).mockResolvedValue({ outcome: 'deleted', prerequisites: NO_PREREQUISITES });
+    await expect(
+      employeesService.deleteEmployee('emp-1', SUPERVISOR_USER, null, { ...CONFIRM, confirm_name: '  juan   dela CRUZ ' }),
+    ).resolves.toMatchObject({ outcome: 'deleted' });
 
-    await expect(employeesService.deleteEmployee('emp-1', SUPERVISOR_USER, null)).rejects.toMatchObject({
-      code: 'EMPLOYEE_HAS_HISTORY',
+    vi.mocked(employeesRepository.deletePermanently).mockClear();
+    await expect(
+      employeesService.deleteEmployee('emp-1', SUPERVISOR_USER, null, { ...CONFIRM, confirm_name: 'Juan Cruz' }),
+    ).rejects.toMatchObject({ code: 'DELETE_CONFIRMATION_MISMATCH', statusCode: 400 });
+    expect(employeesRepository.deletePermanently).not.toHaveBeenCalled();
+  });
+
+  it('refuses a confirmation made against an older version of the account', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee({ updatedAt: new Date(VERSION.getTime() + 1) }) as never);
+    await expect(employeesService.deleteEmployee('emp-1', SUPERVISOR_USER, null, CONFIRM)).rejects.toMatchObject({
+      code: 'EMPLOYEE_CHANGED',
       statusCode: 409,
-      details: { references: expect.objectContaining({ sales: 3 }) },
     });
+    expect(employeesRepository.deletePermanently).not.toHaveBeenCalled();
+  });
+
+  it('explains open work and unpaid payroll hours and changes nothing', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee({ updatedAt: VERSION }) as never);
+    vi.mocked(employeesRepository.countHistoryReferences).mockResolvedValue({ ...NO_HISTORY });
+    vi.mocked(employeesRepository.deletePermanently).mockResolvedValue({
+      outcome: 'blocked',
+      prerequisites: {
+        ...NO_PREREQUISITES,
+        open_attendance: [{ id: 'a1', branch_name: 'SM North' }],
+        unpaid_payroll: [{ branch_id: 'b1', branch_name: 'SM North', first_date: '2026-11-16', last_date: '2026-11-19', records: 4 }],
+      },
+    });
+    const error = await employeesService.deleteEmployee('emp-1', SUPERVISOR_USER, null, CONFIRM).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: 'EMPLOYEE_HAS_OPEN_OPERATIONS', statusCode: 409 });
+    expect((error as Error).message).toContain('clock them out');
+    expect((error as Error).message).toContain('finalize payroll at SM North');
+    expect((error as Error).message).toContain('Nothing has been changed');
     expect(recordAuditLog).not.toHaveBeenCalled();
   });
 
-  it('rejects a supervisor deleting staff outside their branches before checking history', async () => {
+  it('reports a repeat of a delete this actor already completed (lost response), and 404 to anyone else', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(null);
+    vi.mocked(employeesRepository.findPerson).mockResolvedValue({
+      id: 'emp-1',
+      firstName: 'Juan',
+      lastName: 'Dela Cruz',
+      role: 'staff',
+      accountDeletedAt: new Date(),
+      accountDeletedBy: SUPERVISOR_USER.user_id,
+    } as never);
+    await expect(employeesService.deleteEmployee('emp-1', SUPERVISOR_USER, null, CONFIRM)).resolves.toEqual({
+      deleted: true,
+      outcome: 'already_deleted',
+    });
+    await expect(employeesService.deleteEmployee('emp-1', UNASSIGNED_SUPERVISOR_USER, null, CONFIRM)).rejects.toMatchObject({
+      code: 'EMPLOYEE_NOT_FOUND',
+    });
+  });
+
+  it('rejects a supervisor deleting staff outside their branches before anything else', async () => {
     vi.mocked(branchesRepository.findAllActiveBranchIds).mockResolvedValue(['branch-x']);
-    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
-    await expect(employeesService.deleteEmployee('emp-1', UNASSIGNED_SUPERVISOR_USER, null)).rejects.toMatchObject({
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee({ updatedAt: VERSION }) as never);
+    await expect(employeesService.deleteEmployee('emp-1', UNASSIGNED_SUPERVISOR_USER, null, CONFIRM)).rejects.toMatchObject({
       code: 'EMPLOYEE_ACCESS_DENIED',
     });
-    expect(employeesRepository.hardDeleteUnused).not.toHaveBeenCalled();
+    expect(employeesRepository.deletePermanently).not.toHaveBeenCalled();
   });
 
-  it('never hard-deletes a branch account', async () => {
-    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee({ role: ROLES.BRANCH, email: 'b@example.com' }) as never);
-    await expect(employeesService.deleteEmployee('emp-1', SUPER_ADMIN_USER, null)).rejects.toMatchObject({
+  it('never deletes a branch account', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(
+      buildEmployee({ role: ROLES.BRANCH, email: 'b@example.com', updatedAt: VERSION }) as never,
+    );
+    await expect(employeesService.deleteEmployee('emp-1', SUPER_ADMIN_USER, null, CONFIRM)).rejects.toMatchObject({
       code: 'BRANCH_ACCOUNT_NOT_DELETABLE',
     });
-    expect(employeesRepository.hardDeleteUnused).not.toHaveBeenCalled();
+    expect(employeesRepository.deletePermanently).not.toHaveBeenCalled();
   });
 
-  it('reports deletion eligibility from the history counts', async () => {
-    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
-    vi.mocked(employeesRepository.countHistoryReferences).mockResolvedValue({ ...NO_HISTORY });
+  it('offers deletion whatever the history, blocks only on prerequisites, and returns the confirmation to echo', async () => {
+    vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee({ updatedAt: VERSION }) as never);
+    vi.mocked(employeesRepository.countHistoryReferences).mockResolvedValue({ ...NO_HISTORY, attendance: 2 });
+    vi.mocked(employeesRepository.getRemovalPrerequisites).mockResolvedValue(NO_PREREQUISITES);
     await expect(employeesService.getDeletionEligibility('emp-1', SUPERVISOR_USER)).resolves.toMatchObject({
       can_delete: true,
       blocked_reason: null,
+      mode: 'permanent',
+      confirmation: { name: 'Juan Dela Cruz', version: VERSION.toISOString() },
     });
-    vi.mocked(employeesRepository.countHistoryReferences).mockResolvedValue({ ...NO_HISTORY, attendance: 2 });
+    vi.mocked(employeesRepository.getRemovalPrerequisites).mockResolvedValue({
+      ...NO_PREREQUISITES,
+      open_shifts: [{ id: 's1', branch_name: 'SM North' }],
+    });
     await expect(employeesService.getDeletionEligibility('emp-1', SUPERVISOR_USER)).resolves.toMatchObject({
       can_delete: false,
-      blocked_reason: 'has_history',
+      blocked_reason: 'open_operations',
     });
   });
 });

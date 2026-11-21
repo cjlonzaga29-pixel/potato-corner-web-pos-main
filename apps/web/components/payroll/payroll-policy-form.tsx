@@ -10,11 +10,13 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { useSavePayrollPolicy } from '@/hooks/queries/use-payroll';
-import { BREAK_TREATMENT_LABELS, PAYROLL_TIMEZONE_SUGGESTIONS } from '@/lib/payroll-format';
+import { BREAK_TREATMENT_LABELS, PAYROLL_TIMEZONE_SUGGESTIONS, formatPayrollDateTime } from '@/lib/payroll-format';
 
 interface Props {
   branchId: string;
   settings: PayrollSettingsResponse;
+  /** POS-PERF-P66 — called after the server accepts the policy (e.g. to return to the payroll flow). Not called on failure, so the entries stay. */
+  onSaved?: () => void;
 }
 
 /**
@@ -23,7 +25,7 @@ interface Props {
  * explicitly. Saving sends the version this form loaded, so a policy changed
  * elsewhere in the meantime is refused instead of overwritten.
  */
-export function PayrollPolicyForm({ branchId, settings }: Props) {
+export function PayrollPolicyForm({ branchId, settings, onSaved }: Props) {
   const policy = settings.policy;
   const [timezone, setTimezone] = useState(policy?.timezone ?? '');
   const [periodType, setPeriodType] = useState<PayrollPeriodType | ''>(policy?.period_type ?? '');
@@ -60,7 +62,7 @@ export function PayrollPolicyForm({ branchId, settings }: Props) {
       paid_break_limit_minutes: treatment === 'paid_up_to_limit' ? Number(limit) : null,
       expected_version: policy?.version ?? 0,
       change_reason: reason.trim() || undefined,
-    });
+    }, { onSuccess: () => onSaved?.() });
   }
 
   const cutoffNumber = Number(cutoff);
@@ -68,12 +70,12 @@ export function PayrollPolicyForm({ branchId, settings }: Props) {
     <Card>
       <CardHeader className="gap-1">
         <div className="flex flex-wrap items-center gap-2">
-          <CardTitle className="text-base">Payroll policy</CardTitle>
+          <CardTitle className="text-base">Payroll policy, pay period and breaks</CardTitle>
           {policy ? <Badge variant="secondary">Version {policy.version}</Badge> : <Badge variant="warning">Not configured</Badge>}
         </div>
         <CardDescription>
           {policy
-            ? `Last changed by ${policy.created_by_name} on ${new Date(policy.created_at).toLocaleString('en-PH')}. Changes apply to drafts; finalized payroll keeps the policy it used.`
+            ? `Last changed by ${policy.created_by_name} on ${formatPayrollDateTime(policy.created_at, policy.timezone)}. Changes apply to drafts; finalized payroll keeps the policy it used.`
             : 'This branch has no payroll policy. Payroll cannot be generated until one is saved — nothing is assumed.'}
         </CardDescription>
       </CardHeader>

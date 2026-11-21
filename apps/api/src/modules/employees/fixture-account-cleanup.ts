@@ -17,6 +17,12 @@ import { EmployeeError, type EmployeeHistoryCategory } from './employees.types.j
  * Super Admin (same authorization, prerequisites, audit and history
  * retention as the Delete button). Super Admin and Branch accounts are never
  * handled here, and no linked sale, expense, payroll or audit row is changed.
+ *
+ * POS-PERF-P66 — the lifecycle is now permanent deletion: the account row
+ * and its credentials, sessions, PINs and branch access are removed, and the
+ * history stays attributed through the person's attribution record. Staff
+ * fixtures (which have no email) are identified by exact id, role and full
+ * name. Rows that P64 removed but kept are deleted for good the same way.
  */
 export const fixtureCleanupManifestSchema = z.object({
   /** The active Super Admin performing (and named in the audit log for) each removal. */
@@ -25,22 +31,22 @@ export const fixtureCleanupManifestSchema = z.object({
     .array(
       z.object({
         id: z.string().uuid(),
-        email: z.string().email(),
+        /** Exact login email; null for a staff account, which has none. */
+        email: z.string().email().nullable(),
+        /** Exact full name. Required when email is null (staff), checked whenever given. */
+        name: z.string().trim().min(1).optional(),
         role: z.enum(['supervisor', 'staff', 'branch', 'super_admin']),
         /** Why this is a confirmed fixture (e.g. "E2E_SUPERVISOR_EMAIL secret value, created by deploy-production.yml smoke"). */
         evidence: z.string().trim().min(10),
       }),
     )
     .min(1)
-    .refine((accounts) => new Set(accounts.map((a) => a.id)).size === accounts.length, 'Duplicate account id'),
+    .refine((accounts) => new Set(accounts.map((a) => a.id)).size === accounts.length, 'Duplicate account id')
+    .refine((accounts) => accounts.every((a) => a.email !== null || Boolean(a.name)), 'An account without an email needs its exact name'),
 });
 export type FixtureCleanupManifest = z.infer<typeof fixtureCleanupManifestSchema>;
 
-export type FixturePlannedAction =
-  | 'permanent_delete'
-  | 'remove_keep_history'
-  | 'already_removed'
-  | 'refused';
+export type FixturePlannedAction = 'permanent_delete' | 'already_deleted' | 'refused';
 
 export interface FixtureAccountReport {
   id: string;
@@ -56,8 +62,10 @@ export interface FixtureAccountReport {
   action: FixturePlannedAction;
   refusal: string | null;
   /** Execution only. */
-  outcome?: 'permanent' | 'removed' | 'already_removed' | 'failed' | 'skipped';
+  outcome?: 'deleted' | 'already_deleted' | 'failed' | 'skipped';
   error?: string;
+  /** The account version the confirmation is bound to (read just before acting). */
+  version?: string;
 }
 
 export interface FixtureCleanupReport {
@@ -103,11 +111,18 @@ async function evaluate(entry: FixtureCleanupManifest['accounts'][number], actor
   };
   const refuse = (refusal: string): FixtureAccountReport => ({ ...base, action: 'refused', refusal });
 
-  if (!user) return refuse('Account not found');
+  if (!user) {
+    const person = await employeesRepository.findPerson(entry.id);
+    if (person?.accountDeletedAt) return { ...base, name: `${person.firstName} ${person.lastName}`, role: person.role, action: 'already_deleted' };
+    return refuse('Account not found');
+  }
   base.history = await employeesRepository.countHistoryReferences(entry.id);
   // Identity re-check: the manifest must still describe exactly this account.
-  if ((user.email ?? '').trim().toLowerCase() !== entry.email.trim().toLowerCase()) {
+  if ((user.email ?? '').trim().toLowerCase() !== (entry.email ?? '').trim().toLowerCase()) {
     return refuse('Email does not match the manifest — re-review this account');
+  }
+  if (entry.name !== undefined && entry.name.trim() !== `${user.firstName} ${user.lastName}`.trim()) {
+    return refuse('Name does not match the manifest — re-review this account');
   }
   if (user.role !== entry.role) return refuse('Role does not match the manifest — re-review this account');
   if (user.role === ROLES.SUPER_ADMIN) {
@@ -116,7 +131,6 @@ async function evaluate(entry: FixtureCleanupManifest['accounts'][number], actor
   if (user.role === ROLES.BRANCH) return refuse('Branch accounts follow their branch and are not removed here');
   if (!actor) return refuse('No valid Super Admin actor');
   if (actor.user_id === user.id) return refuse('The actor cannot remove their own account');
-  if (user.deletedAt) return { ...base, action: 'already_removed' };
 
   let eligibility: Awaited<ReturnType<typeof employeesService.getDeletionEligibility>>;
   try {
@@ -126,16 +140,12 @@ async function evaluate(entry: FixtureCleanupManifest['accounts'][number], actor
   }
   base.prerequisites = eligibility.prerequisites;
   if (eligibility.blocked_reason === 'open_operations') {
-    return refuse('Open shift or clock-in — close it in the normal workflow first');
+    return refuse('Open shift, clock-in or unpaid payroll hours — resolve them in the normal workflow first');
   }
-  if (!eligibility.can_delete) {
-    return refuse(
-      eligibility.blocked_reason === 'has_history'
-        ? 'Staff account with history — deactivate it from Supervisor Employees instead'
-        : `Not removable (${eligibility.blocked_reason ?? 'unknown'})`,
-    );
+  if (!eligibility.can_delete || !eligibility.confirmation) {
+    return refuse(`Not deletable (${eligibility.blocked_reason ?? 'unknown'})`);
   }
-  return { ...base, action: eligibility.mode === 'remove_keep_history' ? 'remove_keep_history' : 'permanent_delete' };
+  return { ...base, action: 'permanent_delete', version: eligibility.confirmation.version };
 }
 
 export async function runFixtureCleanup(
@@ -149,11 +159,16 @@ export async function runFixtureCleanup(
     // execution never relies on what the dry run saw minutes earlier.
     const report = await evaluate(entry, actor.payload);
     if (options.execute) {
-      if (report.action === 'refused' || !actor.payload) {
+      if (report.action === 'already_deleted') {
+        report.outcome = 'already_deleted';
+      } else if (report.action === 'refused' || !actor.payload || !report.version || !report.name) {
         report.outcome = 'skipped';
       } else {
         try {
-          const result = await employeesService.deleteEmployee(entry.id, actor.payload, null);
+          const result = await employeesService.deleteEmployee(entry.id, actor.payload, null, {
+            confirm_name: report.name,
+            version: report.version,
+          });
           report.outcome = result.outcome;
         } catch (error) {
           report.outcome = 'failed';

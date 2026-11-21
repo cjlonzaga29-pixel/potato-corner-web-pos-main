@@ -9,22 +9,45 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
 ## Observed state
 
 - **Observed:** 2026-11-22
-- **Branch:** `feat/pos-perf-p64-account-removal-and-dashboard-cleanup`, from `origin/main` `27e7114`. It has two commits: P64 `52a9555`, and the P65 follow-up (test determinism and runner exit status) on top. **The branch is pushed and has a PR (see the PR for its number and CI). Nothing merged or deployed; production not accessed.**
-- **Reported history, not re-verified here:**
-  - `27e7114` is the merge of PR #46 (the ever-published test isolation fix), the last reported deployment.
-  - PR #45 (combined P59–P63) was merged before it.
-  - This session did not verify production independently.
+- **Branch:** `feat/pos-perf-p66-delete-dashboard-payroll`, from `origin/main` `f9ce9da7` (merge of PR #47, P64+P65; the last **reported** deployment, not verified here). It holds the P66 commit, **local only: not pushed, no PR, nothing merged or deployed, production not accessed.**
 - **Working tree:** only `.vscode/settings.json` is modified (the owner's personal setting). Never stage it.
-- **Local leftovers (task-owned, safe to delete):**
-  - `C:\p65`: P65 env, logs, stopped Postgres data, measurement stack and its driver (`C:\p65\lead\measure-revocation.mjs`).
-  - `C:\p64a`: P64 test env, logs, stopped Postgres data.
-  - `C:\p64b`: P64 browser stack, logs, screenshots, CSV and stopped Postgres data.
-  - Older roots: `C:\p64` (P63), `C:\p63`, `C:\p62`, `C:\p59r`, `C:\p59c`.
-  - No P64 service is left running.
-- **Unidentified, left running:** two orphaned embedded-Postgres `io_worker` processes from 2026-11-22 1:51 AM and 2:12 AM. They hold no port and could not be tied to this task with certainty.
-- **Not this session's:** a `stack.sh api` (`dist/server.js`) from 2026-11-21 1:04 PM and older orphaned embedded-Postgres `io_worker` processes from 2026-11-21. They were left untouched.
+- **Local leftovers (task-owned, safe to delete):** `C:p66` (throwaway env, logs, stopped stack data), `%TEMP%pos-test-pg-*` dirs. Older: `C:p65`, `C:p64a`, `C:p64b`, `C:p64`, `C:p63`, `C:p62`, `C:p59r`, `C:p59c`. No P66 service is running.
+- **Left running, not proven to be this task's:** four idle embedded-Postgres `io_worker` orphans (started 4:01, 4:36, 4:38 and 4:56 AM, no ports), plus the older ones and the `dist/server.js` (PID 17220, 2026-11-21 1:04 PM) noted before. That server keeps the shared Prisma engine DLL locked, so `prisma generate` reports EPERM. Types and `index.js` still regenerate, and the DLL is identical.
 
-## Latest: P64 — supervisor removal with history, test-account cleanup, Reports-only Admin views, dashboard cleanup (local)
+## Latest: P66 — permanent Delete, dashboard panels removed, simpler Supervisor payroll (local)
+
+Details: [`runbooks/pos-perf-p66-delete-dashboard-payroll.md`](runbooks/pos-perf-p66-delete-dashboard-payroll.md).
+
+- **Delete failure, root cause:** P47's history count missed FK'd tables (expense types and others). Postgres then refused the delete with 23001 `restrict_violation`, which Prisma reports as an *unknown* error, so the request ended as an unmapped 500. Reproduced locally.
+- **Delete is now permanent** for staff and supervisors:
+  - The `users` row and everything it owned (credentials, sessions, PINs, branch access, notifications) are removed.
+  - History references the new non-authenticatable attribution record `people`, so every past record keeps its name and amounts. Existing tokens die through the P64 marker.
+  - Blocks only on an open shift, an open clock-in, or (staff) payroll hours no finalized run covers.
+  - The typed name and the account version are confirmed server-side. Repeats and lost responses are reported as `already_deleted`.
+- **Migration** `20261122120000_pos_perf_p66_account_deletion_people` (additive data; it retargets FKs and adds triggers). Rehearsed: 92 tables byte-identical, no drift. **Rollback floor: once any account is deleted, the API cannot go below P66** (old readers 500 on a deleted person's history). Order: migration, API, web.
+- **Delete inventory:** every Delete button is mapped (runbook §3).
+  - Expense Delete is a soft delete; its wording is now honest.
+  - **Branch delete cascades sales, shifts, attendance, expenses and stock history (pre-existing design). Owner decision needed.** Its `RESTRICT` refusals are now a 409, not a 500.
+- **Dashboards:** both panels gone from all three roles; the Today's Expenses KPI stays; their requests no longer fire.
+- **Payroll:** one Payroll Settings entry, readiness checklist, then pay period, review and finalize. No calculation change.
+- **Fixture cleanup** follows the new lifecycle (exact IDs, dry run first). **The production inventory, dry run and execution were NOT done.**
+
+| Check | Result |
+| --- | --- |
+| P66 integration | 14 tests, all pass (run 3; runs 1–2 found a trigger gap and two test bugs) |
+| Migration rehearsal | Passed (run 2; run 1 seed SQL bug) |
+| Full API, one run | **1 failed, 3,835 passed, 5 skipped**: `p62-pdf-isolation` timing bound (1,124 vs 1,090 ms) in an untouched file; passes 23/23 alone |
+| Full web | **1,777/1,777** |
+| Shared / typecheck / lint | 83 passed / clean / 0 errors |
+| Builds + browser (SW active, emulated desktop/tablet/phone) | Run 1 stopped on a driver bug; **run 2: 57/57** |
+| Not run | Payroll draft/finalize in the browser; hosted/staging (none exists) |
+
+**Next (owner):**
+- Review and push. A push, PR, merge or deploy needs your separate approval.
+- Decide the branch-delete cascade.
+- After deploy, run the fixture inventory and dry run (P64 runbook §4, adapted in P66 §8).
+
+## Earlier: P64 — supervisor removal with history, test-account cleanup, Reports-only Admin views, dashboard cleanup (local)
 
 Details: [`runbooks/pos-perf-p64-account-removal-and-dashboard-cleanup.md`](runbooks/pos-perf-p64-account-removal-and-dashboard-cleanup.md).
 

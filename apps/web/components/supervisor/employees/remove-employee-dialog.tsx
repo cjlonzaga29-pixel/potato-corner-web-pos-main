@@ -1,176 +1,238 @@
 'use client';
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { AlertTriangle, Loader2 } from 'lucide-react';
-import { EMPLOYEE_STATUS, EMPLOYEE_STATUS_LABELS, type EmployeeResponse } from '@potato-corner/shared';
+import { useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
+import type { EmployeeResponse } from '@potato-corner/shared';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
-import { Textarea } from '@/components/ui/textarea';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Button } from '@/components/ui/button';
 import {
   EmployeeApiError,
+  forgetDeletedEmployee,
   useDeleteEmployee,
   useEmployeeDeletionEligibility,
-  useSetEmployeeStatus,
   type EmployeeHistoryCategory,
 } from '@/hooks/queries/use-employees';
-
-const MIN_REASON_LENGTH = 10;
 
 const HISTORY_LABELS: Record<EmployeeHistoryCategory, [string, string]> = {
   sales: ['sale or checkout', 'sales or checkouts'],
   shifts: ['shift', 'shifts'],
   attendance: ['attendance record', 'attendance records'],
   audit: ['audit-log entry', 'audit-log entries'],
-  inventory: ['inventory record', 'inventory records'],
-  expenses: ['expense', 'expenses'],
+  inventory: ['inventory or supply record', 'inventory or supply records'],
+  expenses: ['expense record', 'expense records'],
   catalog: ['product/catalog record', 'product/catalog records'],
   settings: ['settings change', 'settings changes'],
   pin_use: ['PIN verification', 'PIN verifications'],
+  payroll: ['payroll record', 'payroll records'],
 };
 
-function describeHistory(references: Record<EmployeeHistoryCategory, number>): string[] {
+function describeHistory(references: Partial<Record<EmployeeHistoryCategory, number>>): string[] {
   return (Object.keys(HISTORY_LABELS) as EmployeeHistoryCategory[])
-    .filter((key) => references[key] > 0)
-    .map((key) => `${references[key]} ${references[key] === 1 ? HISTORY_LABELS[key][0] : HISTORY_LABELS[key][1]}`);
+    .filter((key) => (references[key] ?? 0) > 0)
+    .map((key) => {
+      const count = references[key] ?? 0;
+      return `${count} ${count === 1 ? HISTORY_LABELS[key][0] : HISTORY_LABELS[key][1]}`;
+    });
+}
+
+/** Same rule as the server: case and extra spaces don't matter. */
+function normalizeName(value: string): string {
+  return value.normalize('NFC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-PH');
+}
+
+function formatDay(day: string): string {
+  return new Date(`${day}T00:00:00Z`).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
 }
 
 interface RemoveEmployeeDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   employee: EmployeeResponse;
-  /** Called after a permanent delete (e.g. a detail page navigates back to its list). */
+  /** Called after the account is deleted (e.g. a detail page navigates back to its list). */
   onDeleted?: () => void;
 }
 
 /**
- * POS-PERF-P47 — the one Delete entry point for staff (Supervisor console)
- * and supervisors (Super Admin). Asks the server first whether the person
- * has any history:
- * - none → permanent delete, behind an explicit "cannot be undone" check;
- * - any → permanent delete is not offered; the same dialog offers
- *   Deactivate (status Inactive) instead, which ends access immediately
- *   and keeps every sale, attendance record and audit entry attributed.
- * The server enforces the same rules (and role/branch/self limits) on its
- * own; this dialog only explains them. No nested dialogs.
+ * POS-PERF-P66 — the one Delete entry point for staff (Supervisor console)
+ * and supervisors (Super Admin). Delete permanently removes the account:
+ * login, password, sessions, PIN and branch access. Past business records
+ * stay, still under the person's name. The server enforces every rule
+ * (role, branch, self, open work, unpaid payroll hours) and re-checks the
+ * typed name and the account version shown here; this dialog explains them.
  */
 export function RemoveEmployeeDialog({ open, onOpenChange, employee, onDeleted }: RemoveEmployeeDialogProps) {
+  const queryClient = useQueryClient();
   const eligibility = useEmployeeDeletionEligibility(employee.id, open);
   const deleteEmployee = useDeleteEmployee(employee.id);
-  const setStatus = useSetEmployeeStatus(employee.id);
 
-  const [confirmed, setConfirmed] = useState(false);
-  const [reason, setReason] = useState('');
-  const [acknowledgeShift, setAcknowledgeShift] = useState(false);
-  const [needsShiftAck, setNeedsShiftAck] = useState(false);
+  const [typedName, setTypedName] = useState('');
+  const [acknowledged, setAcknowledged] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Guards the gap between the click and isPending becoming true (double click).
+  const submitting = useRef(false);
 
   useEffect(() => {
     if (open) {
-      setConfirmed(false);
-      setReason('');
-      setAcknowledgeShift(false);
-      setNeedsShiftAck(false);
+      setTypedName('');
+      setAcknowledged(false);
       setError(null);
     }
   }, [open]);
 
-  const name = `${employee.first_name} ${employee.last_name}`;
-  const isActive = employee.status === EMPLOYEE_STATUS.ACTIVE;
+  const fallbackName = `${employee.first_name} ${employee.last_name}`;
   const data = eligibility.data;
-  const history = data ? describeHistory(data.references) : [];
-  const reasonValid = reason.trim().length >= MIN_REASON_LENGTH;
+  const name = data?.confirmation?.name ?? fallbackName;
+  const history = data?.references ? describeHistory(data.references) : [];
+  const prerequisites = data?.prerequisites ?? null;
+  const nameMatches = normalizeName(typedName) === normalizeName(name);
+
+  function finishDeleted(message: string) {
+    forgetDeletedEmployee(queryClient, employee.id);
+    toast.success(message);
+    onOpenChange(false);
+    onDeleted?.();
+  }
 
   async function handleDelete() {
+    if (submitting.current || !data?.confirmation) return;
+    submitting.current = true;
     setError(null);
     try {
-      await deleteEmployee.mutateAsync();
+      await deleteEmployee.mutateAsync({ confirm_name: typedName, version: data.confirmation.version });
       onOpenChange(false);
       onDeleted?.();
     } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : 'Failed to delete');
-      // A sale, shift or clock-in may have landed since the dialog opened — re-check.
-      if (
-        deleteError instanceof EmployeeApiError &&
-        (deleteError.code === 'EMPLOYEE_HAS_HISTORY' || deleteError.code === 'EMPLOYEE_HAS_OPEN_OPERATIONS')
-      ) {
-        void eligibility.refetch();
-      }
-    }
-  }
-
-  async function handleDeactivate() {
-    setError(null);
-    try {
-      await setStatus.mutateAsync({ status: EMPLOYEE_STATUS.INACTIVE, reason: reason.trim(), acknowledge_active_shift: acknowledgeShift });
-      onOpenChange(false);
-    } catch (statusError) {
-      if (statusError instanceof EmployeeApiError && statusError.code === 'ACTIVE_SHIFT_ACKNOWLEDGMENT_REQUIRED') {
-        setNeedsShiftAck(true);
+      // The request may have gone through even though no answer came back
+      // (lost connection, timeout). Ask the server before showing an error.
+      const recheck = await eligibility.refetch();
+      if (recheck.data?.blocked_reason === 'already_deleted') {
+        finishDeleted('Account permanently deleted');
         return;
       }
-      setError(statusError instanceof Error ? statusError.message : 'Failed to deactivate');
+      setError(deleteError instanceof Error ? deleteError.message : 'Failed to delete');
+      if (deleteError instanceof EmployeeApiError && deleteError.code === 'EMPLOYEE_CHANGED') setTypedName('');
+    } finally {
+      submitting.current = false;
     }
   }
 
   let body: ReactNode;
   let footer: ReactNode;
+  const closeButton = (label: string) => (
+    <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+      {label}
+    </Button>
+  );
 
   if (eligibility.isLoading) {
     body = (
       <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground" role="status">
         <Loader2 className="h-4 w-4 animate-spin" />
-        Checking history…
+        Checking this account…
       </div>
     );
-    footer = (
-      <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-        Cancel
-      </Button>
-    );
+    footer = closeButton('Cancel');
   } else if (eligibility.isError || !data) {
     body = (
       <p className="text-sm text-destructive" role="alert">
-        {eligibility.error instanceof Error ? eligibility.error.message : 'Could not check this person’s history.'}
+        {eligibility.error instanceof Error ? eligibility.error.message : 'Could not check this account.'}
       </p>
     );
     footer = (
       <>
-        <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-          Close
-        </Button>
+        {closeButton('Close')}
         <Button type="button" onClick={() => void eligibility.refetch()}>
           Try again
         </Button>
       </>
     );
-  } else if (data.can_delete && data.mode === 'remove_keep_history') {
-    const prerequisites = data.prerequisites;
+  } else if (data.blocked_reason === 'already_deleted') {
+    body = <p className="text-sm text-muted-foreground">{name}’s account has already been permanently deleted. Their past records remain.</p>;
+    footer = closeButton('Close');
+  } else if (data.blocked_reason === 'branch_account') {
+    body = (
+      <p className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
+        Branch accounts follow their branch and can’t be deleted here.
+      </p>
+    );
+    footer = closeButton('Close');
+  } else if (data.blocked_reason === 'open_operations') {
+    body = (
+      <div className="space-y-3 text-sm" role="alert">
+        <div className="rounded-md border border-warning/40 bg-warning/10 p-3">
+          <p className="font-medium">{name} can’t be deleted yet. First:</p>
+          <ul className="mt-1 list-disc space-y-1 pl-5 text-muted-foreground">
+            {prerequisites?.open_shifts.map((shift) => (
+              <li key={shift.id}>Close the open shift at {shift.branch_name} (count the cash).</li>
+            ))}
+            {prerequisites?.open_attendance.map((record) => (
+              <li key={record.id}>Clock them out, or correct the attendance record, at {record.branch_name}.</li>
+            ))}
+            {prerequisites?.unpaid_payroll?.map((item) => (
+              <li key={item.branch_id}>
+                Finalize payroll at {item.branch_name} for the hours recorded{' '}
+                {item.first_date === item.last_date
+                  ? `on ${formatDay(item.first_date)}`
+                  : `from ${formatDay(item.first_date)} to ${formatDay(item.last_date)}`}
+                , so those hours are paid.
+              </li>
+            ))}
+          </ul>
+        </div>
+        <p className="text-muted-foreground">Nothing has been changed. Check again once these are done.</p>
+      </div>
+    );
+    footer = (
+      <>
+        {closeButton('Close')}
+        <Button type="button" onClick={() => void eligibility.refetch()}>
+          Check again
+        </Button>
+      </>
+    );
+  } else if (!data.can_delete || !data.confirmation || data.mode !== 'permanent') {
+    // A pre-P66 server: it cannot confirm a permanent delete, so none is offered.
+    body = (
+      <p className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm" role="alert">
+        The server can’t confirm a permanent delete right now. Reload the page and try again later. Nothing has been changed.
+      </p>
+    );
+    footer = closeButton('Close');
+  } else {
     const uncovered = prerequisites?.branches_left_without_supervisor ?? [];
+    const branches = prerequisites?.branches ?? [];
     body = (
       <div className="space-y-3 text-sm">
-        <p>
-          <span className="font-medium">{name}</span> has history ({history.join(', ')}). Deleting removes the account from the system:
+        <p className="font-medium">
+          Permanently delete {name}? This cannot be undone in the application. Past business records will remain, but this account cannot be
+          restored.
         </p>
-        <ul className="list-disc space-y-1 pl-5">
-          <li>They are signed out everywhere and can no longer log in, refresh a session or use a PIN.</li>
-          <li>
-            Their branch access is removed
-            {prerequisites && prerequisites.branches.length > 0 ? ` (${prerequisites.branches.map((b) => b.name).join(', ')})` : ''}, and they
-            disappear from supervisor lists and selectors.
-          </li>
-          <li>
-            Their history is kept: past sales, expenses, attendance, stock movements, proofs and audit entries still show {name}. The record is
-            retained for that history, not erased, and it cannot be reactivated.
-          </li>
-        </ul>
+        <div>
+          <p className="font-medium">Removed now</p>
+          <ul className="mt-1 list-disc space-y-1 pl-5 text-muted-foreground">
+            <li>The account, its login and password: {name} is signed out on every device.</li>
+            <li>PIN access and notifications.</li>
+            <li>Branch access{branches.length > 0 ? ` (${branches.map((b) => b.name).join(', ')})` : ''}.</li>
+          </ul>
+        </div>
+        <div>
+          <p className="font-medium">Stays</p>
+          <p className="mt-1 text-muted-foreground">
+            {history.length > 0
+              ? `${history.join(', ')}. These keep showing ${name} as the person who did them.`
+              : `No past records name ${name}.`}{' '}
+            Sales totals, expenses, attendance, payroll and stock records are not changed.
+          </p>
+        </div>
         {uncovered.length > 0 && (
           <div className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 p-3" role="status">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-            <span>
-              {uncovered.map((b) => b.name).join(', ')} will have no assigned supervisor. You can assign one from Branches afterwards.
-            </span>
+            <span>{uncovered.map((b) => b.name).join(', ')} will have no assigned supervisor. You can assign one from Branches afterwards.</span>
           </div>
         )}
         {prerequisites && (prerequisites.held_orders > 0 || prerequisites.pending_inventory_approvals > 0) && (
@@ -184,170 +246,50 @@ export function RemoveEmployeeDialog({ open, onOpenChange, employee, onDeleted }
             stay on their branch under {name}’s name and can still be handled there.
           </p>
         )}
-        <label className="flex items-start gap-2">
-          <Checkbox checked={confirmed} onCheckedChange={(checked) => setConfirmed(checked === true)} className="mt-0.5" />
-          <span>I understand {name} loses all access and cannot be restored, and their history stays.</span>
-        </label>
-      </div>
-    );
-    footer = (
-      <>
-        <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-          Cancel
-        </Button>
-        <Button type="button" variant="danger" disabled={!confirmed || deleteEmployee.isPending} onClick={() => void handleDelete()}>
-          {deleteEmployee.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          Delete account
-        </Button>
-      </>
-    );
-  } else if (data.blocked_reason === 'open_operations') {
-    const prerequisites = data.prerequisites;
-    body = (
-      <div className="space-y-3 text-sm" role="alert">
-        <div className="rounded-md border border-warning/40 bg-warning/10 p-3">
-          <p className="font-medium">{name} still has open work, so the account can’t be deleted yet.</p>
-          <ul className="mt-1 list-disc pl-5 text-muted-foreground">
-            {prerequisites?.open_shifts.map((shift) => (
-              <li key={shift.id}>Open shift at {shift.branch_name}: close it (count the cash) first.</li>
-            ))}
-            {prerequisites?.open_attendance.map((record) => (
-              <li key={record.id}>Still clocked in at {record.branch_name}: clock out or correct the attendance record first.</li>
-            ))}
-          </ul>
-        </div>
-        <p className="text-muted-foreground">Nothing has been changed. Delete again once these are closed.</p>
-      </div>
-    );
-    footer = (
-      <>
-        <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-          Close
-        </Button>
-        <Button type="button" onClick={() => void eligibility.refetch()}>
-          Check again
-        </Button>
-      </>
-    );
-  } else if (data.blocked_reason === 'already_removed') {
-    body = <p className="text-sm text-muted-foreground">{name}’s account has already been removed. Their history is kept.</p>;
-    footer = (
-      <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-        Close
-      </Button>
-    );
-  } else if (data.can_delete) {
-    body = (
-      <div className="space-y-3 text-sm">
-        <p>
-          <span className="font-medium">{name}</span> has no sales, shifts, attendance, inventory or audit history, so the account can be
-          deleted permanently. Their PIN and branch assignment are removed with it.
+        <p className="text-muted-foreground">
+          To stop access for now without deleting, change their status to Inactive instead. That can be undone.
         </p>
+        <div className="space-y-1.5">
+          <Label htmlFor="delete-employee-confirm-name">
+            Type <span className="font-semibold">{name}</span> to confirm
+          </Label>
+          <Input
+            id="delete-employee-confirm-name"
+            value={typedName}
+            onChange={(event) => setTypedName(event.target.value)}
+            autoComplete="off"
+            spellCheck={false}
+            aria-invalid={typedName.length > 0 && !nameMatches}
+          />
+        </div>
         <label className="flex items-start gap-2">
-          <Checkbox checked={confirmed} onCheckedChange={(checked) => setConfirmed(checked === true)} className="mt-0.5" />
-          <span>I understand this permanently deletes the account and cannot be undone.</span>
+          <Checkbox checked={acknowledged} onCheckedChange={(checked) => setAcknowledged(checked === true)} className="mt-0.5" />
+          <span>I understand {name}’s account is deleted permanently and cannot be restored.</span>
         </label>
       </div>
     );
     footer = (
       <>
-        <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-          Cancel
-        </Button>
-        <Button type="button" variant="danger" disabled={!confirmed || deleteEmployee.isPending} onClick={() => void handleDelete()}>
+        {closeButton('Cancel')}
+        <Button
+          type="button"
+          variant="danger"
+          disabled={!nameMatches || !acknowledged || deleteEmployee.isPending}
+          onClick={() => void handleDelete()}
+        >
           {deleteEmployee.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
           Delete permanently
         </Button>
       </>
     );
-  } else {
-    body = (
-      <div className="space-y-3 text-sm">
-        <div className="rounded-md border border-warning/40 bg-warning/10 p-3">
-          <p className="font-medium">This person can’t be permanently deleted.</p>
-          {data.blocked_reason === 'branch_account' ? (
-            <p className="text-muted-foreground">Branch accounts follow their branch and are never deleted here.</p>
-          ) : (
-            <p className="text-muted-foreground">
-              Their name is on {history.join(', ')}. Deleting them would break that history, so it is kept.
-            </p>
-          )}
-        </div>
-        {isActive ? (
-          <>
-            <p>
-              <span className="font-medium">Deactivate instead:</span> sets the status to Inactive, signs them out, removes their branch
-              access and PIN use, and keeps every past record attributed to {name}.
-            </p>
-            <div className="space-y-2">
-              <Label htmlFor="remove-employee-reason">
-                Reason<span className="ml-0.5 text-destructive">*</span>
-              </Label>
-              <Textarea
-                id="remove-employee-reason"
-                value={reason}
-                onChange={(event) => setReason(event.target.value)}
-                placeholder={`Minimum ${MIN_REASON_LENGTH} characters`}
-                rows={3}
-                aria-invalid={reason.length > 0 && !reasonValid}
-                aria-describedby="remove-employee-reason-hint"
-              />
-              <p id="remove-employee-reason-hint" className="text-xs text-muted-foreground">
-                Recorded in the audit log.
-              </p>
-            </div>
-            {needsShiftAck && (
-              <div className="space-y-2 rounded-md bg-destructive/10 p-3 text-destructive" role="alert">
-                <div className="flex items-start gap-2">
-                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                  <span>This person has an active shift. Deactivating does not close it automatically.</span>
-                </div>
-                <label className="flex items-center gap-2 text-foreground">
-                  <Checkbox checked={acknowledgeShift} onCheckedChange={(checked) => setAcknowledgeShift(checked === true)} />
-                  Deactivate anyway
-                </label>
-              </div>
-            )}
-          </>
-        ) : (
-          <p className="text-muted-foreground">
-            Already {EMPLOYEE_STATUS_LABELS[employee.status].toLowerCase()} — they have no access, and their history stays attributed to them.
-          </p>
-        )}
-      </div>
-    );
-    footer = isActive ? (
-      <>
-        <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-          Cancel
-        </Button>
-        <Button
-          type="button"
-          variant="danger"
-          disabled={!reasonValid || (needsShiftAck && !acknowledgeShift) || setStatus.isPending}
-          onClick={() => void handleDeactivate()}
-        >
-          {setStatus.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          Deactivate (keep history)
-        </Button>
-      </>
-    ) : (
-      <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-        Close
-      </Button>
-    );
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(next) => (!next && deleteEmployee.isPending ? undefined : onOpenChange(next))}>
       <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Remove {name}</DialogTitle>
-          <DialogDescription>
-            {data?.mode === 'remove_keep_history'
-              ? 'Access is removed for good; history keeps their name.'
-              : 'Permanent deletion is only possible for accounts with no history.'}
-          </DialogDescription>
+          <DialogTitle>Delete {name}</DialogTitle>
+          <DialogDescription>Deletes the account permanently. Past records keep their name.</DialogDescription>
         </DialogHeader>
         {body}
         {error && (

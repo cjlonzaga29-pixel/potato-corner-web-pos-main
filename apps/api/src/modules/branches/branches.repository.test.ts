@@ -200,12 +200,14 @@ describe('branchesRepository.findAllStatsGrouped', () => {
   it('counts staffTimedInCount only for active employees with a live assignment to the same branch — stale/terminated/reassigned open attendance rows are excluded', async () => {
     vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'branch-1' }] as never);
     vi.mocked(prisma.attendanceRecord.findMany).mockResolvedValue([
-      { branchId: 'branch-1', employee: { isActive: true, status: 'active', branchAssignments: [{ branchId: 'branch-1' }] } },
-      { branchId: 'branch-1', employee: { isActive: true, status: 'active', branchAssignments: [{ branchId: 'branch-1' }] } },
+      { branchId: 'branch-1', employee: { account: { isActive: true, status: 'active', branchAssignments: [{ branchId: 'branch-1' }] } } },
+      { branchId: 'branch-1', employee: { account: { isActive: true, status: 'active', branchAssignments: [{ branchId: 'branch-1' }] } } },
       // stale: employee was terminated but never clocked out
-      { branchId: 'branch-1', employee: { isActive: false, status: 'terminated', branchAssignments: [] } },
+      { branchId: 'branch-1', employee: { account: { isActive: false, status: 'terminated', branchAssignments: [] } } },
       // stale: employee reassigned away from this branch (assignment removed) but never clocked out
-      { branchId: 'branch-1', employee: { isActive: true, status: 'active', branchAssignments: [] } },
+      { branchId: 'branch-1', employee: { account: { isActive: true, status: 'active', branchAssignments: [] } } },
+      // POS-PERF-P66 — a deleted account (no live account) never counts.
+      { branchId: 'branch-1', employee: { account: null } },
     ] as never);
 
     const rows = await branchesRepository.findAllStatsGrouped();
@@ -415,12 +417,14 @@ describe('branchesRepository.branchStats', () => {
 
   it('counts staffTimedInCount only for active employees with a live assignment to this branch — stale/terminated/reassigned rows are excluded', async () => {
     vi.mocked(prisma.attendanceRecord.findMany).mockResolvedValue([
-      { employee: { isActive: true, status: 'active', branchAssignments: [{ id: 'a1' }] } },
-      { employee: { isActive: true, status: 'active', branchAssignments: [{ id: 'a2' }] } },
+      { employee: { account: { isActive: true, status: 'active', branchAssignments: [{ id: 'a1' }] } } },
+      { employee: { account: { isActive: true, status: 'active', branchAssignments: [{ id: 'a2' }] } } },
       // stale: employee was terminated but never clocked out
-      { employee: { isActive: false, status: 'terminated', branchAssignments: [] } },
+      { employee: { account: { isActive: false, status: 'terminated', branchAssignments: [] } } },
       // stale: employee's assignment to this branch was removed but never clocked out
-      { employee: { isActive: true, status: 'active', branchAssignments: [] } },
+      { employee: { account: { isActive: true, status: 'active', branchAssignments: [] } } },
+      // POS-PERF-P66 — a deleted account (no live account) never counts.
+      { employee: { account: null } },
     ] as never);
 
     const stats = await branchesRepository.branchStats('branch-1');

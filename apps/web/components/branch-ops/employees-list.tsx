@@ -159,7 +159,7 @@ export function EmployeesList({ basePath }: { basePath: string }) {
               size="sm"
               className="text-destructive hover:bg-destructive/10 hover:text-destructive"
               onClick={stop(() => setRemoveEmployee(employee))}
-              aria-label={`Delete or deactivate ${fullName}`}
+              aria-label={`Delete ${fullName} permanently`}
               data-row-action={`remove:${employee.id}`}
             >
               <Trash2 className="h-3.5 w-3.5 sm:mr-1.5" aria-hidden="true" />

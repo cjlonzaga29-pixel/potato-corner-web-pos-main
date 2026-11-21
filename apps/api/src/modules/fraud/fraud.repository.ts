@@ -63,7 +63,8 @@ export const fraudRepository = {
   /** Batch lookup for the response's employee_name field — see the note on fraudAlertInclude above. */
   findEmployeeNamesByIds(employeeIds: string[]) {
     if (employeeIds.length === 0) return Promise.resolve([]);
-    return prisma.user.findMany({
+    // POS-PERF-P66 — names come from Person, which outlives a deleted account.
+    return prisma.person.findMany({
       where: { id: { in: employeeIds } },
       select: { id: true, firstName: true, lastName: true },
     });

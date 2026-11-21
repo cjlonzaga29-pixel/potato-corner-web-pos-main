@@ -12,6 +12,7 @@ vi.mock('../../lib/prisma.js', () => {
     attendanceRecord: { findMany: vi.fn(), count: vi.fn() },
     fraudAlert: { findMany: vi.fn(), count: vi.fn() },
     user: { findMany: vi.fn() },
+    person: { findMany: vi.fn() },
     productVariant: { findMany: vi.fn() },
     flavor: { findMany: vi.fn() },
     ingredient: { findMany: vi.fn() },
@@ -436,7 +437,7 @@ describe('reportsRepository.getInventoryMovement', () => {
         unit: { code: 'kg' },
       },
     ] as never);
-    vi.mocked(prisma.user.findMany).mockResolvedValue([{ id: 'u1', firstName: 'Juan', lastName: 'Cruz' }] as never);
+    vi.mocked(prisma.person.findMany).mockResolvedValue([{ id: 'u1', firstName: 'Juan', lastName: 'Cruz' }] as never);
 
     const rows = await reportsRepository.getInventoryMovement({ branchId: 'b1', page: 1, limit: 25 });
 
@@ -539,7 +540,7 @@ describe('reportsRepository.getInventoryMovement', () => {
     const rows = await reportsRepository.getInventoryMovement(baseFilters);
 
     expect(rows[0]?.recorded_by_name).toBeNull();
-    expect(prisma.user.findMany).not.toHaveBeenCalled();
+    expect(prisma.person.findMany).not.toHaveBeenCalled();
   });
 
   // INVENTORY AUDIT FOLLOW-UPS §2A/§6/Phase 6 — a TRANSFER_IN row with no
@@ -1440,7 +1441,7 @@ describe('reportsRepository.getEmployeePerformance', () => {
     vi.mocked(prisma.transaction.groupBy).mockResolvedValue([
       { cashierId: 'u1', branchId: 'b1', _sum: { subtotal: decimal(200) }, _count: { _all: 1 } },
     ] as never);
-    vi.mocked(prisma.user.findMany).mockResolvedValue([{ id: 'u1', firstName: 'Juan', lastName: 'Cruz' }] as never);
+    vi.mocked(prisma.person.findMany).mockResolvedValue([{ id: 'u1', firstName: 'Juan', lastName: 'Cruz' }] as never);
     vi.mocked(prisma.attendanceRecord.findMany).mockResolvedValue([] as never);
     vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
 

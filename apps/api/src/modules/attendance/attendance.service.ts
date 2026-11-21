@@ -56,7 +56,7 @@ interface AttendanceRow {
   deletedAt: Date | null;
   createdAt: Date;
   /** Present only when the query included the relation (branch-scoped list reads) — see attendance.repository.ts findByBranch. */
-  employee?: { firstName: string; lastName: string; employeeId: string | null; status: string } | null;
+  employee?: { firstName: string; lastName: string; employeeId: string | null; status: string | null } | null;
   /** POS-PERF-P51 — present when the query included the breaks relation; a write that returns the bare row has none to show. */
   breaks?: BreakIntervalRow[];
 }

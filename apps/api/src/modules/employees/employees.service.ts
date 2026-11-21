@@ -22,7 +22,7 @@ import {
   type RemovalPrerequisites,
 } from './employees.repository.js';
 import { Prisma } from '@prisma/client';
-import { EmployeeError, type EmployeeHistoryCategory } from './employees.types.js';
+import { EmployeeError, hasBlockingPrerequisites, type EmployeeHistoryCategory } from './employees.types.js';
 import { encryptField, decryptField } from '../../lib/encryption.js';
 import { generateTemporaryPassword } from '../../lib/generate-password.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
@@ -166,23 +166,68 @@ function assertCanManageTarget(actor: JwtPayload, target: Pick<EmployeeWithAssig
 export interface EmployeeDeletionEligibility {
   employee_id: string;
   can_delete: boolean;
-  /** Why permanent deletion is refused when can_delete is false — history references or an account type that is never hard-deleted. */
-  blocked_reason: 'has_history' | 'branch_account' | 'open_operations' | 'already_removed' | null;
-  references: Record<EmployeeHistoryCategory, number>;
   /**
-   * POS-PERF-P64 — what Delete will do: 'permanent' for an account nothing
-   * refers to; 'remove_keep_history' for a supervisor with history (access is
-   * removed, the row stays so history keeps the name). null when refused.
-   * Older clients ignore these fields.
+   * Why Delete is refused right now. POS-PERF-P66: history is never a
+   * reason; 'open_operations' (open shift, open clock-in, unpaid payroll
+   * hours) is resolved through the normal screens; 'already_deleted' answers
+   * a dialog reopened after a lost response.
    */
-  mode: 'permanent' | 'remove_keep_history' | null;
+  blocked_reason: 'branch_account' | 'open_operations' | 'already_deleted' | null;
+  /** The records that stay attributed to the person after deletion; null when already deleted. */
+  references: Record<EmployeeHistoryCategory, number> | null;
+  /** 'permanent' whenever Delete is offered. Older (P64) clients also knew 'remove_keep_history', no longer returned. */
+  mode: 'permanent' | null;
   prerequisites: RemovalPrerequisites | null;
+  /** What the delete request must echo back: the full name to type, and the account version shown. */
+  confirmation: { name: string; version: string } | null;
 }
 
 export interface EmployeeDeletionResult {
   deleted: true;
-  /** 'permanent' = row deleted; 'removed' = access removed, history kept; 'already_removed' = repeat request. */
-  outcome: 'permanent' | 'removed' | 'already_removed';
+  /** 'deleted' = the account row is gone; 'already_deleted' = a repeat of a delete that had succeeded. */
+  outcome: 'deleted' | 'already_deleted';
+}
+
+export interface DeleteEmployeeConfirmation {
+  confirm_name: string;
+  version: string;
+}
+
+function fullName(person: { firstName: string; lastName: string }): string {
+  return `${person.firstName} ${person.lastName}`.trim();
+}
+
+/** Case- and spacing-insensitive, so "juan  dela cruz" confirms "Juan Dela Cruz". */
+function normalizeName(value: string): string {
+  return value.normalize('NFC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-PH');
+}
+
+/** POS-PERF-P66 — did this actor's earlier request delete it (a Super Admin may confirm any app deletion)? */
+async function deletedByThisActor(employeeId: string, actor: Pick<JwtPayload, 'user_id' | 'role'>): Promise<boolean> {
+  const person = await employeesRepository.findPerson(employeeId);
+  if (!person?.accountDeletedAt) return false;
+  return actor.role === ROLES.SUPER_ADMIN || person.accountDeletedBy === actor.user_id;
+}
+
+function formatDay(day: string): string {
+  return new Date(`${day}T00:00:00Z`).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+}
+
+/** POS-PERF-P66 — one plain sentence of what to do before the account can be deleted. */
+function describeBlockingSteps(name: string, prerequisites: RemovalPrerequisites): string {
+  const steps = [
+    prerequisites.open_shifts.length
+      ? `close the open shift at ${prerequisites.open_shifts.map((s) => s.branch_name).join(', ')} (count the cash)`
+      : null,
+    prerequisites.open_attendance.length
+      ? `clock them out, or correct the attendance record, at ${prerequisites.open_attendance.map((a) => a.branch_name).join(', ')}`
+      : null,
+    ...prerequisites.unpaid_payroll.map(
+      (p) =>
+        `finalize payroll at ${p.branch_name} for the hours recorded ${p.first_date === p.last_date ? `on ${formatDay(p.first_date)}` : `from ${formatDay(p.first_date)} to ${formatDay(p.last_date)}`}`,
+    ),
+  ].filter(Boolean);
+  return `${name} can't be deleted yet. First ${steps.join('; and ')}. Nothing has been changed.`;
 }
 
 // Employees directory = staff + supervisor only. Super Admin and Branch
@@ -584,180 +629,128 @@ export const employeesService = {
   },
 
   /**
-   * POS-PERF-P47 — tells the Delete dialog up front whether a permanent
-   * delete is possible, so it can offer Deactivate instead of failing.
-   * Same authorization as the delete itself.
+   * POS-PERF-P47/P66 — tells the Delete dialog up front whether the account
+   * can be deleted now, what stays, and what the person must confirm. Same
+   * authorization as the delete itself. History never blocks (P66); open
+   * work and unpaid payroll hours do.
    */
   async getDeletionEligibility(employeeId: string, requestingUser: JwtPayload): Promise<EmployeeDeletionEligibility> {
     const employee = await employeesRepository.findById(employeeId);
-    if (!employee) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
+    if (!employee) {
+      if (await deletedByThisActor(employeeId, requestingUser)) {
+        return {
+          employee_id: employeeId,
+          can_delete: false,
+          blocked_reason: 'already_deleted',
+          references: null,
+          mode: null,
+          prerequisites: null,
+          confirmation: null,
+        };
+      }
+      throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
+    }
     assertCanManageTarget(requestingUser, employee);
-    const references = await employeesRepository.countHistoryReferences(employeeId);
-    if (employee.deletedAt) {
-      return { employee_id: employeeId, can_delete: false, blocked_reason: 'already_removed', references, mode: null, prerequisites: null };
-    }
-    await assertEmployeeAccess(requestingUser, employee);
+    // A P64-removed row has no branch access left; only a Super Admin reaches it (supervisor target).
+    if (!employee.deletedAt) await assertEmployeeAccess(requestingUser, employee);
 
-    const hasHistory = Object.values(references).some((count) => count > 0);
-    const isBranchAccount = employee.role === ROLES.BRANCH;
-    if (isBranchAccount) {
-      return { employee_id: employeeId, can_delete: false, blocked_reason: 'branch_account', references, mode: null, prerequisites: null };
+    const references = await employeesRepository.countHistoryReferences(employeeId);
+    const confirmation = { name: fullName(employee), version: employee.updatedAt.toISOString() };
+    if (employee.role === ROLES.BRANCH) {
+      return { employee_id: employeeId, can_delete: false, blocked_reason: 'branch_account', references, mode: null, prerequisites: null, confirmation: null };
     }
-    if (!hasHistory) {
-      return { employee_id: employeeId, can_delete: true, blocked_reason: null, references, mode: 'permanent', prerequisites: null };
-    }
-    // POS-PERF-P64 — only a Super Admin removing a supervisor keeps going
-    // with history (assertCanManageTarget already refused anyone else for a
-    // supervisor target). Staff with history still deactivate, as before.
-    if (employee.role !== ROLES.SUPERVISOR) {
-      return { employee_id: employeeId, can_delete: false, blocked_reason: 'has_history', references, mode: null, prerequisites: null };
-    }
-    const prerequisites = await employeesRepository.getRemovalPrerequisites(employeeId);
-    const blocked = prerequisites.open_shifts.length > 0 || prerequisites.open_attendance.length > 0;
+    const prerequisites = await employeesRepository.getRemovalPrerequisites(employeeId, undefined, employee.role);
+    const blocked = hasBlockingPrerequisites(prerequisites);
     return {
       employee_id: employeeId,
       can_delete: !blocked,
       blocked_reason: blocked ? 'open_operations' : null,
       references,
-      mode: 'remove_keep_history',
+      mode: 'permanent',
       prerequisites,
+      confirmation,
     };
   },
 
   /**
-   * POS-PERF-P47 — permanent delete, only for an account nothing refers
-   * to (created by mistake, never worked a shift, never sold, never
-   * clocked in, never acted in the audit trail). Anything with history is
-   * refused with EMPLOYEE_HAS_HISTORY and must be deactivated instead, so
-   * receipts, attendance and audit entries keep resolving to a real name.
-   * Branch accounts are never hard-deleted — they follow their branch's
-   * lifecycle. The audit entry keeps the deleted person's full snapshot.
+   * POS-PERF-P66 — permanent deletion. The account row, its credentials,
+   * sessions, PINs and branch access are removed; every past record stays,
+   * still attributed to the person through their attribution record
+   * (Person). The confirmation is checked here, not only in the dialog: the
+   * typed name must match the account and `version` must be the one the
+   * dialog showed, so a concurrent edit makes the person look again.
+   * Super Admin accounts, branch accounts and yourself are refused. Open
+   * shifts, open clock-ins and (staff) unpaid payroll hours must be resolved
+   * first; nothing changes until they are. A repeat request after success
+   * (double click, lost response) reports 'already_deleted'.
    */
-  async deleteEmployee(employeeId: string, deletedBy: ActorContext, ipAddress: string | null): Promise<EmployeeDeletionResult> {
+  async deleteEmployee(
+    employeeId: string,
+    deletedBy: ActorContext,
+    ipAddress: string | null,
+    confirmation: DeleteEmployeeConfirmation,
+  ): Promise<EmployeeDeletionResult> {
     const before = await employeesRepository.findById(employeeId);
-    if (!before) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
+    if (!before) return employeesService.reportRepeatedDeletion(employeeId, deletedBy, ipAddress);
     assertCanManageTarget(deletedBy, before);
-    if (before.deletedAt) {
-      // Repeat request (double click, retry after a lost response): nothing
-      // changes, but the attempt is still audited.
-      await recordAuditLog({
-        action: 'EMPLOYEE_REMOVAL_REPEATED',
-        entityType: 'user',
-        entityId: employeeId,
-        actorId: deletedBy.user_id,
-        actorRole: deletedBy.role,
-        afterState: { removed: true, removed_at: before.deletedAt.toISOString() },
-        ipAddress,
-      });
-      return { deleted: true, outcome: 'already_removed' };
-    }
-    await assertEmployeeAccess(deletedBy, before);
+    if (!before.deletedAt) await assertEmployeeAccess(deletedBy, before);
     if (before.role === ROLES.BRANCH) {
       throw new EmployeeError('BRANCH_ACCOUNT_NOT_DELETABLE', 'Branch accounts follow their branch and cannot be deleted here', 400);
     }
-
-    let result: Awaited<ReturnType<typeof employeesRepository.hardDeleteUnused>>;
-    try {
-      result = await employeesRepository.hardDeleteUnused(employeeId);
-    } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003') {
-        throw new EmployeeError(
-          'EMPLOYEE_HAS_HISTORY',
-          'This person has recorded history and cannot be permanently deleted — deactivate them instead',
-          409,
-        );
-      }
-      throw error;
+    if (normalizeName(confirmation.confirm_name) !== normalizeName(fullName(before))) {
+      throw new EmployeeError('DELETE_CONFIRMATION_MISMATCH', `Type the full name exactly as shown (${fullName(before)}) to confirm.`, 400);
     }
-    if (!result.deleted) {
-      if (before.role === ROLES.SUPERVISOR && deletedBy.role === ROLES.SUPER_ADMIN) {
-        return employeesService.removeSupervisorKeepingHistory(before, result.references, deletedBy, ipAddress);
-      }
+    const version = new Date(confirmation.version);
+    if (Number.isNaN(version.getTime()) || version.getTime() !== before.updatedAt.getTime()) {
       throw new EmployeeError(
-        'EMPLOYEE_HAS_HISTORY',
-        'This person has recorded history and cannot be permanently deleted — deactivate them instead',
+        'EMPLOYEE_CHANGED',
+        'This account changed after the dialog opened. Review the details and confirm again.',
         409,
-        { references: result.references },
       );
     }
 
-    revokeEmployeeSession(employeeId, 'deleted');
+    const references = await employeesRepository.countHistoryReferences(employeeId);
+    const result = await employeesRepository.deletePermanently(before.id, deletedBy.user_id, version, before.role);
+    if (result.outcome === 'not_found') return employeesService.reportRepeatedDeletion(employeeId, deletedBy, ipAddress);
+    if (result.outcome === 'changed') {
+      throw new EmployeeError('EMPLOYEE_CHANGED', 'This account changed after the dialog opened. Review the details and confirm again.', 409);
+    }
+    if (result.outcome === 'blocked') {
+      throw new EmployeeError('EMPLOYEE_HAS_OPEN_OPERATIONS', describeBlockingSteps(fullName(before), result.prerequisites), 409, {
+        prerequisites: result.prerequisites,
+      });
+    }
+
+    // Committed. Clear this process's caches and sign the browser out now;
+    // none of this can undo the deletion, so a failure is logged, not thrown.
+    try {
+      forgetAccountStatus(before.id);
+      forgetActiveStatus(before.id);
+      revokeEmployeeSession(before.id, 'deleted');
+    } catch (error) {
+      console.error('Post-deletion session cleanup failed (account already deleted):', error);
+    }
 
     await recordAuditLog({
       action: 'EMPLOYEE_DELETED',
       entityType: 'user',
-      entityId: employeeId,
+      entityId: before.id,
       actorId: deletedBy.user_id,
       actorRole: deletedBy.role,
-      beforeState: toEmployeeResponse(before),
-      afterState: { deleted: true },
-      ipAddress,
-    });
-
-    return { deleted: true, outcome: 'permanent' };
-  },
-
-  /**
-   * POS-PERF-P64 — Super Admin "Delete" of a supervisor who has history.
-   * The account leaves normal use for good: no login, refresh, PIN or
-   * existing session, no branch access, absent from operational lists. The
-   * row stays (marked deletedAt) so every sale, expense, attendance record,
-   * stock movement, proof and audit entry keeps the real name; nothing is
-   * reassigned or cascaded. Open shifts and open clock-ins must be closed
-   * first — they are never closed on the owner's behalf.
-   */
-  async removeSupervisorKeepingHistory(
-    before: EmployeeWithAssignments,
-    references: Record<EmployeeHistoryCategory, number>,
-    removedBy: ActorContext,
-    ipAddress: string | null,
-  ): Promise<EmployeeDeletionResult> {
-    const result = await employeesRepository.removeWithHistory(before.id, removedBy.user_id, {
-      isActive: before.isActive,
-      status: before.status,
-    });
-    if (result.outcome === 'blocked') {
-      const { open_shifts: shifts, open_attendance: attendance } = result.prerequisites;
-      const steps = [
-        shifts.length ? `close the open shift at ${shifts.map((s) => s.branch_name).join(', ')}` : null,
-        attendance.length ? `clock them out (or correct the attendance record) at ${attendance.map((a) => a.branch_name).join(', ')}` : null,
-      ].filter(Boolean);
-      throw new EmployeeError(
-        'EMPLOYEE_HAS_OPEN_OPERATIONS',
-        `This supervisor still has open work. Before removing the account, ${steps.join(' and ')}.`,
-        409,
-        { prerequisites: result.prerequisites },
-      );
-    }
-    if (result.outcome === 'already_removed') {
-      await recordAuditLog({
-        action: 'EMPLOYEE_REMOVAL_REPEATED',
-        entityType: 'user',
-        entityId: before.id,
-        actorId: removedBy.user_id,
-        actorRole: removedBy.role,
-        afterState: { removed: true, concurrent: true },
-        ipAddress,
-      });
-      return { deleted: true, outcome: 'already_removed' };
-    }
-
-    forgetAccountStatus(before.id);
-    forgetActiveStatus(before.id);
-    await staffPinService.refreshBranchLookupsForUser(before.id);
-    revokeEmployeeSession(before.id, 'deleted');
-
-    await recordAuditLog({
-      action: 'EMPLOYEE_REMOVED',
-      entityType: 'user',
-      entityId: before.id,
-      actorId: removedBy.user_id,
-      actorRole: removedBy.role,
-      beforeState: toEmployeeResponse(before),
+      // Who the account was, without contact details: the name stays on the
+      // attribution record; email and phone go with the account.
+      beforeState: {
+        id: before.id,
+        first_name: before.firstName,
+        last_name: before.lastName,
+        role: before.role,
+        employee_code: before.employeeId,
+        status: before.status,
+        was_removed_under_p64: Boolean(before.deletedAt),
+      },
       afterState: {
-        removed: true,
-        history_retained: true,
-        references,
+        deleted: true,
+        history_retained: references,
         branches_removed: result.prerequisites.branches,
         branches_left_without_supervisor: result.prerequisites.branches_left_without_supervisor,
         held_orders: result.prerequisites.held_orders,
@@ -766,7 +759,30 @@ export const employeesService = {
       ipAddress,
     });
 
-    return { deleted: true, outcome: 'removed' };
+    return { deleted: true, outcome: 'deleted' };
+  },
+
+  /**
+   * POS-PERF-P66 — the account is already gone. If this actor deleted it (or
+   * the actor is a Super Admin and it was deleted through the app), the
+   * earlier request succeeded and only its response was lost: report that
+   * truthfully and audit the repeat. Anyone else gets 404, as for an id that
+   * never existed.
+   */
+  async reportRepeatedDeletion(employeeId: string, actor: ActorContext, ipAddress: string | null): Promise<EmployeeDeletionResult> {
+    if (!(await deletedByThisActor(employeeId, actor))) {
+      throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
+    }
+    await recordAuditLog({
+      action: 'EMPLOYEE_DELETION_REPEATED',
+      entityType: 'user',
+      entityId: employeeId,
+      actorId: actor.user_id,
+      actorRole: actor.role,
+      afterState: { deleted: true },
+      ipAddress,
+    });
+    return { deleted: true, outcome: 'already_deleted' };
   },
 
   async resetEmployeePassword(

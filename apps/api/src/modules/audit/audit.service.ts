@@ -18,7 +18,7 @@ interface AuditLogRow {
   previousHash: string;
   currentHash: string;
   createdAt: Date;
-  actor?: { id: string; firstName: string; lastName: string; email: string } | null;
+  actor?: { id: string; firstName: string; lastName: string; accountDeletedAt?: Date | null; account?: { email: string | null } | null } | null;
   branch?: { id: string; name: string } | null;
 }
 
@@ -31,7 +31,7 @@ function toAuditLogResponse(row: AuditLogRow): AuditLogResponse {
     actor_id: row.actorId,
     actor_role: row.actorRole,
     actor: row.actor
-      ? { id: row.actor.id, first_name: row.actor.firstName, last_name: row.actor.lastName, email: row.actor.email }
+      ? { id: row.actor.id, first_name: row.actor.firstName, last_name: row.actor.lastName, email: row.actor.account?.email ?? null, account_deleted: Boolean(row.actor.accountDeletedAt) }
       : null,
     branch_id: row.branchId,
     branch: row.branch ? { id: row.branch.id, name: row.branch.name } : null,

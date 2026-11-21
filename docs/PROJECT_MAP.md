@@ -2,7 +2,7 @@
 
 Navigation only, not proof of what the code does today. Rules live in [`.claude/CLAUDE.md`](../.claude/CLAUDE.md), architecture in [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md), and
 the current state of work in [`CURRENT_HANDOFF.md`](CURRENT_HANDOFF.md). Paths were checked against the working tree on
-2026-11-03 (P64/P65 entries 2026-11-22). Update the affected entries when files move. Keep this file under 180 lines and link runbooks, not details.
+2026-11-03 (P64/P65/P66 entries 2026-11-22). Update the affected entries when files move. Keep this file under 180 lines and link runbooks, not details.
 
 Shorthand: `API/` = `apps/api/src/modules/`, `WEB/` = `apps/web/`, `SHARED/` = `packages/shared/src/schemas/`,
 `RUN/` = `docs/runbooks/`.
@@ -119,14 +119,14 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 - **Tests:** `API/payroll/payroll-calc.test.ts`, `API/payroll/payroll.integration.test.ts`,
   `API/payroll/p54-payroll-breaks.integration.test.ts`, `WEB/components/payroll/payroll-components.test.tsx`
 - **Runbooks:** `RUN/pos-perf-p52-payroll-settings-and-reports.md`, `RUN/pos-perf-p54-payroll-discounts-breaks-integration.md`,
-  `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§3)
+  `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§3), `RUN/pos-perf-p66-delete-dashboard-payroll.md` (§5: setup checklist `payroll-setup-checklist.tsx`, review `payroll-review-table.tsx`, tests `payroll-flow.test.tsx`)
 
 ## Dashboards, reports and stock alerts
 
 - **UI:** `WEB/app/(admin)/admin/dashboard/page.tsx`, `WEB/app/(supervisor)/supervisor/dashboard/page.tsx`, `WEB/app/(branch)/branch/dashboard/page.tsx`, `WEB/components/admin/dashboard-low-stock-summary.tsx`, `WEB/components/supervisor/dashboard-inventory-alerts.tsx`, `WEB/app/(admin)/admin/reports/page.tsx`, `WEB/components/branch-ops/reports-view.tsx`, `WEB/components/reports/`
 - **API:** `API/reports/` (exports in `apps/api/src/lib/reports/`); every PDF renders in the worker pool `lib/reports/pdf-render-pool.ts` + `pdf-render.worker.ts` (P62; tests `p62-pdf-isolation.test.ts`, `p62-pdf-routes.integration.test.ts`; benchmark `apps/api/scripts/p62-pdf-render-benchmark.mjs`; interactive request deadline `PDF_REQUEST_DEADLINE_MS` and deadline-aware admission in the pool); partial-file labelling in `export-coverage.ts`; shortage counts in `API/stock-availability/stock-availability.service.ts`; schema `SHARED/reports.schema.ts`
 - **Tests:** `WEB/components/admin/dashboard-low-stock-summary.test.tsx`, `WEB/components/supervisor/dashboard-inventory-alerts.test.tsx`, `API/reports/reports.service.test.ts`, `API/reports/p59-discount-report.integration.test.ts`, `API/reports/p59-export-coverage.integration.test.ts`, `API/reports/p59-report-coverage.integration.test.ts` (fixtures pinned to one Manila report day via `API/reports/report-day-fixture.ts`, P65)
-- **Runbooks:** `RUN/pos-perf-p47-dashboard-and-management.md`, `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§2), `RUN/pos-perf-p59-reports-and-ui-cleanup.md`
+- **Runbooks:** `RUN/pos-perf-p47-dashboard-and-management.md`, `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§2), `RUN/pos-perf-p59-reports-and-ui-cleanup.md`, `RUN/pos-perf-p66-delete-dashboard-payroll.md` (§4: dashboards no longer show the expense-by-type and Extra Supplies panels)
 
 ## Expenses and expense types
 
@@ -155,7 +155,7 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 - **Branch and catalog scope:** `apps/api/src/lib/branch-access.ts`, `apps/api/src/lib/catalog-authority.ts`
 - **Auth module:** `API/auth/auth.router.ts`, `API/auth/auth.service.ts` (refresh protocol: `refreshToken`, grace `ROTATION_GRACE_MS` in `auth.repository.ts`); schema `SHARED/auth.schema.ts`
 - **Web session:** `WEB/lib/auth-refresh.ts` (refresh verdicts, Web Lock), `WEB/lib/api-client.ts` (401 handling, `IDENTITY_CHANGED`; P62: protected requests wait for the session, `isPublicApiPath`), `WEB/stores/auth.store.ts` `sessionStatus`, `WEB/stores/branch.store.ts` (reloaded branch is a hint until the token grants it), `WEB/hooks/use-identity-scoped-query-cache.ts`, `WEB/lib/offline/purge-api-response-cache.ts`; SW rules in `apps/web/next.config.ts`
-- **Account removal (P64):** `deleteEmployee`/`removeSupervisorKeepingHistory` in `API/employees/employees.service.ts`, `removeWithHistory`/`lockNonRemovedUser` in `employees.repository.ts`, marker `removedAccountRevocationHash` in `apps/api/src/lib/verify-access-token.ts`, fixture cleanup `API/employees/fixture-account-cleanup.ts` + `apps/api/scripts/p64-fixture-account-cleanup.ts`, dialog `WEB/components/supervisor/employees/remove-employee-dialog.tsx`; tests `API/employees/p64-account-removal.integration.test.ts`, `apps/api/scripts/test-p64-migration-on-populated-data.ts`, driver `tests/e2e/manual/p64/`; runbook `RUN/pos-perf-p64-account-removal-and-dashboard-cleanup.md`
+- **Account deletion (P66, replaces P64 removal):** history references `Person` (`people`, attribution record, no credentials) instead of `User`; migration `20261122120000_pos_perf_p66_account_deletion_people` (triggers keep it in step, refuse id reuse). `getDeletionEligibility`/`deleteEmployee` in `API/employees/employees.service.ts`, `deletePermanently`/`getRemovalPrerequisites`/`findUnpaidPayrollAttendance` in `employees.repository.ts`, body `deleteEmployeeSchema` in `SHARED/employee.schema.ts`, marker `removedAccountRevocationHash` in `apps/api/src/lib/verify-access-token.ts`, cleanup `API/employees/fixture-account-cleanup.ts` + `apps/api/scripts/p64-fixture-account-cleanup.ts`, dialog `WEB/components/supervisor/employees/remove-employee-dialog.tsx`; tests `API/employees/p66-account-deletion.integration.test.ts`, `apps/api/scripts/test-p66-migration-on-populated-data.ts`; runbook `RUN/pos-perf-p66-delete-dashboard-payroll.md`
 - **Rate limits:** `apps/api/src/middleware/rate-limiter.ts` (`apiLimiter` keys verified users; logout has its own per-user budget). Proxy trust: `app.set('trust proxy', 1)` in `apps/api/src/app.ts`, tested by `apps/api/src/p62-proxy-trust.test.ts`
 - **Tests:** `apps/api/src/middleware/rbac.test.ts`, `apps/api/src/lib/branch-access.test.ts`,
   `API/p40-route-boundaries.test.ts`, `API/products/products.branch-isolation.integration.test.ts`

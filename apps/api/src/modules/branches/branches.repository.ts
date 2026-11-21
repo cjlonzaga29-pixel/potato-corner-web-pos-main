@@ -95,17 +95,16 @@ async function countStaffTimedIn(branchId: string): Promise<number> {
   const rows = await prisma.attendanceRecord.findMany({
     where: { branchId, clockOutServerTime: null, deletedAt: null },
     select: {
+      // POS-PERF-P66 — live account fields through Person.account (null once deleted, which counts as not working).
       employee: {
         select: {
-          isActive: true,
-          status: true,
-          branchAssignments: { where: { branchId, removedAt: null }, select: { id: true } },
+          account: { select: { isActive: true, status: true, branchAssignments: { where: { branchId, removedAt: null }, select: { id: true } } } },
         },
       },
     },
   });
   return rows.filter(
-    (row) => row.employee.isActive && row.employee.status === 'active' && row.employee.branchAssignments.length > 0,
+    (row) => row.employee.account?.isActive === true && row.employee.account.status === 'active' && row.employee.account.branchAssignments.length > 0,
   ).length;
 }
 
@@ -117,19 +116,19 @@ async function countStaffTimedInByBranch(): Promise<Map<string, number>> {
       branchId: true,
       employee: {
         select: {
-          isActive: true,
-          status: true,
-          branchAssignments: { where: { removedAt: null }, select: { branchId: true } },
+          account: { select: { isActive: true, status: true, branchAssignments: { where: { removedAt: null }, select: { branchId: true } } } },
         },
       },
     },
   });
   const byBranch = new Map<string, number>();
   for (const row of rows) {
+    const account = row.employee.account;
     const isCurrentlyWorking =
-      row.employee.isActive &&
-      row.employee.status === 'active' &&
-      row.employee.branchAssignments.some((a) => a.branchId === row.branchId);
+      account !== null &&
+      account.isActive &&
+      account.status === 'active' &&
+      account.branchAssignments.some((a) => a.branchId === row.branchId);
     if (isCurrentlyWorking) {
       byBranch.set(row.branchId, (byBranch.get(row.branchId) ?? 0) + 1);
     }

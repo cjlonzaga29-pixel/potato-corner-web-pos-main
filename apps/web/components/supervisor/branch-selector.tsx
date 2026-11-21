@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { useBranch } from '@/hooks/use-branch';
 import { useBranches } from '@/hooks/queries/use-branches';
+import { useBranchStore } from '@/stores/branch.store';
 
 /**
  * GET /api/branches?status=active already scopes results to the requesting
@@ -38,7 +39,10 @@ export function BranchSelector() {
     // persist that as the new active branch via the existing store.
     const activeIdStillValid = branches.some((branch) => branch.id === activeBranchId);
     if (!activeIdStillValid) {
-      setActiveBranch(branches[0] as BranchResponse);
+      // POS-PERF-P62 — keep the branch this tab had before a reload when the
+      // server still lists it (the token's branch list can lag an assignment).
+      const restoredId = useBranchStore.getState().restoredBranchId;
+      setActiveBranch((branches.find((branch) => branch.id === restoredId) ?? branches[0]) as BranchResponse);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeBranchId, branches, isLoading]);

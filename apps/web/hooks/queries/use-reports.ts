@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
   PARTIAL_EXPORT_FILENAME_MARKER,
+  ROLES,
   SOCKET_EVENTS,
   type ReportPeriodSummary,
   type ReportType,
@@ -32,6 +33,7 @@ import {
   type InventoryAnalyticsReport,
 } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
+import { useAuthStore } from '@/stores/auth.store';
 import { requestReportExport, type ExportOutcome } from '@/lib/report-export-client';
 import { triggerBrowserDownload } from '@/lib/trigger-download';
 import { useSocket } from '@/hooks/use-socket';
@@ -131,7 +133,10 @@ export function useDailySalesReport(filters: ReportQueryFilters, enabled = true)
  * allows an admin to omit branch_id).
  */
 export function useDashboardSalesTrendReport(filters: ReportQueryFilters, enabled = true) {
-  return useRealtimeReport<DailySalesReportRow>('DAILY_SALES', filters, enabled);
+  // POS-PERF-P62 — only a super admin may leave branch_id out; anyone else
+  // waits for a branch instead of sending a request the API refuses (400).
+  const mayOmitBranch = useAuthStore((s) => s.user?.role === ROLES.SUPER_ADMIN);
+  return useRealtimeReport<DailySalesReportRow>('DAILY_SALES', filters, enabled && (Boolean(filters.branch_id) || mayOmitBranch));
 }
 export function useShiftSummaryReport(filters: ReportQueryFilters, enabled = true) {
   return useRealtimeReport<ShiftSummaryReportRow>('SHIFT_SUMMARY', filters, enabled && Boolean(filters.branch_id));

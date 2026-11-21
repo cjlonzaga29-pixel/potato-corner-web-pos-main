@@ -198,6 +198,61 @@ function buildHeaders(init?: RequestInit, accessTokenOverride?: string): Headers
 }
 
 /**
+ * POS-PERF-P62 — the only API paths that work without a session: signing in,
+ * renewing, password reset, the 2FA second step, PIN login and the public
+ * receipt lookup (apps/api: auth.router.ts, receipts.router.ts). Every other
+ * path is refused without an access token, so it is never sent without one.
+ */
+const PUBLIC_PATHS = new Set([
+  '/api/auth/login',
+  '/api/auth/refresh',
+  '/api/auth/request-reset',
+  '/api/auth/reset-password',
+  '/api/auth/2fa/verify-login',
+  '/api/auth/2fa/verify-backup-code',
+  '/api/auth/pin/login',
+]);
+
+export function isPublicApiPath(path: string): boolean {
+  const pathname = path.split('?')[0] ?? path;
+  return PUBLIC_PATHS.has(pathname) || pathname.startsWith('/api/receipts/');
+}
+
+function syntheticResponse(status: number, error: { code: string; message: string }): Response {
+  return new Response(JSON.stringify({ data: null, error, meta: null }), { status, headers: { 'content-type': 'application/json' } });
+}
+
+/**
+ * POS-PERF-P62 — a protected request found no access token. On a page load the
+ * token is memory-only until the refresh cookie has been tried, and a query can
+ * start before useAuth's restore does (child effects run first): such a request
+ * used to go out without a token, get 401 and count against the per-IP budget.
+ * Instead it waits for the session: it joins (or starts) the one shared refresh
+ * and goes out with the token it returns.
+ *
+ * Returns null when a token is now held; otherwise the response to give the
+ * caller. Nothing is sent in that case.
+ */
+async function establishSession(): Promise<Response | null> {
+  if (useAuthStore.getState().sessionStatus === 'unauthenticated') {
+    // Signed out, or the server already ended this session: don't ask again.
+    return syntheticResponse(401, SESSION_EXPIRED_ERROR);
+  }
+  const verdict = classifyRefreshOutcome(await getOrStartRefresh());
+  if (useAuthStore.getState().accessToken) return null;
+  if (verdict.kind === 'ok' && applyRefreshedToken(verdict.accessToken)) return null;
+  if (verdict.kind === 'rejected') {
+    useAuthStore.getState().clearAuth();
+    if (typeof window !== 'undefined') broadcastLogout();
+    const ended = syntheticResponse(401, SESSION_EXPIRED_ERROR);
+    sessionEndedResponses.add(ended);
+    return ended;
+  }
+  // Unconfirmed: not signed out, and nothing was sent; the caller may retry.
+  return syntheticResponse(503, SESSION_UNCONFIRMED_ERROR);
+}
+
+/**
  * fetch wrapper that transparently handles authentication: attaches the
  * bearer token and device ID, and on a 401 attempts a silent token refresh
  * before retrying the original request once. If refresh fails, clears the
@@ -238,6 +293,13 @@ export async function fetchAuthenticated(
 
 /** Responses this module made after a definitive refresh rejection, which itself clears the identity. */
 const sessionEndedResponses = new WeakSet<Response>();
+
+/**
+ * POS-PERF-P62 — the access token each response was actually sent with. A
+ * request that waited for the session went out with a token it didn't have
+ * when it was made, and the MUST_CHANGE_PASSWORD guard compares against that one.
+ */
+const sentWithToken = new WeakMap<Response, string | null>();
 
 async function fetchAuthenticatedForIdentity(
   path: string,
@@ -290,6 +352,11 @@ async function fetchAuthenticatedForIdentity(
     return refreshViaSharedSingleton();
   }
 
+  if (!isPublicApiPath(path) && !useAuthStore.getState().accessToken) {
+    const withoutSession = await establishSession();
+    if (withoutSession) return withoutSession;
+  }
+
   const inFlightRefresh = peekInFlightRefresh();
   if (inFlightRefresh && !_isRetry && !isAuthPath) {
     // A refresh is already resolving elsewhere (e.g. another mutation's 401
@@ -312,12 +379,14 @@ async function fetchAuthenticatedForIdentity(
   }
 
   let response: Response;
+  const sentWith = useAuthStore.getState().accessToken;
   try {
     response = await fetch(`${API_URL}${path}`, {
       ...init,
       credentials: 'include',
       headers: buildHeaders(init),
     });
+    if (response && typeof response === 'object') sentWithToken.set(response, sentWith);
   } catch (err) {
     console.error('[apiClient] network error', { path, method: init?.method ?? 'GET', err });
     throw err;
@@ -462,7 +531,8 @@ export async function apiClient<T>(
     body.error.code === 'MUST_CHANGE_PASSWORD' &&
     typeof window !== 'undefined' &&
     window.location.pathname !== '/change-password' &&
-    requestAccessToken === useAuthStore.getState().accessToken
+    (accessTokenOverride ? requestAccessToken : sentWithToken.has(response) ? sentWithToken.get(response) : requestAccessToken) ===
+      useAuthStore.getState().accessToken
   ) {
     sessionStorage.setItem('pc_redirect_after_password_change', window.location.pathname + window.location.search);
     window.location.href = '/change-password';

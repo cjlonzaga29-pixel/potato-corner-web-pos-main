@@ -213,6 +213,10 @@ export function useAuth() {
         if (!attempt.transientError) {
           clearAuth();
           router.replace('/login');
+        } else {
+          // POS-PERF-P62 — neither signed in nor out: protected requests try
+          // the refresh again themselves before sending (api-client.ts).
+          useAuthStore.getState().markSessionUnconfirmed();
         }
       } finally {
         if (!cancelled) setLoading(false);

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { useState } from 'react';
 import { render, screen, within, cleanup, fireEvent, act, waitFor } from '@testing-library/react';
 
@@ -49,8 +49,7 @@ const GCASH_TXN = {
   created_at: '2026-07-30T23:09:04.900Z',
 };
 
-beforeEach(() => {
-  vi.clearAllMocks();
+function primeMocks() {
   mockUseTransaction.mockReturnValue({ data: undefined });
   mockUseTransactions.mockReturnValue({
     data: { transactions: [CASH_TXN, GCASH_TXN], total: 2, page: 1, limit: 100 },
@@ -59,10 +58,28 @@ beforeEach(() => {
     refetch: vi.fn(),
   });
   mockUseDiscountAuditTrail.mockReturnValue({ data: { data: [] }, isLoading: false });
+}
+
+// The first mount of the sheet pays the one-off cold cost (module evaluation,
+// Radix/portal setup, JIT): about 0.6s on an idle machine, more under load.
+// Pay it once here, under the hook budget, instead of inside whichever test
+// happens to run first.
+beforeAll(() => {
+  primeMocks();
+  render(<DailySalesDrilldown open branchId="branch-1" branchName="Puregold GMA" reportDate="2026-07-30" onOpenChange={vi.fn()} />);
+  cleanup();
+});
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  primeMocks();
 });
 
 afterEach(() => {
   cleanup();
+  // Never let fake timers outlive the test that installed them (including one
+  // that failed or timed out) — RTL's waitFor/findBy would stall on them.
+  vi.useRealTimers();
 });
 
 describe('DailySalesDrilldown', () => {
@@ -76,20 +93,23 @@ describe('DailySalesDrilldown', () => {
 
   // POS-PERF-P40 — the search runs on the server (debounced) so it covers
   // every page, and returns to page 1.
-  it('sends the receipt number search to the server and resets to the first page', async () => {
-    vi.useFakeTimers();
-    try {
-      render(
-        <DailySalesDrilldown open branchId="branch-1" branchName="Puregold GMA" reportDate="2026-07-30" onOpenChange={vi.fn()} />,
-      );
-      fireEvent.change(screen.getByLabelText('Receipt Number'), { target: { value: '000002' } });
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(350);
-      });
-      expect(mockUseTransactions).toHaveBeenLastCalledWith(expect.objectContaining({ receipt_search: '000002', page: 1 }));
-    } finally {
-      vi.useRealTimers();
-    }
+  //
+  // Kept fully synchronous on purpose: an `await act(async ...)` that is still
+  // pending when vitest times the test out leaves React's act scope open, and
+  // every later render in this file then never commits (the whole file
+  // cascades). A sync act cannot be left open, and only the debounce's
+  // setTimeout/clearTimeout are faked. afterEach restores real timers.
+  it('sends the receipt number search to the server and resets to the first page', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    render(
+      <DailySalesDrilldown open branchId="branch-1" branchName="Puregold GMA" reportDate="2026-07-30" onOpenChange={vi.fn()} />,
+    );
+    fireEvent.change(screen.getByLabelText('Receipt Number'), { target: { value: '000002' } });
+    expect(mockUseTransactions).not.toHaveBeenLastCalledWith(expect.objectContaining({ receipt_search: '000002' }));
+    act(() => {
+      vi.advanceTimersByTime(350);
+    });
+    expect(mockUseTransactions).toHaveBeenLastCalledWith(expect.objectContaining({ receipt_search: '000002', page: 1 }));
   });
 
   it('paginates on the server using the total, not the rows already loaded', () => {

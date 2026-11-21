@@ -195,6 +195,12 @@ describe('LoginForm 2FA challenge', () => {
       render(<LoginForm />);
       await fillAndSubmit();
       await waitFor(() => expect(screen.getByLabelText('Authentication code')).toBeInTheDocument());
+      // The TOTP screen can commit before its countdown effect runs: that
+      // render is not inside act, so React leaves the passive effect to a
+      // later Scheduler task. Until it runs, secondsLeft is still its initial
+      // 0 and no interval exists, so advancing the clock does nothing. Wait
+      // for the effect's first tick before moving time.
+      await waitFor(() => expect(screen.getByText(/Challenge expires in 2:05/)).toBeInTheDocument());
 
       act(() => vi.advanceTimersByTime(124_000));
       expect(screen.getByText(/Challenge expires in 0:01/)).toBeInTheDocument();

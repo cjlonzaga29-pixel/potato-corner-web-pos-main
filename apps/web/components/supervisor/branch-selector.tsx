@@ -9,7 +9,6 @@ import { Button } from '@/components/ui/button';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
 import { useBranch } from '@/hooks/use-branch';
 import { useBranches } from '@/hooks/queries/use-branches';
-import { useBranchStore } from '@/stores/branch.store';
 
 /**
  * GET /api/branches?status=active already scopes results to the requesting
@@ -24,7 +23,7 @@ import { useBranchStore } from '@/stores/branch.store';
  * Admin whose realtime refresh hasn't landed yet.
  */
 export function BranchSelector() {
-  const { activeBranchId, activeBranch, setActiveBranch } = useBranch();
+  const { activeBranchId, activeBranch, restoredBranchId, setActiveBranch } = useBranch();
   const { data, isLoading } = useBranches({ status: 'active', limit: 100 });
   const queryClient = useQueryClient();
   const branches = data?.branches ?? [];
@@ -41,11 +40,10 @@ export function BranchSelector() {
     if (!activeIdStillValid) {
       // POS-PERF-P62 — keep the branch this tab had before a reload when the
       // server still lists it (the token's branch list can lag an assignment).
-      const restoredId = useBranchStore.getState().restoredBranchId;
-      setActiveBranch((branches.find((branch) => branch.id === restoredId) ?? branches[0]) as BranchResponse);
+      setActiveBranch((branches.find((branch) => branch.id === restoredBranchId) ?? branches[0]) as BranchResponse);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeBranchId, branches, isLoading]);
+  }, [activeBranchId, branches, isLoading, restoredBranchId]);
 
   if (isLoading) {
     return <LoadingSpinner size="sm" />;

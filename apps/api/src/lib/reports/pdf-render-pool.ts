@@ -41,6 +41,9 @@ export class PdfRenderError extends Error {
   }
 }
 
+/** Abort reason for an interactive request that ran past PDF_REQUEST_DEADLINE_MS. */
+export const PDF_REQUEST_DEADLINE = Symbol('pdf-request-deadline');
+
 /** Limits for one pool. The defaults and the measurements behind them are in the P62 runbook, §3. */
 export interface PdfRenderPoolOptions {
   concurrency: number;
@@ -129,6 +132,10 @@ export function createPdfRenderPool(overrides: Partial<PdfRenderPoolOptions> = {
   const queue: Job[] = [];
   const workers = new Set<PoolWorker>();
   let closed = false;
+
+  /** A request deadline (cancelPdfWhenClientLeaves) aborts with DEADLINE; anything else is the client leaving. */
+  const abortCode = (signal: AbortSignal | undefined, running: boolean): PdfRenderErrorCode =>
+    signal?.reason === PDF_REQUEST_DEADLINE ? (running ? 'PDF_TIMEOUT' : 'PDF_BUSY') : 'PDF_CANCELLED';
 
   function settleAbortListener(job: Job): void {
     if (job.onAbort) job.signal?.removeEventListener('abort', job.onAbort);
@@ -221,7 +228,7 @@ export function createPdfRenderPool(overrides: Partial<PdfRenderPoolOptions> = {
     settleAbortListener(job);
     if (job.signal) {
       // terminate() stops the thread even in the middle of synchronous layout.
-      job.onAbort = () => fail(entry, 'PDF_CANCELLED');
+      job.onAbort = () => fail(entry, abortCode(job.signal, true));
       job.signal.addEventListener('abort', job.onAbort, { once: true });
     }
     entry.worker.postMessage(job.payload, [job.payload.buffer as ArrayBuffer]);
@@ -242,7 +249,7 @@ export function createPdfRenderPool(overrides: Partial<PdfRenderPoolOptions> = {
     render(kind: PdfRenderKind, args: unknown[], signal?: AbortSignal): Promise<Buffer> {
       return new Promise<Buffer>((resolve, reject) => {
         if (closed || signal?.aborted) {
-          reject(new PdfRenderError('PDF_CANCELLED'));
+          reject(new PdfRenderError(closed ? 'PDF_CANCELLED' : abortCode(signal, false)));
           return;
         }
         const running = [...workers].filter((entry) => entry.current !== null).length;
@@ -268,7 +275,7 @@ export function createPdfRenderPool(overrides: Partial<PdfRenderPoolOptions> = {
           job.onAbort = () => {
             queue.splice(queue.indexOf(job), 1);
             if (job.queueTimer) clearTimeout(job.queueTimer);
-            reject(new PdfRenderError('PDF_CANCELLED'));
+            reject(new PdfRenderError(abortCode(signal, false)));
           };
           signal.addEventListener('abort', job.onAbort, { once: true });
         }
@@ -297,12 +304,26 @@ export const pdfRenderPool = createPdfRenderPool();
 const clientAbort = new AsyncLocalStorage<AbortSignal>();
 
 /**
+ * POS-PERF-P62 — an interactive PDF request must answer before the proxy in front
+ * of the API gives up on it. Measured: the web's /api rewrite cut every export at
+ * 30.0s and the browser got a bare 500 instead of the message below (P62 runbook
+ * §3). 25s leaves room for the route's own database reads and the transfer. Past
+ * it, a job still queued is refused PDF_BUSY and a running one PDF_TIMEOUT, both
+ * telling the person to try a shorter range or CSV; the thread is terminated.
+ */
+export const PDF_REQUEST_DEADLINE_MS = Number(process.env.PDF_REQUEST_DEADLINE_MS || 25_000);
+
+/**
  * Stops the render when the person who asked has gone (a closed tab, a dropped
- * connection), so their abandoned file doesn't hold the only worker.
+ * connection), so their abandoned file doesn't hold the only worker, and at the
+ * request deadline above. The background report queue doesn't pass through here.
  */
 export function cancelPdfWhenClientLeaves(_req: Request, res: Response, next: NextFunction): void {
   const controller = new AbortController();
+  const deadline = setTimeout(() => controller.abort(PDF_REQUEST_DEADLINE), PDF_REQUEST_DEADLINE_MS);
+  deadline.unref();
   res.once('close', () => {
+    clearTimeout(deadline);
     if (!res.writableEnded) controller.abort();
   });
   clientAbort.run(controller.signal, next);

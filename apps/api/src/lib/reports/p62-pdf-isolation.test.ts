@@ -6,6 +6,8 @@ import { Prisma } from '@prisma/client';
 import {
   createPdfRenderPool,
   PdfRenderError,
+  PDF_REQUEST_DEADLINE,
+  PDF_REQUEST_DEADLINE_MS,
   toPlainData,
   type PdfRenderKind,
 } from './pdf-render-pool.js';
@@ -105,6 +107,25 @@ describe('PDF render pool (P62)', () => {
     running.abort();
     expect(await codeOf(first)).toBe('PDF_CANCELLED');
     expect((await limited.render(asKind('ok'), [])).toString()).toBe('%PDF-ok');
+  });
+
+  it('at the request deadline, a queued job is PDF_BUSY and a running one PDF_TIMEOUT; the pool recovers', async () => {
+    // P62 browser run: the web's /api rewrite cut exports at 30.0s with a bare 500.
+    const limited = pool({ concurrency: 1 });
+    const running = new AbortController();
+    const queued = new AbortController();
+    const first = limited.render(asKind('hang'), [], running.signal);
+    const second = limited.render(asKind('ok'), [], queued.signal);
+    queued.abort(PDF_REQUEST_DEADLINE);
+    expect(await codeOf(second)).toBe('PDF_BUSY');
+    running.abort(PDF_REQUEST_DEADLINE);
+    expect(await codeOf(first)).toBe('PDF_TIMEOUT');
+    expect(limited.stats()).toMatchObject({ running: 0, queued: 0 });
+    const late = new AbortController();
+    late.abort(PDF_REQUEST_DEADLINE);
+    expect(await codeOf(limited.render(asKind('ok'), [], late.signal))).toBe('PDF_BUSY');
+    expect((await limited.render(asKind('ok'), [])).toString()).toBe('%PDF-ok');
+    expect(PDF_REQUEST_DEADLINE_MS).toBeLessThan(30_000);
   });
 
   it('shutdown refuses queued work, stops running work and accepts nothing more', async () => {

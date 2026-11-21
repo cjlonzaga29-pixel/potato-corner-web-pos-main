@@ -9,27 +9,28 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
 ## Observed state
 
 - **Observed:** 2026-11-21
-- **Branch:** `feat/pos-perf-p62-performance-and-reliability`, from `42bd3eb` (whose parent is the P61 docs tip `fa31ede`). Local only: not pushed, no PR, nothing deployed, production not accessed.
+- **Branch:** `feat/pos-perf-p62-performance-and-reliability`. Local only: not pushed, no PR, nothing deployed, production not accessed.
 - **Ancestry:** P62 → P61 → P60 → P59, all unpushed, from `origin/main` `6931b10`. Merging P62 brings in all of them.
-- **Tested code:** full API suite at `6fd5f8d`, full web suite at `780c5b1`, builds and PDF benchmark at `a0be182`. Later commits are docs only.
-- **Working tree:** only `.vscode/settings.json` is modified (the owner's personal setting). Never stage it. `1be724e` removed it from the committed history.
-- **PR #44** and the six `prunable` P51–P55R3 worktrees: unchanged and not checked; see GitHub.
+- **This batch:** started at `a54321f`. Application code tested in the browser and timing runs: `197aaca`. Final suites: `08fcea4` (same application code). The docs commit follows it.
+- **Working tree:** only `.vscode/settings.json` is modified (the owner's personal setting). Never stage it.
+- **Local leftovers (task-owned, safe to delete):** `C:\p62` (browser profiles, embedded Postgres data, the `git archive` of `500e97e`, outputs). Earlier `C:\p59r`, `C:\p59c` still there.
 
-## Task status: P62, partly verified — not release-ready
+## Task status: P62, verified locally in the browser — not release-ready
 
-Fixes refresh-token protocol defects (cache read before checks, logout leaving a live successor, a 60s logged-out token, replay revocation rolled back). Transient refresh failures and wrong-PIN 401s no longer sign users out. User data is isolated across logout and user switch, and the service worker no longer caches authenticated API responses. Rate limits count verified users, not one shared IP. The PDF worker isolation is now tested and packaged. See [`runbooks/pos-perf-p62-performance-and-reliability.md`](runbooks/pos-perf-p62-performance-and-reliability.md).
+Auth, cache isolation, PDF isolation and rate limits from the first batch, plus this batch. The test runner exit status is fixed: it used to exit 0 on failure. Four defects were found in the real browser and load runs and fixed: the old service worker kept caching during an upgrade; dead sessions kept their cookies, so signed-out users looped back to the dashboard; a rate-limited logout did nothing; and PDFs past the web proxy's 30s came back as bare 500s. In the tests, two copies of React loaded when run from a `c:\` cwd (fixed). The fixture no longer uses raw SQL. The Extra Supplies rollback was rehearsed on real pre-P61 code. See [`runbooks/pos-perf-p62-performance-and-reliability.md`](runbooks/pos-perf-p62-performance-and-reliability.md).
 
 | Check | Result |
 | --- | --- |
-| Full API suite, default parallel, `6fd5f8d` | **9 failed**, 3,796 passed. 7 fixed in `780c5b1` and passing on rerun; still failing: `payroll-export` multi-page (load), `P61` hook timeout; `P58` race seen once (runbook §7) |
-| Full web suite, 5s timeout, `780c5b1` | **10 failed** (all 5s timeouts in untouched files), 1,697 passed |
+| Full API suite, `08fcea4` | Run 1: **1 failed file** (P57 hook timeout, unexplained; 0.69s alone). Run 2: **0 failed**, 3,837 passed |
+| Full web suite, 5s default, `08fcea4` | **0 failed**, 1,708 passed |
 | Shared, typecheck, lint, builds | 83 passed; clean; 0 errors; pass |
-| PDF, production build, loaded laptop | Event-loop stall 2.9–5.8s on the request thread vs 25–161ms in the worker (runbook §3) |
-| Browser with SW, navigation timing, checkout under PDF load, rollback rehearsal | **Not done** (runbook §9) |
+| Browser, service worker active, local stack, `197aaca` | Upgrade 8/8; sessions 10/11 (the 1 is the driver counting its own injected 429s); terminal flows 10/10 three times (idle twice, under PDF load); cross-role 5/5 |
+| PDF through the proxy | No more bare 500s; 25s deadline answers `PDF_BUSY`/`PDF_TIMEOUT` JSON; a 7-day busy-branch PDF takes ~20s; sustained load 2/12 succeed |
+| Extra Supplies rollback to `500e97e` | Old code expects ₱1,200 instead of ₱1,225, refuses the correct count without a reason, closes flagged +₱25; current code keeps all records. **Prohibited with open shifts that have collections** |
 
-**Rollout:** no migration; API and web in either order. A session mid-refresh at deploy or rollback may be signed out once (runbook §5).
+**Rollout:** no migration; API, then web. **Release blockers:** hosted checks (client IP through Vercel → Render, hosted proxy timeout); PDF capacity (owner); Extra Supplies rollback procedure (owner); pre-restore request burst that spends the per-IP budget (predates P62); the unexplained P57 and P58 flakes. Runbook §11.
 
-**Next:** browser verification with the service worker active, navigation and checkout-under-load measurements, the Extra Supplies rollback rehearsal, and the parallel test failures.
+**Next:** owner decisions in runbook §11; with authorization, the staging checklist in §4.
 
 ## Earlier: P61, verified locally
 
@@ -135,9 +136,9 @@ Earlier failures are recorded in runbook §7 and §10.
 
 - **Still open from P59, not fixed by P60:** PDF blocking and the uncapped routes (both below) and the owner decisions (P59 section) block release.
 - **Found in P60, not changed:** see runbook §7.
-- No failing checks. Production was not accessed, and local Git says nothing about what is deployed.
-- **Resolved in P62 at code level:** PDF rendering runs in a bounded worker (P62 runbook §3). Hosted timing still wasn't measured. A 2,000-row Transaction PDF can time out (refused cleanly): owner decision on the cap.
-- **Test environment (P62):** `with-test-postgres.ts` exits 0 even when vitest fails; read vitest's summary.
+- Production was not accessed, and local Git says nothing about what is deployed.
+- **P62:** PDF rendering runs in a bounded worker with a 25s interactive deadline (P62 runbook §3). Hosted timing not measured. Capacity is an owner decision (§11).
+- **Test environment (P62):** fixed in `db80eb0`; `with-test-postgres.ts` now exits nonzero on any failure.
 - **Unresolved: the Transaction PDF route is uncapped.** `GET /api/transactions/export/pdf`, behind the Daily Sales drill-down, took 9.6s and stalled `/health` for 8.4s at about 267 rows, and allows 2,000. Admin's synchronous PDFs also stay uncapped below 2,000 rows. Decide before release. See runbook §11.
 - **Owner to note:** a branch with more than 100 sales a week gets a partial PDF on the default 7-day range. CSV stays complete up to 10,000 rows.
 - **Deploy order:** API before web, or the new Void/Refund tab lists every sale during the overlap. See runbook §11.

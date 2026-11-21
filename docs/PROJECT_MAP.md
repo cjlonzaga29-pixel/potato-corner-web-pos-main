@@ -128,7 +128,7 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 ## Dashboards, reports and stock alerts
 
 - **UI:** `WEB/app/(admin)/admin/dashboard/page.tsx`, `WEB/app/(supervisor)/supervisor/dashboard/page.tsx`, `WEB/app/(branch)/branch/dashboard/page.tsx`, `WEB/components/admin/dashboard-low-stock-summary.tsx`, `WEB/components/supervisor/dashboard-inventory-alerts.tsx`, `WEB/app/(admin)/admin/reports/page.tsx`, `WEB/components/branch-ops/reports-view.tsx`, `WEB/components/reports/`
-- **API:** `API/reports/` (exports in `apps/api/src/lib/reports/`); every PDF renders in the worker pool `lib/reports/pdf-render-pool.ts` + `pdf-render.worker.ts` (P62; tests `p62-pdf-isolation.test.ts`, `p62-pdf-routes.integration.test.ts`; benchmark `apps/api/scripts/p62-pdf-render-benchmark.mjs`); partial-file labelling in `export-coverage.ts`; shortage counts in `API/stock-availability/stock-availability.service.ts`; schema `SHARED/reports.schema.ts`
+- **API:** `API/reports/` (exports in `apps/api/src/lib/reports/`); every PDF renders in the worker pool `lib/reports/pdf-render-pool.ts` + `pdf-render.worker.ts` (P62; tests `p62-pdf-isolation.test.ts`, `p62-pdf-routes.integration.test.ts`; benchmark `apps/api/scripts/p62-pdf-render-benchmark.mjs`; interactive request deadline `PDF_REQUEST_DEADLINE_MS` in the pool); partial-file labelling in `export-coverage.ts`; shortage counts in `API/stock-availability/stock-availability.service.ts`; schema `SHARED/reports.schema.ts`
 - **Tests:** `WEB/components/admin/dashboard-low-stock-summary.test.tsx`, `WEB/components/supervisor/dashboard-inventory-alerts.test.tsx`, `API/reports/reports.service.test.ts`, `API/reports/p59-discount-report.integration.test.ts`, `API/reports/p59-export-coverage.integration.test.ts`, `API/reports/p59-report-coverage.integration.test.ts`
 - **Runbooks:** `RUN/pos-perf-p47-dashboard-and-management.md`, `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§2), `RUN/pos-perf-p59-reports-and-ui-cleanup.md`
 
@@ -160,7 +160,7 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 - **Branch and catalog scope:** `apps/api/src/lib/branch-access.ts`, `apps/api/src/lib/catalog-authority.ts`
 - **Auth module:** `API/auth/auth.router.ts`, `API/auth/auth.service.ts` (refresh protocol: `refreshToken`, grace `ROTATION_GRACE_MS` in `auth.repository.ts`); schema `SHARED/auth.schema.ts`
 - **Web session:** `WEB/lib/auth-refresh.ts` (refresh verdicts, Web Lock), `WEB/lib/api-client.ts` (401 handling, `IDENTITY_CHANGED`), `WEB/hooks/use-identity-scoped-query-cache.ts`, `WEB/lib/offline/purge-api-response-cache.ts`; SW rules in `apps/web/next.config.ts`
-- **Rate limits:** `apps/api/src/middleware/rate-limiter.ts` (`apiLimiter` keys verified users)
+- **Rate limits:** `apps/api/src/middleware/rate-limiter.ts` (`apiLimiter` keys verified users; logout has its own per-user budget). Proxy trust: `app.set('trust proxy', 1)` in `apps/api/src/app.ts`, tested by `apps/api/src/p62-proxy-trust.test.ts`
 - **Tests:** `apps/api/src/middleware/rbac.test.ts`, `apps/api/src/lib/branch-access.test.ts`,
   `API/p40-route-boundaries.test.ts`, `API/products/products.branch-isolation.integration.test.ts`
 - **Runbooks:** `RUN/pos-perf-p16-write-gate.md`, `RUN/pos-perf-p40-admin-management-and-downloads.md`, `RUN/pos-perf-p62-performance-and-reliability.md`, `docs/security/`
@@ -169,7 +169,7 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 
 - **Schema and history:** `apps/api/prisma/schema.prisma`, `apps/api/prisma/migrations/`
 - **Safety rules:** "Database & Migration Safety" in [`.claude/CLAUDE.md`](../.claude/CLAUDE.md). Read it before any `prisma migrate` command.
-- **Rehearsals on disposable data:** `apps/api/scripts/with-test-postgres.ts`, `apps/api/scripts/test-p57-migration-on-populated-data.ts`, and the other `apps/api/scripts/test-*-migration*-on-populated-data.ts` scripts
+- **Rehearsals on disposable data:** `apps/api/scripts/with-test-postgres.ts` (exit status: `scripts/lib/test-postgres-run.ts`, tested), `apps/api/scripts/test-p57-migration-on-populated-data.ts`, and the other `apps/api/scripts/test-*-migration*-on-populated-data.ts` scripts
 - **Rollback notes:** `docs/migrations/`
 - **Runbook example:** `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§9)
 
@@ -177,5 +177,6 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 
 - **Workflows:** `.github/workflows/ci.yml` (PRs), `.github/workflows/deploy-production.yml` (push to `main`; it has no manual trigger), `.github/workflows/deploy-staging.yml`
 - **Rollout script:** `.github/scripts/deploy-rollout.mjs` (`render-preflight`, `render`, `vercel-promote`, `vercel-verify`); tests in `.github/scripts/deploy-rollout.test.mjs`
+- **Local browser and timing drivers (P62):** `tests/e2e/manual/p62/` (`stack.sh` disposable local stack, `auth-cache.mjs`, `terminal.mjs`, `perf-nav.mjs`, `perf-pdf.mjs`, `cross-role.mjs`); fixture `apps/api/scripts/p62-perf-fixtures.ts`; Extra Supplies rollback rehearsal `apps/api/scripts/p62-rollback-rehearsal.ts`
 - **Smoke tests:** `tests/e2e/production-smoke.spec.ts`, `tests/e2e/playwright.production-smoke.config.ts`, `tests/e2e/pilot-smoke.spec.ts`, `tests/e2e/playwright.pilot.config.ts`
 - **Runbooks:** `RUN/pos-perf-p42r-production-test-gate.md`, `RUN/pos-perf-p43-gated-web-and-rollout-verification.md`, `RUN/pos-perf-p44-pilot-and-e2e-readiness.md`, `RUN/pilot-on-call.md`, `RUN/backup-and-restore.md`

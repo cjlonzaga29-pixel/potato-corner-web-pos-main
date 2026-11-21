@@ -146,7 +146,8 @@ function assertSupervisorMayEnableAtBranch(
  */
 async function assertProductTypeAssignable(productTypeId: string, branchIds: string[], actor: ActorContext, tx: Prisma.TransactionClient): Promise<void> {
   const type = await productTypesRepository.findById(productTypeId, tx);
-  const scope = new Set((type?.branches ?? []).map((row) => row.branchId));
+  // Scope is read by id, not from type.branches: see findScopeBranchIds.
+  const scope = new Set(type ? await productTypesRepository.findScopeBranchIds(productTypeId, tx) : []);
   const liveBranchIds = await branchesRepository.findAllActiveBranchIds(actor.id, tx);
   if (!type || !liveBranchIds.some((id) => scope.has(id))) {
     throw new ProductError('PRODUCT_TYPE_NOT_FOUND', 'This product type does not exist or is not available at your branches', 404);

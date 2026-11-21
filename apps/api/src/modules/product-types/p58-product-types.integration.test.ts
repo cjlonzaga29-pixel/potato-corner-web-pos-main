@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import jwt from 'jsonwebtoken';
@@ -19,6 +19,7 @@ const { prisma } = await import('../../lib/prisma.js');
 const { config } = await import('../../config/index.js');
 const { app } = await import('../../app.js');
 const { productTypesService } = await import('./product-types.service.js');
+const { productTypesRepository } = await import('./product-types.repository.js');
 const { productsService } = await import('../products/products.service.js');
 const { discountsService } = await import('../discounts/discounts.service.js');
 const { transactionsService } = await import('../transactions/transactions.service.js');
@@ -456,6 +457,50 @@ describe.skipIf(!canRunIntegrationTests)('P58 custom product types', () => {
         expect(row.productTypeId).toBeNull();
       }
     }
+  });
+
+  // P58 race fix — the interleaving the randomized test above only hits by
+  // chance: the type row is read while active and the deactivation commits
+  // (cascading is_active onto its branch rows) before the scope is read.
+  // Before the fix the scope came back empty and the request said
+  // PRODUCT_TYPE_NOT_FOUND for a type the actor can see.
+  it('deactivation committing between the type read and the scope read is reported as inactive, with nothing written', async () => {
+    const type = await createType(unique(`Race window ${tag}`), [ids.branchA]);
+    const product = await createProduct({ branch_ids: [ids.branchA] }, ids.supA);
+    const before = await prisma.product.findUniqueOrThrow({ where: { id: product.id } });
+    const auditsBefore = await prisma.auditLog.count({ where: { entityId: product.id } });
+    const realScope = productTypesRepository.findScopeBranchIds.bind(productTypesRepository);
+    const spy = vi.spyOn(productTypesRepository, 'findScopeBranchIds').mockImplementationOnce(async (id, client) => {
+      await productTypesService.setActive(type.id, false, type.version, actor(ids.supAB), null);
+      return realScope(id, client);
+    });
+    try {
+      expect(await code(productsService.updateProduct(product.id, { product_type: type.id }, actor(ids.supA), null))).toBe('PRODUCT_TYPE_INACTIVE');
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+    const after = await prisma.product.findUniqueOrThrow({ where: { id: product.id } });
+    expect(after.productTypeId).toBeNull();
+    expect(after.version).toBe(before.version);
+    expect(after.updatedAt).toEqual(before.updatedAt);
+    expect(await prisma.auditLog.count({ where: { entityId: product.id } })).toBe(auditsBefore);
+  });
+
+  it('a type outside the actor’s branches stays not found under the same race, never revealing it is inactive', async () => {
+    const type = await createType(unique(`Race hidden ${tag}`), [ids.branchA]);
+    const product = await createProduct({ branch_ids: [ids.branchC] }, ids.supC);
+    const realScope = productTypesRepository.findScopeBranchIds.bind(productTypesRepository);
+    const spy = vi.spyOn(productTypesRepository, 'findScopeBranchIds').mockImplementationOnce(async (id, client) => {
+      await productTypesService.setActive(type.id, false, type.version, actor(ids.supAB), null);
+      return realScope(id, client);
+    });
+    try {
+      expect(await code(productsService.updateProduct(product.id, { product_type: type.id }, actor(ids.supC), null))).toBe('PRODUCT_TYPE_NOT_FOUND');
+    } finally {
+      spy.mockRestore();
+    }
+    expect((await prisma.product.findUniqueOrThrow({ where: { id: product.id } })).productTypeId).toBeNull();
   });
 
   // ---------------------------------------------------------------- branch copies

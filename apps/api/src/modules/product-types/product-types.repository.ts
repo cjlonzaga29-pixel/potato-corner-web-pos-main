@@ -23,6 +23,17 @@ export const productTypesRepository = {
     return client.productType.findUnique({ where: { id: productTypeId }, include: typeInclude });
   },
 
+  /**
+   * The type's branch scope, read by type id alone. The include in findById
+   * joins on the composite FK (id, normalized_name, is_active), so a
+   * deactivation committing between its two queries returns no branches; the
+   * scope never depends on the type's active state.
+   */
+  async findScopeBranchIds(productTypeId: string, client: Prisma.TransactionClient | typeof prisma = prisma) {
+    const rows = await client.productTypeBranch.findMany({ where: { productTypeId }, select: { branchId: true } });
+    return rows.map((row) => row.branchId);
+  },
+
   async countProductsByType(productTypeIds: string[]) {
     if (productTypeIds.length === 0) return new Map<string, number>();
     const rows = await prisma.product.groupBy({ by: ['productTypeId'], where: { productTypeId: { in: productTypeIds } }, _count: { _all: true } });

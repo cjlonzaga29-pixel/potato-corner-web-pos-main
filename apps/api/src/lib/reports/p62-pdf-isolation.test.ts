@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { inflateSync } from 'node:zlib';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Prisma } from '@prisma/client';
@@ -42,6 +43,78 @@ async function codeOf(promise: Promise<unknown>): Promise<string> {
 
 afterEach(async () => {
   for (const created of pools.splice(0)) await created.shutdown();
+});
+
+describe('PDF deadline-aware admission (P62)', () => {
+  /** Rejection with its timing: how long the caller waited for the answer. */
+  async function outcome(promise: Promise<unknown>) {
+    const t0 = Date.now();
+    try {
+      await promise;
+      return { code: 'resolved', ms: Date.now() - t0, error: null as PdfRenderError | null };
+    } catch (error) {
+      return { code: error instanceof PdfRenderError ? error.code : 'other', ms: Date.now() - t0, error: error instanceof PdfRenderError ? error : null };
+    }
+  }
+
+  it('refuses at once, with how long to wait, a request that could not finish before its deadline', async () => {
+    const p = pool();
+    await p.render(asKind('slow'), [400]); // a measurement: ~400ms for this size
+    const first = p.render(asKind('slow'), [400], undefined, Date.now() + 10_000);
+    // Long enough for the job alone (~400ms), not after the one running ahead of it.
+    const second = await outcome(p.render(asKind('slow'), [400], undefined, Date.now() + 600));
+    expect(second.code).toBe('PDF_BUSY');
+    expect(second.ms).toBeLessThan(100); // not after waiting out the deadline
+    expect(second.error?.retryAfterSeconds).toBeGreaterThanOrEqual(5);
+    expect(second.error?.message).toMatch(/Try again in about \d+ seconds, choose a shorter date range, or download a CSV/);
+    expect(await codeOf(first)).toBe('resolved');
+  });
+
+  it('admits a request that fits before its deadline', async () => {
+    const p = pool();
+    await p.render(asKind('slow'), [200]);
+    const first = p.render(asKind('slow'), [200], undefined, Date.now() + 10_000);
+    const second = p.render(asKind('slow'), [200], undefined, Date.now() + 5_000);
+    expect(await Promise.all([codeOf(first), codeOf(second)])).toEqual(['resolved', 'resolved']);
+  });
+
+  it('refuses nothing on a prediction before the first measurement', async () => {
+    const p = pool();
+    expect(await codeOf(p.render(asKind('slow'), [300], undefined, Date.now() + 50))).toBe('resolved');
+  });
+
+  it('says at once when even an idle worker could not finish in time (shorter range or CSV)', async () => {
+    const p = pool();
+    await p.render(asKind('slow'), [400]);
+    const result = await outcome(p.render(asKind('slow'), [400], undefined, Date.now() + 200));
+    expect(result.code).toBe('PDF_TIMEOUT');
+    expect(result.ms).toBeLessThan(100);
+    expect(result.error?.message).toMatch(/would take too long to make, so it was not started/);
+    expect(result.error?.retryAfterSeconds).toBeUndefined();
+  });
+
+  it('does not start a queued job whose deadline can no longer be met when its turn comes', async () => {
+    const p = pool();
+    await p.render(asKind('slow'), [100]); // learns ~100ms
+    const t0 = Date.now();
+    const overrun = p.render(asKind('slow'), [1000]); // the same size, but 1s: the estimate is wrong
+    // Admitted: predicted to start at ~100ms. The overrun also teaches the pool a
+    // higher estimate (~550ms), still inside this job's own 800ms window.
+    const queued = outcome(p.render(asKind('slow'), [100], undefined, Date.now() + 800));
+    const [first, second] = await Promise.all([codeOf(overrun), queued]);
+    expect(first).toBe('resolved');
+    expect(second.code).toBe('PDF_BUSY');
+    // Refused when its turn came (~1s), not started and run for another ~100ms.
+    expect(Date.now() - t0).toBeLessThan(1_090);
+    expect(p.stats()).toMatchObject({ running: 0, queued: 0 });
+  });
+
+  it('leaves requests without a deadline (the background report queue) alone', async () => {
+    const p = pool();
+    await p.render(asKind('slow'), [300]);
+    const jobs = [p.render(asKind('slow'), [300]), p.render(asKind('slow'), [300]), p.render(asKind('slow'), [300])];
+    expect(await Promise.all(jobs.map(codeOf))).toEqual(['resolved', 'resolved', 'resolved']);
+  });
 });
 
 describe('PDF render pool (P62)', () => {
@@ -210,6 +283,46 @@ describe('real worker render (P62)', () => {
       status: 'completed',
     }));
   }
+
+  /** The text a PDF draws: its streams inflated, and the hex strings of its text operators decoded. */
+  function pdfText(bytes: Buffer): string {
+    const source = bytes.toString('latin1');
+    const parts: string[] = [];
+    for (const match of source.matchAll(/stream\r?\n/g)) {
+      const start = (match.index ?? 0) + match[0].length;
+      try {
+        const content = inflateSync(bytes.subarray(start, source.indexOf('endstream', start))).toString('latin1');
+        for (const op of content.matchAll(/\[([^\]]*)\]\s*TJ/g)) {
+          parts.push(Buffer.from([...(op[1] ?? '').matchAll(/<([0-9a-fA-F]*)>/g)].map((m) => m[1]).join(''), 'hex').toString('latin1'));
+        }
+      } catch {
+        // Not a deflated text stream (an embedded font).
+      }
+    }
+    return parts.join(' ');
+  }
+  const sheets = (pdf: Buffer) => pdf.toString('latin1').match(/\/Type\s*\/Page[^s]/g)?.length ?? 0;
+
+  // POS-PERF-P62 — the cells' line height was resolved against another font size,
+  // so every single-line row took about twice its height: 12 rows a sheet, 50 sheets
+  // for 600 rows. Each 24-row group now fits its sheet (the first spills, under the title).
+  it('fits a 24-row group of single-line rows on one sheet, and keeps every row and the page numbers', async () => {
+    const pdf = await generateTransactionsPdf(rows(600), { kind: 'filtered', filterLines: ['Branch: P62 Branch'], totalCount: 600 }, 'POTATO CORNER');
+    expect(sheets(pdf)).toBeLessThanOrEqual(27);
+    const text = pdfText(pdf);
+    for (const n of [1, 24, 25, 300, 600]) expect(text).toContain(`PC-P62-20261120-${String(n).padStart(6, '0')}`);
+    expect(text).toContain(`Page ${sheets(pdf)} of ${sheets(pdf)}`);
+  }, 120_000);
+
+  it('still wraps long values over several lines without losing a row', async () => {
+    const long = rows(120).map((row, i) => ({ ...row, cashier: 'Maria Concepcion Dela Cruz-Santiago Villanueva', discount_type: i % 2 ? 'Senior Citizen (RA 9994) with supporting ID on file' : row.discount_type }));
+    const pdf = await generateTransactionsPdf(long, { kind: 'filtered', filterLines: ['Branch: P62 Branch'], totalCount: 120 }, 'POTATO CORNER');
+    const single = await generateTransactionsPdf(rows(120), { kind: 'filtered', filterLines: ['Branch: P62 Branch'], totalCount: 120 }, 'POTATO CORNER');
+    // Taller wrapped rows need more sheets than the same rows on one line each.
+    expect(sheets(pdf)).toBeGreaterThan(sheets(single));
+    const text = pdfText(pdf);
+    for (let n = 1; n <= 120; n += 1) expect(text).toContain(`PC-P62-20261120-${String(n).padStart(6, '0')}`);
+  }, 120_000);
 
   it('paginates a large Transaction PDF and keeps the main thread responsive while it renders', async () => {
     let worstGapMs = 0;

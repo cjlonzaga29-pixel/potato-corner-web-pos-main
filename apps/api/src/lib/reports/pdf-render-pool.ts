@@ -32,13 +32,35 @@ const ERROR_RESPONSES: Record<PdfRenderErrorCode, { status: number; message: str
 export class PdfRenderError extends Error {
   readonly statusCode: number;
   readonly retryAfterSeconds: number | undefined;
-  constructor(public readonly code: PdfRenderErrorCode) {
+  constructor(
+    public readonly code: PdfRenderErrorCode,
+    override?: { message: string; retryAfterSeconds: number | undefined },
+  ) {
     const response = ERROR_RESPONSES[code];
-    super(response.message);
+    super(override?.message ?? response.message);
     this.name = 'PdfRenderError';
     this.statusCode = response.status;
-    this.retryAfterSeconds = response.retryAfterSeconds;
+    this.retryAfterSeconds = override ? override.retryAfterSeconds : response.retryAfterSeconds;
   }
+}
+
+/**
+ * POS-PERF-P62 — answers for an interactive request that could not finish before
+ * its deadline, given at once instead of after waiting the deadline out.
+ */
+export function busyUntil(waitMs: number): PdfRenderError {
+  const seconds = Math.min(120, Math.max(5, Math.ceil(waitMs / 1000) + 2));
+  return new PdfRenderError('PDF_BUSY', {
+    message: `Another PDF is being made right now, and this one could not be finished in time, so it was not started. Try again in about ${seconds} seconds, choose a shorter date range, or download a CSV.`,
+    retryAfterSeconds: seconds,
+  });
+}
+
+export function tooLongToFinish(): PdfRenderError {
+  return new PdfRenderError('PDF_TIMEOUT', {
+    message: 'This PDF would take too long to make, so it was not started. Choose a shorter date range, or download a CSV.',
+    retryAfterSeconds: undefined,
+  });
 }
 
 /** Abort reason for an interactive request that ran past PDF_REQUEST_DEADLINE_MS. */
@@ -62,6 +84,15 @@ export interface PdfRenderPoolOptions {
   workerUrl?: URL;
 }
 
+/**
+ * POS-PERF-P62 — the estimate learns half from each new render, so a change in data
+ * shape shows within a few exports; a prediction must be at least 10% past the
+ * deadline before anything is refused on it (measured spread of equal 7-day
+ * renders: about ±8%, runbook §3).
+ */
+const ESTIMATE_WEIGHT = 0.5;
+const ESTIMATE_FIT = 0.9;
+
 export const DEFAULT_PDF_POOL_OPTIONS: PdfRenderPoolOptions = {
   concurrency: 1,
   maxQueued: 4,
@@ -76,6 +107,14 @@ export const DEFAULT_PDF_POOL_OPTIONS: PdfRenderPoolOptions = {
 };
 
 interface Job {
+  kind: PdfRenderKind;
+  /** Serialized input size: render time grows with it (runbook §3). */
+  bytes: number;
+  /** Interactive requests only: the moment the person's request gives up (PDF_REQUEST_DEADLINE_MS). */
+  deadlineAt: number | undefined;
+  arrivedAt: number;
+  /** When the renderer started on it (after worker start-up), for the timing estimate. */
+  startedAt: number | null;
   payload: Uint8Array;
   signal: AbortSignal | undefined;
   resolve: (pdf: Buffer) => void;
@@ -133,6 +172,49 @@ export function createPdfRenderPool(overrides: Partial<PdfRenderPoolOptions> = {
   const workers = new Set<PoolWorker>();
   let closed = false;
 
+  // POS-PERF-P62 — deadline-aware admission. Measured (runbook §3): every refused
+  // interactive PDF used to wait the full 25s deadline before being told, and the
+  // job behind a long render was started and then terminated part-way, wasting the
+  // only worker. Render time grows with the input, so the pool learns each kind's
+  // milliseconds per serialized byte from finished renders, and refuses at once a
+  // request that cannot finish before its own deadline. Until a kind has a
+  // measurement nothing is refused on a prediction.
+  const msPerByte = new Map<PdfRenderKind, number>();
+  const estimateMs = (job: Pick<Job, 'kind' | 'bytes'>): number | undefined => {
+    const rate = msPerByte.get(job.kind);
+    return rate === undefined ? undefined : rate * job.bytes;
+  };
+  function learn(job: Job, renderMs: number): void {
+    const rate = renderMs / Math.max(job.bytes, 1);
+    const previous = msPerByte.get(job.kind);
+    msPerByte.set(job.kind, previous === undefined ? rate : previous * (1 - ESTIMATE_WEIGHT) + rate * ESTIMATE_WEIGHT);
+  }
+  /** When a job joining the end of the queue would start, by the estimates known now. */
+  function expectedStartAt(now: number): number {
+    const slots: number[] = [];
+    for (const entry of workers) {
+      if (!entry.current) continue;
+      const estimate = estimateMs(entry.current);
+      slots.push(estimate === undefined ? now : Math.max(now, (entry.current.startedAt ?? now) + estimate));
+    }
+    while (slots.length < options.concurrency) slots.push(now);
+    slots.sort((a, b) => a - b);
+    for (const job of queue) {
+      slots[0] = (slots[0] ?? now) + (estimateMs(job) ?? 0);
+      slots.sort((a, b) => a - b);
+    }
+    return slots[0] ?? now;
+  }
+  /** The refusal for a job that can't finish by its deadline if it starts at startAt, or null. */
+  function deadlineRefusal(job: Job, startAt: number, now: number): PdfRenderError | null {
+    const estimate = estimateMs(job);
+    if (job.deadlineAt === undefined || estimate === undefined) return null;
+    if (startAt + estimate * ESTIMATE_FIT <= job.deadlineAt) return null;
+    // Even started the moment it arrived it couldn't finish: waiting wouldn't help.
+    if (job.arrivedAt + estimate * ESTIMATE_FIT > job.deadlineAt) return tooLongToFinish();
+    return busyUntil(startAt - now);
+  }
+
   /** A request deadline (cancelPdfWhenClientLeaves) aborts with DEADLINE; anything else is the client leaving. */
   const abortCode = (signal: AbortSignal | undefined, running: boolean): PdfRenderErrorCode =>
     signal?.reason === PDF_REQUEST_DEADLINE ? (running ? 'PDF_TIMEOUT' : 'PDF_BUSY') : 'PDF_CANCELLED';
@@ -178,11 +260,15 @@ export function createPdfRenderPool(overrides: Partial<PdfRenderPoolOptions> = {
     worker.on('message', (message: { ready: true } | { ok: true; pdf: Uint8Array } | { ok: false }) => {
       if ('ready' in message) {
         entry.ready = true;
-        if (entry.current) armRenderTimer(entry);
+        if (entry.current) {
+          entry.current.startedAt = Date.now();
+          armRenderTimer(entry);
+        }
         return;
       }
       const job = entry.current;
       if (!job) return;
+      if (message.ok && job.startedAt !== null) learn(job, Date.now() - job.startedAt);
       if (message.ok && message.pdf.byteLength > options.maxResultBytes) {
         finish(entry, job, () => job.reject(new PdfRenderError('PDF_TOO_LARGE')));
       } else if (message.ok) {
@@ -223,7 +309,10 @@ export function createPdfRenderPool(overrides: Partial<PdfRenderPoolOptions> = {
     entry.worker.ref();
     entry.current = job;
     entry.jobs += 1;
-    if (entry.ready) armRenderTimer(entry);
+    if (entry.ready) {
+      job.startedAt = Date.now();
+      armRenderTimer(entry);
+    }
     else entry.renderTimer = setTimeout(() => fail(entry, 'PDF_FAILED'), options.startupTimeoutMs);
     settleAbortListener(job);
     if (job.signal) {
@@ -241,12 +330,21 @@ export function createPdfRenderPool(overrides: Partial<PdfRenderPoolOptions> = {
       const job = queue.shift();
       if (!job) return;
       if (job.queueTimer) clearTimeout(job.queueTimer);
+      // Don't start what the deadline would stop part-way: that time belongs to the next job.
+      const now = Date.now();
+      const refusal = deadlineRefusal(job, now, now);
+      if (refusal) {
+        settleAbortListener(job);
+        job.reject(refusal);
+        continue;
+      }
       run(idle ?? spawn(), job);
     }
   }
 
   return {
-    render(kind: PdfRenderKind, args: unknown[], signal?: AbortSignal): Promise<Buffer> {
+    /** deadlineAt: an interactive request's deadline (epoch ms); the background queue passes none. */
+    render(kind: PdfRenderKind, args: unknown[], signal?: AbortSignal, deadlineAt?: number): Promise<Buffer> {
       return new Promise<Buffer>((resolve, reject) => {
         if (closed || signal?.aborted) {
           reject(new PdfRenderError(closed ? 'PDF_CANCELLED' : abortCode(signal, false)));
@@ -265,7 +363,13 @@ export function createPdfRenderPool(overrides: Partial<PdfRenderPoolOptions> = {
         // A copy of its own, because v8.serialize can return a view into a shared pool
         // and the buffer is transferred to the worker.
         const payload = new Uint8Array(serialized);
-        const job: Job = { payload, signal, resolve, reject, queueTimer: null, onAbort: null };
+        const arrivedAt = Date.now();
+        const job: Job = { kind, bytes: payload.byteLength, deadlineAt, arrivedAt, startedAt: null, payload, signal, resolve, reject, queueTimer: null, onAbort: null };
+        const refusal = deadlineRefusal(job, expectedStartAt(arrivedAt), arrivedAt);
+        if (refusal) {
+          reject(refusal);
+          return;
+        }
         job.queueTimer = setTimeout(() => {
           queue.splice(queue.indexOf(job), 1);
           settleAbortListener(job);
@@ -301,7 +405,7 @@ export function createPdfRenderPool(overrides: Partial<PdfRenderPoolOptions> = {
 
 export const pdfRenderPool = createPdfRenderPool();
 
-const clientAbort = new AsyncLocalStorage<AbortSignal>();
+const clientAbort = new AsyncLocalStorage<{ signal: AbortSignal; deadlineAt: number }>();
 
 /**
  * POS-PERF-P62 — an interactive PDF request must answer before the proxy in front
@@ -320,15 +424,17 @@ export const PDF_REQUEST_DEADLINE_MS = Number(process.env.PDF_REQUEST_DEADLINE_M
  */
 export function cancelPdfWhenClientLeaves(_req: Request, res: Response, next: NextFunction): void {
   const controller = new AbortController();
+  const deadlineAt = Date.now() + PDF_REQUEST_DEADLINE_MS;
   const deadline = setTimeout(() => controller.abort(PDF_REQUEST_DEADLINE), PDF_REQUEST_DEADLINE_MS);
   deadline.unref();
   res.once('close', () => {
     clearTimeout(deadline);
     if (!res.writableEnded) controller.abort();
   });
-  clientAbort.run(controller.signal, next);
+  clientAbort.run({ signal: controller.signal, deadlineAt }, next);
 }
 
 export function renderPdfIsolated(kind: PdfRenderKind, args: unknown[]): Promise<Buffer> {
-  return pdfRenderPool.render(kind, args, clientAbort.getStore());
+  const request = clientAbort.getStore();
+  return pdfRenderPool.render(kind, args, request?.signal, request?.deadlineAt);
 }

@@ -2,7 +2,8 @@
 # POS-PERF-P62 — disposable LOCAL stack for browser verification and timing.
 # Never points at production, pos_verify or another session's services: every
 # URL below is 127.0.0.1/localhost on this task's ports, and the database is a
-# fresh embedded Postgres named p62_browser in a short task-owned directory.
+# fresh embedded Postgres named $P62_DB (default p62_browser) in a short
+# task-owned directory ($P62_ROOT, default /c/p62).
 #
 #   tests/e2e/manual/p62/stack.sh env      # print the env file path (creates it once)
 #   tests/e2e/manual/p62/stack.sh pg       # foreground: embedded Postgres (Ctrl-C stops)
@@ -20,7 +21,9 @@ P62_ROOT="${P62_ROOT:-/c/p62}"
 PG_PORT="${P62_PG_PORT:-56431}"
 API_PORT="${P62_API_PORT:-56432}"
 WEB_PORT="${P62_WEB_PORT:-56433}"
-DB_URL="postgresql://postgres:postgres@127.0.0.1:${PG_PORT}/p62_browser"
+PG_DB="${P62_DB:-p62_browser}"
+case "$PG_DB" in p62_*) ;; *) echo "Refusing: P62_DB must start with p62_" >&2; exit 1 ;; esac
+DB_URL="postgresql://postgres:postgres@127.0.0.1:${PG_PORT}/${PG_DB}"
 ENV_FILE="$P62_ROOT/env.sh"
 
 make_env() {
@@ -51,8 +54,8 @@ make_env() {
 
 guard() {
   case "$DATABASE_URL" in
-    postgresql://postgres:postgres@127.0.0.1:"$PG_PORT"/p62_browser) ;;
-    *) echo "Refusing: DATABASE_URL is not this task's local p62_browser" >&2; exit 1 ;;
+    postgresql://postgres:postgres@127.0.0.1:"$PG_PORT"/"$PG_DB") ;;
+    *) echo "Refusing: DATABASE_URL is not this task's local $PG_DB" >&2; exit 1 ;;
   esac
   [ -z "${PRODUCTION_DATABASE_URL_DIRECT:-}" ] || { echo "Refusing: production URL set" >&2; exit 1; }
 }
@@ -66,7 +69,7 @@ case "${1:-}" in
   env) echo "$ENV_FILE" ;;
   pg)
     cd "$REPO/apps/api"
-    TEST_PG_PORT="$PG_PORT" TEST_PG_DB_NAME=p62_browser TEST_PG_DATA_DIR="$P62_ROOT/pg" exec npx tsx scripts/dev-local-postgres.ts
+    TEST_PG_PORT="$PG_PORT" TEST_PG_DB_NAME="$PG_DB" TEST_PG_DATA_DIR="$P62_ROOT/pg" exec npx tsx scripts/dev-local-postgres.ts
     ;;
   prepare)
     cd "$REPO/apps/api"

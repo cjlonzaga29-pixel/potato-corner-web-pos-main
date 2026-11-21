@@ -6,7 +6,7 @@
 //   node tests/e2e/manual/p62/terminal.mjs discover   # ARIA snapshots for selectors
 //   node tests/e2e/manual/p62/terminal.mjs flows
 import fs from 'node:fs';
-import { WEB, openProfile, login, dumpAria, shot, check, record, saveResults, sleep, waitForController } from './lib.mjs';
+import { WEB, OUT, ROOT, openProfile, login, dumpAria, shot, check, record, saveResults, sleep, waitForController } from './lib.mjs';
 
 const mode = process.argv[2];
 const PIN_ANA = process.env.P62_PIN_ANA;
@@ -132,7 +132,7 @@ async function issueSupply(page, { quantity, free, cash, lose = false }) {
 
 async function flows() {
   const { activitySince, supplyStock, prisma } = await import('./db.mjs');
-  const fixtures = JSON.parse(fs.readFileSync('C:/p62/fixtures.json', 'utf8'));
+  const fixtures = JSON.parse(fs.readFileSync(`${ROOT}/fixtures.json`, 'utf8'));
   const since = new Date(Date.now() - 1000);
   const stock0 = await supplyStock(fixtures.supplyItem);
   const context = await openProfile('terminal-flows');
@@ -208,7 +208,7 @@ async function flows() {
   check('db: exactly one issue per supply operation (free, paid, lost paid)', db.issues.length === 3, { issues: db.issues });
   check('db: supply stock fell by exactly the units issued (1 + 2 + 1)', stock0 !== null && stock0 - stock1 === 4, { before: stock0, after: stock1 });
   check('db: one collection per paid issue (10 + 5)', db.issues.filter((i) => i.kind === 'paid').reduce((s, i) => s + i.amountCollected, 0) === 15, {});
-  fs.writeFileSync('C:/p62/out/terminal-timings.json', JSON.stringify(timings, null, 2));
+  fs.writeFileSync(`${OUT}/terminal-timings.json`, JSON.stringify(timings, null, 2));
   await prisma.$disconnect();
   await context.close();
 }

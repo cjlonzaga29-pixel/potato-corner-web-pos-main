@@ -126,13 +126,34 @@ async function runNew() {
   return saveResults('auth-cache-new');
 }
 
+/** Marks a response this driver fabricated, so it is never counted as the application's. */
+const INJECTED_HEADER = 'x-p62-injected';
+const injectedAborts = new WeakSet();
+const tally = (xs) => xs.reduce((m, x) => { const k = x.replace(/^[^:]+:/, ''); m[k] = (m[k] ?? 0) + 1; return m; }, {});
+
 async function runSession() {
   const context = await openProfile('session');
   const page = context.pages()[0] ?? (await context.newPage());
-  // Rate limits are respected, not bypassed: count any 429 and pause between phases.
-  const limited = [];
+  // Three kinds of outcome are kept apart:
+  //  injected   — failures this driver fabricates (page.route fulfil/abort), tagged at the source;
+  //  unexpected — real API 429/5xx answers and page errors: application failures;
+  //  recovery   — what the user is expected to see afterwards (the checks below).
+  // Rate limits are respected, not bypassed: pause between phases.
+  const injected = [];
+  const unexpected = [];
   let phase = 'start';
-  context.on('response', (r) => { if (r.status() === 429) limited.push(`${phase}:${new URL(r.url()).pathname}`); });
+  context.on('response', (r) => {
+    const u = new URL(r.url());
+    if (!u.pathname.startsWith('/api/')) return;
+    if (r.headers()[INJECTED_HEADER]) { injected.push(`${phase}:${r.status()} ${u.pathname}`); return; }
+    if (r.status() === 429 || r.status() >= 500) unexpected.push(`${phase}:${r.status()} ${r.request().method()} ${u.pathname}`);
+  });
+  context.on('requestfailed', (r) => {
+    const u = new URL(r.url());
+    if (!u.pathname.startsWith('/api/')) return;
+    if (injectedAborts.has(r)) injected.push(`${phase}:aborted ${u.pathname}`);
+  });
+  page.on('pageerror', (e) => unexpected.push(`${phase}:pageerror ${String(e.message).slice(0, 120)}`));
   const pace = () => sleep(Number(process.env.P62_PACE_MS || 25000));
   await login(page, 'supervisor');
   await waitForController(page);
@@ -163,10 +184,10 @@ async function runSession() {
   // Transient refresh failures keep the session.
   phase = 'transient';
   for (const [label, handler] of [
-    ['503', (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ success: false, error: { code: 'SERVICE_UNAVAILABLE' } }) })],
-    ['429', (route) => route.fulfill({ status: 429, contentType: 'application/json', body: JSON.stringify({ success: false, error: { code: 'RATE_LIMITED' } }), headers: { 'Retry-After': '1' } })],
-    ['gateway HTML 502', (route) => route.fulfill({ status: 502, contentType: 'text/html', body: '<html>Bad gateway</html>' })],
-    ['network failure', (route) => route.abort('failed')],
+    ['503', (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ success: false, error: { code: 'SERVICE_UNAVAILABLE' } }), headers: { [INJECTED_HEADER]: '1' } })],
+    ['429', (route) => route.fulfill({ status: 429, contentType: 'application/json', body: JSON.stringify({ success: false, error: { code: 'RATE_LIMITED' } }), headers: { 'Retry-After': '1', [INJECTED_HEADER]: '1' } })],
+    ['gateway HTML 502', (route) => route.fulfill({ status: 502, contentType: 'text/html', body: '<html>Bad gateway</html>', headers: { [INJECTED_HEADER]: '1' } })],
+    ['network failure', (route) => { injectedAborts.add(route.request()); return route.abort('failed'); }],
   ]) {
     phase = `transient-${label}`;
     await page.route('**/api/auth/refresh', handler);
@@ -224,8 +245,8 @@ async function runSession() {
   check('switch: no API response is cached for B to inherit', inv.length === 0, { left: inv.slice(0, 4) });
   record('switch: B header initials', true, { initials: headerName?.trim(), bodyChars: body.length });
   await shot(page, 'switch-admin');
-  const real429 = limited.filter((x) => !x.startsWith('transient-429:')); // that scenario injects its own 429
-  check('session: the driver stayed within the API rate limits (no 429 from the API)', real429.length === 0, { real: real429.slice(0, 5), realCount: real429.length, injected: limited.length - real429.length });
+  record('session: failures injected by this driver (not application failures)', true, { count: injected.length, byKind: tally(injected) });
+  check('session: no unexpected application failure (no real API 429/5xx, no page error)', unexpected.length === 0, { count: unexpected.length, sample: unexpected.slice(0, 8) });
   await context.close();
   return saveResults('auth-session');
 }

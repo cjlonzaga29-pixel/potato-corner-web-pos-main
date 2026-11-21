@@ -1,10 +1,10 @@
 // POS-PERF-P62 — read-only database checks for the browser driver. Refuses anything
-// but this task's local p62_browser database.
+// but this task's local p62_* database (stack.sh P62_DB).
 import { createRequire } from 'node:module';
 
 const url = new URL(process.env.DATABASE_URL ?? 'missing://');
-if (url.hostname !== '127.0.0.1' || url.pathname !== '/p62_browser' || process.env.PRODUCTION_DATABASE_URL_DIRECT) {
-  throw new Error('Refusing: DATABASE_URL is not the local p62_browser database');
+if (url.hostname !== '127.0.0.1' || !/^\/p62_[a-z0-9_]+$/.test(url.pathname) || process.env.PRODUCTION_DATABASE_URL_DIRECT) {
+  throw new Error('Refusing: DATABASE_URL is not a local p62_* database');
 }
 const require = createRequire(new URL('../../../../apps/api/package.json', import.meta.url));
 const { PrismaClient } = require('@prisma/client');

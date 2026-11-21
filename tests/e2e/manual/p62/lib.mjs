@@ -8,7 +8,8 @@ import path from 'node:path';
 
 export const WEB = process.env.P62_WEB_URL || 'http://localhost:56433';
 if (!/^http:\/\/localhost:\d+$/.test(WEB)) throw new Error('Refusing: P62_WEB_URL must be a localhost URL');
-export const OUT = process.env.P62_OUT || 'C:/p62/out';
+export const ROOT = process.env.P62_ROOT_WIN || 'C:/p62';
+export const OUT = process.env.P62_OUT || `${ROOT}/out`;
 fs.mkdirSync(OUT, { recursive: true });
 
 export const ACCOUNTS = {
@@ -37,7 +38,7 @@ export function saveResults(name) {
 
 /** A persistent Chromium profile in a short path (long ones break CacheStorage on Windows). */
 export async function openProfile(name, options = {}) {
-  const dir = `C:/p62/prof-${name}`;
+  const dir = `${ROOT}/prof-${name}`;
   const context = await chromium.launchPersistentContext(dir, {
     headless: process.env.P62_HEADED !== '1',
     viewport: { width: 1366, height: 900 },

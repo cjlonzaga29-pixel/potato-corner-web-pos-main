@@ -11,7 +11,7 @@
 //   apiRequests  — /api/ requests the visit made; waterfall — each one's start/end/status
 // Paced between visits so the per-user and per-IP budgets are never reached.
 import fs from 'node:fs';
-import { WEB, OUT, openProfile, login, sleep } from './lib.mjs';
+import { WEB, OUT, ROOT, openProfile, login, sleep } from './lib.mjs';
 
 const ROUNDS = Number(process.argv[2] ?? 3);
 const PACE_MS = Number(process.env.P62_PACE_MS || 8000);
@@ -55,7 +55,7 @@ const results = [];
 for (let round = 1; round <= ROUNDS; round += 1) {
   for (const [role, pages] of Object.entries(PLAN)) {
     const name = `nav-${role}-${round}`;
-    fs.rmSync(`C:/p62/prof-${name}`, { recursive: true, force: true });
+    fs.rmSync(`${ROOT}/prof-${name}`, { recursive: true, force: true });
     const context = await openProfile(name);
     const page = context.pages()[0] ?? (await context.newPage());
     await login(page, role);

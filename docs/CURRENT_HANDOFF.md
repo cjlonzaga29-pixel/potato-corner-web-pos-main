@@ -11,26 +11,28 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
 - **Observed:** 2026-11-21
 - **Branch:** `feat/pos-perf-p62-performance-and-reliability`. Local only: not pushed, no PR, nothing deployed, production not accessed.
 - **Ancestry:** P62 → P61 → P60 → P59, all unpushed, from `origin/main` `6931b10`. Merging P62 brings in all of them.
-- **This batch:** started at `a54321f`. Application code tested in the browser and timing runs: `197aaca`. Final suites: `08fcea4` (same application code). The docs commit follows it.
+- **This batch (readiness):** started at `119e321`. Final application code `032d07b` (web); API code unchanged since `e8bae36`. Full API run 2 at `5952a62` (test-only changes after). The docs commit follows.
 - **Working tree:** only `.vscode/settings.json` is modified (the owner's personal setting). Never stage it.
-- **Local leftovers (task-owned, safe to delete):** `C:\p62` (browser profiles, embedded Postgres data, the `git archive` of `500e97e`, outputs). Earlier `C:\p59r`, `C:\p59c` still there.
+- **Local leftovers (task-owned, safe to delete):** `C:\p63` (this batch: embedded Postgres `p62_final`, still running on 56441 unless stopped; profiles, builds, logs), `C:\p62`, `C:\p59r`, `C:\p59c`.
 
-## Task status: P62, verified locally in the browser — not release-ready
+## Task status: P62 readiness batch, verified locally — not release-ready
 
-Auth, cache isolation, PDF isolation and rate limits from the first batch, plus this batch. The test runner exit status is fixed: it used to exit 0 on failure. Four defects were found in the real browser and load runs and fixed: the old service worker kept caching during an upgrade; dead sessions kept their cookies, so signed-out users looped back to the dashboard; a rate-limited logout did nothing; and PDFs past the web proxy's 30s came back as bare 500s. In the tests, two copies of React loaded when run from a `c:\` cwd (fixed). The fixture no longer uses raw SQL. The Extra Supplies rollback was rehearsed on real pre-P61 code. See [`runbooks/pos-perf-p62-performance-and-reliability.md`](runbooks/pos-perf-p62-performance-and-reliability.md).
+All local gaps from the previous batch are closed or diagnosed; hosted checks are NOT RUN. See runbook §12.
 
 | Check | Result |
 | --- | --- |
-| Full API suite, `08fcea4` | Run 1: **1 failed file** (P57 hook timeout, unexplained; 0.69s alone). Run 2: **0 failed**, 3,837 passed |
-| Full web suite, 5s default, `08fcea4` | **0 failed**, 1,708 passed |
+| Requests before session restore (browser, 4 accounts, reload + client nav) | Supervisor per reload 16 → 14 requests; 1 tokenless 401 + 1 `daily-sales` 400 → 0. Admin/Branch/staff already 0. The "13 Admin calls" were the driver's own aborted requests |
+| Session set (final web build) | 12/12; 12 injected failures counted apart; 0 unexpected |
+| Screen totals vs API vs DB (Admin + Supervisor reports, Supervisor + Branch dashboards) | 34/34, discounts non-zero |
+| PDF, saturation 4×3 week PDFs | 4/12 before and after; refusals ~25s → 0.8–1.2s. Sheets 120 → 61. Under browser+terminal load: 2/12, 2 admitted renders still hit 25s |
+| Terminal under PDF load, SW active | 10/10; one sale/deduction/issue/collection per operation |
+| Full API | Run 1: 2 failed (diagnosed, fixed). Run 2 `5952a62`: **0 failed**, 3,845 passed |
+| Full web, final `032d07b` | Run 1: **1 failed** (`login-form` countdown, unexplained, untouched area). Run 2: **18 failed** in `daily-sales-drilldown` (5s timeout under load, passes alone). **No fully green web run on final code** |
 | Shared, typecheck, lint, builds | 83 passed; clean; 0 errors; pass |
-| Browser, service worker active, local stack, `197aaca` | Upgrade 8/8; sessions 10/11 (the 1 is the driver counting its own injected 429s); terminal flows 10/10 three times (idle twice, under PDF load); cross-role 5/5 |
-| PDF through the proxy | No more bare 500s; 25s deadline answers `PDF_BUSY`/`PDF_TIMEOUT` JSON; a 7-day busy-branch PDF takes ~20s; sustained load 2/12 succeed |
-| Extra Supplies rollback to `500e97e` | Old code expects ₱1,200 instead of ₱1,225, refuses the correct count without a reason, closes flagged +₱25; current code keeps all records. **Prohibited with open shifts that have collections** |
 
-**Rollout:** no migration; API, then web. **Release blockers:** hosted checks (client IP through Vercel → Render, hosted proxy timeout); PDF capacity (owner); Extra Supplies rollback procedure (owner); pre-restore request burst that spends the per-IP budget (predates P62); the unexplained P57 and P58 flakes. Runbook §11.
+**Release blockers:** hosted checks (runbook §12.8, NOT RUN); PDF capacity decision (owner, §11.2); Extra Supplies rollback procedure acceptance (owner, §12.7); unexplained intermittent failures (P57 hook, P58 race, refresh 500s, `login-form` countdown, `daily-sales-drilldown` timeouts; §12.5); no fully green full web run on the final code.
 
-**Next:** owner decisions in runbook §11; with authorization, the staging checklist in §4.
+**Next:** owner decisions; with authorization, the hosted checklist in §12.8.
 
 ## Earlier: P61, verified locally
 

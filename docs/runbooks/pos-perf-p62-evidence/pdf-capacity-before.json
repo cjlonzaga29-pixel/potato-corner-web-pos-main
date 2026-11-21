@@ -1,0 +1,327 @@
+{
+  "label": "before",
+  "at": "2026-11-21T08:34:56.249Z",
+  "branch": "MAIN01",
+  "workloads": {
+    "sequential": {
+      "exports": [
+        {
+          "tag": "seq-1d",
+          "days": 1,
+          "status": 200,
+          "ms": 5752,
+          "bytes": 30459,
+          "isPdf": true,
+          "code": null,
+          "retryAfter": null
+        },
+        {
+          "tag": "seq-1d",
+          "days": 1,
+          "status": 200,
+          "ms": 1904,
+          "bytes": 30457,
+          "isPdf": true,
+          "code": null,
+          "retryAfter": null
+        },
+        {
+          "tag": "seq-1d",
+          "days": 1,
+          "status": 200,
+          "ms": 1488,
+          "bytes": 30457,
+          "isPdf": true,
+          "code": null,
+          "retryAfter": null
+        },
+        {
+          "tag": "seq-7d",
+          "days": 7,
+          "status": 200,
+          "ms": 16938,
+          "bytes": 299672,
+          "isPdf": true,
+          "code": null,
+          "retryAfter": null
+        },
+        {
+          "tag": "seq-7d",
+          "days": 7,
+          "status": 200,
+          "ms": 17102,
+          "bytes": 299672,
+          "isPdf": true,
+          "code": null,
+          "retryAfter": null
+        },
+        {
+          "tag": "seq-7d",
+          "days": 7,
+          "status": 200,
+          "ms": 16171,
+          "bytes": 299672,
+          "isPdf": true,
+          "code": null,
+          "retryAfter": null
+        }
+      ],
+      "wallMs": 59355,
+      "reads": {
+        "n": 112,
+        "failed": 0,
+        "p50": 19,
+        "p95": 41,
+        "max": 89
+      },
+      "succeeded": 6,
+      "total": 6,
+      "okMs": [
+        5752,
+        1904,
+        1488,
+        16938,
+        17102,
+        16171
+      ],
+      "refusedMs": [],
+      "corruptSuccess": 0
+    },
+    "realistic": {
+      "exports": [
+        {
+          "tag": "real-1d-user1@0s",
+          "days": 1,
+          "status": 200,
+          "ms": 1749,
+          "bytes": 30459,
+          "isPdf": true,
+          "code": null,
+          "retryAfter": null
+        },
+        {
+          "tag": "real-1d-user2@4s",
+          "days": 1,
+          "status": 200,
+          "ms": 1556,
+          "bytes": 30459,
+          "isPdf": true,
+          "code": null,
+          "retryAfter": null
+        },
+        {
+          "tag": "real-1d-user3@9s",
+          "days": 1,
+          "status": 200,
+          "ms": 1460,
+          "bytes": 30459,
+          "isPdf": true,
+          "code": null,
+          "retryAfter": null
+        },
+        {
+          "tag": "real-7d-user1@0s",
+          "days": 7,
+          "status": 200,
+          "ms": 16814,
+          "bytes": 299671,
+          "isPdf": true,
+          "code": null,
+          "retryAfter": null
+        },
+        {
+          "tag": "real-7d-user2@4s",
+          "days": 7,
+          "status": 503,
+          "ms": 25029,
+          "bytes": 164,
+          "isPdf": false,
+          "code": "PDF_TIMEOUT",
+          "retryAfter": "60"
+        },
+        {
+          "tag": "real-7d-user3@9s",
+          "days": 7,
+          "status": 503,
+          "ms": 25016,
+          "bytes": 164,
+          "isPdf": false,
+          "code": "PDF_TIMEOUT",
+          "retryAfter": "60"
+        }
+      ],
+      "wallMs": 84494,
+      "reads": {
+        "n": 160,
+        "failed": 0,
+        "p50": 21,
+        "p95": 35,
+        "max": 92
+      },
+      "succeeded": 4,
+      "total": 6,
+      "okMs": [
+        1749,
+        1556,
+        1460,
+        16814
+      ],
+      "refusedMs": [
+        "PDF_TIMEOUT@25029",
+        "PDF_TIMEOUT@25016"
+      ],
+      "corruptSuccess": 0
+    },
+    "saturation": {
+      "exports": [
+        {
+          "tag": "sat-r1-1",
+          "days": 7,
+          "status": 503,
+          "ms": 25031,
+          "bytes": 164,
+          "isPdf": false,
+          "code": "PDF_TIMEOUT",
+          "retryAfter": "60"
+        },
+        {
+          "tag": "sat-r1-2",
+          "days": 7,
+          "status": 200,
+          "ms": 19177,
+          "bytes": 299671,
+          "isPdf": true,
+          "code": null,
+          "retryAfter": null
+        },
+        {
+          "tag": "sat-r1-3",
+          "days": 7,
+          "status": 503,
+          "ms": 25031,
+          "bytes": 164,
+          "isPdf": false,
+          "code": "PDF_TIMEOUT",
+          "retryAfter": "60"
+        },
+        {
+          "tag": "sat-r2-1",
+          "days": 7,
+          "status": 200,
+          "ms": 18201,
+          "bytes": 299671,
+          "isPdf": true,
+          "code": null,
+          "retryAfter": null
+        },
+        {
+          "tag": "sat-r2-2",
+          "days": 7,
+          "status": 503,
+          "ms": 25039,
+          "bytes": 164,
+          "isPdf": false,
+          "code": "PDF_TIMEOUT",
+          "retryAfter": "60"
+        },
+        {
+          "tag": "sat-r2-3",
+          "days": 7,
+          "status": 503,
+          "ms": 25039,
+          "bytes": 164,
+          "isPdf": false,
+          "code": "PDF_TIMEOUT",
+          "retryAfter": "60"
+        },
+        {
+          "tag": "sat-r3-1",
+          "days": 7,
+          "status": 503,
+          "ms": 25026,
+          "bytes": 175,
+          "isPdf": false,
+          "code": "PDF_BUSY",
+          "retryAfter": "60"
+        },
+        {
+          "tag": "sat-r3-2",
+          "days": 7,
+          "status": 200,
+          "ms": 18884,
+          "bytes": 299671,
+          "isPdf": true,
+          "code": null,
+          "retryAfter": null
+        },
+        {
+          "tag": "sat-r3-3",
+          "days": 7,
+          "status": 503,
+          "ms": 25027,
+          "bytes": 164,
+          "isPdf": false,
+          "code": "PDF_TIMEOUT",
+          "retryAfter": "60"
+        },
+        {
+          "tag": "sat-r4-1",
+          "days": 7,
+          "status": 503,
+          "ms": 25020,
+          "bytes": 175,
+          "isPdf": false,
+          "code": "PDF_BUSY",
+          "retryAfter": "60"
+        },
+        {
+          "tag": "sat-r4-2",
+          "days": 7,
+          "status": 200,
+          "ms": 18370,
+          "bytes": 299671,
+          "isPdf": true,
+          "code": null,
+          "retryAfter": null
+        },
+        {
+          "tag": "sat-r4-3",
+          "days": 7,
+          "status": 503,
+          "ms": 25020,
+          "bytes": 164,
+          "isPdf": false,
+          "code": "PDF_TIMEOUT",
+          "retryAfter": "60"
+        }
+      ],
+      "wallMs": 100122,
+      "reads": {
+        "n": 183,
+        "failed": 0,
+        "p50": 18,
+        "p95": 52,
+        "max": 1389
+      },
+      "succeeded": 4,
+      "total": 12,
+      "okMs": [
+        19177,
+        18201,
+        18884,
+        18370
+      ],
+      "refusedMs": [
+        "PDF_TIMEOUT@25031",
+        "PDF_TIMEOUT@25031",
+        "PDF_TIMEOUT@25039",
+        "PDF_TIMEOUT@25039",
+        "PDF_BUSY@25026",
+        "PDF_TIMEOUT@25027",
+        "PDF_BUSY@25020",
+        "PDF_TIMEOUT@25020"
+      ],
+      "corruptSuccess": 0
+    }
+  }
+}

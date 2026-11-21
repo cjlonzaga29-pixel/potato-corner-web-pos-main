@@ -1,0 +1,342 @@
+{
+  "before2": {
+    "admin sign-in": {
+      "n": 1,
+      "requests": 15,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 0,
+      "other": 0,
+      "signedOut": 0
+    },
+    "admin reload-during-post-sign-in-load": {
+      "n": 1,
+      "requests": 26,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 10,
+      "other": 0,
+      "signedOut": 0
+    },
+    "admin hard-reload": {
+      "n": 3,
+      "requests": 42,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 0,
+      "other": 0,
+      "signedOut": 0
+    },
+    "admin client-nav": {
+      "n": 3,
+      "requests": 3,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 0,
+      "other": 0,
+      "signedOut": 0
+    },
+    "supervisor sign-in": {
+      "n": 1,
+      "requests": 16,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 1,
+      "noBranch": 1,
+      "aborted": 0,
+      "other": 0,
+      "signedOut": 0
+    },
+    "supervisor reload-during-post-sign-in-load": {
+      "n": 1,
+      "requests": 27,
+      "noAuth": 1,
+      "s401": 1,
+      "s400": 1,
+      "noBranch": 1,
+      "aborted": 4,
+      "other": 0,
+      "signedOut": 0
+    },
+    "supervisor hard-reload": {
+      "n": 3,
+      "requests": 48,
+      "noAuth": 3,
+      "s401": 3,
+      "s400": 3,
+      "noBranch": 3,
+      "aborted": 0,
+      "other": 0,
+      "signedOut": 0
+    },
+    "supervisor client-nav": {
+      "n": 3,
+      "requests": 33,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 0,
+      "other": 0,
+      "signedOut": 0
+    },
+    "branch sign-in": {
+      "n": 1,
+      "requests": 12,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 0,
+      "other": 0,
+      "signedOut": 0
+    },
+    "branch reload-during-post-sign-in-load": {
+      "n": 1,
+      "requests": 20,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 2,
+      "other": 0,
+      "signedOut": 0
+    },
+    "branch hard-reload": {
+      "n": 3,
+      "requests": 33,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 0,
+      "other": 0,
+      "signedOut": 0
+    },
+    "branch client-nav": {
+      "n": 3,
+      "requests": 3,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 0,
+      "other": 0,
+      "signedOut": 0
+    },
+    "staff sign-in": {
+      "n": 1,
+      "requests": 10,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 0,
+      "other": 2,
+      "signedOut": 0
+    },
+    "staff reload-during-post-sign-in-load": {
+      "n": 1,
+      "requests": 15,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 1,
+      "other": 3,
+      "signedOut": 0
+    },
+    "staff hard-reload": {
+      "n": 3,
+      "requests": 27,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 0,
+      "other": 6,
+      "signedOut": 0
+    },
+    "staff client-nav": {
+      "skipped": "/branch/sales link not in sidebar"
+    }
+  },
+  "after2": {
+    "admin sign-in": {
+      "n": 1,
+      "requests": 15,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 0,
+      "other": 0,
+      "signedOut": 0
+    },
+    "admin reload-during-post-sign-in-load": {
+      "n": 1,
+      "requests": 26,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 7,
+      "other": 0,
+      "signedOut": 0
+    },
+    "admin hard-reload": {
+      "n": 3,
+      "requests": 42,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 0,
+      "other": 0,
+      "signedOut": 0
+    },
+    "admin client-nav": {
+      "n": 3,
+      "requests": 3,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 0,
+      "other": 0,
+      "signedOut": 0
+    },
+    "supervisor sign-in": {
+      "n": 1,
+      "requests": 15,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 0,
+      "other": 0,
+      "signedOut": 0
+    },
+    "supervisor reload-during-post-sign-in-load": {
+      "n": 1,
+      "requests": 25,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 2,
+      "other": 0,
+      "signedOut": 0
+    },
+    "supervisor hard-reload": {
+      "n": 3,
+      "requests": 42,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 0,
+      "other": 0,
+      "signedOut": 0
+    },
+    "supervisor client-nav": {
+      "n": 3,
+      "requests": 33,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 0,
+      "other": 0,
+      "signedOut": 0
+    },
+    "branch sign-in": {
+      "n": 1,
+      "requests": 12,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 0,
+      "other": 0,
+      "signedOut": 0
+    },
+    "branch reload-during-post-sign-in-load": {
+      "n": 1,
+      "requests": 20,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 6,
+      "other": 0,
+      "signedOut": 0
+    },
+    "branch hard-reload": {
+      "n": 3,
+      "requests": 33,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 0,
+      "other": 0,
+      "signedOut": 0
+    },
+    "branch client-nav": {
+      "n": 3,
+      "requests": 3,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 0,
+      "other": 0,
+      "signedOut": 0
+    },
+    "staff sign-in": {
+      "n": 1,
+      "requests": 10,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 0,
+      "other": 2,
+      "signedOut": 0
+    },
+    "staff reload-during-post-sign-in-load": {
+      "n": 1,
+      "requests": 15,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 0,
+      "other": 3,
+      "signedOut": 0
+    },
+    "staff hard-reload": {
+      "n": 3,
+      "requests": 27,
+      "noAuth": 0,
+      "s401": 0,
+      "s400": 0,
+      "noBranch": 0,
+      "aborted": 0,
+      "other": 6,
+      "signedOut": 0
+    },
+    "staff client-nav": {
+      "skipped": "/branch/sales link not in sidebar"
+    }
+  }
+}

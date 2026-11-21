@@ -2,7 +2,7 @@
 
 Branch `feat/pos-perf-p62-performance-and-reliability`, local only: not pushed, no PR, nothing deployed, production not accessed.
 
-**Not release-ready.** The code-level work is done and was verified in a real browser on a local stack, including the business flows. It found and fixed four more product defects (§1, §2, §3) and the test-environment causes in §7. What still blocks a combined release is in §11: hosted-only checks, owner decisions on PDF capacity and Extra Supplies rollback, a request burst before session restore that predates P62, and the full-suite results in §7.
+**Not release-ready.** The code-level work is done and was verified in a real browser on a local stack, including the business flows. The readiness batch (§12) closed the local gaps: requests before session restore, the session driver, on-screen totals, PDF admission and layout, and two test-isolation causes. What still blocks a combined release is in §11: hosted-only checks (NOT RUN), owner decisions on PDF capacity and the Extra Supplies rollback procedure, and the unexplained intermittent test failures listed in §12.
 
 ## 0. SHAs and dependencies
 
@@ -22,6 +22,10 @@ Branch `feat/pos-perf-p62-performance-and-reliability`, local only: not pushed, 
 | Drivers and evidence | `8ace34a`, `08fcea4` |
 | Browser, terminal, PDF load, navigation | builds at `197aaca` |
 | Final suites, typecheck, lint, builds | `08fcea4` (same code as `197aaca`) |
+| **Readiness batch (§12), start** | `119e321` |
+| Request gating · PDF layout · PDF admission | `483d49e` · `e52206d` · `e8bae36` |
+| Drivers · test isolation · route test · selector | `d5b65e2` · `440ef2e` · `5952a62` · `032d07b` |
+| **Final application code, tested** | `032d07b` (web build, browser gating recheck, full web suite); API code unchanged since `e8bae36` (API build, browser, PDF and full API run 2 at `5952a62`, test-only changes after) |
 
 P62 sits on unpushed P61 → P60 → P59 (see their runbooks). Merging P62 brings all of them in.
 
@@ -265,8 +269,174 @@ Local stack only (`tests/e2e/manual/p62/stack.sh`): embedded Postgres `p62_brows
 ## 11. Release blockers and owner decisions
 
 1. **Hosted checks** (§4 checklist): client IP through Vercel → Render; the hosted proxy timeout against the 25s PDF deadline; Render timing.
-2. **PDF capacity** (owner): one worker, 12 rows per sheet. A 7-day busy-branch Transaction PDF takes ~20s; under sustained demand 2 of 12 succeeded. Options: denser rows (layout change), more concurrency (memory on Render), a shorter default range, or CSV first. No cap was changed.
+2. **PDF capacity** (owner): one worker. Rows now fit ~23 a sheet (§12.4), and a refusal answers in about 1s with a Retry-After instead of after 25s (§12.4). Capacity itself is unchanged: a 7-day busy-branch Transaction PDF renders in ~15s locally, so one worker completes about one such PDF per 15s and 3 simultaneous requests still get 1 file and 2 refusals. Options: more concurrency (memory on Render, unmeasured), a shorter default range, or CSV first. No cap was changed.
 3. **Extra Supplies rollback** (§5): prohibited with open shifts that have collections; the procedure is written, an owner must accept it.
-4. **Requests before session restore** (§6): spends the shared per-IP budget on every reload; predates P62; not fixed.
-5. **Final suites** (§7): web green. API green on one of two final runs; the other had an unexplained P57 hook timeout. The P58 race and the one-off refresh-test 500s were not reproduced and remain unexplained.
+4. **Requests before session restore** (§6): fixed in §12.1. The "13 Admin calls" were a driver artifact; the real ones (Supervisor 401 and 400) are gone.
+5. **Final suites** (§12.6): API run 2 green; run 1's two failures diagnosed and fixed. Web: the final-code run had 1 unexplained intermittent failure (`login-form` countdown) in an area this batch didn't change. The P57 hook timeout, the P58 race and the refresh-test 500s did not recur and remain unexplained.
 6. Unpushed P59 → P61 owner decisions still apply (their runbooks).
+
+## 12. Readiness batch (local only)
+
+Started at `119e321`. Fresh disposable stack: embedded Postgres `p62_final` on 56441, API 56442, web 56443, task root `C:\p63` (`stack.sh` with `P62_ROOT`, `P62_DB`, `P62_*_PORT`). Same machine and fixture as §6 (55,000 sales; MAIN01 has 1,444 completed sales in the 7-day window). Production builds, service worker active. Nothing hosted was touched.
+
+### 12.1 Requests before session restore
+
+Measured with `request-gate.mjs` (each request's Authorization header as sent, status as received), 3 rounds per account, on the `119e321` build and on the final build (`evidence/browser/request-gate-{before,after,final-supervisor}.json`):
+
+| Per hard reload | Before | After |
+| --- | --- | --- |
+| Admin | 14 requests, 0 without a token, 0 × 401 | unchanged |
+| **Supervisor** | **16 requests: 1 without a token → 401 (`GET /api/branches`), 1 × 400 (`daily-sales` without `branch_id`)** | **14 requests, 0, 0** |
+| Branch account, staff (direct login) | 11 / 9 requests, 0, 0 | unchanged |
+| Client navigation, all four | 0 without a token, 0 × 401 / 400 | unchanged |
+
+The only remaining non-2xx is staff `GET /api/cash/current` 404 (no open shift), the same in both builds.
+
+**Causes.**
+- The "13 unauthenticated Admin calls" in §6 were a measurement artifact. They had no response and no end time, and the new driver reproduces them as the *post-sign-in page's own authenticated requests* (`auth=true`, `net::ERR_ABORTED`), cancelled by the driver navigating again straight after sign-in. On a real hard reload, Admin sends nothing before the refresh.
+- Supervisor: React runs child effects before parent ones, so the sidebar `BranchSelector`'s query started before `useAuth`'s restore effect started the refresh. With nothing in flight to wait on, it went out without a token.
+- Supervisor `daily-sales` 400: the dashboard month trend fired while the active branch was still unknown, and only a super admin may omit `branch_id`.
+
+**Fix (`483d49e`, `032d07b`).**
+- `auth.store` has an explicit `sessionStatus` (`restoring` / `authenticated` / `unauthenticated` / `unconfirmed`).
+- `api-client.ts`: a protected request with no token joins, or starts, the one shared refresh and goes out with the resulting token. If the session is over it gets a local `SESSION_EXPIRED`; if it can't be confirmed it gets `SESSION_UNCONFIRMED` (503, still signed in, nothing sent, the next request tries again). After sign-out, nothing is sent at all.
+- Public endpoints are never held: login, refresh, reset, 2FA verify, PIN login and the receipt lookup (`isPublicApiPath`, matched to the API routers).
+- `useDashboardSalesTrendReport` waits for a branch unless the user is a super admin.
+- The branch persisted across a reload is now only a hint. It becomes active once the restored token grants it, and it is cleared on any identity change, so the next account never starts on the previous one's branch.
+- Unchanged: server-side authorization, checkout validation, the IndexedDB queues and drafts.
+- Tests: `api-client.session-gate.test.ts` (8), `branch.store.test.ts` (5), 4 in `use-reports.test.tsx`. With the gate disabled, 7 of them fail.
+
+### 12.2 Session scenarios (complete set, final web build)
+
+`auth-cache.mjs session`: **12 / 12** (`evidence/browser/auth-session.json`).
+- Covered: slow refresh with reloads, three tabs, refresh 503 / 429 / HTML 502 / network failure, logout then cookie replay, user A → B switch with A's requests held, and cache isolation.
+- The driver now tags the failures it injects at their source (`x-p62-injected`, aborted requests tracked). They are counted apart from unexpected application failures: **12 injected, 0 unexpected** (no real 429 / 5xx, no page error).
+- API log for the run window, sanitized (`auth-session-api-log.json`): 193 requests, 19 × 401, all expected:
+  - 1 restore with no cookie
+  - 3 replays
+  - 1 restore after logout
+  - A's 13 held GETs, answered after A's logout with A's revoked token
+  - 1 refresh with A's cookie gone
+
+### 12.3 Report totals read off the screens
+
+`report-screens.mjs`: **34 / 34** (`evidence/browser/report-screens*.json`, screenshots). Run again after the terminal driver had made a ₱20-discount sale, so discounts are non-zero.
+
+Setup: MAIN01, 2026-11-15 to 2026-11-21. Each role chose the branch with its own controls (Admin report filter, Supervisor sidebar selector).
+
+| Read from | Matches DB | Shown |
+| --- | --- | --- |
+| Admin Financial Summary | Gross ₱179,762 · Discounts ₱20 · Refunds ₱2,004 · Net ₱177,738 · Expenses ₱71,006 | ✓ |
+| Admin DSR, Expenses, Void/Refund | Completed 1,447 · Voided 15 · Refunded 16 · Expenses ₱71,006 | ✓ |
+| Supervisor Reports | Transactions 1,447 · Sales after discounts ₱179,742 · Discounts ₱20 · Voided 15 / ₱1,890 · Refunded 16 / ₱2,004 | ✓ |
+| Supervisor and Branch dashboards | Today's gross, transactions, expenses; "Gross Sales — Last 7 Days" (8 calendar days, `manilaDaysAgo(7)`) | ✓ |
+| API as Admin, Supervisor, Branch | period summary and DSR sums | ✓ identical |
+
+The database figures were computed independently, with the definitions in `reports.repository.ts`. Admin "Net Sales" (gross − discounts − refunds) and Supervisor "Total Sales" (completed totals after discounts) are different measures under different labels, and each matches its own definition.
+
+The Branch account has no Reports screen: middleware sends it to its dashboard, and Reports is staff-only. Its totals were read from its dashboard. No access was added.
+
+### 12.4 PDF capacity
+
+**Workload definitions** (`pdf-capacity.mjs`, through the web's `/api` rewrite, Supervisor, MAIN01 Transaction PDFs; 1-day ≈ 140 rows, 7-day ≈ 1,444 rows):
+- **Sequential:** one person, 3 × 1-day then 3 × 7-day.
+- **Realistic:** three people arriving at 0s, 4s and 9s, first with 1-day PDFs, then with 7-day PDFs.
+- **Saturation:** the earlier overload test, 4 rounds of 3 simultaneous 7-day PDFs.
+
+An authenticated read (`GET /api/branches/stats`) runs every 500ms throughout. The machine was quiet: about 29% CPU from VS Code, nothing else heavy.
+
+| Workload | Before (`119e321` code) | After (`e8bae36`) |
+| --- | --- | --- |
+| Sequential | 6/6. 1-day 1.5–1.9s (first, cold 5.8s); 7-day 16.2–17.1s | 6/6. 1-day 1.2–1.7s (cold 3.2s); 7-day 14.9–15.7s |
+| Realistic, 1-day | 3/3 | 3/3 |
+| Realistic, 7-day | 1/3; both refusals `PDF_TIMEOUT` at 25.0s | 1/3; refused at 0.5s, and at 12.9s when its turn came (never started) |
+| Saturation | 4/12 (the earlier session measured 2/12); all 8 refusals at ~25s | 4/12; all 8 refusals `PDF_BUSY` in 0.8–1.2s |
+| Reads during load | 0 failed; p95 35–52ms, max 1.4s | 0 failed; p95 33–57ms, max 0.8s |
+
+**Causes measured.**
+- Admission existed (1 rendering, 4 queued) but ignored the deadline. A request queued behind a ~17s render waited out the full 25s before being told. A job that started with too little time left was terminated part-way, wasting the only worker.
+- **12 rows a sheet:** the cells' unitless `lineHeight: 1.35` was resolved against a font size other than the one the Page passes down.
+
+  | Variant | 240 rows → sheets |
+  | --- | --- |
+  | Current | 20 |
+  | Without `lineHeight` | 10 |
+  | Font size set on the cell | 11 |
+
+  The em dash glyph was ruled out: em dash, hyphen and empty all give 20 sheets.
+
+**Fixes.**
+- `e52206d`: the font size is set on each cell. 1,436 rows go from 120 sheets to 61, while wrapped text keeps its 1.35 spacing. Render time falls only ~7% (15.2s → 14.0s), because the cost is per row. This is a paper and readability fix, not a capacity fix. Checked as page images (`evidence/browser/transactions-pdf-final-{page-1,last-page}.png`): about 22 rows on sheet 1, the header repeated on each sheet, the last receipt present, "Page 61 of 61".
+- `e8bae36`: deadline-aware admission.
+  - The pool learns each kind's render milliseconds per serialized input byte from finished renders.
+  - An interactive request predicted not to finish before its own deadline is refused at once with `PDF_BUSY`. The `Retry-After` and the message both carry the expected wait: "Try again in about N seconds, choose a shorter date range, or download a CSV."
+  - A queued job that can no longer finish is not started.
+  - A job too long even for an idle worker gets `PDF_TIMEOUT` at once.
+  - Nothing is refused before the first measurement, and a prediction must exceed the deadline by 10% before it counts.
+  - The background queue (no deadline) is unchanged, as are the worker count, queue size, 25s deadline and row caps.
+- Tests: 6 admission tests (3 fail with the check disabled) and 2 layout tests (600 rows: 50 sheets before, ≤ 27 after; every row and page number present; long values still wrap).
+
+**Under load, final code** (`pdf-capacity-underload-1.json`, `terminal-flows-under-pdf-load-final.json`): the terminal flows ran while saturation PDF load ran continuously.
+- Terminal: **10/10**, with the service worker active. Cash sale 693ms, custom-discount sale 503ms, free supply 113ms, paid cash supply 77ms. The lost sale reply and lost paid-supply reply both recovered after reload.
+- Database: exactly 3 transactions, 9 deduction movements, 3 issues, stock −4, collections ₱10 + ₱5. One payment or collection and one deduction per operation.
+- PDFs that round: **2/12**. 8 refusals in 0.8–3.0s, but **2 admitted renders still reached the 25s deadline** (`PDF_TIMEOUT`). With the browser and terminal running, a render took ~21s against an estimate learned at ~15s. The 10% margin doesn't cover that much slowdown. The estimate adapts (half weight per render), but a sudden load change can still cost a render.
+- Reads: 0 failed; p95 255ms, max 2.4s.
+
+**Remaining limits (honest):**
+- One worker renders about one busy-branch week every 15s on this laptop. Admission makes refusals fast and clear; it doesn't add capacity.
+- Render speed on Render's hardware, its memory for a second worker, and its proxy timeout are unmeasured (§12.8).
+- Laptop numbers don't predict hosting.
+- The other PDF builders (`pdf.ts`, `expenses-export.ts`, `inventory-summary-export.ts`, `payroll-export.ts`) use the same cell style. The same spacing defect is likely there but was not measured, so it was not changed.
+
+### 12.5 Failures investigated
+
+| Failure | Evidence | Outcome |
+| --- | --- | --- |
+| **P50R branch discounts** (new, full API run 1): expected the 20% organization default, read 5% | `p50-tax` sets the **global** `discount_policy` employee rate to 5% (line 305) while `p50r` runs in a parallel worker. Both files run together 6 times: **1 failed run** (different assertions, same shared row) | **Fixed** (`440ef2e`): those two files hold a session advisory lock (single-connection client) for their whole run. 6 runs: 0 failed. Nothing else is serialized; no timeout changed |
+| PDF route test (run 1) | Pinned `render`'s exact arguments; the deadline is now a 4th | Test updated to assert the deadline too (`5952a62`) |
+| BranchSelector tests (web full run 1) | `useBranchStore.getState` missing from the tests' store mock | The hint now comes from `useBranch()` (`032d07b`) |
+| P57 shortages hook timeout (earlier) | Passed in both full API runs this batch (7.1s, 9.4s for the file) | **Not reproduced; unexplained** |
+| P58 race | `p58-product-types` and `p58r-type-scope-race` passed in both runs | **Not reproduced; unexplained** |
+| Refresh-test 500s (earlier) | The same pair, 8 times in one cluster, full logs kept: 8/8 passed, 0 HTTP 500. The full runs contain no real P2028 / P2024 (the 6 hits are mocked tests). Hypothesis, not proven: Prisma's interactive `$transaction` defaults (2s to get a connection, 5s total) in `withAdvisoryLock` under pool contention would give exactly a burst of 500s | **Not reproduced; unexplained** |
+| `daily-sales-drilldown` (web, final-code run 2) | 18 failures, starting with a 5s test timeout; 2/2 isolated passes; passed in run 1; run took 861s against 598s | **Load-related timeout, cause not proven; not fixed** |
+| `login-form` "returns to the credentials form when the challenge expires" (web, final-code run) | Showed "0:00" where the test expected "0:01", meaning the component saw ≥ 0.5s more fake time than advanced. 3/3 isolated passes; passed in the previous full run; area unchanged in this batch | **Unexplained intermittency** |
+
+### 12.6 Suites and checks on the final code
+
+| Check | Result |
+| --- | --- |
+| Runner failure propagation | A child exiting 7 → runner exit **7** |
+| Full API, default parallel, `d5b65e2` (run 1) | **2 failed** (§12.5), 3,843 passed, 5 skipped; runner exit 1 |
+| Full API, default parallel, `5952a62` (run 2) | **0 failed**, 3,845 passed, 5 skipped; runner exit 0. API code unchanged after this |
+| Full web, default settings, `5952a62` | **2 failed** (BranchSelector mock, §12.5), 1,723 passed |
+| Full web, default settings, `032d07b` (final), run 1 | **1 failed** (`login-form` countdown, §12.5), 1,724 passed; exit 1 |
+| Full web, `032d07b`, run 2 | **18 failed, all in `daily-sales-drilldown.test.tsx`** (first a 5s test timeout, then the rest of the file cascading), 1,707 passed; exit 1. That file passed in run 1 (11.8s) and twice in isolation (~10s); it uses none of the changed modules. This run took 861s against 598s for run 1 (a busier machine): the §7 class of 5s page-test timeouts under parallel load. Not fixed, no timeout raised. **No fully green full web run on the final code** |
+| Shared | 83 passed |
+| Typecheck API, web, shared | Clean |
+| Lint | 0 errors (API 409 / web 5 warnings, unchanged; shared clean) |
+| Production builds | API `tsc` at `e8bae36` code; web `next build` at `032d07b` |
+| Browser on final builds | Supervisor gating recheck (§12.1); everything else in §12.1–12.4 ran on builds whose only later change is `032d07b` (BranchSelector reads the same hint another way) |
+
+### 12.7 Rollback checklist (read-only first; nothing executed)
+
+Rule kept: **never roll the API back below P61 while any shift that has Extra Supplies collections is open** (§5).
+
+1. **Read only, every branch.** List open shifts and, for each, Extra Supplies issues with collections. Use a read-only query; check table and column names against `schema.prisma` first. If any open shift has a collection, **stop**.
+2. **Read only, every terminal.** On each terminal of each branch: the Extra Supplies Pending tab is empty, no sale shows "checking", and the offline queue (Sync status) is empty. Record each terminal as checked; a terminal that can't be checked blocks the rollback.
+3. **Close and drain under current code.** Close every open shift normally, let terminals resolve every pending supply issue and sync every offline sale, then repeat steps 1–2 until both are clean.
+4. **Supported targets.**
+   - Web rollback is possible to any build that has P62's service worker rules (`next.config.ts` `NetworkOnly` for `/api/`). A build before P62 brings back the `apis` cache (§2, §5).
+   - API rollback is possible to P61 or later. P61 → P62 changes no schema.
+   - Order: web first, then API.
+   - Never drop P61 tables.
+5. **After a rollback:** posted stock movements, money, issues and audit rows stay as they are. No balancing entries, no edits to historical amounts. If a shift was closed on pre-P61 code anyway: approve the flagged variance with the reason and issue references (§5).
+6. **Roll forward** to current code to restore supply totals in reports.
+
+### 12.8 Hosted checks — NOT RUN (need separate authorization)
+
+Do not add a public debug endpoint, and do not log credentials or session identifiers. Use only Render's and Vercel's own request logs.
+
+1. **Client IP path.** Sign in from two networks at once through the Vercel URL. In Render's logs, compare the address the API records (the rate-limit key) with each network's real address, for both a proxied request and a direct request to the Render URL.
+2. **Spoofed headers.** Send a forged `X-Forwarded-For` from a client, both direct and via Vercel. The recorded address must not be the forged one. Send 101 failed logins with rotating forged values from one network: it must get 429.
+3. **Budgets not combined.** 101 failed logins from network A must not block login or unauthenticated requests from network B, and two branches behind different networks must not share a budget. If Render sees one Vercel egress address for everyone, decide between `trust proxy` 2 (only if Vercel's forwarded entry is reliable) and different keys. Don't change it on the local two-proxy simulation alone (§4).
+4. **Proxy timeout and worker resources.** Time a 7-day busy-branch Transaction PDF through Vercel on staging data. Confirm that `PDF_BUSY` / `PDF_TIMEOUT` arrive as JSON before the hosted proxy's limit, that the 25s deadline suits it, and record Render memory during one render before considering a second worker.

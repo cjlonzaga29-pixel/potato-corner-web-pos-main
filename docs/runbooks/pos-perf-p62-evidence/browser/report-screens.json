@@ -1,0 +1,127 @@
+{
+  "branch": "MAIN01",
+  "from": "2026-11-15",
+  "to": "2026-11-21",
+  "db": {
+    "completedCount": 1447,
+    "gross": 179762,
+    "discounts": 20,
+    "completedTotal": 179742,
+    "voidedCount": 15,
+    "voidedTotal": 1890,
+    "refundedCount": 16,
+    "refundedTotal": 2004,
+    "expenses": 71006,
+    "expenseCount": 160,
+    "netSales": 177738,
+    "todayCompleted": 143,
+    "todayGross": 17573,
+    "todayExpenses": 10074.5,
+    "windowFrom": "2026-11-14",
+    "windowGross": 207058
+  },
+  "api": {
+    "admin": {
+      "completedCount": 1447,
+      "completedTotal": 179742,
+      "discounts": 20,
+      "voidedCount": 15,
+      "refundedCount": 16,
+      "voidedTotal": 1890,
+      "refundedTotal": 2004,
+      "dsrGross": 179762,
+      "dsrNet": 177738,
+      "dsrExpenses": 71006
+    },
+    "supervisor": {
+      "completedCount": 1447,
+      "completedTotal": 179742,
+      "discounts": 20,
+      "voidedCount": 15,
+      "refundedCount": 16,
+      "voidedTotal": 1890,
+      "refundedTotal": 2004,
+      "dsrGross": 179762,
+      "dsrNet": 177738,
+      "dsrExpenses": 71006
+    },
+    "branch": {
+      "completedCount": 1447,
+      "completedTotal": 179742,
+      "discounts": 20,
+      "voidedCount": 15,
+      "refundedCount": 16,
+      "voidedTotal": 1890,
+      "refundedTotal": 2004,
+      "dsrGross": 179762,
+      "dsrNet": 177738,
+      "dsrExpenses": 71006
+    }
+  },
+  "screens": {
+    "admin": {
+      "fin": {
+        "Gross Sales": "₱179,762",
+        "Discounts": "₱20",
+        "Refunds": "₱2,004",
+        "Net Sales": "₱177,738",
+        "Operating Expenses": "₱71,006",
+        "Net Operating Result": "₱106,732"
+      },
+      "dsr": {
+        "Gross Sales — Selected Period": "₱179,762",
+        "Completed": "1,447",
+        "Voided": "15",
+        "Refunded": "16"
+      },
+      "expenses": {
+        "Expenses": "160",
+        "Total Amount": "71,006"
+      },
+      "voids": {
+        "Voided": "15",
+        "Refunded": "16",
+        "Total Amount": "3,894"
+      }
+    },
+    "supervisor": {
+      "selectedBranch": "Main Branch",
+      "dashboard": {
+        "Gross Sales Today": "₱17,573",
+        "Gross Sales This Month": "₱558,767",
+        "Today's Transactions": "143",
+        "Average Order Value": "₱122.89",
+        "Today's Expenses": "₱10,074.50",
+        "Crew on Duty": "2",
+        "Low Stock Items": "0",
+        "Inventory Alerts": "0",
+        "Gross Sales — Last 7 Days": "₱207,058.00"
+      },
+      "sales": {
+        "Total Transactions": "1,447",
+        "Total Sales — Selected Period": "₱179,742",
+        "Discounts Given": "₱20"
+      },
+      "voids": {
+        "Total Voided": "15",
+        "Total Refunded": "16",
+        "Voided Amount": "₱1,890",
+        "Refunded Amount": "₱2,004"
+      }
+    },
+    "branch": {
+      "dashboard": {
+        "Gross Sales Today": "₱17,573",
+        "Gross Sales This Month": "₱558,767",
+        "Today's Transactions": "143",
+        "Average Order Value": "₱122.89",
+        "Today's Expenses": "₱10,074.50",
+        "Crew on Duty": "2",
+        "Items Needing Stock": "0",
+        "Inventory Alerts": "0",
+        "Gross Sales — Last 7 Days": "₱207,058.00"
+      },
+      "reportsUrl": "/branch/dashboard"
+    }
+  }
+}

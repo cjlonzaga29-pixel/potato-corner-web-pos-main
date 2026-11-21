@@ -4,7 +4,7 @@
     "url": "/supervisor/dashboard",
     "ok": true,
     "slowRefreshes": 2,
-    "at": "2026-11-21T05:41:38.415Z"
+    "at": "2026-11-21T08:23:17.902Z"
   },
   {
     "step": "session: three tabs reloading together all stay signed in",
@@ -14,35 +14,35 @@
       "/supervisor/dashboard"
     ],
     "ok": true,
-    "at": "2026-11-21T05:42:47.663Z"
+    "at": "2026-11-21T08:23:52.287Z"
   },
   {
     "step": "session: a refresh 503 does not sign the user out",
     "during": "/supervisor/dashboard",
     "after": "/supervisor/dashboard",
     "ok": true,
-    "at": "2026-11-21T05:42:54.186Z"
+    "at": "2026-11-21T08:23:57.909Z"
   },
   {
     "step": "session: a refresh 429 does not sign the user out",
     "during": "/supervisor/dashboard",
     "after": "/supervisor/dashboard",
     "ok": true,
-    "at": "2026-11-21T05:43:59.900Z"
+    "at": "2026-11-21T08:24:27.938Z"
   },
   {
     "step": "session: a refresh gateway HTML 502 does not sign the user out",
     "during": "/supervisor/dashboard",
     "after": "/supervisor/dashboard",
     "ok": true,
-    "at": "2026-11-21T05:45:05.932Z"
+    "at": "2026-11-21T08:24:58.339Z"
   },
   {
     "step": "session: a refresh network failure does not sign the user out",
     "during": "/supervisor/dashboard",
     "after": "/supervisor/dashboard",
     "ok": true,
-    "at": "2026-11-21T05:46:11.729Z"
+    "at": "2026-11-21T08:25:28.577Z"
   },
   {
     "step": "session: the pre-logout refresh cookie, replayed, does not sign back in",
@@ -50,46 +50,51 @@
     "ok": true,
     "refreshes": [
       "401 cleared",
-      "401 cleared",
       "401 cleared"
     ],
     "jar": [
       "pc_device_id",
       "csrf-token"
     ],
-    "at": "2026-11-21T05:47:15.651Z"
+    "at": "2026-11-21T08:25:56.815Z"
   },
   {
     "step": "switch: B lands on their own dashboard after A logged out mid-request",
-    "url": "http://localhost:56433/admin/dashboard",
-    "heldForA": 26,
+    "url": "http://localhost:56443/admin/dashboard",
+    "heldForA": 13,
     "ok": true,
-    "at": "2026-11-21T05:48:29.383Z"
+    "at": "2026-11-21T08:26:34.153Z"
   },
   {
     "step": "switch: no API response is cached for B to inherit",
     "left": [],
     "ok": true,
-    "at": "2026-11-21T05:48:29.383Z"
+    "at": "2026-11-21T08:26:34.153Z"
   },
   {
     "step": "switch: B header initials",
     "initials": "AD",
-    "bodyChars": 1801,
+    "bodyChars": 1804,
     "ok": true,
-    "at": "2026-11-21T05:48:29.383Z"
+    "at": "2026-11-21T08:26:34.153Z"
   },
   {
-    "step": "session: the driver stayed within the API rate limits (no 429 seen)",
-    "limited": [
-      "transient:/api/auth/refresh",
-      "transient:/api/auth/refresh",
-      "transient:/api/auth/refresh",
-      "transient:/api/auth/refresh",
-      "transient:/api/auth/refresh"
-    ],
-    "count": 10,
-    "ok": false,
-    "at": "2026-11-21T05:48:29.478Z"
+    "step": "session: failures injected by this driver (not application failures)",
+    "count": 12,
+    "byKind": {
+      "503 /api/auth/refresh": 3,
+      "429 /api/auth/refresh": 3,
+      "502 /api/auth/refresh": 3,
+      "aborted /api/auth/refresh": 3
+    },
+    "ok": true,
+    "at": "2026-11-21T08:26:34.233Z"
+  },
+  {
+    "step": "session: no unexpected application failure (no real API 429/5xx, no page error)",
+    "count": 0,
+    "sample": [],
+    "ok": true,
+    "at": "2026-11-21T08:26:34.233Z"
   }
 ]

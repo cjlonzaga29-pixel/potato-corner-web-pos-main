@@ -1,0 +1,36 @@
+{
+  "window": [
+    "2026-11-21T08:22:56Z",
+    "exit=0",
+    "2026-11-21T08:26:34Z"
+  ],
+  "requests": 193,
+  "byStatus": {
+    "200": 62,
+    "304": 112,
+    "401": 19
+  },
+  "non2xx": [
+    "21/Nov/2026:08:22:58 +0000 POST /api/auth/refresh 401",
+    "21/Nov/2026:08:25:54 +0000 POST /api/auth/refresh 401",
+    "21/Nov/2026:08:25:54 +0000 POST /api/auth/refresh 401",
+    "21/Nov/2026:08:25:55 +0000 POST /api/auth/refresh 401",
+    "21/Nov/2026:08:26:22 +0000 POST /api/auth/refresh 401",
+    "21/Nov/2026:08:26:24 +0000 GET /api/notifications 401",
+    "21/Nov/2026:08:26:24 +0000 GET /api/expenses/summary 401",
+    "21/Nov/2026:08:26:25 +0000 GET /api/reports/payment-method-mix 401",
+    "21/Nov/2026:08:26:25 +0000 GET /api/reports/product-performance 401",
+    "21/Nov/2026:08:26:25 +0000 GET /api/extra-supplies/issues/summary 401",
+    "21/Nov/2026:08:26:25 +0000 GET /api/reports/daily-sales 401",
+    "21/Nov/2026:08:26:25 +0000 GET /api/branches/stats 401",
+    "21/Nov/2026:08:26:25 +0000 GET /api/transactions 401",
+    "21/Nov/2026:08:26:25 +0000 GET /api/attendance/branch/:id/summary 401",
+    "21/Nov/2026:08:26:25 +0000 GET /api/branches/:id/inventory-stock/alerts 401",
+    "21/Nov/2026:08:26:25 +0000 GET /api/reports/daily-sales 401",
+    "21/Nov/2026:08:26:25 +0000 GET /api/branches 401",
+    "21/Nov/2026:08:26:25 +0000 GET /api/branches/stats 401",
+    "21/Nov/2026:08:26:25 +0000 POST /api/auth/refresh 401"
+  ],
+  "otherLogLines": 1,
+  "otherSample": []
+}

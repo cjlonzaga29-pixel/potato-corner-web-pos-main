@@ -78,6 +78,10 @@ const DEFINITIVE_QUEUE_REJECTION_CODES = new Set([
   'TAX_SETTINGS_CHANGED',
   'MANUAL_DISCOUNT_OFFLINE_UNSUPPORTED',
   'CALCULATION_MODE_REQUIRED',
+  // POS-PERF-P63 — VAT_CALCULATION_RETIRED: a queued sale an older POS rang
+  // with VAT (or the old PWD/Senior formula). It is never recalculated, so it
+  // stays in the queue, visibly, for a supervisor to record.
+  'VAT_CALCULATION_RETIRED',
 ]);
 
 export function isDefinitiveQueueRejection(code: string | null | undefined): boolean {

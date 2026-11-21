@@ -89,7 +89,8 @@ describe('EmployeesList PIN and management actions (POS-PERF-P47)', () => {
     expect(within(rowOf('Nora')).getByRole('button', { name: 'Edit Nora Test' })).toBeInTheDocument();
     expect(within(rowOf('Nora')).getByRole('button', { name: 'Delete or deactivate Nora Test' })).toBeInTheDocument();
     const sam = rowOf('Sam');
-    expect(within(sam).getByText('Managed by Super Admin')).toBeInTheDocument();
+    // POS-PERF-P59 — no explanatory text, and still no actions: the server refuses these changes either way.
+    expect(within(sam).queryByText('Managed by Super Admin')).not.toBeInTheDocument();
     expect(within(sam).queryByRole('button')).not.toBeInTheDocument();
   });
 

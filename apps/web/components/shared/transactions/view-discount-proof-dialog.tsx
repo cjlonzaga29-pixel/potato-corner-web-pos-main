@@ -28,7 +28,7 @@ export function ViewDiscountProofDialog({ transactionId, onOpenChange, onCloseAu
       <DialogContent className="max-w-md" onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle>Discount Proof</DialogTitle>
-          <DialogDescription className="sr-only">Photo of the PWD or Senior Citizen ID used for the discount.</DialogDescription>
+          <DialogDescription className="sr-only">Proof photo saved with the discount.</DialogDescription>
         </DialogHeader>
         {transactionId && (
           <ProofPhotoViewer

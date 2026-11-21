@@ -8,8 +8,9 @@
 import React from 'react';
 import { Document, Page, Text, View, StyleSheet, renderToBuffer } from '@react-pdf/renderer';
 import type { ReportColumn } from '../../modules/reports/reports.types.js';
-import { computeColumnLayout, formatCellValue } from './pdf.js';
+import { computeColumnLayout, formatCellValue, ONE_PAGE_ROW_THRESHOLD, ROWS_PER_SPLIT_PAGE } from './pdf.js';
 import { formatManilaDateTime } from '../manila-time.js';
+import { renderPdfIsolated } from './pdf-render-pool.js';
 
 const e = React.createElement;
 
@@ -21,7 +22,6 @@ export interface TransactionExportRow extends Record<string, unknown> {
   payment: string;
   reference: string;
   subtotal: string;
-  vat: string;
   discount: string;
   discount_type: string;
   customer_id: string;
@@ -37,7 +37,6 @@ export const TRANSACTION_EXPORT_COLUMNS: ReportColumn<TransactionExportRow>[] = 
   { key: 'payment', header: 'Payment' },
   { key: 'reference', header: 'Reference' },
   { key: 'subtotal', header: 'Subtotal' },
-  { key: 'vat', header: 'VAT' },
   { key: 'discount', header: 'Discount' },
   { key: 'discount_type', header: 'Discount Type' },
   { key: 'customer_id', header: 'Customer ID' },
@@ -73,7 +72,8 @@ export function buildTransactionExportFilename(scope: 'filtered' | 'single', lab
   return `transactions-${scope}-${safe || 'export'}.pdf`;
 }
 
-export async function generateTransactionsPdf(rows: TransactionExportRow[], scope: TransactionExportScope, brandName: string): Promise<Buffer> {
+/** Runs in the PDF worker (pdf-render.worker.ts) only. Everything else calls generateTransactionsPdf. */
+export async function renderTransactionsPdf(rows: TransactionExportRow[], scope: TransactionExportScope, brandName: string): Promise<Buffer> {
   const generatedAt = formatManilaDateTime(new Date());
   const { fontSize: layoutFontSize, widths: columnWidths } = computeColumnLayout(TRANSACTION_EXPORT_COLUMNS, rows, 'landscape');
   // Widths are sized for layoutFontSize; rendering one point smaller leaves
@@ -83,15 +83,19 @@ export async function generateTransactionsPdf(rows: TransactionExportRow[], scop
   const bodyFontSize = Math.max(6, layoutFontSize - 1);
 
   // fixed: true repeats the header row at the top of every page the table spans.
+  // POS-PERF-P62 — the size is set on each cell, not only inherited from the Page:
+  // react-pdf resolved the cell's unitless lineHeight against another size, so every
+  // single-line row took about twice its height (12 rows a sheet; measured, runbook §3).
+  const cellSize = { fontSize: bodyFontSize };
   const headerCells = TRANSACTION_EXPORT_COLUMNS.map((c, i) =>
-    e(Text, { key: String(c.key), style: [styles.cell, { width: columnWidths[i] }] }, c.header),
+    e(Text, { key: String(c.key), style: [styles.cell, cellSize, { width: columnWidths[i] }] }, c.header),
   );
   const bodyRows = rows.map((row, i) =>
     e(
       View,
       { key: i, style: styles.row, wrap: false },
       ...TRANSACTION_EXPORT_COLUMNS.map((c, ci) =>
-        e(Text, { key: String(c.key), style: [styles.cell, { width: columnWidths[ci] }] }, formatCellValue(row[c.key])),
+        e(Text, { key: String(c.key), style: [styles.cell, cellSize, { width: columnWidths[ci] }] }, formatCellValue(row[c.key])),
       ),
     ),
   );
@@ -101,13 +105,20 @@ export async function generateTransactionsPdf(rows: TransactionExportRow[], scop
       ? 'Scope: one transaction'
       : `Scope: all ${scope.totalCount} transaction(s) matching the filters below (every page, not only the page on screen)`;
 
-  const doc = e(
-    Document,
-    null,
+  // POS-PERF-P62 — above ONE_PAGE_ROW_THRESHOLD rows the table is split into sheets of
+  // ROWS_PER_SPLIT_PAGE, as the other report PDFs already were, instead of one Page
+  // holding every row; smaller exports keep their exact earlier one-Page layout.
+  const rowGroups: React.ReactElement[][] = [];
+  const rowsPerGroup = bodyRows.length > ONE_PAGE_ROW_THRESHOLD ? ROWS_PER_SPLIT_PAGE : Math.max(bodyRows.length, 1);
+  for (let start = 0; start === 0 || start < bodyRows.length; start += rowsPerGroup) {
+    rowGroups.push(bodyRows.slice(start, start + rowsPerGroup));
+  }
+
+  const pages = rowGroups.map((group, groupIndex) =>
     e(
       Page,
-      { size: 'A4', style: [styles.page, { fontSize: bodyFontSize }], orientation: 'landscape' },
-      e(
+      { key: groupIndex, size: 'A4', style: [styles.page, { fontSize: bodyFontSize }], orientation: 'landscape' },
+      groupIndex > 0 ? null : e(
         View,
         { style: styles.header },
         e(Text, { style: styles.brand }, brandName),
@@ -117,7 +128,7 @@ export async function generateTransactionsPdf(rows: TransactionExportRow[], scop
         e(Text, { style: styles.meta }, `Generated: ${generatedAt} (Asia/Manila). Amounts in PHP. "—" means the value was not recorded.`),
       ),
       rows.length > 0
-        ? e(View, { style: styles.table }, e(View, { style: styles.headerRow, fixed: true }, ...headerCells), ...bodyRows)
+        ? e(View, { style: styles.table }, e(View, { style: styles.headerRow, fixed: true }, ...headerCells), ...group)
         : e(Text, { style: styles.emptyState }, 'No transactions match these filters.'),
       e(Text, {
         style: styles.footer,
@@ -127,5 +138,9 @@ export async function generateTransactionsPdf(rows: TransactionExportRow[], scop
     ),
   );
 
-  return renderToBuffer(doc as never);
+  return renderToBuffer(e(Document, null, ...pages) as never);
+}
+
+export function generateTransactionsPdf(...args: Parameters<typeof renderTransactionsPdf>): Promise<Buffer> {
+  return renderPdfIsolated('transactions', args);
 }

@@ -124,7 +124,7 @@ export function FinancialSummaryPanel({ branchId, dateFrom, dateTo }: FinancialS
           isLoading={isLoading}
           tooltip={`Completed sales from ${dateFrom} to ${dateTo}, before discounts/refunds.`}
         />
-        <KpiCard title="Discounts" value={discountTotal} prefix="₱" isLoading={isLoading} tooltip="PWD, Senior, and other discounts applied to completed sales." />
+        <KpiCard title="Discounts" value={discountTotal} prefix="₱" isLoading={isLoading} tooltip="Discounts applied to completed sales." />
         <KpiCard title="Refunds" value={refundTotal} prefix="₱" isLoading={isLoading} tooltip="Value of completed sales later refunded, for the selected range." />
         <KpiCard title="Net Sales" value={netSales} prefix="₱" isLoading={isLoading} emphasize tooltip="Gross Sales minus discounts and refunds." />
         <KpiCard title="Operating Expenses" value={totalExpenses} prefix="₱" isLoading={isLoading} tooltip="Recorded Expenses for the selected range." />

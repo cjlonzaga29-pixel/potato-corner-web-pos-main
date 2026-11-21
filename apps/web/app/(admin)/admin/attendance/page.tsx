@@ -227,7 +227,7 @@ export default function AdminAttendancePage() {
 
       {view === 'open' && data && !data.scope.supervisor && employeeId === ALL && (
         <p className="rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground">
-          Dashboard &quot;Staff Clocked In&quot; for this scope: <span className="font-semibold text-foreground">{dashboardClockedIn ?? '—'}</span>. Of the open
+          Dashboard &quot;Crew on Duty&quot; for this scope: <span className="font-semibold text-foreground">{dashboardClockedIn ?? '—'}</span>. Of the open
           records on this page, {countedOpen} count toward it and {notCountedOpen} do not (the employee is inactive or no longer assigned to that
           branch). Records are never changed to make these match.
         </p>

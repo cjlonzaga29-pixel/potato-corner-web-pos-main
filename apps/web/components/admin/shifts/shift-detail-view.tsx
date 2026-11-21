@@ -19,6 +19,7 @@ import { ReviewVarianceDialog } from '@/components/admin/shifts/review-variance-
 import { ReviewShiftDialog } from '@/components/admin/shifts/review-shift-dialog';
 import { ViewPaymentProofDialog } from '@/components/shared/transactions/view-payment-proof-dialog';
 import { formatCurrency } from '@/lib/utils';
+import { saleDiscountName } from '@/lib/discount-report';
 import { useAuth } from '@/hooks/use-auth';
 import type { ShiftReviewPhase } from '@potato-corner/shared';
 import {
@@ -76,7 +77,7 @@ export function ShiftDetailView() {
       cell: ({ row }) => (row.original.items ?? []).map((i) => `${i.quantity}x ${i.product_name}`).join(', '),
     },
     { id: 'payment_method', header: 'Payment', cell: ({ row }) => row.original.payment_method.toUpperCase() },
-    { id: 'discount_type', header: 'Discount', cell: ({ row }) => row.original.discount_type ?? '—' },
+    { id: 'discount_type', header: 'Discount', cell: ({ row }) => saleDiscountName(row.original) ?? '—' },
     { id: 'total_amount', header: 'Total', cell: ({ row }) => formatCurrency(row.original.total_amount) },
     {
       id: 'payment_proof',
@@ -156,6 +157,9 @@ export function ShiftDetailView() {
             <div><p className="text-xs text-muted-foreground">Refunded</p><p className="font-semibold tabular-nums">{summary.refunded_count}</p></div>
             <div><p className="text-xs text-muted-foreground">Total Discounts</p><p className="font-semibold tabular-nums">{formatCurrency(summary.total_discount_amount)}</p></div>
             <div><p className="text-xs text-muted-foreground">PWD/SC Transactions</p><p className="font-semibold tabular-nums">{summary.pwd_sc_transaction_count}</p></div>
+            {/* POS-PERF-P61 — not sales. Expected cash already includes the cash part, once. */}
+            <div><p className="text-xs text-muted-foreground">Extra Supply Collections</p><p className="font-semibold tabular-nums">{formatCurrency(summary.extra_supply_collections_total ?? 0)} ({formatCurrency(summary.extra_supply_cash_total ?? 0)} cash)</p></div>
+            <div><p className="text-xs text-muted-foreground">Sales + Supply Collections</p><p className="font-semibold tabular-nums">{formatCurrency(summary.total_collections ?? summary.total_sales)}</p></div>
             {summary.actual_cash !== null && (
               <>
                 <div><p className="text-xs text-muted-foreground">Expected Cash</p><p className="font-semibold tabular-nums">{formatCurrency(summary.expected_cash)}</p></div>

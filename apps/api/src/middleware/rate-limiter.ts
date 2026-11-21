@@ -1,5 +1,7 @@
 import rateLimit, { type Options } from 'express-rate-limit';
-import type { Request, Response } from 'express';
+import type { Request, RequestHandler, Response } from 'express';
+import jwt from 'jsonwebtoken';
+import { config } from '../config/index.js';
 
 /**
  * Phase 21: Redis-backed store removed — falls back to express-rate-limit's
@@ -199,12 +201,80 @@ export const staffPinVerifyOverallLimiter = rateLimit({
   handler: rateLimitHandler,
 });
 
-/** 100 requests per minute — applied globally; keyed by authenticated user when available, else IP. */
-export const apiLimiter = rateLimit({
+/**
+ * POS-PERF-P62 — the global budget, applied before authentication. It used to
+ * key on req.user, which nothing had set yet at this point, so every request
+ * was counted per IP and all the terminals and dashboards behind one branch
+ * connection shared 100 requests a minute.
+ *
+ * A request is counted against its user only when its bearer token verifies
+ * (RS256 signature and expiry; revocation is still checked by authenticate).
+ * Anything else, including a forged or expired token and every header a client
+ * can set, falls back to the unchanged per-IP budget. req.ip comes from
+ * trust proxy (app.ts), never from a header read here. The dedicated login,
+ * PIN, 2FA and reset limiters above apply on top of this.
+ *
+ * Counters are kept in this process's memory, so each API instance counts on
+ * its own. See the P62 runbook, §5.
+ */
+export const API_LIMIT_PER_IP_PER_MINUTE = 100;
+export const API_LIMIT_PER_USER_PER_MINUTE = 300;
+
+const unauthenticatedApiLimiter = rateLimit({
   windowMs: 60 * 1000,
-  limit: 100,
+  limit: API_LIMIT_PER_IP_PER_MINUTE,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req: Request) => req.user?.user_id ?? req.ip ?? 'unknown',
+  keyGenerator: (req: Request) => `ip:${req.ip ?? 'unknown'}`,
   handler: rateLimitHandler,
 });
+
+const authenticatedApiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: API_LIMIT_PER_USER_PER_MINUTE,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (_req: Request, res: Response) => `user:${String(res.locals.rateLimitUserId)}`,
+  handler: rateLimitHandler,
+});
+
+/** The user id of a bearer token that verifies, or null. Never trusts an unverified claim. */
+export function verifiedRateLimitUserId(req: Request): string | null {
+  const header = req.headers.authorization;
+  if (typeof header !== 'string' || !header.startsWith('Bearer ')) return null;
+  try {
+    const payload = jwt.verify(header.slice('Bearer '.length), config.jwt.publicKey, { algorithms: ['RS256'] });
+    if (typeof payload === 'object' && typeof payload.user_id === 'string' && payload.user_id.length > 0) return payload.user_id;
+  } catch {
+    // Forged, expired or malformed: counted per IP.
+  }
+  return null;
+}
+
+/**
+ * POS-PERF-P62 — signing out must not depend on the shared budget. Found in the
+ * P62 browser run: a logout refused with 429 left the server session and its
+ * cookies in place, the web cleared itself, and its middleware sent /login
+ * straight back to the dashboard, so "Log out" appeared to do nothing. Every
+ * terminal of a branch shares one account's budget, so a busy branch can be at
+ * the limit. A verified user's logout has its own, separate per-user budget.
+ */
+export const LOGOUT_LIMIT_PER_USER_PER_MINUTE = 30;
+const LOGOUT_PATHS = new Set(['/api/auth/logout', '/api/auth/logout-all']);
+
+const logoutLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: LOGOUT_LIMIT_PER_USER_PER_MINUTE,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (_req: Request, res: Response) => `logout:${String(res.locals.rateLimitUserId)}`,
+  handler: rateLimitHandler,
+});
+
+export const apiLimiter: RequestHandler = (req, res, next) => {
+  const userId = verifiedRateLimitUserId(req);
+  if (userId === null) return unauthenticatedApiLimiter(req, res, next);
+  res.locals.rateLimitUserId = userId;
+  if (req.method === 'POST' && LOGOUT_PATHS.has(req.path)) return logoutLimiter(req, res, next);
+  return authenticatedApiLimiter(req, res, next);
+};

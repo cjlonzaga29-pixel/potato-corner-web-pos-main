@@ -5,16 +5,19 @@
 import EmbeddedPostgres from 'embedded-postgres';
 import path from 'node:path';
 import os from 'node:os';
+import { existsSync } from 'node:fs';
 
 const DB_DIR = process.env.TEST_PG_DATA_DIR || path.join(os.tmpdir(), 'pos-dev-pg');
 const PORT = Number(process.env.TEST_PG_PORT || 55999);
-const DB_NAME = 'pos_dev';
+// TEST_PG_DB_NAME lets a fixture's name guard (e.g. p62_*) be satisfied.
+const DB_NAME = process.env.TEST_PG_DB_NAME || 'pos_dev';
 const DATABASE_URL = `postgresql://postgres:postgres@127.0.0.1:${PORT}/${DB_NAME}`;
 
 const pg = new EmbeddedPostgres({ databaseDir: DB_DIR, user: 'postgres', password: 'postgres', port: PORT, persistent: false });
 
 async function main() {
-  await pg.initialise();
+  // A restart on a dir left by a killed run reuses that cluster; initdb refuses a non-empty dir.
+  if (!existsSync(path.join(DB_DIR, 'PG_VERSION'))) await pg.initialise();
   await pg.start();
   await pg.createDatabase(DB_NAME).catch(() => {}); // already exists on a restart against the same dir
   console.log(`DATABASE_URL=${DATABASE_URL}`);

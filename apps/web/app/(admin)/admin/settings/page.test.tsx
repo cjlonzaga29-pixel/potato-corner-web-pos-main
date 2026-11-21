@@ -57,12 +57,7 @@ vi.mock('@/components/ui/tabs', () => {
 vi.mock('@/components/settings/notification-preferences-section', () => ({
   NotificationPreferencesSection: () => <div>Notifications Section Content</div>,
 }));
-vi.mock('@/components/settings/tax-settings-section', () => ({
-  TaxSettingsSection: () => <div>Tax Section Content</div>,
-}));
-vi.mock('@/components/settings/discount-settings-section', () => ({
-  DiscountSettingsSection: () => <div>Discounts Section Content</div>,
-}));
+// POS-PERF-P63 — DiscountSettingsSection and LegacyDiscountSettings were deleted with VAT.
 vi.mock('@/components/settings/branch-discount-settings-section', () => ({
   BranchDiscountSettingsSection: () => <div>Branch Discounts Section Content</div>,
 }));
@@ -103,6 +98,10 @@ describe('SettingsPage', () => {
 
     render(<SettingsPage />);
 
-    expect(screen.getByText('Discounts Section Content')).toBeInTheDocument();
+    // POS-PERF-P63 — the Discounts tab is the discount types plus the per-branch decision, nothing else.
+    expect(screen.getByText('Discount Types Section Content')).toBeInTheDocument();
+    expect(screen.getByText('Branch Discounts Section Content')).toBeInTheDocument();
+    expect(screen.queryByText(/legacy|statutory/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('Notifications Section Content')).not.toBeInTheDocument();
   });
 });

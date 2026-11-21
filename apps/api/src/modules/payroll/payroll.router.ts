@@ -1,4 +1,5 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
+import { cancelPdfWhenClientLeaves } from '../../lib/reports/pdf-render-pool.js';
 import {
   payRateCreateSchema,
   payRateVoidSchema,
@@ -206,7 +207,7 @@ router.post('/branches/:branchId/runs/:runId/mark-paid', ...guard, validate(payr
   }
 });
 
-router.get('/branches/:branchId/runs/:runId/export', ...guard, async (req, res, next) => {
+router.get('/branches/:branchId/runs/:runId/export', ...guard, cancelPdfWhenClientLeaves, async (req, res, next) => {
   try {
     const query = queryOr422(payrollExportQuerySchema, req, res);
     if (!query) return;

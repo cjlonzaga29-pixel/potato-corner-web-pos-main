@@ -272,9 +272,29 @@ export const cashRepository = {
     return result._sum.totalAmount ?? new Prisma.Decimal(0);
   },
 
-  /** Any transaction at all (regardless of status) counts toward the void guard — even a voided one means the shift wasn't untouched. */
-  countAnyTransactionsForShift(shiftId: string) {
-    return prisma.transaction.count({ where: { shiftId } });
+  /**
+   * POS-PERF-P61 — paid Extra Supplies collected on this shift. Kept apart from
+   * sumTransactionsForShift on purpose: these are not sales, so cash_sales_total and
+   * gross_sales_total stay product-only, and only the expected drawer adds the cash.
+   */
+  async sumExtraSupplyCollectionsForShift(shiftId: string, tx?: Prisma.TransactionClient): Promise<{ cash: Prisma.Decimal; total: Prisma.Decimal }> {
+    const client = tx ?? prisma;
+    const rows = await client.extraSupplyIssue.groupBy({
+      by: ['paymentMethod'],
+      where: { shiftId, kind: 'paid' },
+      _sum: { amountCollected: true },
+    });
+    const zero = new Prisma.Decimal(0);
+    return {
+      cash: rows.find((row) => row.paymentMethod === 'cash')?._sum.amountCollected ?? zero,
+      total: rows.reduce((sum, row) => sum.plus(row._sum.amountCollected ?? zero), zero),
+    };
+  },
+
+  /** Any transaction at all (regardless of status) counts toward the void guard — even a voided one means the shift wasn't untouched. POS-PERF-P61: so does any Extra Supplies issue. */
+  async countAnyTransactionsForShift(shiftId: string) {
+    const [transactions, issues] = await Promise.all([prisma.transaction.count({ where: { shiftId } }), prisma.extraSupplyIssue.count({ where: { shiftId } })]);
+    return transactions + issues;
   },
 
   /**

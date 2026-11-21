@@ -5,6 +5,7 @@ vi.mock('./db', () => ({
     offlineTransactions: {
       orderBy: vi.fn(),
       update: vi.fn(),
+      delete: vi.fn(),
     },
   },
 }));
@@ -202,6 +203,52 @@ describe('syncOfflineTransactions', () => {
     expect(outcome.rejected).toEqual(['PC-MAIN01-20260719-OFFLINE-0001']);
   });
 
+  // POS-PERF-P63 — VAT retired: a sale an older POS queued with the VAT basis
+  // is refused for good. It stays in the queue, visibly refused, untouched,
+  // and the next automatic sync (reconnect) does not send it again.
+  it('VAT_CALCULATION_RETIRED: kept in the queue as a definitive refusal, never deleted, not resent on reconnect', async () => {
+    const vatBasis = { vat_rate: 12, discount_rate: null };
+    const row: Record<string, unknown> = offlineRow({ payload: { ...offlineRow().payload, tax_basis: vatBasis } });
+    const originalPayload = structuredClone(row.payload);
+    mockPendingRows([row]);
+    // Apply each update to the row, as Dexie would, so the second sync sees the stored state.
+    vi.mocked(db.offlineTransactions.update).mockImplementationOnce((async (_id: string, changes: Record<string, unknown>) => {
+      Object.assign(row, changes);
+      return 1;
+    }) as never);
+    vi.mocked(apiClient).mockResolvedValueOnce({
+      data: {
+        results: [{ offline_provisional_number: 'PC-MAIN01-20260719-OFFLINE-0001', status: 'failed', error: { code: 'VAT_CALCULATION_RETIRED', message: 'VAT is no longer calculated' } }],
+        synced_count: 0,
+      },
+      error: null,
+      meta: null,
+    });
+
+    const outcome = await syncOfflineTransactions(OPTIONS);
+
+    expect(isDefinitiveQueueRejection('VAT_CALCULATION_RETIRED')).toBe(true);
+    expect(outcome).toEqual({ attempted: 1, synced: [], rejected: ['PC-MAIN01-20260719-OFFLINE-0001'], failed: [] });
+    expect(db.offlineTransactions.update).toHaveBeenCalledTimes(1);
+    expect(db.offlineTransactions.update).toHaveBeenCalledWith('PC-MAIN01-20260719-OFFLINE-0001', {
+      rejection: { code: 'VAT_CALCULATION_RETIRED', message: 'VAT is no longer calculated', at: expect.any(Number) },
+      lastError: null,
+    });
+    expect(db.offlineTransactions.delete).not.toHaveBeenCalled();
+    // Not marked synced, and the sale itself (identity, basis) is unchanged: never recalculated.
+    expect(row.syncedAt).toBeNull();
+    expect(row).not.toHaveProperty('officialTransactionNumber');
+    expect(row.payload).toEqual(originalPayload);
+
+    // Reconnect: the automatic sync sends nothing, and the row stays refused.
+    vi.mocked(apiClient).mockResolvedValue({ data: { results: [], synced_count: 0 }, error: null, meta: null });
+    const again = await syncOfflineTransactions(OPTIONS);
+    expect(apiClient).toHaveBeenCalledTimes(1);
+    expect(again.attempted).toBe(0);
+    expect(row.rejection).toMatchObject({ code: 'VAT_CALCULATION_RETIRED' });
+    expect(db.offlineTransactions.delete).not.toHaveBeenCalled();
+  });
+
   it('never resends a rejected row automatically, but an explicit Retry sends exactly that row with its original identity', async () => {
     const rejected = offlineRow({ id: 'PC-MAIN01-20260719-OFFLINE-0001', rejection: { code: 'PRODUCT_OPTION_REQUIRED', message: null, at: 1 } });
     const waiting = offlineRow({ id: 'PC-MAIN01-20260719-OFFLINE-0002' });
@@ -317,6 +364,8 @@ describe('isDefinitiveQueueRejection', () => {
     expect(isDefinitiveQueueRejection('PRODUCT_OPTION_REQUIRED')).toBe(true);
     // P50 — a sale rung at a rate checkout no longer uses waits visibly; it is never resent or repriced.
     expect(isDefinitiveQueueRejection('TAX_SETTINGS_CHANGED')).toBe(true);
+    // P63 — VAT retired: resending the same queued sale gets the same answer.
+    expect(isDefinitiveQueueRejection('VAT_CALCULATION_RETIRED')).toBe(true);
     for (const code of ['INSUFFICIENT_STOCK', 'SHIFT_CLOSED', 'NETWORK_ERROR', 'SYNC_FAILED', 'PRODUCT_UNAVAILABLE', undefined, null]) {
       expect(isDefinitiveQueueRejection(code)).toBe(false);
     }

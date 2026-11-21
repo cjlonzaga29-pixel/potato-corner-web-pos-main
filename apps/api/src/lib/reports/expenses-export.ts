@@ -16,15 +16,19 @@ import { Document, Page, Text, View, StyleSheet, renderToBuffer } from '@react-p
 import type { ReportColumn, ReportFilters } from '../../modules/reports/reports.types.js';
 import { computeColumnLayout, formatCellValue } from './pdf.js';
 import { manilaDateKey } from '../manila-time.js';
+import { renderPdfIsolated } from './pdf-render-pool.js';
 
 const e = React.createElement;
 
 export interface ExpensesExportRow extends Record<string, unknown> {
   incurred_at: string;
   branch: string;
-  category: string;
+  // The name recorded on the expense, or its legacy category's label (expenseDisplayName).
+  expense_type: string;
+  // The type's name today, only where it differs from the recorded one.
+  current_type_name: string;
   vendor_name: string;
-  amount: string;
+  amount: string | number;
   created_by_name: string;
   // 'Yes' | 'No' only — never the storage key or a signed URL, same rule as
   // InventoryMovementReportRow.proof_available (see reports.schema.ts).
@@ -34,7 +38,8 @@ export interface ExpensesExportRow extends Record<string, unknown> {
 export const EXPENSES_EXPORT_COLUMNS: ReportColumn<ExpensesExportRow>[] = [
   { key: 'incurred_at', header: 'Date' },
   { key: 'branch', header: 'Branch' },
-  { key: 'category', header: 'Category' },
+  { key: 'expense_type', header: 'Type' },
+  { key: 'current_type_name', header: 'Type Now Called' },
   { key: 'vendor_name', header: 'Vendor' },
   { key: 'amount', header: 'Amount' },
   { key: 'created_by_name', header: 'Recorded By' },
@@ -68,13 +73,15 @@ const styles = StyleSheet.create({
   footer: { position: 'absolute', bottom: 16, left: 24, right: 24, fontSize: 8, textAlign: 'center', color: '#666666' },
 });
 
-export async function generateExpensesPdf(
+/** Runs in the PDF worker (pdf-render.worker.ts) only. Everything else calls generateExpensesPdf. */
+export async function renderExpensesPdf(
   filters: ReportFilters,
   rows: ExpensesExportRow[],
   totalCount: number,
   totalAmount: number,
   branchName: string | null,
   brandName: string,
+  coverageNote?: string,
 ): Promise<Buffer> {
   const generatedAt = new Date().toISOString();
   const dateRangeLabel =
@@ -119,6 +126,7 @@ export async function generateExpensesPdf(
         { style: styles.summary },
         e(Text, { style: styles.summaryLine }, `Total Expenses: ${totalCount}`),
         e(Text, { style: styles.summaryLine }, `Total Amount: ${formatPhp(totalAmount)}`),
+        ...(coverageNote ? [e(Text, { key: 'coverage', style: styles.meta }, coverageNote)] : []),
       ),
       rows.length > 0
         ? e(View, { style: styles.table }, e(View, { style: styles.headerRow, fixed: true }, ...headerCells), ...bodyRows)
@@ -132,4 +140,8 @@ export async function generateExpensesPdf(
   );
 
   return renderToBuffer(doc as never);
+}
+
+export function generateExpensesPdf(...args: Parameters<typeof renderExpensesPdf>): Promise<Buffer> {
+  return renderPdfIsolated('expenses', args);
 }

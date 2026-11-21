@@ -1,8 +1,8 @@
 'use client';
 
-import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { SOCKET_EVENTS } from '@potato-corner/shared';
+import { SOCKET_EVENTS, type ExpenseSummaryResponse } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
 import { useRealtimeInvalidate } from '@/hooks/use-realtime-invalidate';
 
@@ -13,6 +13,12 @@ export interface ExpenseRow {
   branch_id: string;
   branch_name: string;
   category: ExpenseCategory;
+  /** POS-PERF-P60 — null on a legacy expense. An older API omits all four. */
+  expense_type_id?: string | null;
+  /** The name recorded on this expense. */
+  expense_type_name?: string | null;
+  expense_type_current_name?: string | null;
+  expense_type_is_active?: boolean | null;
   amount: number;
   vendor_name: string | null;
   description: string | null;
@@ -33,16 +39,22 @@ export interface ExpenseListResponse {
 
 export interface ExpenseFilters {
   branch_id?: string;
+  expense_type_id?: string;
   category?: ExpenseCategory;
+  unassigned?: boolean;
   date_from?: string;
   date_to?: string;
   page?: number;
   limit?: number;
 }
 
+export type ExpenseSummaryFilters = Omit<ExpenseFilters, 'page' | 'limit'>;
+
 export interface CreateExpenseInput {
   branch_id: string;
-  category: ExpenseCategory;
+  /** Only ever legacy: a new expense names a type. */
+  category?: ExpenseCategory;
+  expense_type_id?: string;
   amount: number;
   vendor_name?: string;
   description?: string;
@@ -52,20 +64,28 @@ export interface CreateExpenseInput {
 export type UpdateExpenseInput = Partial<CreateExpenseInput>;
 
 interface ApiErrorShape {
-  error: { code: string; message?: string } | string | null;
+  error: { code: string; message?: string; fields?: Array<{ message?: string }> } | string | null;
 }
 
 function errorMessage(response: ApiErrorShape, fallback: string): string {
   if (!response.error) return fallback;
-  return typeof response.error === 'string' ? response.error : (response.error.message ?? response.error.code);
+  if (typeof response.error === 'string') return response.error;
+  return response.error.message ?? response.error.fields?.[0]?.message ?? response.error.code;
+}
+
+function buildFilterParams(filters: ExpenseSummaryFilters): URLSearchParams {
+  const params = new URLSearchParams();
+  if (filters.branch_id) params.set('branch_id', filters.branch_id);
+  if (filters.expense_type_id) params.set('expense_type_id', filters.expense_type_id);
+  if (filters.category) params.set('category', filters.category);
+  if (filters.unassigned) params.set('unassigned', 'true');
+  if (filters.date_from) params.set('date_from', filters.date_from);
+  if (filters.date_to) params.set('date_to', filters.date_to);
+  return params;
 }
 
 function buildQueryString(filters: ExpenseFilters): string {
-  const params = new URLSearchParams();
-  if (filters.branch_id) params.set('branch_id', filters.branch_id);
-  if (filters.category) params.set('category', filters.category);
-  if (filters.date_from) params.set('date_from', filters.date_from);
-  if (filters.date_to) params.set('date_to', filters.date_to);
+  const params = buildFilterParams(filters);
   params.set('page', String(filters.page ?? 1));
   params.set('limit', String(filters.limit ?? 25));
   return params.toString();
@@ -81,7 +101,26 @@ export function useExpenses(filters: ExpenseFilters = {}) {
       return response.data;
     },
     staleTime: 30 * 1000,
-    placeholderData: keepPreviousData,
+    // Only another page of the same filters may stand in while loading: another
+    // branch's or type's rows must never show under this one.
+    placeholderData: (previous, previousQuery) => {
+      const previousFilters = (previousQuery?.queryKey[2] ?? {}) as ExpenseFilters;
+      return JSON.stringify({ ...previousFilters, page: undefined }) === JSON.stringify({ ...filters, page: undefined }) ? previous : undefined;
+    },
+  });
+}
+
+/** GET /api/expenses/summary — totals and the breakdown by type, over the same filters as the list. */
+export function useExpenseSummary(filters: ExpenseSummaryFilters = {}, options: { enabled?: boolean } = {}) {
+  return useQuery({
+    queryKey: ['expenses', 'summary', filters],
+    queryFn: async () => {
+      const response = await apiClient<ExpenseSummaryResponse>(`/api/expenses/summary?${buildFilterParams(filters).toString()}`);
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load expense totals'));
+      return response.data;
+    },
+    staleTime: 30 * 1000,
+    enabled: options.enabled ?? true,
   });
 }
 
@@ -109,17 +148,20 @@ export function useExpensesRealtimeSync(): void {
 export function useCreateExpense() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: CreateExpenseInput) => {
+    // A form passes one key for all its attempts, so a retry can't add a second expense.
+    mutationFn: async ({ idempotencyKey, ...input }: CreateExpenseInput & { idempotencyKey?: string }) => {
       const response = await apiClient<ExpenseRow>('/api/expenses', {
         method: 'POST',
         body: JSON.stringify(input),
-        headers: { 'Idempotency-Key': crypto.randomUUID() },
+        headers: { 'Idempotency-Key': idempotencyKey ?? crypto.randomUUID() },
       });
       if (!response.data) throw new Error(errorMessage(response, 'Failed to create expense'));
       return response.data;
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['expenses', 'list'] });
+      void queryClient.invalidateQueries({ queryKey: ['expenses'] });
+      void queryClient.invalidateQueries({ queryKey: ['expense-types'] });
+      void queryClient.invalidateQueries({ queryKey: ['branches'] });
       toast.success('Expense created');
     },
     onError: (error: Error) => toast.error(error.message),
@@ -138,8 +180,7 @@ export function useUpdateExpense(expenseId: string) {
       return response.data;
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['expenses', 'list'] });
-      void queryClient.invalidateQueries({ queryKey: ['expenses', 'detail', expenseId] });
+      void queryClient.invalidateQueries({ queryKey: ['expenses'] });
       toast.success('Expense updated');
     },
     onError: (error: Error) => toast.error(error.message),
@@ -155,6 +196,7 @@ export function useDeleteExpense(expenseId: string) {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['expenses', 'list'] });
+      void queryClient.invalidateQueries({ queryKey: ['expenses', 'summary'] });
       toast.success('Expense deleted');
     },
     onError: (error: Error) => toast.error(error.message),

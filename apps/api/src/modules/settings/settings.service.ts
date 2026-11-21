@@ -23,12 +23,9 @@ import {
   type BranchDiscountSettingsResponse,
   type BranchTaxProfileResponse,
   type UpdateBranchDiscountSettingsInput,
-  type UpdateBranchTaxProfileInput,
   type DiscountSettingSource,
-  type VatRegistrationStatus,
   CONFIGURABLE_DISCOUNT_TYPES,
   ROLES,
-  SUPPORTED_VAT_REGISTRATION_STATUSES,
   isLawfulPwdRate,
   isLawfulSeniorRate,
   PRICES_INCLUDE_VAT,
@@ -123,8 +120,8 @@ function assertStatutoryRowsUnchanged(data: UpdateDiscountPolicyInput, before: D
       throw new SettingsError(
         'STATUTORY_DISCOUNT_LOCKED',
         type === 'pwd'
-          ? `The PWD discount is required by law (RA 10754): at least ${STATUTORY_DISCOUNT_PERCENT}%, VAT-exempt. It can be raised up to 100% but not lowered below ${STATUTORY_DISCOUNT_PERCENT}% or turned off.`
-          : `The Senior Citizen discount is set by law (RA 9994): exactly ${STATUTORY_DISCOUNT_PERCENT}%, VAT-exempt. It cannot be changed or turned off.`,
+          ? `The PWD discount is required by law (RA 10754): at least ${STATUTORY_DISCOUNT_PERCENT}%. It can be raised up to 100% but not lowered below ${STATUTORY_DISCOUNT_PERCENT}% or turned off.`
+          : `The Senior Citizen discount is set by law (RA 9994): exactly ${STATUTORY_DISCOUNT_PERCENT}%. It cannot be changed or turned off.`,
         422,
       );
     }
@@ -193,7 +190,7 @@ function branchBoundId(actor: ActorContext): string | null {
 }
 
 const ORGANIZATION_ADMIN_ONLY_MESSAGE =
-  'Organization-wide discount defaults are set by a Super Admin. Supervisors change discounts for their own branches in Settings → Discounts & VAT.';
+  'Organization-wide discount defaults are set by a Super Admin. Supervisors change discounts for their own branches in Settings → Discounts.';
 
 /** Default state assumed when no BranchPaymentMethodConfig row exists yet (both methods enabled). */
 const DEFAULT_PAYMENT_METHOD_CONFIG = { cashEnabled: true, gcashEnabled: true };
@@ -609,67 +606,6 @@ export const settingsService = {
       branchId,
       beforeState: { override: before.override, effective: before.effective },
       afterState: { override: after.override, effective: after.effective },
-      ipAddress,
-    });
-    return after;
-  },
-
-  /**
-   * POS-PERF-P50R — records a branch's VAT registration: a legal fact the
-   * owner supplies, Super Admin only, audited, never changed implicitly.
-   * 'non_vat_registered' is refused: this release cannot calculate or
-   * receipt a non-VAT sale (runbook D1). The record does not change how
-   * checkout calculates — every branch is calculated as VAT-registered.
-   */
-  async updateBranchTaxProfile(
-    branchId: string,
-    data: UpdateBranchTaxProfileInput,
-    actor: ActorContext,
-    ipAddress: string | null,
-  ): Promise<BranchTaxProfileResponse> {
-    if (actor.role !== ROLES.SUPER_ADMIN) {
-      throw new SettingsError('TAX_PROFILE_ADMIN_ONLY', "Only a Super Admin can record a branch's VAT registration.", 403);
-    }
-    const branch = await branchesRepository.findById(branchId);
-    if (!branch) throw new SettingsError('BRANCH_NOT_FOUND', 'Branch not found', 404);
-    if (!SUPPORTED_VAT_REGISTRATION_STATUSES.includes(data.vatRegistration as VatRegistrationStatus)) {
-      throw new SettingsError(
-        'TAX_TREATMENT_NOT_SUPPORTED',
-        'Non-VAT registration is not supported yet: a non-VAT branch needs a different calculation and receipt that this version does not have. Leave the branch unconfirmed and contact the system owner.',
-        422,
-      );
-    }
-    const key = branchTaxProfileKey(branchId);
-    const before = readTaxProfile(branchId, await settingsRepository.findSystemSetting(key));
-    const expected = data.expectedUpdatedAt === null ? null : new Date(data.expectedUpdatedAt);
-    const stale = (expected?.toISOString() ?? null) !== before.updatedAt;
-    const saved = stale
-      ? null
-      : await settingsRepository.writeSystemSettingIfUnchanged(
-          key,
-          { vatRegistration: data.vatRegistration, note: data.note } as unknown as Prisma.InputJsonValue,
-          actor.user_id,
-          expected,
-          'Branch VAT registration as recorded by a Super Admin (POS-PERF-P50R)',
-        );
-    if (!saved) {
-      throw new SettingsError(
-        'SETTINGS_CHANGED',
-        `The VAT registration for ${branch.name} was changed by someone else after you opened it. Reload and check it again.`,
-        409,
-        { current: before },
-      );
-    }
-    const after = readTaxProfile(branchId, saved);
-    await recordAuditLog({
-      action: 'BRANCH_TAX_PROFILE_UPDATED',
-      entityType: 'system_setting',
-      entityId: key,
-      actorId: actor.user_id,
-      actorRole: actor.role,
-      branchId,
-      beforeState: before,
-      afterState: after,
       ipAddress,
     });
     return after;

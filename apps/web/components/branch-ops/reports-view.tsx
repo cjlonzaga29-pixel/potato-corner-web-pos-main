@@ -1,16 +1,17 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { ColumnDef, PaginationState } from '@tanstack/react-table';
 import type {
   AttendanceResponse,
   ExportReadyPayload,
   ExportRequestInput,
+  InventoryConsumptionSummaryReportRow,
   InventoryStockMovementResponse,
   TransactionResponse,
 } from '@potato-corner/shared';
 import { toast } from 'sonner';
-import { ROLES } from '@potato-corner/shared';
+import { DISCOUNT_PROOF_REQUIREMENT_LABELS, ROLES, reportTypeDisplayName } from '@potato-corner/shared';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -28,8 +29,14 @@ import { ViewPaymentProofDialog } from '@/components/shared/transactions/view-pa
 import { ViewDiscountProofDialog } from '@/components/shared/transactions/view-discount-proof-dialog';
 import { ViewTransactionItemsDialog } from '@/components/shared/transactions/view-transaction-items-dialog';
 import { ViewTransactionDetailDialog } from '@/components/shared/transactions/view-transaction-detail-dialog';
+import { DiscountCoverageNotice } from '@/components/reports/discount-coverage-notice';
+import { ReportCoverageNotice } from '@/components/reports/report-coverage-notice';
+import { DiscountProofSummary } from '@/components/reports/discount-proof-summary';
+import { ALL_DISCOUNT_TYPES, DiscountTypeFilter } from '@/components/reports/discount-type-filter';
+import { getDiscountBreakdownColumns } from '@/components/reports/discount-type-breakdown-columns';
 import { MOVEMENT_TYPE_LABELS } from '@/lib/inventory-movement-labels';
-import { formatCurrency, formatVatAmount, formatDateTime, formatDuration, formatInventoryQuantity, formatTimeAgo } from '@/lib/utils';
+import { discountTypeOptions, mergeDiscountRows, saleDiscountName, saleProofRequirement, summarizeDiscountProof } from '@/lib/discount-report';
+import { formatCurrency, formatDateTime, formatDuration, formatInventoryQuantity, formatTimeAgo } from '@/lib/utils';
 import { manilaEndOfDayISO, manilaStartOfDayISO } from '@/lib/manila-date';
 import { useAuthStore } from '@/stores/auth.store';
 import { useBranchStore } from '@/stores/branch.store';
@@ -37,11 +44,22 @@ import { useDiscountAuditTrail, useTransaction, useTransactions, useTransactions
 import { useInventoryItems, useInventoryStockMovements, useInventoryStockRealtimeSync, useUnitsOfMeasure } from '@/hooks/queries/use-universal-inventory';
 import { useAttendanceByBranch, useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
 import { useEmployees } from '@/hooks/queries/use-employees';
-import { useDiscountComplianceReport, useRequestExport, useReportsRealtimeSync } from '@/hooks/queries/use-reports';
+import {
+  useDiscountComplianceReport,
+  useInventoryConsumptionSummaryReport,
+  useReportPeriodSummary,
+  useReportPeriodSummaryRealtimeSync,
+  useRequestExport,
+  useReportsRealtimeSync,
+} from '@/hooks/queries/use-reports';
 
 const DEFAULT_RANGE_DAYS = 7;
 const QUERY_LIMIT = 100;
+const REPORT_PAGE_SIZE = 25;
+const DISCOUNT_DETAIL_PAGE_SIZE = 25;
 const REFRESH_COOLDOWN_SECONDS = 60;
+const SEARCH_DEBOUNCE_MS = 300;
+const FIRST_PAGE: PaginationState = { pageIndex: 0, pageSize: REPORT_PAGE_SIZE };
 
 const TAB_TO_REPORT_TYPE: Record<string, ExportRequestInput['report_type']> = {
   'daily-sales': 'DAILY_SALES',
@@ -58,19 +76,11 @@ const TAB_TO_REPORT_TYPE: Record<string, ExportRequestInput['report_type']> = {
   'attendance-summary': 'ATTENDANCE_SUMMARY',
 };
 
-interface ConsumptionSummaryRow {
-  inventory_item_id: string;
-  inventory_item_name: string;
-  unit: string;
-  quantity_consumed: number;
-  movement_count: number;
-}
-
-const consumptionSummaryColumns: ColumnDef<ConsumptionSummaryRow>[] = [
-  { accessorKey: 'inventory_item_name', header: 'Ingredient' },
+const consumptionSummaryColumns: ColumnDef<InventoryConsumptionSummaryReportRow>[] = [
+  { accessorKey: 'ingredient_name', header: 'Ingredient' },
   {
     id: 'quantity_consumed',
-    header: 'Consumed',
+    header: 'Stock Used',
     cell: ({ row }) => formatInventoryQuantity(row.original.quantity_consumed, row.original.unit),
   },
   { accessorKey: 'movement_count', header: 'Sales Movements' },
@@ -92,14 +102,6 @@ function daysAgoDateString(days: number): string {
   const date = new Date();
   date.setDate(date.getDate() - days);
   return dateString(date);
-}
-
-function startOfDayISO(dateStr: string): string {
-  return new Date(`${dateStr}T00:00:00`).toISOString();
-}
-
-function endOfDayISO(dateStr: string): string {
-  return new Date(`${dateStr}T23:59:59.999`).toISOString();
 }
 
 function humanizeSnake(value: string): string {
@@ -135,12 +137,11 @@ function getDailySalesColumns(
       cell: ({ row }) => <Badge variant="outline">{humanizeSnake(row.original.payment_method)}</Badge>,
     },
     { id: 'total_amount', header: 'Total', cell: ({ row }) => formatCurrency(row.original.total_amount) },
-    { id: 'vat_amount', header: 'VAT', cell: ({ row }) => formatVatAmount(row.original.vat_amount) },
     { id: 'discount_amount', header: 'Discount', cell: ({ row }) => formatCurrency(row.original.discount_amount) },
     {
       id: 'discount_type',
       header: 'Discount Type',
-      cell: ({ row }) => (row.original.discount_type ? humanizeSnake(row.original.discount_type) : '—'),
+      cell: ({ row }) => saleDiscountName(row.original) ?? '—',
     },
     { id: 'created_at', header: 'Date', cell: ({ row }) => formatDateTime(row.original.created_at) },
   ];
@@ -150,7 +151,7 @@ function getDailySalesColumns(
     {
       // Same PII-visibility boundary as Cashier/Proof Available below
       // (withActions === supervisor only) — sourced from the discount-audit
-      // trail endpoint already fetched for the Discount Compliance tab, not
+      // trail endpoint already fetched for the Discount Report tab, not
       // a new query.
       id: 'customer_id',
       header: 'Customer ID / Reference',
@@ -189,7 +190,7 @@ function getDailySalesColumns(
 
 /**
  * Sold Product Transactions (Reports §10) — one row per transaction (never
- * per product line, so Subtotal/VAT/Discount/Total are never duplicated);
+ * per product line, so Subtotal/Discount/Total are never duplicated);
  * the Items cell opens ViewTransactionItemsDialog for the product/variant/
  * quantity/unit-price breakdown, per the report's "expandable row OR a View
  * Items action" allowance.
@@ -230,7 +231,6 @@ function getSoldProductTransactionsColumns(
       },
     },
     { id: 'subtotal', header: 'Subtotal', cell: ({ row }) => formatCurrency(row.original.subtotal) },
-    { id: 'vat_amount', header: 'VAT', cell: ({ row }) => formatVatAmount(row.original.vat_amount) },
     { id: 'discount_amount', header: 'Discount', cell: ({ row }) => formatCurrency(row.original.discount_amount) },
     { id: 'total_amount', header: 'Total', cell: ({ row }) => formatCurrency(row.original.total_amount) },
     {
@@ -319,8 +319,10 @@ function getDiscountComplianceColumns(
     {
       id: 'discount_type',
       header: 'Discount Type',
-      cell: ({ row }) =>
-        row.original.discount_type ? <Badge variant="secondary">{humanizeSnake(row.original.discount_type)}</Badge> : '—',
+      cell: ({ row }) => {
+        const name = saleDiscountName(row.original);
+        return name ? <Badge variant="secondary">{name}</Badge> : '—';
+      },
     },
     { id: 'discount_amount', header: 'Discount', cell: ({ row }) => formatCurrency(row.original.discount_amount) },
     { id: 'total_amount', header: 'Total', cell: ({ row }) => formatCurrency(row.original.total_amount) },
@@ -341,6 +343,11 @@ function getDiscountComplianceColumns(
       id: 'customer_id',
       header: 'Customer ID / Reference',
       cell: ({ row }) => discountCustomerIdByTransaction.get(row.original.id) ?? '—',
+    },
+    {
+      id: 'proof_requirement',
+      header: 'Proof Requirement',
+      cell: ({ row }) => DISCOUNT_PROOF_REQUIREMENT_LABELS[saleProofRequirement(row.original)],
     },
     {
       id: 'discount_proof',
@@ -423,10 +430,10 @@ function createInventoryStockMovementColumns(
 function createAttendanceSummaryColumns(employeeNames: Map<string, string>): ColumnDef<AttendanceResponse>[] {
   return [
     { id: 'employee', header: 'Employee', cell: ({ row }) => employeeNames.get(row.original.employee_id) ?? row.original.employee_id },
-    { id: 'clock_in_server_time', header: 'Clock In', cell: ({ row }) => formatDateTime(row.original.clock_in_server_time) },
+    { id: 'clock_in_server_time', header: 'Time In', cell: ({ row }) => formatDateTime(row.original.clock_in_server_time) },
     {
       id: 'clock_out_server_time',
-      header: 'Clock Out',
+      header: 'Time Out',
       cell: ({ row }) => (row.original.clock_out_server_time ? formatDateTime(row.original.clock_out_server_time) : 'Still clocked in'),
     },
     { id: 'break_minutes', header: 'Break', cell: ({ row }) => formatDuration(row.original.break_minutes) },
@@ -453,12 +460,10 @@ function createAttendanceSummaryColumns(employeeNames: Map<string, string>): Col
  * the 7 tabs' underlying data still come from this lightweight
  * client-composed tier, unchanged.
  *
- * All queries below are fired unconditionally and in parallel (no
- * sequential/waterfall awaits) so every tab's data is ready by the time the
- * user switches to it, and are capped at limit=100 (the API's max page
- * size) — a known ceiling of this lightweight tier, not a bug: a branch
- * with more than 100 matching rows in the selected range will only
- * aggregate over its most recent 100.
+ * Queries are fired in parallel (no sequential/waterfall awaits) so a tab's
+ * data is ready by the time the user switches to it. POS-PERF-P59 — every
+ * table pages through the server, and every card reads a server aggregate of
+ * all matching records, so nothing here depends on the rows on one page.
  *
  * The date range lives at the page level (not per-tab) so switching tabs
  * never resets it.
@@ -472,7 +477,7 @@ export function ReportsView() {
 
   const currentUserId = useAuthStore((s) => s.user?.id);
   const isSupervisor = useAuthStore((s) => s.user?.role === ROLES.SUPERVISOR);
-  // Task 209.16 — Discount Compliance's Proof Available/View Proof column
+  // Task 209.16 — the Discount Report's Proof Available/View Proof column
   // and KPIs were supervisor-only; the owner explicitly requires Admin
   // (super_admin) to see discount ID proof here too. Scoped to just this
   // tab's `withActions` gate (see getDiscountComplianceColumns below), not
@@ -480,6 +485,8 @@ export function ReportsView() {
   // unrelated actions this task doesn't touch.
   const isSuperAdmin = useAuthStore((s) => s.user?.role === ROLES.SUPER_ADMIN);
   const canViewDiscountProof = isSupervisor || isSuperAdmin;
+  // POS-PERF-P59 — the report API refuses the staff role, so staff get the sales list they may read, never a false ₱0 summary.
+  const canReadReportSummaries = useAuthStore((s) => s.user?.role !== ROLES.STAFF);
   const requestExport = useRequestExport();
   const [activeTab, setActiveTab] = useState('daily-sales');
   const [refreshDisabled, setRefreshDisabled] = useState(false);
@@ -491,22 +498,42 @@ export function ReportsView() {
   const [discountProofTransactionId, setDiscountProofTransactionId] = useState<string | null>(null);
   const [viewItemsTransaction, setViewItemsTransaction] = useState<TransactionResponse | null>(null);
   const [viewDetailTransaction, setViewDetailTransaction] = useState<TransactionResponse | null>(null);
+  const [discountTypeFilter, setDiscountTypeFilter] = useState(ALL_DISCOUNT_TYPES);
+  const [discountPagination, setDiscountPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: DISCOUNT_DETAIL_PAGE_SIZE });
+  const [dailyPagination, setDailyPagination] = useState<PaginationState>(FIRST_PAGE);
+  const [voidRefundPagination, setVoidRefundPagination] = useState<PaginationState>(FIRST_PAGE);
+  const [movementPagination, setMovementPagination] = useState<PaginationState>(FIRST_PAGE);
+  const [consumptionPagination, setConsumptionPagination] = useState<PaginationState>(FIRST_PAGE);
+  const [attendancePagination, setAttendancePagination] = useState<PaginationState>(FIRST_PAGE);
   const { data: receiptTransaction } = useTransaction(receiptTransactionId);
 
-  // Sold Product Transactions filters (client-side over the fetched page —
-  // same known 100-row ceiling as every other tab in this view; none of
-  // these are supported query params on GET /api/transactions today).
+  // Sold Product Transactions filters — sent to the server, so they cover every sale in the period.
   const [soldReceiptSearch, setSoldReceiptSearch] = useState('');
+  const [soldReceiptQuery, setSoldReceiptQuery] = useState('');
   const [soldCashierFilter, setSoldCashierFilter] = useState('all');
   const [soldPaymentMethodFilter, setSoldPaymentMethodFilter] = useState('all');
   const [soldStatusFilter, setSoldStatusFilter] = useState('all');
   const [soldProductFilter, setSoldProductFilter] = useState('all');
-  const [soldPagination, setSoldPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
+  const [soldPagination, setSoldPagination] = useState<PaginationState>(FIRST_PAGE);
 
+  useEffect(() => {
+    const timer = setTimeout(() => setSoldReceiptQuery(soldReceiptSearch.trim()), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [soldReceiptSearch]);
+
+  function resetReportPages() {
+    for (const setPagination of [setDiscountPagination, setDailyPagination, setVoidRefundPagination, setMovementPagination, setConsumptionPagination, setAttendancePagination, setSoldPagination]) {
+      setPagination((p) => ({ ...p, pageIndex: 0 }));
+    }
+  }
+
+  useEffect(resetReportPages, [activeBranchId]);
+
+  useReportPeriodSummaryRealtimeSync();
   useReportsRealtimeSync((payload: ExportReadyPayload) => {
     if (payload.requester_id !== currentUserId) return;
     toast.success('Export ready', {
-      description: `Your ${payload.report_type} export is ready`,
+      description: `Your ${reportTypeDisplayName(payload.report_type)} export is ready`,
       action: { label: 'Download', onClick: () => window.open(payload.download_url, '_blank') },
       duration: 30_000,
     });
@@ -528,81 +555,146 @@ export function ReportsView() {
   const [toInput, setToInput] = useState(() => todayDateString());
   const [dateRange, setDateRange] = useState(() => ({ from: daysAgoDateString(DEFAULT_RANGE_DAYS), to: todayDateString() }));
 
-  const rangeStartISO = startOfDayISO(dateRange.from);
-  const rangeEndISO = endOfDayISO(dateRange.to);
-  // Inventory Movement's screen data and its PDF export must cover the same
+  // Screen data with an instant filter and its export must cover the same
   // window: the export sends a bare date to /api/reports/export, which the
   // backend resolves to a Manila calendar-day boundary (manila-time.ts).
-  // This endpoint requires a precise ISO instant, so it's computed the same
-  // way client-side instead of via rangeStartISO/rangeEndISO's browser-local
-  // midnight, which drifts from Manila whenever the browser isn't on that
-  // timezone and desynced the two views.
-  const movementRangeStartISO = manilaStartOfDayISO(dateRange.from);
-  const movementRangeEndISO = manilaEndOfDayISO(dateRange.to);
+  // These endpoints require a precise ISO instant, so it's computed the same
+  // way client-side instead of browser-local midnight, which drifts from
+  // Manila whenever the browser isn't on that timezone.
+  const manilaRangeStartISO = manilaStartOfDayISO(dateRange.from);
+  const manilaRangeEndISO = manilaEndOfDayISO(dateRange.to);
 
   const completedQuery = useTransactions({
     branch_id: activeBranchId ?? undefined,
     status: 'completed',
     date_from: dateRange.from,
     date_to: dateRange.to,
-    limit: QUERY_LIMIT,
+    page: dailyPagination.pageIndex + 1,
+    limit: dailyPagination.pageSize,
   });
-  // Task 209.56E — the Discount Compliance tab's headline KPIs (total
-  // discount amount, discounted-transaction count, PWD/Senior counts) used
+  // Every card on these tabs, across every matching record: never the rows on one page.
+  const periodSummaryQuery = useReportPeriodSummary(
+    { branch_id: activeBranchId ?? undefined, date_from: dateRange.from, date_to: dateRange.to },
+    canReadReportSummaries,
+  );
+  // Task 209.56E — the Discount Report tab's headline KPIs (total discount
+  // amount, discounted-transaction count) used
   // to be reduced client-side from completedQuery's rows, which are capped
   // at QUERY_LIMIT (100). Any branch/date-range with more than 100 completed
   // transactions silently undercounted every one of those numbers — the
   // same reused reducer must've felt consistent internally but is a real
   // financial-reporting gap. getDiscountCompliance is a SQL groupBy over
   // the full date range (already what Admin Reports uses for the same
-  // numbers), so switching these 4 KPIs to it removes the cap without a
+  // numbers), so switching these KPIs to it removes the cap without a
   // second discount formula: it's the same discountAmount/discountType
   // columns, aggregated server-side instead of paginated-then-reduced.
-  // The detail table and proof-compliance stats below still read from
-  // completedQuery, since they need per-transaction rows the aggregate
-  // doesn't carry — that page-sized scope is unchanged by this fix.
+  // POS-PERF-P59 — the proof summary reads it too, and the detail table has its
+  // own server-paginated query below, so neither stops at the newest 100 sales.
   const discountComplianceQuery = useDiscountComplianceReport({
     branch_id: activeBranchId ?? undefined,
     date_from: dateRange.from,
     date_to: dateRange.to,
-    limit: 25,
-  });
-  // Task: Discount Compliance parity — reuses the same discount-audit trail
+    limit: QUERY_LIMIT,
+  }, canReadReportSummaries);
+  // Task: Discount Report parity — reuses the same discount-audit trail
   // endpoint the Admin drilldown already calls (GET /transactions/discount-audit)
   // purely to source discountCustomerId per transaction id, not as this tab's
-  // row source (discountedTransactions below is unchanged, so KPIs/detail-row
-  // count/CSV/PDF parity with the screen are all unaffected). Gated to
-  // canViewDiscountProof so branch/staff sessions never issue this
-  // supervisor/admin-only request.
+  // row source. POS-PERF-P59 — asks for exactly the Daily Sales page's discounted
+  // sales, so a row on any page finds its value. Gated to canViewDiscountProof so
+  // branch/staff sessions never issue this supervisor/admin-only request.
+  const dailyDiscountedIds = (completedQuery.data?.transactions ?? []).filter((t) => t.discount_type !== null).map((t) => t.id);
   const discountAuditQuery = useDiscountAuditTrail(
-    { branchId: activeBranchId ?? undefined, dateFrom: dateRange.from, dateTo: dateRange.to, page: 1, limit: QUERY_LIMIT },
-    canViewDiscountProof,
+    { branchId: activeBranchId ?? undefined, transactionIds: dailyDiscountedIds, page: 1, limit: QUERY_LIMIT },
+    canViewDiscountProof && dailyDiscountedIds.length > 0,
   );
-  // Sold Product Transactions — deliberately not status-filtered (unlike
-  // completedQuery above) so the tab's own Status filter can show voided/
-  // refunded rows too.
+  // POS-PERF-P59 — the Discount Report's own rows: same filter as its KPIs and
+  // export, one page at a time, every discounted sale reachable.
+  const activeDiscountKey = discountTypeFilter === ALL_DISCOUNT_TYPES ? undefined : discountTypeFilter;
+  const discountDetailQuery = useTransactions({
+    branch_id: activeBranchId ?? undefined,
+    status: 'completed',
+    discounted_only: 'true',
+    discount_key: activeDiscountKey,
+    date_from: dateRange.from,
+    date_to: dateRange.to,
+    page: discountPagination.pageIndex + 1,
+    limit: discountPagination.pageSize,
+  });
+  const discountDetailAuditQuery = useDiscountAuditTrail(
+    {
+      branchId: activeBranchId ?? undefined,
+      discountKey: activeDiscountKey,
+      dateFrom: dateRange.from,
+      dateTo: dateRange.to,
+      page: discountPagination.pageIndex + 1,
+      limit: discountPagination.pageSize,
+    },
+    canViewDiscountProof && activeTab === 'discount-compliance',
+  );
+  const discountRows = useMemo(() => mergeDiscountRows(discountComplianceQuery.data?.data ?? []), [discountComplianceQuery.data]);
+  // A chosen type can drop out when the branch or dates change: back to all types rather than an empty report.
+  useEffect(() => {
+    if (activeDiscountKey && discountComplianceQuery.data && !discountRows.some((r) => r.discount_key === activeDiscountKey)) setDiscountTypeFilter(ALL_DISCOUNT_TYPES);
+  }, [activeDiscountKey, discountComplianceQuery.data, discountRows]);
+  // Sold Product Transactions — deliberately not status-filtered by default
+  // (unlike completedQuery above) so voided/refunded rows can show too.
   const soldTransactionsQuery = useTransactions({
     branch_id: activeBranchId ?? undefined,
     date_from: dateRange.from,
     date_to: dateRange.to,
-    limit: QUERY_LIMIT,
+    receipt_search: soldReceiptQuery || undefined,
+    cashier_id: soldCashierFilter !== 'all' ? soldCashierFilter : undefined,
+    payment_method: soldPaymentMethodFilter !== 'all' ? (soldPaymentMethodFilter as TransactionResponse['payment_method']) : undefined,
+    status: soldStatusFilter !== 'all' ? (soldStatusFilter as TransactionResponse['status']) : undefined,
+    product_name: soldProductFilter !== 'all' ? soldProductFilter : undefined,
+    page: soldPagination.pageIndex + 1,
+    limit: soldPagination.pageSize,
   });
-  const voidedQuery = useTransactions({
+  const voidRefundQuery = useTransactions({
     branch_id: activeBranchId ?? undefined,
-    status: 'voided',
+    status_group: 'void_refund',
     date_from: dateRange.from,
     date_to: dateRange.to,
-    limit: QUERY_LIMIT,
+    page: voidRefundPagination.pageIndex + 1,
+    limit: voidRefundPagination.pageSize,
   });
-  const refundedQuery = useTransactions({
-    branch_id: activeBranchId ?? undefined,
-    status: 'refunded',
-    date_from: dateRange.from,
-    date_to: dateRange.to,
-    limit: QUERY_LIMIT,
+  const movementsQuery = useInventoryStockMovements(activeBranchId, {
+    from_date: manilaRangeStartISO,
+    to_date: manilaRangeEndISO,
+    page: movementPagination.pageIndex + 1,
+    limit: movementPagination.pageSize,
   });
-  const movementsQuery = useInventoryStockMovements(activeBranchId, { from_date: movementRangeStartISO, to_date: movementRangeEndISO, page: 1, limit: QUERY_LIMIT });
-  const attendanceQuery = useAttendanceByBranch(activeBranchId, { from: rangeStartISO, to: rangeEndISO, page: 1, limit: QUERY_LIMIT });
+  // The same server aggregate as this tab's export. Only read while the tab is
+  // open: the aggregate loads the period's sale movements on the server.
+  const consumptionQuery = useInventoryConsumptionSummaryReport(
+    {
+      branch_id: activeBranchId ?? undefined,
+      date_from: dateRange.from,
+      date_to: dateRange.to,
+      page: consumptionPagination.pageIndex + 1,
+      limit: consumptionPagination.pageSize,
+    },
+    canReadReportSummaries && activeTab === 'consumption-summary',
+  );
+  const attendanceQuery = useAttendanceByBranch(activeBranchId, {
+    from: manilaRangeStartISO,
+    to: manilaRangeEndISO,
+    page: attendancePagination.pageIndex + 1,
+    limit: attendancePagination.pageSize,
+  });
+  // For the open transaction's cashier only, so a sale on any page can find the
+  // clock-in session covering it, whatever page the Attendance tab is on.
+  const saleSessionQuery = useAttendanceByBranch(
+    activeBranchId,
+    {
+      employee_id: viewDetailTransaction?.cashier_id,
+      from: viewDetailTransaction ? new Date(new Date(viewDetailTransaction.created_at).getTime() - 24 * 60 * 60 * 1000).toISOString() : undefined,
+      to: viewDetailTransaction?.created_at,
+      page: 1,
+      limit: QUERY_LIMIT,
+    },
+    { enabled: viewDetailTransaction !== null },
+  );
   const employeesQuery = useEmployees({ branchId: activeBranchId ?? undefined, limit: QUERY_LIMIT });
   const unitsQuery = useUnitsOfMeasure();
   const inventoryItemsQuery = useInventoryItems();
@@ -613,6 +705,7 @@ export function ReportsView() {
 
   function handleRefresh() {
     setDateRange({ from: fromInput, to: toInput });
+    resetReportPages();
     setRefreshDisabled(true);
     setRefreshCooldown(REFRESH_COOLDOWN_SECONDS);
   }
@@ -622,13 +715,15 @@ export function ReportsView() {
     setIsExporting(true);
     // Sold Product Transactions shares DAILY_SALES's report_type (no
     // dedicated backend ReportType — see TAB_TO_REPORT_TYPE's comment
-    // above) but has its own filter bar; forwarding those filters here is
-    // what keeps the CSV/PDF population matching what's on screen for this
-    // tab specifically. Every other tab keeps sending just branch/date, same
-    // as before.
+    // above) but has its own filter bar; forwarding those filters and its
+    // view here is what keeps the CSV/PDF population matching what's on
+    // screen for this tab specifically. Every other tab keeps sending just
+    // branch/date, same as before.
     const soldTabFilters =
       activeTab === 'sold-product-transactions'
         ? {
+            report_view: 'sold_product_transactions' as const,
+            product_name: soldProductFilter !== 'all' ? soldProductFilter : undefined,
             cashier_id: soldCashierFilter !== 'all' ? soldCashierFilter : undefined,
             payment_method: soldPaymentMethodFilter !== 'all' ? (soldPaymentMethodFilter as ExportRequestInput['filters']['payment_method']) : undefined,
             status: soldStatusFilter !== 'all' ? (soldStatusFilter as ExportRequestInput['filters']['status']) : undefined,
@@ -644,137 +739,62 @@ export function ReportsView() {
         page: 1,
         limit: QUERY_LIMIT,
         ...soldTabFilters,
+        ...(activeTab === 'discount-compliance' && activeDiscountKey ? { discount_key: activeDiscountKey } : {}),
       },
       format,
     };
     requestExport.mutate(input, { onSettled: () => setIsExporting(false) });
   }
 
+  // POS-PERF-P59 — every card below reads this aggregate of all matching
+  // records. When it isn't available a card says so, never a false 0.
+  const periodSummary = periodSummaryQuery.data;
+  const summaryUnavailable = !canReadReportSummaries || periodSummaryQuery.isError;
+  const summaryValueText = summaryUnavailable ? 'Unavailable' : undefined;
+  const summaryLoading = canReadReportSummaries && periodSummaryQuery.isLoading;
+
   // Daily Sales
   const completedTransactions = completedQuery.data?.transactions ?? [];
-  const totalTransactions = completedTransactions.length;
-  // Task 209.10 (Step 11, follow-up A) — this is a sum of total_amount
-  // (post-discount, what was actually charged), not the canonical
-  // subtotal-based Gross Sales that lib/financial-metrics.ts and the Admin
-  // Reports/Financial Summary "Gross Sales" figures use. Left as
-  // total_amount rather than switched to subtotal (that's a Gross Sales
-  // formula change, out of scope here) — instead labeled "Total Sales"
-  // below so it no longer claims to be the same metric.
-  const totalSalesCollected = completedTransactions.reduce((sum, t) => sum + t.total_amount, 0);
-  // POS-PERF-P55R2/R3 — VAT of the VAT-calculated sales only; a manual-total sale has no VAT figure and is counted apart.
-  const taxNotCalculated = completedTransactions.filter((t) => t.vat_amount === null);
-  const vatCollected = completedTransactions.reduce((sum, t) => sum + (t.vat_amount ?? 0), 0);
-  const taxNotCalculatedCount = taxNotCalculated.length;
-  const taxNotCalculatedSales = taxNotCalculated.reduce((sum, t) => sum + t.total_amount, 0);
-  const vatCalculatedCount = totalTransactions - taxNotCalculatedCount;
-  const manualTotalSalesLabel = `${taxNotCalculatedCount} manual-total sale${taxNotCalculatedCount === 1 ? '' : 's'}`;
-  const discountsGiven = completedTransactions.reduce((sum, t) => sum + t.discount_amount, 0);
 
-  // Sold Product Transactions
-  const soldTransactionsAll = soldTransactionsQuery.data?.transactions ?? [];
-  const soldProductOptions = Array.from(
-    new Set(soldTransactionsAll.flatMap((t) => (t.items ?? []).map((i) => i.product_name))),
-  ).sort();
-  const filteredSoldTransactions = soldTransactionsAll.filter((t) => {
-    if (soldCashierFilter !== 'all' && t.cashier_id !== soldCashierFilter) return false;
-    if (soldPaymentMethodFilter !== 'all' && t.payment_method !== soldPaymentMethodFilter) return false;
-    if (soldStatusFilter !== 'all' && t.status !== soldStatusFilter) return false;
-    if (soldProductFilter !== 'all' && !(t.items ?? []).some((i) => i.product_name === soldProductFilter)) return false;
-    const search = soldReceiptSearch.trim().toLowerCase();
-    if (search && !t.receipt_number.toLowerCase().includes(search)) return false;
-    return true;
-  });
-  const soldTransactionsPageRows = filteredSoldTransactions.slice(
-    soldPagination.pageIndex * soldPagination.pageSize,
-    soldPagination.pageIndex * soldPagination.pageSize + soldPagination.pageSize,
-  );
+  // Sold Product Transactions. Product names come from the aggregate, as one page
+  // can't list them all; staff can't read it, so they choose from the current page.
+  const soldTransactions = soldTransactionsQuery.data?.transactions ?? [];
+  const soldProductOptions = periodSummary?.sold_product_names ?? Array.from(new Set(soldTransactions.flatMap((t) => (t.items ?? []).map((i) => i.product_name)))).sort();
 
   // Void/Refund
-  const voidedTransactions = voidedQuery.data?.transactions ?? [];
-  const refundedTransactions = refundedQuery.data?.transactions ?? [];
-  const totalVoided = voidedTransactions.length;
-  const totalRefunded = refundedTransactions.length;
-  const voidedAmount = voidedTransactions.reduce((sum, t) => sum + t.total_amount, 0);
-  const refundedAmount = refundedTransactions.reduce((sum, t) => sum + t.total_amount, 0);
-  const voidRefundRows: VoidRefundRow[] = [
-    ...voidedTransactions.map((transaction): VoidRefundRow => ({ transaction, type: 'void' })),
-    ...refundedTransactions.map((transaction): VoidRefundRow => ({ transaction, type: 'refund' })),
-  ];
-  const voidRefundLoading = voidedQuery.isLoading || refundedQuery.isLoading;
-  const voidRefundError = voidedQuery.isError || refundedQuery.isError;
+  const voidRefundRows: VoidRefundRow[] = (voidRefundQuery.data?.transactions ?? []).map((transaction) => ({
+    transaction,
+    type: transaction.status === 'voided' ? 'void' : 'refund',
+  }));
 
-  // Discount Compliance — headline KPIs come from the server-side groupBy
-  // aggregate (see discountComplianceQuery above), not the page-capped
-  // completedTransactions list. discountedTransactions itself is still
-  // needed below for the per-transaction detail table and proof-compliance
-  // stats, which the aggregate's rows don't carry.
-  const discountedTransactions = completedTransactions.filter((t) => t.discount_type !== null);
+  // Discount Report — every figure comes from the server-side aggregate (see
+  // discountComplianceQuery above), filtered here by discount identity. The
+  // choices come from the unfiltered rows, so a filter can always be changed.
+  const discountOptions = discountTypeOptions(discountRows);
+  const visibleDiscountRows = activeDiscountKey ? discountRows.filter((r) => r.discount_key === activeDiscountKey) : discountRows;
+  const discountedTransactions = (discountDetailQuery.data?.transactions ?? []).filter((t) => t.discount_type !== null);
   const discountCustomerIdByTransaction = new Map(
     (discountAuditQuery.data?.data ?? []).map((row) => [row.id, row.discountCustomerId]),
   );
-  const discountComplianceRows = discountComplianceQuery.data?.data ?? [];
-  const totalDiscountedTransactions = discountComplianceRows.reduce((sum, r) => sum + r.transaction_count, 0);
-  const pwdDiscounts = discountComplianceRows
-    .filter((r) => r.discount_type === 'pwd')
-    .reduce((sum, r) => sum + r.transaction_count, 0);
-  const seniorCitizenDiscounts = discountComplianceRows
-    .filter((r) => r.discount_type === 'senior_citizen')
-    .reduce((sum, r) => sum + r.transaction_count, 0);
-  const totalDiscountAmount = discountComplianceRows.reduce((sum, r) => sum + r.total_discount_amount, 0);
-  // Task 209.5 — compact proof-compliance summary, added to this tab's
-  // existing KPI row (no new dashboard widget, no redesign). Proof is only
-  // ever meaningful for PWD/Senior Citizen rows — Employee/Promotional
-  // discounts have no proof-capture UI, so they're excluded from the
-  // denominator rather than counted as "missing".
-  const proofEligibleDiscounts = discountedTransactions.filter((t) => t.discount_type === 'pwd' || t.discount_type === 'senior_citizen');
-  const proofAvailableCount = proofEligibleDiscounts.filter((t) => t.has_discount_proof).length;
-  const proofMissingCount = proofEligibleDiscounts.length - proofAvailableCount;
-  const proofComplianceRate = proofEligibleDiscounts.length > 0 ? (proofAvailableCount / proofEligibleDiscounts.length) * 100 : 0;
+  const discountDetailCustomerIds = new Map(
+    (discountDetailAuditQuery.data?.data ?? []).map((row) => [row.id, row.discountCustomerId]),
+  );
+  const totalDiscountedTransactions = visibleDiscountRows.reduce((sum, r) => sum + r.transaction_count, 0);
+  const totalDiscountAmount = visibleDiscountRows.reduce((sum, r) => sum + r.total_discount_amount, 0);
+  const proofSummary = summarizeDiscountProof(visibleDiscountRows);
 
   // Inventory Movement
   const movements = movementsQuery.data?.movements ?? [];
-  const totalMovements = movements.length;
-  const receivingCount = movements.filter((m) => m.movement_type === 'RECEIVING').length;
-  const wasteCount = movements.filter((m) => m.movement_type === 'WASTE').length;
-  const adjustmentsCount = movements.filter((m) => m.movement_type === 'ADJUSTMENT_IN' || m.movement_type === 'ADJUSTMENT_OUT').length;
   const unitCodes = new Map((unitsQuery.data ?? []).map((u) => [u.id, u.code]));
   const itemSkus = new Map((inventoryItemsQuery.data ?? []).map((i) => [i.id, i.sku]));
 
-  // Inventory Consumption Summary — aggregated client-side from the same
-  // movements fetch as Inventory Movement above (SALE type only), consistent
-  // with this view's client-composed tier. Export still goes through the
-  // real backend INVENTORY_CONSUMPTION_SUMMARY aggregate, same relationship
-  // Inventory Movement already has with its own export.
-  const consumptionByItem = new Map<string, ConsumptionSummaryRow>();
-  for (const m of movements) {
-    if (m.movement_type !== 'SALE') continue;
-    const consumed = Math.abs(m.quantity_change);
-    const existing = consumptionByItem.get(m.inventory_item_id);
-    if (existing) {
-      existing.quantity_consumed += consumed;
-      existing.movement_count += 1;
-    } else {
-      consumptionByItem.set(m.inventory_item_id, {
-        inventory_item_id: m.inventory_item_id,
-        inventory_item_name: m.inventory_item_name,
-        unit: m.unit_id ? (unitCodes.get(m.unit_id) ?? '—') : '—',
-        quantity_consumed: consumed,
-        movement_count: 1,
-      });
-    }
-  }
-  const consumptionRows = Array.from(consumptionByItem.values()).sort((a, b) => b.quantity_consumed - a.quantity_consumed);
-  // TASK 209.9: no overall quantity total — consumptionRows mixes grams, kg,
-  // and pc across ingredients, so summing quantity_consumed across rows is
-  // mathematically meaningless (can't add grams and pieces).
-  const totalConsumptionMovements = consumptionRows.reduce((sum, r) => sum + r.movement_count, 0);
+  // Stock Used Summary. TASK 209.9: no overall quantity total — these rows mix
+  // grams, kg, and pc across ingredients, so summing quantity_consumed across
+  // rows is mathematically meaningless (can't add grams and pieces).
+  const consumptionRows = consumptionQuery.data?.data ?? [];
 
   // Attendance Summary
   const attendanceRecords = attendanceQuery.data?.records ?? [];
-  const totalStaffToday = attendanceRecords.length;
-  const clockedInNow = attendanceRecords.filter((r) => r.clock_out_server_time === null).length;
-  const totalWorkMinutes = attendanceRecords.reduce((sum, r) => sum + (r.actual_work_minutes ?? 0), 0);
-  const overtimeMinutesSum = attendanceRecords.reduce((sum, r) => sum + r.overtime_minutes, 0);
   const employeeNames = new Map((employeesQuery.data?.employees ?? []).map((e) => [e.id, `${e.first_name} ${e.last_name}`]));
   const attendanceSummaryColumns = createAttendanceSummaryColumns(employeeNames);
   const inventoryMovementColumns = createInventoryStockMovementColumns(unitCodes, itemSkus, employeeNames);
@@ -812,12 +832,12 @@ export function ReportsView() {
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList className="flex-wrap h-auto">
-          <TabsTrigger value="daily-sales">Daily Sales</TabsTrigger>
+          <TabsTrigger value="daily-sales">Daily Sales Report (DSR)</TabsTrigger>
           <TabsTrigger value="sold-product-transactions">Sold Product Transactions</TabsTrigger>
           <TabsTrigger value="void-refund">Void/Refund</TabsTrigger>
-          <TabsTrigger value="discount-compliance">Discount Compliance</TabsTrigger>
+          <TabsTrigger value="discount-compliance">Discount Report</TabsTrigger>
           <TabsTrigger value="inventory-movement">Inventory Movement</TabsTrigger>
-          <TabsTrigger value="consumption-summary">Consumption Summary</TabsTrigger>
+          <TabsTrigger value="consumption-summary">Stock Used Summary</TabsTrigger>
           <TabsTrigger value="attendance-summary">Attendance Summary</TabsTrigger>
         </TabsList>
 
@@ -826,47 +846,19 @@ export function ReportsView() {
             timestamp={completedQuery.dataUpdatedAt ? new Date(completedQuery.dataUpdatedAt).toISOString() : undefined}
             isLoading={completedQuery.isLoading}
           />
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-            <KpiCard title="Total Transactions" value={totalTransactions} isLoading={completedQuery.isLoading} />
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            <KpiCard title="Total Transactions" value={periodSummary?.sales.completed_count ?? 0} valueText={summaryValueText} isLoading={summaryLoading} />
             <KpiCard
               title="Total Sales — Selected Period"
-              value={totalSalesCollected}
+              value={periodSummary?.sales.completed_total_amount ?? 0}
               prefix="₱"
-              isLoading={completedQuery.isLoading}
-              tooltip={`Completed transaction totals, after discounts, from ${fromInput} to ${toInput}. For pre-discount Gross Sales, see Admin Reports > Financial Summary.`}
+              valueText={summaryValueText}
+              isLoading={summaryLoading}
+              tooltip={`Completed transaction totals, after discounts, from ${dateRange.from} to ${dateRange.to}. For pre-discount Gross Sales, see Admin Reports > Financial Summary.`}
             />
-            {/* POS-PERF-P55R3 — never a VAT figure that reads as covering every sale: a period with manual-total sales says so on screen, and one with only manual-total sales has no VAT figure at all (not ₱0). */}
-            <KpiCard
-              title="VAT Collected"
-              value={vatCollected}
-              prefix="₱"
-              isLoading={completedQuery.isLoading}
-              valueText={taxNotCalculatedCount > 0 && vatCalculatedCount === 0 ? 'Not calculated' : undefined}
-              caption={
-                taxNotCalculatedCount === 0
-                  ? undefined
-                  : vatCalculatedCount === 0
-                    ? `${manualTotalSalesLabel} — the manual-total checkout does not calculate VAT`
-                    : `VAT-calculated sales only — excludes ${manualTotalSalesLabel}`
-              }
-              tooltip={
-                taxNotCalculatedCount > 0
-                  ? 'Manual-total sales do not calculate VAT. Their tax is not shown here — it is unknown, not ₱0.'
-                  : undefined
-              }
-            />
-            {taxNotCalculatedCount > 0 && (
-              <KpiCard
-                title="Without VAT Calculation"
-                value={taxNotCalculatedSales}
-                prefix="₱"
-                isLoading={completedQuery.isLoading}
-                caption={`${manualTotalSalesLabel}, amount paid`}
-                tooltip="Completed manual-total sales (VAT not calculated). They are included in Total Sales."
-              />
-            )}
-            <KpiCard title="Discounts Given" value={discountsGiven} prefix="₱" isLoading={completedQuery.isLoading} />
+            <KpiCard title="Discounts Given" value={periodSummary?.sales.completed_discount_amount ?? 0} prefix="₱" valueText={summaryValueText} isLoading={summaryLoading} />
           </div>
+          <ReportCoverageNotice count={completedQuery.data?.total} noun="completed sales" hasTotals={!summaryUnavailable} />
           <DataTable
             stickyHeader
             columns={getDailySalesColumns(isSupervisor, setReceiptTransactionId, setProofTransactionId, employeeNames, discountCustomerIdByTransaction)}
@@ -874,6 +866,9 @@ export function ReportsView() {
             isLoading={completedQuery.isLoading}
             isError={completedQuery.isError}
             onRetry={() => void completedQuery.refetch()}
+            pagination={dailyPagination}
+            onPaginationChange={setDailyPagination}
+            rowCount={completedQuery.data?.total ?? completedTransactions.length}
             emptyState={<EmptyState title="No sales" description="No completed transactions in this date range." />}
           />
         </TabsContent>
@@ -983,6 +978,7 @@ export function ReportsView() {
               </Select>
             </div>
           </div>
+          <ReportCoverageNotice count={soldTransactionsQuery.data?.total} noun="sold product transactions" hasTotals={false} />
           <DataTable
             stickyHeader
             columns={getSoldProductTransactionsColumns(
@@ -993,71 +989,91 @@ export function ReportsView() {
               setReceiptTransactionId,
               setProofTransactionId,
             )}
-            data={soldTransactionsPageRows}
+            data={soldTransactions}
             isLoading={soldTransactionsQuery.isLoading}
             isError={soldTransactionsQuery.isError}
             onRetry={() => void soldTransactionsQuery.refetch()}
             pagination={soldPagination}
             onPaginationChange={setSoldPagination}
-            rowCount={filteredSoldTransactions.length}
+            rowCount={soldTransactionsQuery.data?.total ?? soldTransactions.length}
             emptyState={<EmptyState title="No sold products" description="No product sales match these filters in this date range." />}
           />
         </TabsContent>
 
         <TabsContent value="void-refund" className="space-y-4">
           <ReportLastUpdated
-            timestamp={
-              voidedQuery.dataUpdatedAt || refundedQuery.dataUpdatedAt
-                ? new Date(Math.max(voidedQuery.dataUpdatedAt, refundedQuery.dataUpdatedAt)).toISOString()
-                : undefined
-            }
-            isLoading={voidRefundLoading}
+            timestamp={voidRefundQuery.dataUpdatedAt ? new Date(voidRefundQuery.dataUpdatedAt).toISOString() : undefined}
+            isLoading={voidRefundQuery.isLoading}
           />
           <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-            <KpiCard title="Total Voided" value={totalVoided} isLoading={voidRefundLoading} />
-            <KpiCard title="Total Refunded" value={totalRefunded} isLoading={voidRefundLoading} />
-            <KpiCard title="Voided Amount" value={voidedAmount} prefix="₱" isLoading={voidRefundLoading} />
-            <KpiCard title="Refunded Amount" value={refundedAmount} prefix="₱" isLoading={voidRefundLoading} />
+            <KpiCard title="Total Voided" value={periodSummary?.sales.voided_count ?? 0} valueText={summaryValueText} isLoading={summaryLoading} />
+            <KpiCard title="Total Refunded" value={periodSummary?.sales.refunded_count ?? 0} valueText={summaryValueText} isLoading={summaryLoading} />
+            <KpiCard title="Voided Amount" value={periodSummary?.sales.voided_total_amount ?? 0} prefix="₱" valueText={summaryValueText} isLoading={summaryLoading} />
+            <KpiCard title="Refunded Amount" value={periodSummary?.sales.refunded_total_amount ?? 0} prefix="₱" valueText={summaryValueText} isLoading={summaryLoading} />
           </div>
+          <ReportCoverageNotice count={voidRefundQuery.data?.total} noun="voided or refunded sales" hasTotals={!summaryUnavailable} />
           <DataTable
             stickyHeader
             columns={voidRefundColumns}
             data={voidRefundRows}
-            isLoading={voidRefundLoading}
-            isError={voidRefundError}
-            onRetry={() => {
-              void voidedQuery.refetch();
-              void refundedQuery.refetch();
-            }}
+            isLoading={voidRefundQuery.isLoading}
+            isError={voidRefundQuery.isError}
+            onRetry={() => void voidRefundQuery.refetch()}
+            pagination={voidRefundPagination}
+            onPaginationChange={setVoidRefundPagination}
+            rowCount={voidRefundQuery.data?.total ?? voidRefundRows.length}
             emptyState={<EmptyState title="No voids or refunds" description="No voided or refunded transactions in this date range." />}
           />
         </TabsContent>
 
         <TabsContent value="discount-compliance" className="space-y-4">
-          <ReportLastUpdated
-            timestamp={completedQuery.dataUpdatedAt ? new Date(completedQuery.dataUpdatedAt).toISOString() : undefined}
-            isLoading={completedQuery.isLoading}
-          />
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-            <KpiCard title="Total Discounted Transactions" value={totalDiscountedTransactions} isLoading={discountComplianceQuery.isLoading} />
-            <KpiCard title="PWD Discounts" value={pwdDiscounts} isLoading={discountComplianceQuery.isLoading} />
-            <KpiCard title="Senior Citizen Discounts" value={seniorCitizenDiscounts} isLoading={discountComplianceQuery.isLoading} />
-            <KpiCard title="Total Discount Amount" value={totalDiscountAmount} prefix="₱" isLoading={discountComplianceQuery.isLoading} />
-          </div>
-          {canViewDiscountProof && (
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-              <KpiCard title="Proof Available" value={proofAvailableCount} isLoading={completedQuery.isLoading} />
-              <KpiCard title="Proof Missing" value={proofMissingCount} isLoading={completedQuery.isLoading} />
-              <KpiCard title="Proof Compliance Rate" value={proofComplianceRate} suffix="%" isLoading={completedQuery.isLoading} />
-            </div>
+          {canReadReportSummaries && (
+            <>
+              <ReportLastUpdated
+                timestamp={discountComplianceQuery.dataUpdatedAt ? new Date(discountComplianceQuery.dataUpdatedAt).toISOString() : undefined}
+                isLoading={discountComplianceQuery.isLoading}
+              />
+              <DiscountTypeFilter
+                options={discountOptions}
+                value={discountTypeFilter}
+                onChange={(value) => {
+                  setDiscountTypeFilter(value);
+                  setDiscountPagination((p) => ({ ...p, pageIndex: 0 }));
+                }}
+              />
+              {discountComplianceQuery.data && (
+                <DiscountCoverageNotice
+                  rowsReturned={discountComplianceQuery.data.data.length}
+                  rowsTotal={discountComplianceQuery.data.total}
+                  transactionCount={totalDiscountedTransactions}
+                  showExportLimits
+                />
+              )}
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <KpiCard title="Total Discounted Transactions" value={totalDiscountedTransactions} valueText={discountComplianceQuery.isError ? 'Unavailable' : undefined} isLoading={discountComplianceQuery.isLoading} />
+                <KpiCard title="Total Discount Amount" value={totalDiscountAmount} prefix="₱" valueText={discountComplianceQuery.isError ? 'Unavailable' : undefined} isLoading={discountComplianceQuery.isLoading} />
+              </div>
+              {canViewDiscountProof && !discountComplianceQuery.isError && <DiscountProofSummary summary={proofSummary} isLoading={discountComplianceQuery.isLoading} />}
+              <DataTable
+                columns={getDiscountBreakdownColumns({ showBranch: false, showProof: canViewDiscountProof })}
+                data={visibleDiscountRows}
+                isLoading={discountComplianceQuery.isLoading}
+                isError={discountComplianceQuery.isError}
+                onRetry={() => void discountComplianceQuery.refetch()}
+                emptyState={<EmptyState title="No discount types" description="No discounted sales in this date range." />}
+              />
+            </>
           )}
           <DataTable
             stickyHeader
-            columns={getDiscountComplianceColumns(canViewDiscountProof, setDiscountProofTransactionId, employeeNames, discountCustomerIdByTransaction)}
+            columns={getDiscountComplianceColumns(canViewDiscountProof, setDiscountProofTransactionId, employeeNames, discountDetailCustomerIds)}
             data={discountedTransactions}
-            isLoading={completedQuery.isLoading}
-            isError={completedQuery.isError}
-            onRetry={() => void completedQuery.refetch()}
+            isLoading={discountDetailQuery.isLoading}
+            isError={discountDetailQuery.isError}
+            onRetry={() => void discountDetailQuery.refetch()}
+            pagination={discountPagination}
+            onPaginationChange={setDiscountPagination}
+            rowCount={discountDetailQuery.data?.total ?? discountedTransactions.length}
             emptyState={<EmptyState title="No discounted transactions" description="No discounted transactions in this date range." />}
           />
         </TabsContent>
@@ -1068,11 +1084,12 @@ export function ReportsView() {
             isLoading={movementsQuery.isLoading}
           />
           <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-            <KpiCard title="Total Movements" value={totalMovements} isLoading={movementsQuery.isLoading} />
-            <KpiCard title="Receiving" value={receivingCount} isLoading={movementsQuery.isLoading} />
-            <KpiCard title="Waste" value={wasteCount} isLoading={movementsQuery.isLoading} />
-            <KpiCard title="Adjustments" value={adjustmentsCount} isLoading={movementsQuery.isLoading} />
+            <KpiCard title="Total Movements" value={periodSummary?.movements.total_count ?? 0} valueText={summaryValueText} isLoading={summaryLoading} />
+            <KpiCard title="Deliveries / Received" value={periodSummary?.movements.receiving_count ?? 0} valueText={summaryValueText} isLoading={summaryLoading} />
+            <KpiCard title="Waste" value={periodSummary?.movements.waste_count ?? 0} valueText={summaryValueText} isLoading={summaryLoading} />
+            <KpiCard title="Adjustments" value={periodSummary?.movements.adjustment_count ?? 0} valueText={summaryValueText} isLoading={summaryLoading} />
           </div>
+          <ReportCoverageNotice count={movementsQuery.data?.total} noun="stock movements" hasTotals={!summaryUnavailable} />
           <DataTable
             stickyHeader
             columns={inventoryMovementColumns}
@@ -1080,27 +1097,38 @@ export function ReportsView() {
             isLoading={movementsQuery.isLoading}
             isError={movementsQuery.isError}
             onRetry={() => void movementsQuery.refetch()}
+            pagination={movementPagination}
+            onPaginationChange={setMovementPagination}
+            rowCount={movementsQuery.data?.total ?? movements.length}
             emptyState={<EmptyState title="No inventory movements" description="No stock movements recorded in this date range." />}
           />
         </TabsContent>
 
         <TabsContent value="consumption-summary" className="space-y-4">
           <ReportLastUpdated
-            timestamp={movementsQuery.dataUpdatedAt ? new Date(movementsQuery.dataUpdatedAt).toISOString() : undefined}
-            isLoading={movementsQuery.isLoading}
+            timestamp={consumptionQuery.dataUpdatedAt ? new Date(consumptionQuery.dataUpdatedAt).toISOString() : undefined}
+            isLoading={consumptionQuery.isLoading}
           />
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <KpiCard title="Ingredients Consumed" value={consumptionRows.length} isLoading={movementsQuery.isLoading} />
-            <KpiCard title="Sales Movements" value={totalConsumptionMovements} isLoading={movementsQuery.isLoading} />
+            <KpiCard title="Ingredients Used" value={consumptionQuery.data?.total ?? 0} valueText={!canReadReportSummaries || consumptionQuery.isError ? 'Unavailable' : undefined} isLoading={consumptionQuery.isLoading} />
+            <KpiCard title="Sales Movements" value={periodSummary?.movements.sale_count ?? 0} valueText={summaryValueText} isLoading={summaryLoading} />
           </div>
+          {consumptionQuery.data && (
+            <p className="text-sm text-muted-foreground">
+              Stock used covers all {(periodSummary?.movements.sale_count ?? 0).toLocaleString('en-PH')} sales movements in this period, across {consumptionQuery.data.total.toLocaleString('en-PH')} ingredients.
+            </p>
+          )}
           <DataTable
             stickyHeader
             columns={consumptionSummaryColumns}
             data={consumptionRows}
-            isLoading={movementsQuery.isLoading}
-            isError={movementsQuery.isError}
-            onRetry={() => void movementsQuery.refetch()}
-            emptyState={<EmptyState title="No consumption recorded" description="No sale-driven inventory consumption in this date range." />}
+            isLoading={consumptionQuery.isLoading}
+            isError={!canReadReportSummaries || consumptionQuery.isError}
+            onRetry={() => void consumptionQuery.refetch()}
+            pagination={consumptionPagination}
+            onPaginationChange={setConsumptionPagination}
+            rowCount={consumptionQuery.data?.total ?? consumptionRows.length}
+            emptyState={<EmptyState title="No stock used" description="No stock used by sales in this date range." />}
           />
         </TabsContent>
 
@@ -1110,11 +1138,12 @@ export function ReportsView() {
             isLoading={attendanceQuery.isLoading}
           />
           <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-            <KpiCard title="Total Staff Today" value={totalStaffToday} isLoading={attendanceQuery.isLoading} />
-            <KpiCard title="Clocked In Now" value={clockedInNow} isLoading={attendanceQuery.isLoading} />
-            <KpiCard title="Total Hours Worked" value={totalWorkMinutes / 60} suffix="h" isLoading={attendanceQuery.isLoading} />
-            <KpiCard title="Overtime Hours" value={overtimeMinutesSum / 60} suffix="h" isLoading={attendanceQuery.isLoading} />
+            <KpiCard title="Attendance Records" value={periodSummary?.attendance.record_count ?? 0} valueText={summaryValueText} isLoading={summaryLoading} />
+            <KpiCard title="Crew on Duty" value={periodSummary?.attendance.open_count ?? 0} valueText={summaryValueText} isLoading={summaryLoading} />
+            <KpiCard title="Total Hours Worked" value={(periodSummary?.attendance.work_minutes ?? 0) / 60} suffix="h" valueText={summaryValueText} isLoading={summaryLoading} />
+            <KpiCard title="Overtime Hours" value={(periodSummary?.attendance.overtime_minutes ?? 0) / 60} suffix="h" valueText={summaryValueText} isLoading={summaryLoading} />
           </div>
+          <ReportCoverageNotice count={attendanceQuery.data?.total} noun="attendance records" hasTotals={!summaryUnavailable} />
           <DataTable
             stickyHeader
             columns={attendanceSummaryColumns}
@@ -1122,7 +1151,10 @@ export function ReportsView() {
             isLoading={attendanceQuery.isLoading}
             isError={attendanceQuery.isError}
             onRetry={() => void attendanceQuery.refetch()}
-            emptyState={<EmptyState title="No attendance records" description="No clock-in/out records in this date range." />}
+            pagination={attendancePagination}
+            onPaginationChange={setAttendancePagination}
+            rowCount={attendanceQuery.data?.total ?? attendanceRecords.length}
+            emptyState={<EmptyState title="No attendance records" description="No time in or time out records in this date range." />}
           />
         </TabsContent>
       </Tabs>
@@ -1142,7 +1174,7 @@ export function ReportsView() {
                 ? (viewDetailTransaction.cashier_name ?? employeeNames.get(viewDetailTransaction.cashier_id) ?? viewDetailTransaction.cashier_id)
                 : ''
             }
-            attendanceRecords={attendanceRecords}
+            attendanceRecords={saleSessionQuery.data?.records ?? []}
           />
         </>
       )}

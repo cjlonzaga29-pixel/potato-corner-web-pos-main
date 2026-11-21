@@ -1,0 +1,43 @@
+{
+  "label": "c3",
+  "concurrent": 3,
+  "days": 7,
+  "at": "2026-11-21T06:27:12.085Z",
+  "exports": [
+    {
+      "n": 1,
+      "status": 503,
+      "ms": 25064,
+      "bytes": 164,
+      "isPdf": false,
+      "code": "PDF_TIMEOUT",
+      "retryAfter": "60"
+    },
+    {
+      "n": 2,
+      "status": 503,
+      "ms": 25064,
+      "bytes": 164,
+      "isPdf": false,
+      "code": "PDF_TIMEOUT",
+      "retryAfter": "60"
+    },
+    {
+      "n": 3,
+      "status": 200,
+      "ms": 17830,
+      "bytes": 291890,
+      "isPdf": true,
+      "code": null,
+      "retryAfter": null
+    }
+  ],
+  "exportsWallMs": 25068,
+  "health": {
+    "samples": 350,
+    "rttP50": 17,
+    "rttP95": 19,
+    "rttMax": 674,
+    "worstGapMs": 734
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "label": "c0",
+  "concurrent": 0,
+  "days": 7,
+  "at": "2026-11-21T06:26:18.724Z",
+  "exports": [],
+  "exportsWallMs": 0,
+  "health": {
+    "samples": 39,
+    "rttP50": 18,
+    "rttP95": 21,
+    "rttMax": 25,
+    "worstGapMs": 82
+  }
+}

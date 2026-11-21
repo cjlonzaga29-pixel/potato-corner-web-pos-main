@@ -2,7 +2,7 @@
 
 Navigation only, not proof of what the code does today. Rules live in [`.claude/CLAUDE.md`](../.claude/CLAUDE.md), architecture in [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md), and
 the current state of work in [`CURRENT_HANDOFF.md`](CURRENT_HANDOFF.md). Paths were checked against the working tree on
-2026-11-02. Update the affected entries when files move. Keep this file under 180 lines and link runbooks, not details.
+2026-11-03. Update the affected entries when files move. Keep this file under 180 lines and link runbooks, not details.
 
 Shorthand: `API/` = `apps/api/src/modules/`, `WEB/` = `apps/web/`, `SHARED/` = `packages/shared/src/schemas/`,
 `RUN/` = `docs/runbooks/`.
@@ -27,11 +27,12 @@ Playwright config at `tests/e2e/playwright.config.ts`.
   `WEB/components/pos/payment-footer.tsx`
 - **Client state:** `WEB/stores/cart.store.ts`, `WEB/lib/pos/`, `WEB/lib/checkout-recovery.ts`, `WEB/lib/detached-sales.ts`
 - **API (authoritative totals):** `API/transactions/transactions.router.ts`, `API/transactions/transactions.service.ts`
+- **VAT retired (P63, CR-010):** every new sale is the manual total; `assertVatCalculationRetired` refuses VAT-calculated sales after the replay paths. History fixture: `apps/api/src/test-utils/historical-vat-sale.ts`; browser driver `tests/e2e/manual/p62/vat-retired.mjs`
 - **Schema:** `SHARED/transaction.schema.ts`; model `Transaction`
 - **Tests:** `WEB/components/pos/checkout-workspace.test.tsx`, `WEB/stores/cart.store.test.ts`,
   `API/transactions/transactions.service.test.ts`, `API/transactions/checkout-worker.integration.test.ts`, `tests/e2e/pos-workflow.spec.ts`
 - **Runbooks:** `RUN/pos-perf-p15-fast-checkout.md`, `RUN/pos-perf-p41-cart-responsiveness-and-product-editor.md`,
-  `RUN/pos-perf-p46-pos-keypad-and-customization-usability.md`, `RUN/pos-perf-p50-vat-settings-and-calculation-review.md`
+  `RUN/pos-perf-p46-pos-keypad-and-customization-usability.md`, `RUN/pos-perf-p63-vat-retired.md` (supersedes `RUN/pos-perf-p50-vat-settings-and-calculation-review.md`)
 
 ## Inventory: availability, reservations, deduction
 
@@ -90,13 +91,13 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 - **API (types):** `API/discounts/discounts.router.ts`, `API/discounts/discounts.service.ts`
 - **API (calculation and proof):** `API/transactions/transactions.service.ts`; upload and signed-URL routes
   in `API/transactions/transactions.router.ts`; storage client in `apps/api/src/lib/supabase.ts`
-- **Promotions:** `WEB/app/(supervisor)/supervisor/promotions/page.tsx`, `API/discounts/promotion-pricing.ts`,
+- **Promotions (configuration only — no checkout applies them since P63):** `WEB/app/(supervisor)/supervisor/promotions/page.tsx`, `API/discounts/promotion-pricing.ts`,
   `SHARED/promotion.schema.ts`
-- **Schema:** `SHARED/manual-discount.schema.ts`; models `ManualDiscountType`, `ManualDiscountTypeProduct`
+- **Schema:** `SHARED/manual-discount.schema.ts`; models `ManualDiscountType`, `ManualDiscountTypeProduct`; display rules `packages/shared/src/discounts/discount-display.ts`
 - **Tests:** `API/transactions/p55-manual-discounts.integration.test.ts`,
   `API/transactions/p57-shortages-and-discount-modes.integration.test.ts`, `API/discounts/p49-promotions.integration.test.ts`
 - **Runbooks:** `RUN/pos-perf-p55-manual-discounts-and-proof.md` (P55R2 note at the top supersedes parts of it),
-  `RUN/pos-perf-p55r3-compat-readers.md`, `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§4–7)
+  `RUN/pos-perf-p55r3-compat-readers.md`, `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§4–7), `RUN/pos-perf-p59-reports-and-ui-cleanup.md`
 
 ## Attendance, PIN, breaks, cashier sessions
 
@@ -125,17 +126,22 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 - **Runbooks:** `RUN/pos-perf-p52-payroll-settings-and-reports.md`, `RUN/pos-perf-p54-payroll-discounts-breaks-integration.md`,
   `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§3)
 
-## Dashboards and stock alerts
+## Dashboards, reports and stock alerts
 
-- **UI:** `WEB/app/(admin)/admin/dashboard/page.tsx`, `WEB/app/(supervisor)/supervisor/dashboard/page.tsx`,
-  `WEB/app/(branch)/branch/dashboard/page.tsx`, `WEB/components/admin/dashboard-low-stock-summary.tsx`,
-  `WEB/components/supervisor/dashboard-inventory-alerts.tsx`
-- **API:** `API/reports/reports.router.ts`, `API/reports/reports.service.ts`; shortage counts in
-  `API/stock-availability/stock-availability.service.ts`
-- **Schema:** `SHARED/reports.schema.ts`
-- **Tests:** `WEB/components/admin/dashboard-low-stock-summary.test.tsx`,
-  `WEB/components/supervisor/dashboard-inventory-alerts.test.tsx`, `API/reports/reports.service.test.ts`
-- **Runbooks:** `RUN/pos-perf-p47-dashboard-and-management.md`, `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§2)
+- **UI:** `WEB/app/(admin)/admin/dashboard/page.tsx`, `WEB/app/(supervisor)/supervisor/dashboard/page.tsx`, `WEB/app/(branch)/branch/dashboard/page.tsx`, `WEB/components/admin/dashboard-low-stock-summary.tsx`, `WEB/components/supervisor/dashboard-inventory-alerts.tsx`, `WEB/app/(admin)/admin/reports/page.tsx`, `WEB/components/branch-ops/reports-view.tsx`, `WEB/components/reports/`
+- **API:** `API/reports/` (exports in `apps/api/src/lib/reports/`); every PDF renders in the worker pool `lib/reports/pdf-render-pool.ts` + `pdf-render.worker.ts` (P62; tests `p62-pdf-isolation.test.ts`, `p62-pdf-routes.integration.test.ts`; benchmark `apps/api/scripts/p62-pdf-render-benchmark.mjs`; interactive request deadline `PDF_REQUEST_DEADLINE_MS` and deadline-aware admission in the pool); partial-file labelling in `export-coverage.ts`; shortage counts in `API/stock-availability/stock-availability.service.ts`; schema `SHARED/reports.schema.ts`
+- **Tests:** `WEB/components/admin/dashboard-low-stock-summary.test.tsx`, `WEB/components/supervisor/dashboard-inventory-alerts.test.tsx`, `API/reports/reports.service.test.ts`, `API/reports/p59-discount-report.integration.test.ts`, `API/reports/p59-export-coverage.integration.test.ts`, `API/reports/p59-report-coverage.integration.test.ts`
+- **Runbooks:** `RUN/pos-perf-p47-dashboard-and-management.md`, `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§2), `RUN/pos-perf-p59-reports-and-ui-cleanup.md`
+
+## Expenses and expense types
+
+- **UI:** `WEB/components/branch-ops/expenses-view.tsx`, `create-expense-dialog.tsx`, `expense-type-*.tsx` (same folder), `WEB/components/admin/expense-*.tsx`, `WEB/app/(admin)/admin/expenses/`, `WEB/components/reports/expense-breakdown-card.tsx`, `WEB/lib/expense-ledger-link.ts`, `WEB/hooks/queries/use-expenses.ts`, `use-expense-types.ts`
+- **API and schema:** `API/expenses/`, `API/expense-types/`, `apps/api/src/lib/reports/expenses-export.ts`, `SHARED/expense.schema.ts`, `SHARED/expense-type.schema.ts`
+- **Tests and runbook:** `API/expense-types/p60-expense-types.integration.test.ts`, `apps/api/scripts/test-p60-migration-on-populated-data.ts`, `RUN/pos-perf-p60-expense-types.md`
+
+## Extra Supplies
+
+- **All:** `API/extra-supplies/`, `SHARED/extra-supply.schema.ts`, `WEB/components/pos/extra-supplies-panel.tsx`, `WEB/components/extra-supplies/`, `WEB/hooks/queries/use-extra-supplies.ts`, `WEB/stores/extra-supply-draft.store.ts`, `apps/api/scripts/test-p61-migration-on-populated-data.ts`, `RUN/pos-perf-p61-extra-supplies.md`
 
 ## Stock transfers
 
@@ -153,27 +159,25 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 - **API middleware:** `apps/api/src/middleware/authenticate.ts`, `authorize.ts`, `branch-guard.ts`,
   `require-active-employee.ts`, `write-gate.ts` (same folder)
 - **Branch and catalog scope:** `apps/api/src/lib/branch-access.ts`, `apps/api/src/lib/catalog-authority.ts`
-- **Auth module:** `API/auth/auth.router.ts`, `API/auth/auth.service.ts`; schema `SHARED/auth.schema.ts`
+- **Auth module:** `API/auth/auth.router.ts`, `API/auth/auth.service.ts` (refresh protocol: `refreshToken`, grace `ROTATION_GRACE_MS` in `auth.repository.ts`); schema `SHARED/auth.schema.ts`
+- **Web session:** `WEB/lib/auth-refresh.ts` (refresh verdicts, Web Lock), `WEB/lib/api-client.ts` (401 handling, `IDENTITY_CHANGED`; P62: protected requests wait for the session, `isPublicApiPath`), `WEB/stores/auth.store.ts` `sessionStatus`, `WEB/stores/branch.store.ts` (reloaded branch is a hint until the token grants it), `WEB/hooks/use-identity-scoped-query-cache.ts`, `WEB/lib/offline/purge-api-response-cache.ts`; SW rules in `apps/web/next.config.ts`
+- **Rate limits:** `apps/api/src/middleware/rate-limiter.ts` (`apiLimiter` keys verified users; logout has its own per-user budget). Proxy trust: `app.set('trust proxy', 1)` in `apps/api/src/app.ts`, tested by `apps/api/src/p62-proxy-trust.test.ts`
 - **Tests:** `apps/api/src/middleware/rbac.test.ts`, `apps/api/src/lib/branch-access.test.ts`,
   `API/p40-route-boundaries.test.ts`, `API/products/products.branch-isolation.integration.test.ts`
-- **Runbooks:** `RUN/pos-perf-p16-write-gate.md`, `RUN/pos-perf-p40-admin-management-and-downloads.md`, `docs/security/`
+- **Runbooks:** `RUN/pos-perf-p16-write-gate.md`, `RUN/pos-perf-p40-admin-management-and-downloads.md`, `RUN/pos-perf-p62-performance-and-reliability.md`, `docs/security/`
 
 ## Migrations
 
 - **Schema and history:** `apps/api/prisma/schema.prisma`, `apps/api/prisma/migrations/`
 - **Safety rules:** "Database & Migration Safety" in [`.claude/CLAUDE.md`](../.claude/CLAUDE.md). Read it before any `prisma migrate` command.
-- **Rehearsals on disposable data:** `apps/api/scripts/with-test-postgres.ts`, `apps/api/scripts/test-p57-migration-on-populated-data.ts`,
-  and the other `apps/api/scripts/test-*-migration*-on-populated-data.ts` scripts
+- **Rehearsals on disposable data:** `apps/api/scripts/with-test-postgres.ts` (exit status: `scripts/lib/test-postgres-run.ts`, tested), `apps/api/scripts/test-p57-migration-on-populated-data.ts`, and the other `apps/api/scripts/test-*-migration*-on-populated-data.ts` scripts
 - **Rollback notes:** `docs/migrations/`
 - **Runbook example:** `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§9)
 
 ## Deployment and rollout
 
-- **Workflows:** `.github/workflows/ci.yml` (PRs), `.github/workflows/deploy-production.yml` (push to `main`; it has
-  no manual trigger), `.github/workflows/deploy-staging.yml`
-- **Rollout script:** `.github/scripts/deploy-rollout.mjs` (`render-preflight`, `render`, `vercel-promote`, `vercel-verify`);
-  tests in `.github/scripts/deploy-rollout.test.mjs`
-- **Smoke tests:** `tests/e2e/production-smoke.spec.ts`, `tests/e2e/playwright.production-smoke.config.ts`,
-  `tests/e2e/pilot-smoke.spec.ts`, `tests/e2e/playwright.pilot.config.ts`
-- **Runbooks:** `RUN/pos-perf-p42r-production-test-gate.md`, `RUN/pos-perf-p43-gated-web-and-rollout-verification.md`,
-  `RUN/pos-perf-p44-pilot-and-e2e-readiness.md`, `RUN/pilot-on-call.md`, `RUN/backup-and-restore.md`
+- **Workflows:** `.github/workflows/ci.yml` (PRs), `.github/workflows/deploy-production.yml` (push to `main`; it has no manual trigger), `.github/workflows/deploy-staging.yml`
+- **Rollout script:** `.github/scripts/deploy-rollout.mjs` (`render-preflight`, `render`, `vercel-promote`, `vercel-verify`); tests in `.github/scripts/deploy-rollout.test.mjs`
+- **Local browser and timing drivers (P62):** `tests/e2e/manual/p62/` (`stack.sh` disposable local stack, `auth-cache.mjs`, `terminal.mjs`, `perf-nav.mjs`, `perf-pdf.mjs`, `cross-role.mjs`, `request-gate.mjs`, `report-screens.mjs`, `pdf-capacity.mjs`); fixture `apps/api/scripts/p62-perf-fixtures.ts`; Extra Supplies rollback rehearsal `apps/api/scripts/p62-rollback-rehearsal.ts`
+- **Smoke tests:** `tests/e2e/production-smoke.spec.ts`, `tests/e2e/playwright.production-smoke.config.ts`, `tests/e2e/pilot-smoke.spec.ts`, `tests/e2e/playwright.pilot.config.ts`
+- **Runbooks:** `RUN/pos-perf-p42r-production-test-gate.md`, `RUN/pos-perf-p43-gated-web-and-rollout-verification.md`, `RUN/pos-perf-p44-pilot-and-e2e-readiness.md`, `RUN/pilot-on-call.md`, `RUN/backup-and-restore.md`

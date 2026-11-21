@@ -81,12 +81,34 @@ describe('expensesRepository.findAll', () => {
       expect.objectContaining({
         where: expect.objectContaining({
           category: 'utilities',
+          // On a typed row the category is a placeholder, so it only ever matches legacy rows.
+          expenseTypeId: null,
           // Widened to Manila day boundaries, not UTC midnight — see
           // resolveDateRangeBoundary in apps/api/src/lib/manila-time.ts.
           incurredAt: { gte: new Date('2026-06-30T16:00:00.000Z'), lte: new Date('2026-07-31T15:59:59.999Z') },
         }),
       }),
     );
+  });
+
+  it('a requested branch narrows the caller\'s scope and can never widen it', async () => {
+    vi.mocked(prisma.expense.findMany).mockResolvedValue([] as never);
+    vi.mocked(prisma.expense.count).mockResolvedValue(0 as never);
+    vi.mocked(prisma.expense.aggregate).mockResolvedValue({ _sum: { amount: null } } as never);
+
+    await expensesRepository.findAll({ branchIds: ['branch-a'], branch_id: 'branch-z', page: 1, limit: 25 });
+
+    expect(prisma.expense.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ branchId: { in: [] } }) }));
+  });
+
+  it('orders ties deterministically, since a day\'s expenses share one business date', async () => {
+    vi.mocked(prisma.expense.findMany).mockResolvedValue([] as never);
+    vi.mocked(prisma.expense.count).mockResolvedValue(0 as never);
+    vi.mocked(prisma.expense.aggregate).mockResolvedValue({ _sum: { amount: null } } as never);
+
+    await expensesRepository.findAll({ branchIds: 'all', page: 1, limit: 25 });
+
+    expect(prisma.expense.findMany).toHaveBeenCalledWith(expect.objectContaining({ orderBy: [{ incurredAt: 'desc' }, { createdAt: 'desc' }, { id: 'desc' }] }));
   });
 
   it('always excludes soft-deleted expenses', async () => {
@@ -110,24 +132,3 @@ describe('expensesRepository.softDelete', () => {
   });
 });
 
-describe('expensesRepository.findIdempotencyKey', () => {
-  it('returns the record when it exists within the 24h window', async () => {
-    const record = { id: 'key-1', key: 'abc', userId: 'user-1', expenseId: 'expense-1', createdAt: new Date() };
-    vi.mocked(prisma.expenseIdempotencyKey.findFirst).mockResolvedValue(record as never);
-
-    const result = await expensesRepository.findIdempotencyKey('abc', 'user-1');
-
-    expect(result).toEqual(record);
-    expect(prisma.expenseIdempotencyKey.findFirst).toHaveBeenCalledWith({
-      where: { key: 'abc', userId: 'user-1', createdAt: { gte: expect.any(Date) } },
-    });
-  });
-
-  it('returns null when no matching record exists', async () => {
-    vi.mocked(prisma.expenseIdempotencyKey.findFirst).mockResolvedValue(null as never);
-
-    const result = await expensesRepository.findIdempotencyKey('missing-key', 'user-1');
-
-    expect(result).toBeNull();
-  });
-});

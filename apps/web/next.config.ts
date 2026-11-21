@@ -8,6 +8,22 @@ const withPWA = withPWAInit({
   cacheOnFrontEndNav: true,
   aggressiveFrontEndNavCaching: true,
   reloadOnOnline: true,
+  // POS-PERF-P62 — the default rules cached every same-origin GET /api/* for
+  // 24h, keyed by URL alone, and answered from that cache when the network was
+  // slow or offline: one user's data could be shown to the next. This rule
+  // takes the default's place (same cacheName) and never stores anything.
+  // Offline selling uses its own Dexie snapshot and queue (lib/offline/), and
+  // lib/offline/purge-api-response-cache.ts deletes what older builds stored.
+  extendDefaultRuntimeCaching: true,
+  workboxOptions: {
+    runtimeCaching: [
+      {
+        urlPattern: ({ sameOrigin, url }) => sameOrigin && url.pathname.startsWith('/api/'),
+        handler: 'NetworkOnly',
+        options: { cacheName: 'apis' },
+      },
+    ],
+  },
 });
 
 const nextConfig: NextConfig = {

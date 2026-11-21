@@ -68,6 +68,11 @@ function buildQueryString(filters: TransactionFilters): string {
   if (filters.date_from) params.set('date_from', filters.date_from);
   if (filters.date_to) params.set('date_to', filters.date_to);
   if (filters.receipt_search) params.set('receipt_search', filters.receipt_search);
+  if (filters.discounted_only) params.set('discounted_only', filters.discounted_only);
+  if (filters.discount_key) params.set('discount_key', filters.discount_key);
+  if (filters.cashier_id) params.set('cashier_id', filters.cashier_id);
+  if (filters.product_name) params.set('product_name', filters.product_name);
+  if (filters.status_group) params.set('status_group', filters.status_group);
   params.set('page', String(filters.page ?? 1));
   params.set('limit', String(filters.limit ?? 25));
   return params.toString();
@@ -261,7 +266,7 @@ export function useUploadDiscountProof(accessTokenOverride?: string, refreshOver
   });
 }
 
-/** Fetches a freshly-signed discount-proof URL — only enabled while the Discount Compliance report's View Proof dialog is open. */
+/** Fetches a freshly-signed discount-proof URL — only enabled while the Discount Report's View Proof dialog is open. */
 export function useDiscountProof(transactionId: string | null, enabled: boolean) {
   return useQuery({
     queryKey: ['transaction-discount-proof', transactionId],
@@ -278,6 +283,10 @@ export function useDiscountProof(transactionId: string | null, enabled: boolean)
 export interface DiscountAuditTrailFilters {
   branchId?: string;
   discountType?: string;
+  /** POS-PERF-P59 — one discount identity (discountIdentityKey); same-named types never share one. */
+  discountKey?: string;
+  /** POS-PERF-P59 — exactly the discounted sales on one page of another report. */
+  transactionIds?: string[];
   dateFrom?: string;
   dateTo?: string;
   page?: number;
@@ -287,7 +296,7 @@ export interface DiscountAuditTrailFilters {
 /**
  * Task 209.16 — GET /api/transactions/discount-audit (super_admin/supervisor
  * only), the existing per-transaction audit trail behind the Discount
- * Compliance report's Admin drill-down (see discount-compliance-drilldown.tsx).
+ * Report's Admin drill-down (see discount-compliance-drilldown.tsx).
  * Disabled until a branchId is supplied, same "don't fetch org-wide by
  * accident" guard as useTransactions.
  */
@@ -298,8 +307,10 @@ export function useDiscountAuditTrail(filters: DiscountAuditTrailFilters, enable
       const params = new URLSearchParams();
       if (filters.branchId) params.set('branch_id', filters.branchId);
       if (filters.discountType) params.set('discount_type', filters.discountType);
+      if (filters.discountKey) params.set('discount_key', filters.discountKey);
       if (filters.dateFrom) params.set('date_from', filters.dateFrom);
       if (filters.dateTo) params.set('date_to', filters.dateTo);
+      if (filters.transactionIds) params.set('transaction_ids', filters.transactionIds.join(','));
       params.set('page', String(filters.page ?? 1));
       params.set('limit', String(filters.limit ?? 100));
       const response = await apiClient<DiscountAuditTrailResponse>(`/api/transactions/discount-audit?${params.toString()}`);

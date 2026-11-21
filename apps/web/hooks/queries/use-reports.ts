@@ -4,7 +4,10 @@ import { useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
+  PARTIAL_EXPORT_FILENAME_MARKER,
+  ROLES,
   SOCKET_EVENTS,
+  type ReportPeriodSummary,
   type ReportType,
   type ReportResponse,
   type SnapshotResponse,
@@ -30,6 +33,7 @@ import {
   type InventoryAnalyticsReport,
 } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
+import { useAuthStore } from '@/stores/auth.store';
 import { requestReportExport, type ExportOutcome } from '@/lib/report-export-client';
 import { triggerBrowserDownload } from '@/lib/trigger-download';
 import { useSocket } from '@/hooks/use-socket';
@@ -87,6 +91,37 @@ function useRealtimeReport<T>(reportType: ReportType, filters: ReportQueryFilter
   });
 }
 
+/** POS-PERF-P59 — figures across every matching record for the Supervisor/Branch Reports tabs; their tables page separately. */
+export function useReportPeriodSummary(filters: Pick<ReportQueryFilters, 'branch_id' | 'date_from' | 'date_to'>, enabled = true) {
+  return useQuery({
+    queryKey: ['reports', 'PERIOD_SUMMARY', filters],
+    queryFn: async () => {
+      const response = await apiClient<ReportPeriodSummary>(`/api/reports/period-summary?${buildReportQueryString(filters)}`);
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to load report totals'));
+      return response.data;
+    },
+    enabled: enabled && Boolean(filters.branch_id),
+    staleTime: 60_000,
+  });
+}
+
+export function useReportPeriodSummaryRealtimeSync(): void {
+  useRealtimeInvalidate(
+    [
+      SOCKET_EVENTS.TRANSACTION_COMPLETED,
+      SOCKET_EVENTS.TRANSACTION_REFUNDED,
+      SOCKET_EVENTS.VOID_REQUESTED,
+      SOCKET_EVENTS.INVENTORY_MOVEMENT_RECORDED,
+      SOCKET_EVENTS.ATTENDANCE_CLOCKED_IN,
+      SOCKET_EVENTS.ATTENDANCE_CLOCKED_OUT,
+    ],
+    [
+      ['reports', 'PERIOD_SUMMARY'],
+      ['reports', 'INVENTORY_CONSUMPTION_SUMMARY'],
+    ],
+  );
+}
+
 export function useDailySalesReport(filters: ReportQueryFilters, enabled = true) {
   return useRealtimeReport<DailySalesReportRow>('DAILY_SALES', filters, enabled && Boolean(filters.branch_id));
 }
@@ -98,7 +133,10 @@ export function useDailySalesReport(filters: ReportQueryFilters, enabled = true)
  * allows an admin to omit branch_id).
  */
 export function useDashboardSalesTrendReport(filters: ReportQueryFilters, enabled = true) {
-  return useRealtimeReport<DailySalesReportRow>('DAILY_SALES', filters, enabled);
+  // POS-PERF-P62 — only a super admin may leave branch_id out; anyone else
+  // waits for a branch instead of sending a request the API refuses (400).
+  const mayOmitBranch = useAuthStore((s) => s.user?.role === ROLES.SUPER_ADMIN);
+  return useRealtimeReport<DailySalesReportRow>('DAILY_SALES', filters, enabled && (Boolean(filters.branch_id) || mayOmitBranch));
 }
 export function useShiftSummaryReport(filters: ReportQueryFilters, enabled = true) {
   return useRealtimeReport<ShiftSummaryReportRow>('SHIFT_SUMMARY', filters, enabled && Boolean(filters.branch_id));
@@ -279,7 +317,14 @@ export function useRequestExport() {
         // a toast that fires first and a download that silently fails
         // would tell the user something happened when nothing did.
         triggerBrowserDownload(outcome.file.blob, outcome.file.filename);
-        toast.success(`${formatLabel(variables.format)} downloaded`);
+        if (outcome.file.filename.includes(PARTIAL_EXPORT_FILENAME_MARKER)) {
+          toast.warning(`Partial ${formatLabel(variables.format)} downloaded`, {
+            description: 'More records match these filters than this file can hold. The file says which rows it covers.',
+            duration: 15_000,
+          });
+        } else {
+          toast.success(`${formatLabel(variables.format)} downloaded`);
+        }
       } else {
         toast.success(outcome.message || "Generating your report… you'll be notified when it's ready");
       }

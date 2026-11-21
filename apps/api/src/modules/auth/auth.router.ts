@@ -81,6 +81,9 @@ function getBearerToken(req: Request): string | undefined {
   return header?.startsWith('Bearer ') ? header.slice('Bearer '.length) : undefined;
 }
 
+/** POS-PERF-P62 — refresh outcomes after which the session cannot continue; mirrors the web's final list (use-auth.ts). */
+const SESSION_OVER_CODES = new Set(['REFRESH_INVALID', 'ACCOUNT_INACTIVE', 'BRANCH_INACTIVE', 'BRANCH_ASSIGNMENT_REMOVED']);
+
 /** Routes AuthError to its declared status code; unexpected errors fall through to the global handler. */
 function handleAuthError(error: unknown, res: Response, next: NextFunction): void {
   if (error instanceof AuthError) {
@@ -119,6 +122,8 @@ router.post('/refresh', validate(refreshSchema), async (req: Request, res: Respo
   try {
     const refreshTokenValue = (req.cookies as Record<string, string> | undefined)?.[REFRESH_COOKIE_NAME];
     if (!refreshTokenValue) {
+      clearRefreshCookie(res);
+      clearAccessHintCookie(res);
       res.status(401).json({ data: null, error: { code: 'REFRESH_MISSING' }, meta: null });
       return;
     }
@@ -128,6 +133,16 @@ router.post('/refresh', validate(refreshSchema), async (req: Request, res: Respo
     setAccessHintCookie(res, result.access_token);
     res.status(200).json({ data: { access_token: result.access_token }, error: null, meta: null });
   } catch (error) {
+    // POS-PERF-P62 — a session that is over (revoked, replayed, logged out,
+    // account or branch no longer allowed) loses its cookies here, as on
+    // logout. Otherwise the web middleware, which routes /login from the
+    // unexpired access hint, sent the signed-out browser back to its dashboard
+    // until the hint expired (found in the P62 browser run). Transient
+    // failures keep the cookies: the session may still be fine.
+    if (error instanceof AuthError && SESSION_OVER_CODES.has(error.code)) {
+      clearRefreshCookie(res);
+      clearAccessHintCookie(res);
+    }
     handleAuthError(error, res, next);
   }
 });

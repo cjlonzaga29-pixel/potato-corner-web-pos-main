@@ -1,0 +1,158 @@
+{
+  "label": "underload-1",
+  "at": "2026-11-21T08:56:45.710Z",
+  "branch": "MAIN01",
+  "workloads": {
+    "saturation": {
+      "exports": [
+        {
+          "tag": "sat-r1-1",
+          "days": 7,
+          "status": 503,
+          "ms": 974,
+          "bytes": 248,
+          "isPdf": false,
+          "code": "PDF_BUSY",
+          "retryAfter": "17"
+        },
+        {
+          "tag": "sat-r1-2",
+          "days": 7,
+          "status": 200,
+          "ms": 14914,
+          "bytes": 217510,
+          "isPdf": true,
+          "code": null,
+          "retryAfter": null
+        },
+        {
+          "tag": "sat-r1-3",
+          "days": 7,
+          "status": 503,
+          "ms": 1256,
+          "bytes": 248,
+          "isPdf": false,
+          "code": "PDF_BUSY",
+          "retryAfter": "17"
+        },
+        {
+          "tag": "sat-r2-1",
+          "days": 7,
+          "status": 503,
+          "ms": 1056,
+          "bytes": 248,
+          "isPdf": false,
+          "code": "PDF_BUSY",
+          "retryAfter": "16"
+        },
+        {
+          "tag": "sat-r2-2",
+          "days": 7,
+          "status": 503,
+          "ms": 25032,
+          "bytes": 164,
+          "isPdf": false,
+          "code": "PDF_TIMEOUT",
+          "retryAfter": "60"
+        },
+        {
+          "tag": "sat-r2-3",
+          "days": 7,
+          "status": 503,
+          "ms": 768,
+          "bytes": 248,
+          "isPdf": false,
+          "code": "PDF_BUSY",
+          "retryAfter": "17"
+        },
+        {
+          "tag": "sat-r3-1",
+          "days": 7,
+          "status": 503,
+          "ms": 2501,
+          "bytes": 248,
+          "isPdf": false,
+          "code": "PDF_BUSY",
+          "retryAfter": "17"
+        },
+        {
+          "tag": "sat-r3-2",
+          "days": 7,
+          "status": 503,
+          "ms": 25034,
+          "bytes": 164,
+          "isPdf": false,
+          "code": "PDF_TIMEOUT",
+          "retryAfter": "60"
+        },
+        {
+          "tag": "sat-r3-3",
+          "days": 7,
+          "status": 503,
+          "ms": 3006,
+          "bytes": 248,
+          "isPdf": false,
+          "code": "PDF_BUSY",
+          "retryAfter": "17"
+        },
+        {
+          "tag": "sat-r4-1",
+          "days": 7,
+          "status": 503,
+          "ms": 1074,
+          "bytes": 248,
+          "isPdf": false,
+          "code": "PDF_BUSY",
+          "retryAfter": "17"
+        },
+        {
+          "tag": "sat-r4-2",
+          "days": 7,
+          "status": 503,
+          "ms": 795,
+          "bytes": 248,
+          "isPdf": false,
+          "code": "PDF_BUSY",
+          "retryAfter": "17"
+        },
+        {
+          "tag": "sat-r4-3",
+          "days": 7,
+          "status": 200,
+          "ms": 20709,
+          "bytes": 217879,
+          "isPdf": true,
+          "code": null,
+          "retryAfter": null
+        }
+      ],
+      "wallMs": 85694,
+      "reads": {
+        "n": 147,
+        "failed": 0,
+        "p50": 21,
+        "p95": 255,
+        "max": 2377
+      },
+      "succeeded": 2,
+      "total": 12,
+      "okMs": [
+        14914,
+        20709
+      ],
+      "refusedMs": [
+        "PDF_BUSY@974",
+        "PDF_BUSY@1256",
+        "PDF_BUSY@1056",
+        "PDF_TIMEOUT@25032",
+        "PDF_BUSY@768",
+        "PDF_BUSY@2501",
+        "PDF_TIMEOUT@25034",
+        "PDF_BUSY@3006",
+        "PDF_BUSY@1074",
+        "PDF_BUSY@795"
+      ],
+      "corruptSuccess": 0
+    }
+  }
+}

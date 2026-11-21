@@ -34,6 +34,10 @@ const {
 }));
 
 
+vi.mock('@/components/extra-supplies/extra-supply-summary-card', () => ({
+  ExtraSupplySummaryCard: () => <div data-testid="extra-supply-summary-card" />,
+}));
+
 vi.mock('@/hooks/queries/use-products', () => ({
 }));
 
@@ -80,6 +84,7 @@ vi.mock('@/hooks/queries/use-reports', () => ({
 
 vi.mock('@/hooks/queries/use-expenses', () => ({
   useExpensesRealtimeSync: vi.fn(),
+  useExpenseSummary: vi.fn(() => ({ data: undefined, isLoading: false, isError: false, refetch: vi.fn() })),
 }));
 
 vi.mock('@/components/shared/dashboard/sales-analytics-section', () => ({
@@ -387,11 +392,11 @@ describe('SupervisorDashboardPage', () => {
     expect(screen.getByText('Out Of Stock')).toBeInTheDocument();
   });
 
-  it('counts Staff Clocked In from attendance records (the summary), not from logins or branch stats', () => {
+  it('counts Crew on Duty from attendance records (the summary), not from logins or branch stats', () => {
     mockUseAllBranchStats.mockReturnValue({ data: [branchStats({ staffTimedInCount: 9 })], isLoading: false });
     mockUseAttendanceSummary.mockReturnValue({ data: attendanceSummary({ clocked_in: [CLOCKED_IN] }), isLoading: false, isError: false });
     render(<SupervisorDashboardPage />);
-    const card = screen.getByTestId('kpi-Staff Clocked In');
+    const card = screen.getByTestId('kpi-Crew on Duty');
     expect(card).toHaveTextContent('1');
     expect(card).toHaveAttribute('data-href', '/supervisor/attendance');
   });
@@ -410,7 +415,7 @@ describe('SupervisorDashboardPage', () => {
     expect(screen.queryByText('Juan Dela Cruz')).not.toBeInTheDocument();
     expect(screen.getByTestId('kpi-Gross Sales Today')).toHaveTextContent('loading');
     expect(screen.getByTestId('kpi-Inventory Alerts')).toHaveTextContent('loading');
-    expect(screen.getByTestId('kpi-Staff Clocked In')).toHaveTextContent('loading');
+    expect(screen.getByTestId('kpi-Crew on Duty')).toHaveTextContent('loading');
   });
 
   it('never renders Net Sales, (Estimated) Profit, or Discounts Given — not part of the TASK 165 KPI set', () => {

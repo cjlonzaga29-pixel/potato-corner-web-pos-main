@@ -80,7 +80,14 @@ async function attemptRefresh(): Promise<RestoreAttempt> {
       }
 
       const errorCode = typeof response.error === 'object' ? response.error?.code : undefined;
-      const isInvalid = errorCode === 'REFRESH_INVALID' || errorCode === 'REFRESH_MISSING';
+      // POS-PERF-P62 — the same list as auth-refresh.ts's classifyRefreshOutcome:
+      // an account that may no longer sign in (403) is final too.
+      const isInvalid =
+        errorCode === 'REFRESH_INVALID' ||
+        errorCode === 'REFRESH_MISSING' ||
+        errorCode === 'ACCOUNT_INACTIVE' ||
+        errorCode === 'BRANCH_INACTIVE' ||
+        errorCode === 'BRANCH_ASSIGNMENT_REMOVED';
       return { accessToken: null, transientError: !isInvalid };
     } catch {
       return { accessToken: null, transientError: true };
@@ -206,6 +213,10 @@ export function useAuth() {
         if (!attempt.transientError) {
           clearAuth();
           router.replace('/login');
+        } else {
+          // POS-PERF-P62 — neither signed in nor out: protected requests try
+          // the refresh again themselves before sending (api-client.ts).
+          useAuthStore.getState().markSessionUnconfirmed();
         }
       } finally {
         if (!cancelled) setLoading(false);

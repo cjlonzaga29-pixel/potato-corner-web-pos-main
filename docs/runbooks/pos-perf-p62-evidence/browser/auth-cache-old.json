@@ -1,0 +1,27 @@
+[
+  {
+    "step": "old: a service worker controls the page",
+    "ok": true,
+    "sw": "http://localhost:56433/sw.js",
+    "at": "2026-11-21T04:45:38.198Z"
+  },
+  {
+    "step": "old: the previous build stores authenticated API responses",
+    "ok": true,
+    "count": 5,
+    "sample": [
+      "apis:/api/expense-types?include_inactive=true&branch_id=b3965d34-8e0a-4469-8087-fe779aae533b",
+      "apis:/api/expenses/summary?branch_id=b3965d34-8e0a-4469-8087-fe779aae533b",
+      "apis:/api/expenses?branch_id=b3965d34-8e0a-4469-8087-fe779aae533b&page=1&limit=25",
+      "apis:/api/notifications?page=1&limit=25"
+    ],
+    "at": "2026-11-21T04:46:03.231Z"
+  },
+  {
+    "step": "old: offline, an unauthenticated fetch is answered from the API cache (the risk)",
+    "ok": true,
+    "target": "/api/expense-types?include_inactive=true&branch_id=b3965d34-8e0a-4469-8087-fe779aae533b",
+    "status": 200,
+    "at": "2026-11-21T04:46:03.295Z"
+  }
+]

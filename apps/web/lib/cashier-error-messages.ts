@@ -75,7 +75,7 @@ const TITLES: Record<string, string> = {
   PROMOTION_CHANGED: 'Promotion changed — not charged',
   PROMOTION_NOT_COMBINABLE: 'Promotion not combinable — not charged',
   PROMOTION_OFFLINE_UNSUPPORTED: 'Promotion not allowed offline — not recorded',
-  TAX_SETTINGS_CHANGED: 'Discount or VAT settings changed — not recorded',
+  TAX_SETTINGS_CHANGED: 'Discount settings changed — not recorded',
   DISCOUNT_CHOICE_REQUIRED: 'Choose a discount or “No applicable discount” — not charged',
   DISCOUNT_CHOICE_CONFLICT: 'Two discount choices — not charged',
   MANUAL_DISCOUNT_TYPE_UNAVAILABLE: 'Discount type no longer offered — not charged',
@@ -99,6 +99,7 @@ const TITLES: Record<string, string> = {
   CALCULATION_MODE_REQUIRED: 'POS update needed — not charged',
   CALCULATION_MODE_NOT_SUPPORTED: 'POS update needed — not charged',
   STATUTORY_DISCOUNT_REQUIRES_TAX_CALCULATION: 'POS update needed — not charged',
+  VAT_CALCULATION_RETIRED: 'POS update needed — not charged',
 };
 
 /** Real server codes that prove only that THIS request made no progress, not that anything failed or succeeded — the network/uncertain bucket, same as the synthetic codes above. */

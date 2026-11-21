@@ -8,16 +8,17 @@ import { DataTable } from '@/components/shared/data-table';
 import { EmptyState } from '@/components/shared/feedback/empty-state';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { createExpenseColumns, categoryLabel } from '@/components/admin/expense-columns';
+import { expenseDisplayName } from '@potato-corner/shared';
+import { createExpenseColumns } from '@/components/admin/expense-columns';
+import { ExpenseBreakdownCard } from '@/components/reports/expense-breakdown-card';
 import { ExpenseFilterBar } from '@/components/admin/expense-filter-bar';
 import { ViewExpenseReceiptDialog, type ExpenseReceiptProofData } from '@/components/shared/transactions/view-expense-receipt-dialog';
 import { useExpenses, useExpensesRealtimeSync, type ExpenseCategory } from '@/hooks/queries/use-expenses';
+import { useRequestExport } from '@/hooks/queries/use-reports';
 import { useSelectedBranch } from '@/hooks/use-selected-branch';
-import { downloadCsv, formatCurrency } from '@/lib/utils';
-import { manilaToday } from '@/lib/manila-date';
+import { formatCurrency } from '@/lib/utils';
 
 const ALL_BRANCHES = 'all';
-const ALL_CATEGORIES = 'all';
 const DEFAULT_PAGE_SIZE = 25;
 
 function ExpensesPageContent() {
@@ -29,7 +30,8 @@ function ExpensesPageContent() {
 
   const branchIdParam = searchParams.get('branch_id');
   const branchId = branchIdParam ?? (selectedBranchId !== ALL_BRANCHES ? selectedBranchId : ALL_BRANCHES);
-  const category = searchParams.get('category') ?? ALL_CATEGORIES;
+  const expenseTypeId = searchParams.get('expense_type_id');
+  const category = searchParams.get('category');
   const dateFrom = searchParams.get('date_from') ?? '';
   const dateTo = searchParams.get('date_to') ?? '';
   const page = Number(searchParams.get('page') ?? '1') || 1;
@@ -50,7 +52,8 @@ function ExpensesPageContent() {
 
   const filters = {
     branch_id: branchId === ALL_BRANCHES ? undefined : branchId,
-    category: category === ALL_CATEGORIES ? undefined : (category as ExpenseCategory),
+    expense_type_id: expenseTypeId ?? undefined,
+    category: expenseTypeId ? undefined : ((category ?? undefined) as ExpenseCategory | undefined),
     date_from: dateFrom || undefined,
     date_to: dateTo || undefined,
     page,
@@ -69,7 +72,7 @@ function ExpensesPageContent() {
           id: selectedExpense.id,
           receiptUrl: selectedExpense.receipt_url,
           branchName: selectedExpense.branch_name,
-          categoryLabel: categoryLabel(selectedExpense.category),
+          categoryLabel: expenseDisplayName(selectedExpense),
           vendorName: selectedExpense.vendor_name,
           amount: selectedExpense.amount,
           incurredAt: selectedExpense.incurred_at,
@@ -77,36 +80,29 @@ function ExpensesPageContent() {
         }
       : null;
 
-  const hasActiveFilters = branchId !== ALL_BRANCHES || category !== ALL_CATEGORIES || dateFrom !== '' || dateTo !== '';
+  const typeFilter = expenseTypeId ? `type:${expenseTypeId}` : category ? `legacy:${category}` : 'all';
+  const hasActiveFilters = branchId !== ALL_BRANCHES || typeFilter !== 'all' || dateFrom !== '' || dateTo !== '';
+  const requestExport = useRequestExport();
 
   function clearFilters() {
     router.push(pathname, { scroll: false });
   }
 
+  // POS-PERF-P60 — built by the server over these filters: a browser-built file only held the page on screen.
   function handleExportCsv() {
-    downloadCsv(
-      `expenses-${manilaToday()}.csv`,
-      rows.map((row) => ({
-        incurred_at: row.incurred_at,
-        branch: row.branch_name,
-        category: row.category,
-        vendor_name: row.vendor_name ?? '',
-        amount: row.amount,
-        created_by_name: row.created_by_name,
-        // 'Yes'/'No' only — never the signed URL itself (same rule as every
-        // other proof-bearing export in this app).
-        proof_available: row.receipt_url ? 'Yes' : 'No',
-      })),
-      [
-        { key: 'incurred_at', label: 'Date' },
-        { key: 'branch', label: 'Branch' },
-        { key: 'category', label: 'Category' },
-        { key: 'vendor_name', label: 'Vendor' },
-        { key: 'amount', label: 'Amount' },
-        { key: 'created_by_name', label: 'Recorded By' },
-        { key: 'proof_available', label: 'Proof Available' },
-      ],
-    );
+    requestExport.mutate({
+      report_type: 'EXPENSES',
+      filters: {
+        branch_id: filters.branch_id,
+        date_from: filters.date_from,
+        date_to: filters.date_to,
+        expense_type_id: filters.expense_type_id,
+        expense_category: filters.category,
+        page: 1,
+        limit: pageSize,
+      },
+      format: 'csv',
+    });
   }
 
   return (
@@ -117,7 +113,7 @@ function ExpensesPageContent() {
           <p className="text-sm text-muted-foreground">Branch operating expenses and receipts</p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={handleExportCsv} disabled={rows.length === 0} className="w-full sm:w-auto">
+          <Button variant="outline" size="sm" onClick={handleExportCsv} disabled={rows.length === 0 || requestExport.isPending} className="w-full sm:w-auto">
             <Download className="mr-2 h-4 w-4" />
             Export CSV
           </Button>
@@ -127,12 +123,21 @@ function ExpensesPageContent() {
       <Card>
         <CardContent className="pt-6">
           <p className="text-sm text-muted-foreground">Total</p>
-          <p className="app-kpi-value font-bold">{formatCurrency(data?.total_amount ?? 0)}</p>
+          {/* While loading or after a failure there is no total: 0 would read as a real figure. */}
+          <p className="app-kpi-value font-bold" data-testid="expense-ledger-total">{data ? formatCurrency(data.total_amount) : '—'}</p>
         </CardContent>
       </Card>
 
+      <ExpenseBreakdownCard
+        title="Expenses by Type"
+        branchId={filters.branch_id}
+        dateFrom={filters.date_from}
+        dateTo={filters.date_to}
+        ledgerPath={pathname}
+      />
+
       <ExpenseFilterBar
-        filters={{ branchId, category, dateFrom, dateTo }}
+        filters={{ branchId, typeFilter, dateFrom, dateTo }}
         onChange={(updates) => pushParams(updates, true)}
         onClear={clearFilters}
         hasActiveFilters={hasActiveFilters}
@@ -154,7 +159,7 @@ function ExpensesPageContent() {
             <EmptyState
               icon={Receipt}
               title="No expenses match the current filters"
-              description="Try a different branch, category, or date range."
+              description="Try a different branch, type, or date range."
               action={
                 <Button variant="outline" size="sm" onClick={clearFilters}>
                   Clear filters

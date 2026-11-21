@@ -38,7 +38,7 @@ export async function downloadTransactionsPdf(filters: TransactionPdfFilters): P
     const body = (await response.json().catch(() => null)) as { error?: { message?: string; code?: string } | string | null } | null;
     const error = body?.error;
     const message = typeof error === 'string' ? error : (error?.message ?? error?.code);
-    throw new DownloadError(message ?? 'The PDF could not be generated. Please try again.');
+    throw new DownloadError(message ?? 'The file could not be made. Try again, choose a shorter date range, or download a CSV.');
   }
 
   const blob = await response.blob();

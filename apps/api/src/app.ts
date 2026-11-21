@@ -26,6 +26,8 @@ import { notificationsRouter } from './modules/notifications/notifications.route
 import { auditRouter } from './modules/audit/audit.router.js';
 import { fraudRouter } from './modules/fraud/fraud.router.js';
 import { expensesRouter } from './modules/expenses/expenses.router.js';
+import { expenseTypesRouter } from './modules/expense-types/expense-types.router.js';
+import { extraSuppliesRouter } from './modules/extra-supplies/extra-supplies.router.js';
 import { settingsRouter, branchReceiptConfigRouter } from './modules/settings/settings.router.js';
 import { productInventoryRouter } from './modules/product-inventory/product-inventory.router.js';
 import { universalInventoryRouter, inventoryStockBranchRouter } from './modules/universal-inventory/universal-inventory.router.js';
@@ -39,6 +41,7 @@ import { productTypesRouter } from './modules/product-types/product-types.router
 import { productOptionsRouter } from './modules/product-options/product-options.router.js';
 import { catalogAssignmentRouter } from './modules/catalog-assignment/catalog-assignment.router.js';
 import { AuthError } from './modules/auth/auth.types.js';
+import { PdfRenderError } from './lib/reports/pdf-render-pool.js';
 
 export const app: Express = express();
 
@@ -96,6 +99,8 @@ app.use('/api/notifications', notificationsRouter);
 app.use('/api/audit', auditRouter);
 app.use('/api/fraud', fraudRouter);
 app.use('/api/expenses', expensesRouter);
+app.use('/api/expense-types', expenseTypesRouter);
+app.use('/api/extra-supplies', extraSuppliesRouter);
 app.use('/api/settings', settingsRouter);
 // Same prefix as branchesRouter — no path collision (branchesRouter owns
 // /:branchId; this owns /:branchId/receipt-config).
@@ -122,6 +127,14 @@ app.use('/{*splat}', (_req: Request, res: Response) => {
 // Express to recognize it as an error handler rather than a normal route.
 app.use((error: unknown, req: Request, res: Response, _next: NextFunction) => {
   if (error instanceof AuthError) {
+    res.status(error.statusCode).json({ data: null, error: { code: error.code, message: error.message }, meta: null });
+    return;
+  }
+
+  // POS-PERF-P62 — a refused or stopped PDF is an answer, never an empty download.
+  if (error instanceof PdfRenderError) {
+    if (res.writableEnded || res.destroyed) return;
+    if (error.retryAfterSeconds !== undefined) res.setHeader('Retry-After', String(error.retryAfterSeconds));
     res.status(error.statusCode).json({ data: null, error: { code: error.code, message: error.message }, meta: null });
     return;
   }

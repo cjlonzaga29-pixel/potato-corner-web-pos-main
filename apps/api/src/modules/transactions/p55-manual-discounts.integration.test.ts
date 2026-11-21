@@ -54,6 +54,7 @@ vi.mock('../../lib/supabase.js', () => ({
 
 const { app } = await import('../../app.js');
 const { prisma } = await import('../../lib/prisma.js');
+const { makeHistoricalVatSale, closeHistoricalVatSaleClient } = await import('../../test-utils/historical-vat-sale.js');
 const { discountsService } = await import('../discounts/discounts.service.js');
 const { reportsRepository } = await import('../reports/reports.repository.js');
 const { generateStaffToken, generateSupervisorToken, generateSuperAdminToken, generateBranchToken } = await import('../../test-utils/auth-tokens.js');
@@ -194,6 +195,7 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
   });
 
   afterAll(async () => {
+    await closeHistoricalVatSaleClient();
     await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
     if (!setupSucceeded) return;
     const branches = [ids.branchA, ids.branchB];
@@ -317,17 +319,28 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
     expect(row.taxSnapshot).not.toHaveProperty('treatment');
     expect((await prisma.transaction.findUniqueOrThrow({ where: { id: none.body.data?.id as string } })).calculationMode).toBe('manual_total_v1');
 
-    // The statutory PWD formula is untouched in the new flow (₱500 → ÷1.12 → −20% → ₱357.14, VAT ₱0).
-    const pwd = await manualSale(tokens.ana, { choice: 'selected', extra: { discount_type: 'pwd', discount_id_reference: `PWD-${tag}`, tax_basis: { vat_rate: 12, discount_rate: 20 } } });
+    // POS-PERF-P63 — the statutory PWD/Senior formula is retired: refused with nothing written, never recalculated.
+    const beforeStatutory = await saleCount();
+    for (const discountType of ['pwd', 'senior_citizen']) {
+      const statutory = await manualSale(tokens.ana, { choice: 'selected', extra: { discount_type: discountType, discount_id_reference: `PWD-${tag}`, tax_basis: { vat_rate: 12, discount_rate: 20 } } });
+      expect(statutory.status).toBe(422);
+      expect(statutory.body.error?.code).toBe('VAT_CALCULATION_RETIRED');
+    }
+    expect(await saleCount()).toBe(beforeStatutory);
+    // A historical statutory sale (stored by the old formula: ₱500 → ÷1.12 → −20% → ₱357.14, VAT ₱0) reads as stored.
+    const pwd = await manualSale(tokens.ana, { choice: 'none_applicable' });
     expect(pwd.status).toBe(201);
-    expect(pwd.body.data).toMatchObject({ discount_type: 'pwd', calculation_mode: 'legacy_vat_v1', vat_amount: 0, total_amount: 357.14, manual_discount: null });
-    expect((await prisma.transaction.findUniqueOrThrow({ where: { id: pwd.body.data?.id as string } })).taxSnapshot).toMatchObject({ version: 1, calculation_mode: 'legacy_vat_v1', treatment: 'vat_exempt' });
+    await makeHistoricalVatSale(prisma, pwd.body.data?.id as string, {
+      subtotal: 500, discountAmount: 89.29, vatAmount: 0, vatExemptAmount: 446.43, totalAmount: 357.14, discountType: 'pwd', storedMode: 'legacy_vat_v1',
+    });
+    expect((await call('GET', `/api/transactions/${pwd.body.data?.id as string}`, tokens.supA)).body.data).toMatchObject({ discount_type: 'pwd', calculation_mode: 'legacy_vat_v1', vat_amount: 0, total_amount: 357.14 });
 
     const before = await saleCount();
     const refusals: [Record<string, unknown>, number, string][] = [
       // PWD + manual cannot even be expressed: discount_type must be 'manual' with manual_discount.
       [{ discount_type: 'pwd', discount_id_reference: 'X', manual_discount: { discount_type_id: type.id, type_version: type.version, amount: 10 } }, 422, 'VALIDATION_ERROR'],
-      [{ discount_type: 'employee', tax_basis: { vat_rate: 12, discount_rate: 20 } }, 422, 'DISCOUNT_NOT_SUPPORTED_IN_MANUAL_FLOW'],
+      [{ discount_type: 'employee', tax_basis: { vat_rate: 12, discount_rate: 20 } }, 422, 'VAT_CALCULATION_RETIRED'],
+      [{ discount_type: 'employee' }, 422, 'DISCOUNT_NOT_SUPPORTED_IN_MANUAL_FLOW'],
       [{ discount_type: 'promotional' }, 400, 'DISCOUNT_TYPE_NOT_SUPPORTED'],
     ];
     for (const [extra, status, code] of refusals) {
@@ -344,17 +357,17 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
     // P55R2 — the calculation is explicit and cannot be forged or mixed.
     const modeRefusals: [Record<string, unknown>, string][] = [
       // The new flow without the mode (e.g. the unreleased first-pass build): never silently VAT-calculated.
-      [{ tax_basis: { vat_rate: 12, discount_rate: null } }, 'CALCULATION_MODE_REQUIRED'],
-      [{ tax_basis: undefined }, 'CALCULATION_MODE_REQUIRED'],
-      // Statutory PWD/Senior cannot be charged as a manual total, nor without a basis.
-      [{ discount_type: 'pwd', discount_id_reference: 'PWD-X', discount_choice: 'selected' }, 'STATUTORY_DISCOUNT_REQUIRES_TAX_CALCULATION'],
-      [{ discount_type: 'senior_citizen', discount_id_reference: 'SC-X', discount_choice: 'selected', tax_basis: undefined }, 'CALCULATION_MODE_REQUIRED'],
+      [{ tax_basis: { vat_rate: 12, discount_rate: null } }, 'VAT_CALCULATION_RETIRED'],
+      [{ tax_basis: undefined }, 'VAT_CALCULATION_RETIRED'],
+      // POS-PERF-P63 — statutory PWD/Senior is retired in every shape.
+      [{ discount_type: 'pwd', discount_id_reference: 'PWD-X', discount_choice: 'selected' }, 'VAT_CALCULATION_RETIRED'],
+      [{ discount_type: 'senior_citizen', discount_id_reference: 'SC-X', discount_choice: 'selected', tax_basis: undefined }, 'VAT_CALCULATION_RETIRED'],
       // Unknown or inconsistent modes are refused by validation.
       [{ tax_basis: { calculation_mode: 'no_vat', vat_rate: null, discount_rate: null } }, 'VALIDATION_ERROR'],
       [{ tax_basis: { calculation_mode: 'manual_total_v1', vat_rate: 12, discount_rate: null } }, 'VALIDATION_ERROR'],
       [{ tax_basis: { vat_rate: null, discount_rate: null } }, 'VALIDATION_ERROR'],
       // A top-level mode field is not part of the contract (stripped), so the numeric basis still needs the mode.
-      [{ calculation_mode: 'manual_total_v1', tax_basis: { vat_rate: 12, discount_rate: null } }, 'CALCULATION_MODE_REQUIRED'],
+      [{ calculation_mode: 'manual_total_v1', tax_basis: { vat_rate: 12, discount_rate: null } }, 'VAT_CALCULATION_RETIRED'],
     ];
     for (const [extra, code] of modeRefusals) {
       expect((await manualSale(tokens.ben, { extra })).body.error?.code, JSON.stringify(extra)).toBe(code);
@@ -363,16 +376,17 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
     const legacyClaim = await call('POST', '/api/transactions', tokens.ben, {
       branch_id: ids.branchA, items: [item()], payment_method: 'cash', cash_tendered: 1000, is_offline_transaction: false, tax_basis: MANUAL_TOTAL_BASIS,
     });
-    expect(legacyClaim.body.error?.code).toBe('CALCULATION_MODE_NOT_SUPPORTED');
+    expect(legacyClaim.body.error?.code).toBe('VAT_CALCULATION_RETIRED');
     expect(await saleCount()).toBe(before);
 
-    // Old web -> new API: no flow, numeric basis -> the documented legacy VAT calculation, recorded as such.
+    // POS-PERF-P63 — old web -> new API: no flow, numeric basis -> refused, never charged with VAT.
     const oldWeb = await call('POST', '/api/transactions', tokens.ben, {
       branch_id: ids.branchA, items: [item()], payment_method: 'cash', cash_tendered: 1000, is_offline_transaction: false, tax_basis: { vat_rate: 12, discount_rate: null },
     });
-    expect(oldWeb.status).toBe(201);
-    expect(oldWeb.body.data).toMatchObject({ total_amount: 500, vat_amount: 53.57, vat_exempt_amount: 0, calculation_mode: 'legacy_vat_v1' });
-    expect((await prisma.transaction.findUniqueOrThrow({ where: { id: oldWeb.body.data?.id as string } })).calculationMode).toBe('legacy_vat_v1');
+    expect(oldWeb.status).toBe(422);
+    expect(oldWeb.body.error?.code).toBe('VAT_CALCULATION_RETIRED');
+    expect(oldWeb.body.error?.message).toContain('Reload the POS');
+    expect(await saleCount()).toBe(before);
   });
 
   it('amounts: invalid, over-subtotal and changed totals are refused with nothing written; the full subtotal is allowed', async () => {
@@ -410,11 +424,12 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
       expect(capped.status).toBe(201);
       expect(capped.body.data).toMatchObject({ subtotal: 500, discount_amount: 450, total_amount: 50, vat_amount: null, vat_exempt_amount: null });
       expect((await manualSale(tokens.ben, { manual: md(500.01) })).body.error?.code).toBe('MANUAL_DISCOUNT_EXCEEDS_SUBTOTAL');
-      // The legacy calculation of the same cart is unchanged (₱400 VATable, ₱100 non-VATable).
+      // POS-PERF-P63 — the old VAT calculation of the same cart is refused, never charged.
       const legacy = await call('POST', '/api/transactions', tokens.ben, {
         branch_id: ids.branchA, items: [item()], payment_method: 'cash', cash_tendered: 1000, is_offline_transaction: false, tax_basis: { vat_rate: 12, discount_rate: null },
       });
-      expect(legacy.body.data).toMatchObject({ total_amount: 500, vat_amount: 42.86, vat_exempt_amount: 100, calculation_mode: 'legacy_vat_v1' });
+      expect(legacy.status).toBe(422);
+      expect(legacy.body.error?.code).toBe('VAT_CALCULATION_RETIRED');
     } finally {
       await prisma.productVariant.update({ where: { id: ids.variant }, data: { vatableCapAmount: null } });
     }
@@ -473,40 +488,12 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
     expect((await call('GET', `/api/transactions/${sale.id}/discount-proof`, tokens.supB)).status).toBe(403);
     expect(await saleCount()).toBe(before + 1);
 
-    // A legacy statutory key pointing at another branch's object is refused (pre-P55 it was attached as-is).
+    // A legacy statutory sale (even with another branch's proof key) is refused before anything is attached.
     const legacyForged = await call('POST', '/api/transactions', tokens.ana, {
       branch_id: ids.branchA, items: [item()], payment_method: 'cash', cash_tendered: 1000, is_offline_transaction: false,
       discount_type: 'senior_citizen', discount_id_reference: 'SC-1', discount_proof_key: `${ids.branchB}/x/y.webp`, discount_proof_type: 'live_capture',
     });
-    expect(legacyForged.body.error?.code).toBe('DISCOUNT_PROOF_INVALID');
-  });
-
-  it('legacy statutory proof keys: only a registered, unused upload by this cashier/branch/shift; real old-client uploads still work', async () => {
-    const legacySale = (token: string, key: string, idempotencyKey: string = randomUUID()) =>
-      call('POST', '/api/transactions', token, {
-        branch_id: ids.branchA, items: [item(1)], payment_method: 'cash', cash_tendered: 1000, is_offline_transaction: false, idempotency_key: idempotencyKey,
-        discount_type: 'pwd', discount_id_reference: 'PWD-LEGACY', discount_proof_key: key, discount_proof_type: 'live_capture',
-      });
-    const before = await saleCount();
-    // Made up under the sale's own branch prefix, and a traversal out of it: refused (both were attached before this fix).
-    expect((await legacySale(tokens.ana, `${ids.branchA}/made-up/anything.webp`)).body.error?.code).toBe('DISCOUNT_PROOF_INVALID');
-    expect((await legacySale(tokens.ana, `${ids.branchA}/../${ids.branchB}/x.webp`)).body.error?.code).toBe('DISCOUNT_PROOF_INVALID');
-    // Ana's real upload: Ben cannot attach it; Ana can, exactly once; a same-key retry replays the sale.
-    const upload = await uploadProof(tokens.ana, ids.branchA);
-    const key = upload.body.data?.discount_proof_key as string;
-    expect((await legacySale(tokens.ben, key)).body.error?.code).toBe('DISCOUNT_PROOF_INVALID');
-    const idempotencyKey = randomUUID();
-    const ok = await legacySale(tokens.ana, key, idempotencyKey);
-    expect(ok.status).toBe(201);
-    // Legacy PWD formula unchanged: ₱250 → base 223.21, 20% off → ₱178.57, VAT ₱0.
-    expect(ok.body.data).toMatchObject({ discount_type: 'pwd', has_discount_proof: true, total_amount: 178.57, vat_amount: 0 });
-    const replay = await legacySale(tokens.ana, key, idempotencyKey);
-    expect(replay.body.data?.id).toBe(ok.body.data?.id);
-    const second = await legacySale(tokens.ana, key);
-    expect(second.status).toBe(409);
-    expect(second.body.error?.code).toBe('DISCOUNT_PROOF_ALREADY_USED');
-    expect((await prisma.discountProofUpload.findUniqueOrThrow({ where: { storageKey: key } })).transactionId).toBe(ok.body.data?.id);
-    expect(await saleCount()).toBe(before + 1);
+    expect(legacyForged.body.error?.code).toBe('VAT_CALCULATION_RETIRED');
   });
 
   it('idempotency: same-key retry and lost-response resolve never apply the amount twice; a changed discount under the same key is refused', async () => {
@@ -545,13 +532,13 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
     promotionIds.push(promotion.id);
     const promoItem = { product_id: ids.promoProduct, product_variant_id: ids.promoVariant, quantity: 1 };
 
-    // Legacy client: the automatic promotion still applies, exactly as before.
+    // POS-PERF-P63 — a legacy client's sale (which applied the promotion with VAT) is refused, nothing written.
     const legacy = await call('POST', '/api/transactions', tokens.ana, {
       branch_id: ids.branchA, items: [{ ...promoItem, promotion: { promotion_id: promotion.id, unit_discount: 10 } }], payment_method: 'cash', cash_tendered: 1000,
       is_offline_transaction: false, tax_basis: { vat_rate: 12, discount_rate: null },
     });
-    expect(legacy.status).toBe(201);
-    expect(legacy.body.data).toMatchObject({ discount_type: 'promotional', discount_amount: 10, total_amount: 90, vat_amount: 9.64, calculation_mode: 'legacy_vat_v1' });
+    expect(legacy.status).toBe(422);
+    expect(legacy.body.error?.code).toBe('VAT_CALCULATION_RETIRED');
 
     // New flow: a line claiming the promotion is refused; without it nothing is deducted automatically.
     const claimed = await manualSale(tokens.ana, { items: [{ ...promoItem, promotion: { promotion_id: promotion.id, unit_discount: 10 } }] });
@@ -610,9 +597,9 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
       transactions: [
         { ...base, offline_provisional_number: `PC-P55-${tag}-OFFLINE-0001`, discount_flow: 'manual_v1', manual_discount: { discount_type_id: type.id, type_version: type.version, amount: 10 } },
         { ...base, offline_provisional_number: `PC-P55-${tag}-OFFLINE-0002`, discount_flow: 'manual_v1', discount_choice: 'none_applicable' },
-        // P55R2 — an old queued sale keeps its original VAT calculation.
+        // POS-PERF-P63 — an old queued VAT sale is refused visibly, never recalculated.
         { ...base, offline_provisional_number: `PC-P55-${tag}-OFFLINE-0003`, tax_basis: legacyBasis },
-        // P55R2 — a new-flow sale queued without the mode is never converted to the VAT calculation: refused visibly.
+        // A new-flow sale queued without the mode is never converted to the VAT calculation: refused visibly.
         { ...base, offline_provisional_number: `PC-P55-${tag}-OFFLINE-0004`, discount_flow: 'manual_v1', discount_choice: 'none_applicable', tax_basis: legacyBasis },
       ],
     });
@@ -621,10 +608,11 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
     expect(results[0]).toMatchObject({ status: 'failed', error: { code: 'MANUAL_DISCOUNT_OFFLINE_UNSUPPORTED' } });
     expect(results[0]?.error?.message).toContain('not recorded');
     expect(results[1]).toMatchObject({ status: 'synced', transaction: { total_amount: 250, calculation_mode: 'manual_total_v1', vat_amount: null } });
-    expect(results[2]).toMatchObject({ status: 'synced', transaction: { total_amount: 250, calculation_mode: 'legacy_vat_v1', vat_amount: 26.79 } });
-    expect(results[3]).toMatchObject({ status: 'failed', error: { code: 'CALCULATION_MODE_REQUIRED' } });
-    expect(results[3]?.error?.message).toContain('not recorded');
-    for (const n of ['0001', '0004']) expect(await prisma.transaction.count({ where: { offlineProvisionalNumber: `PC-P55-${tag}-OFFLINE-${n}` } })).toBe(0);
+    for (const r of [results[2], results[3]]) {
+      expect(r).toMatchObject({ status: 'failed', error: { code: 'VAT_CALCULATION_RETIRED' } });
+      expect(r?.error?.message).toContain('amount collected was not changed');
+    }
+    for (const n of ['0001', '0003', '0004']) expect(await prisma.transaction.count({ where: { offlineProvisionalNumber: `PC-P55-${tag}-OFFLINE-${n}` } })).toBe(0);
     // A retried sync of the same queued sale (lost response) returns the same sale, never a duplicate.
     const firstId = (results[1] as unknown as { transaction: { id: string } }).transaction.id;
     const again = await call('POST', '/api/transactions/sync-offline', tokens.ana, {
@@ -637,12 +625,13 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
 
   it('reports and refunds: manual sales are their own group and stored totals reconcile', async () => {
     const rows = await reportsRepository.getDiscountCompliance({ branchId: ids.branchA } as Parameters<typeof reportsRepository.getDiscountCompliance>[0]);
-    const manualRow = rows.find((r) => r.discount_type === 'manual');
+    // P59 — one row per discount type, by identity; together they cover every manual sale.
+    const manualRows = rows.filter((r) => r.discount_type === 'manual');
     const manualSales = await prisma.transaction.findMany({ where: { branchId: ids.branchA, discountType: 'manual', status: 'completed' } });
-    expect(manualRow?.transaction_count).toBe(manualSales.length);
-    expect(manualRow?.total_discount_amount).toBeCloseTo(manualSales.reduce((s, t) => s + t.discountAmount.toNumber(), 0), 2);
+    expect(manualRows.reduce((s, r) => s + r.transaction_count, 0)).toBe(manualSales.length);
+    expect(manualRows.reduce((s, r) => s + r.total_discount_amount, 0)).toBeCloseTo(manualSales.reduce((s, t) => s + t.discountAmount.toNumber(), 0), 2);
     // P55R2 — VAT not calculated: no exempt/non-VATable figure (null), not ₱0.
-    expect(manualRow).toMatchObject({ calculation_mode: 'manual_total_v1', total_vat_exempt_sales: null, total_vat_exempt_amount: null });
+    for (const manualRow of manualRows) expect(manualRow).toMatchObject({ calculation_mode: 'manual_total_v1', total_vat_exempt_sales: null, total_vat_exempt_amount: null });
     expect(rows.find((r) => r.discount_type === 'pwd')).toMatchObject({ calculation_mode: 'legacy_vat_v1' });
     // Daily Sales: VAT totals only VAT-calculated sales; manual-total sales are counted apart.
     const completed = await prisma.transaction.findMany({ where: { branchId: ids.branchA, status: 'completed' } });
@@ -659,7 +648,6 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
     expect(txRows.filter((r) => r.vat_amount === null).every((r) => r.tax_calculation === 'Not calculated (manual total)')).toBe(true);
     expect(txRows.filter((r) => r.vat_amount !== null).every((r) => r.tax_calculation === null)).toBe(true);
     expect(rows.some((r) => r.discount_type === 'pwd')).toBe(true);
-    expect(rows.some((r) => r.discount_type === 'promotional')).toBe(true);
     for (const t of manualSales) expect(t.subtotal.toNumber() - t.discountAmount.toNumber()).toBeCloseTo(t.totalAmount.toNumber(), 2);
 
     const target = manualSales[0];
@@ -674,5 +662,94 @@ describe.skipIf(!isLocalDatabase)('P55 manual peso discounts (real Express + Pos
     expect([after.calculationMode, after.vatAmount.toNumber(), after.taxSnapshot]).toEqual([target.calculationMode, target.vatAmount.toNumber(), target.taxSnapshot]);
     const refundedView = await call('GET', `/api/transactions/${target.id}`, tokens.supA);
     expect(refundedView.body.data).toMatchObject({ status: 'refunded', calculation_mode: 'manual_total_v1', vat_amount: null });
+  });
+
+  it('P63 — VAT retired: a "PWD"-named type is a manual discount; history replays, refunds and voids keep their stored amounts', async () => {
+    // A supervisor-created type named "PWD" (proof required) is a manual peso discount, not a statutory formula.
+    const created = await createType(tokens.supA, ids.branchA, `PWD ${tag}`, true);
+    expect(created.status).toBe(201);
+    const type = created.body.data as unknown as { id: string; version: number };
+    const md = (amount: number, extra: Record<string, unknown> = {}) => ({ discount_type_id: type.id, type_version: type.version, amount, ...extra });
+    const before = await saleCount();
+    expect((await manualSale(tokens.ana, { manual: md(100) })).body.error?.code).toBe('MANUAL_DISCOUNT_PROOF_REQUIRED');
+    const anaUpload = await uploadProof(tokens.ana, ids.branchA);
+    const anaProof = anaUpload.body.data?.discount_proof_upload_id as string;
+    // Bound to the cashier who took it: Ben cannot use Ana's proof.
+    expect((await manualSale(tokens.ben, { manual: md(100, { proof_upload_id: anaProof }) })).body.error?.code).toBe('MANUAL_DISCOUNT_PROOF_INVALID');
+    expect(await saleCount()).toBe(before);
+    const key = randomUUID();
+    const sold = await manualSale(tokens.ana, { key, manual: md(100, { proof_upload_id: anaProof }) });
+    expect(sold.status).toBe(201);
+    expect(sold.body.data).toMatchObject({ discount_type: 'manual', subtotal: 500, discount_amount: 100, total_amount: 400, vat_amount: null, vat_exempt_amount: null, calculation_mode: 'manual_total_v1' });
+    expect((sold.body.data?.manual_discount as { name?: string } | null)?.name).toBe(`PWD ${tag}`);
+    // Uncertain result: the same key replays the same sale; no second sale, no second deduction.
+    const stock = await availableStock();
+    const retried = await manualSale(tokens.ana, { key, manual: md(100, { proof_upload_id: anaProof }) });
+    expect(retried.body.data?.id).toBe(sold.body.data?.id);
+    expect(await saleCount()).toBe(before + 1);
+    expect(await availableStock()).toBe(stock);
+
+    // History: a VAT-era sale keeps its stored amounts through replay, refund and void.
+    const legacyKey = randomUUID();
+    const histA = await manualSale(tokens.ana, { key: legacyKey, choice: 'none_applicable' });
+    await makeHistoricalVatSale(prisma, histA.body.data?.id as string, { subtotal: 500, discountAmount: 0, vatAmount: 53.57, vatExemptAmount: 0, totalAmount: 500, discountType: null });
+    const storedA = await prisma.transaction.findUniqueOrThrow({ where: { id: histA.body.data?.id as string } });
+    // An old client retrying its own already-recorded sale (legacy shape, same key) gets the stored sale back.
+    const legacyReplay = await call('POST', '/api/transactions', tokens.ana, {
+      branch_id: ids.branchA, items: [item()], payment_method: 'cash', cash_tendered: 1000, is_offline_transaction: false, idempotency_key: legacyKey,
+      tax_basis: { vat_rate: 12, discount_rate: null },
+    });
+    expect(legacyReplay.status).toBeLessThan(300);
+    expect(legacyReplay.body.data).toMatchObject({ id: storedA.id, total_amount: 500, vat_amount: 53.57, calculation_mode: 'legacy_vat_v1' });
+    // A new legacy-shape sale (new key) is refused with nothing written.
+    const countNow = await saleCount();
+    const newLegacy = await call('POST', '/api/transactions', tokens.ana, {
+      branch_id: ids.branchA, items: [item()], payment_method: 'cash', cash_tendered: 1000, is_offline_transaction: false, idempotency_key: randomUUID(),
+      tax_basis: { vat_rate: 12, discount_rate: null },
+    });
+    expect(newLegacy.body.error?.code).toBe('VAT_CALCULATION_RETIRED');
+    expect(await saleCount()).toBe(countNow);
+
+    // An already-synced offline VAT-era sale replays as synced with its stored amounts (same device identity).
+    const offlineNumber = `PC-P63-${tag}-OFFLINE-0001`;
+    const queued = {
+      items: [item(1)], payment_method: 'cash', cash_tendered: 1000, client_created_at: Date.now() - 60_000, offline_provisional_number: offlineNumber,
+      discount_flow: 'manual_v1', discount_choice: 'none_applicable', tax_basis: MANUAL_TOTAL_BASIS,
+    };
+    const firstSync = await call('POST', '/api/transactions/sync-offline', tokens.ana, { branch_id: ids.branchA, transactions: [queued] });
+    const syncedId = (firstSync.body.data?.results as { transaction?: { id: string } }[])[0]?.transaction?.id as string;
+    expect(syncedId).toBeTruthy();
+    await makeHistoricalVatSale(prisma, syncedId, { subtotal: 250, discountAmount: 44.64, vatAmount: 0, vatExemptAmount: 223.21, totalAmount: 178.57, discountType: 'senior_citizen' });
+    const legacyQueued = {
+      items: [item(1)], payment_method: 'cash', cash_tendered: 1000, client_created_at: Date.now() - 60_000, offline_provisional_number: offlineNumber,
+      discount_type: 'senior_citizen', discount_id_reference: 'SC-OLD', tax_basis: { vat_rate: 12, discount_rate: 20 },
+    };
+    const resync = await call('POST', '/api/transactions/sync-offline', tokens.ana, { branch_id: ids.branchA, transactions: [legacyQueued] });
+    expect((resync.body.data?.results as unknown[])[0]).toMatchObject({
+      status: 'synced', transaction: { id: syncedId, total_amount: 178.57, discount_type: 'senior_citizen', calculation_mode: 'legacy_vat_v1' },
+    });
+    expect(await prisma.transaction.count({ where: { offlineProvisionalNumber: offlineNumber } })).toBe(1);
+
+    // Refund and void change status only; every stored amount and snapshot stays.
+    expect((await call('POST', `/api/transactions/${storedA.id}/refund`, tokens.supA, { refund_reason: 'Customer returned the order' })).status).toBe(200);
+    expect((await call('POST', `/api/transactions/${syncedId}/void`, tokens.supA, { void_reason: 'Rung on the wrong terminal' })).status).toBe(200);
+    const expectations: [string, number[]][] = [
+      [storedA.id, [500, 0, 53.57, 0, 500]],
+      [syncedId, [250, 44.64, 0, 223.21, 178.57]],
+    ];
+    for (const [id, expected] of expectations) {
+      const row = await prisma.transaction.findUniqueOrThrow({ where: { id } });
+      expect([row.subtotal, row.discountAmount, row.vatAmount, row.vatExemptAmount, row.totalAmount].map((d) => d.toNumber())).toEqual(expected);
+      expect(row.calculationMode).toBeNull();
+      expect(row.taxSnapshot).toMatchObject({ version: 1, calculation_mode: 'legacy_vat_v1' });
+    }
+    expect((await prisma.transaction.findUniqueOrThrow({ where: { id: syncedId } })).status).toBe('voided');
+    const refundedView = await call('GET', `/api/transactions/${storedA.id}`, tokens.supA);
+    expect(refundedView.body.data).toMatchObject({ status: 'refunded', vat_amount: 53.57, total_amount: 500, calculation_mode: 'legacy_vat_v1' });
+
+    // No VAT setting can be written any more; the read-only GET stays for older terminals.
+    const taxWrite = await call('PUT', `/api/settings/tax/branches/${ids.branchA}`, tokens.admin, { vatRegistration: 'vat_registered', note: null, expectedUpdatedAt: null });
+    expect(taxWrite.status).toBe(404);
+    expect((await call('GET', '/api/settings/tax', tokens.ana)).status).toBe(200);
   });
 });

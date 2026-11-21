@@ -100,7 +100,7 @@ function setup() {
 }
 
 describe('ReceiptModal', () => {
-  it('renders every required receipt field for a multi-item sale with options, discount, VAT, and cash payment', () => {
+  it('renders every required receipt field for a multi-item sale with options, discount and cash payment, and no VAT lines', () => {
     setup();
     render(<ReceiptModal transaction={transaction()} onClose={vi.fn()} />);
 
@@ -123,9 +123,8 @@ describe('ReceiptModal', () => {
     // this transaction (discount_rate_used), never a raw "senior_citizen" string.
     expect(screen.getByText('Senior Citizen Discount (20%)')).toBeInTheDocument();
     expect(screen.getByText('-₱20.00')).toBeInTheDocument();
-    // P50 — a Senior Citizen sale is labelled VAT-exempt (from the stored amounts).
-    expect(screen.getByText('VAT-exempt sale (PWD/Senior)')).toBeInTheDocument();
-    expect(screen.getByText('₱18.75')).toBeInTheDocument();
+    // POS-PERF-P59 — amounts are stored and unchanged; the receipt no longer shows VAT lines.
+    expect(document.body.textContent).not.toMatch(/\bVAT\b|VAT-exempt|not calculated/i);
     expect(screen.getByText('Total')).toBeInTheDocument();
     expect(screen.getAllByText('₱175.00').length).toBeGreaterThan(0);
 
@@ -219,6 +218,19 @@ describe('ReceiptModal', () => {
 
     expect(screen.getByText(/2x Classic Cheese/)).toBeInTheDocument();
     expect(screen.getByText(/1x Sour Cream/)).toBeInTheDocument();
+  });
+
+  it('P59 — a custom type named PWD prints PWD; the word Manual and a saved VAT figure never appear', () => {
+    setup();
+    render(
+      <ReceiptModal
+        transaction={transaction({ discount_type: 'manual', discount_rate_used: null, calculation_mode: 'manual_total_v1', vat_amount: null, vat_exempt_amount: null, manual_discount: { discount_type_id: 't-1', name: 'PWD', amount: 20, require_proof: true } })}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('PWD discount')).toBeInTheDocument();
+    expect(screen.queryByText(/manual/i)).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/\bVAT\b|not calculated/i);
   });
 
   it('P55 — a manual discount shows its frozen type name; a type this build does not know is a plain "Discount", never its raw code', () => {

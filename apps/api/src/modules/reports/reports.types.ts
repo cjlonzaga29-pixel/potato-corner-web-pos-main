@@ -68,6 +68,17 @@ export interface ReportFilters {
   paymentMethod?: 'cash' | 'gcash' | 'maya' | 'other';
   status?: 'completed' | 'voided' | 'refunded';
   search?: string;
+  // POS-PERF-P59 — Discount Report's type filter, plus its transaction-level export's discounted-only scope.
+  discountKey?: string;
+  // POS-PERF-P60 — the Expenses report's type filter, as GET /api/expenses.
+  expenseTypeId?: string;
+  expenseCategory?: string;
+  expenseUnassigned?: boolean;
+  discountedOnly?: boolean;
+  // POS-PERF-P59 — Sold Product Transactions export: every status unless one is chosen, and its product filter.
+  reportView?: 'sold_product_transactions';
+  anyStatus?: boolean;
+  productName?: string;
 }
 
 export interface ExportRequest {
@@ -112,6 +123,7 @@ export function columnsForRows<T extends Record<string, unknown>>(columns: Array
  */
 export type DailySalesTransactionRow = {
   receipt_number: string;
+  status: string;
   payment_method: string;
   total_amount: number;
   /** POS-PERF-P55R2 — null for a manual-total sale (VAT not calculated). */
@@ -120,6 +132,10 @@ export type DailySalesTransactionRow = {
   tax_calculation?: string | null;
   discount_amount: number;
   discount_type: string | null;
+  // POS-PERF-P59 — what exports print (discountDisplayName); discount_type stays the raw code.
+  discount_name?: string | null;
+  discount_key?: string | null;
+  discount_proof_requirement?: string | null;
   // Task 209.xx — the configured percentage actually applied at sale time
   // (Transaction.discountRateUsed), frozen forever; never today's Discount
   // Settings value. Null for no-discount rows and for legacy sales predating

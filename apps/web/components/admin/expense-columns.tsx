@@ -2,17 +2,11 @@
 
 import Link from 'next/link';
 import type { ColumnDef } from '@tanstack/react-table';
+import { expenseDisplayName } from '@potato-corner/shared';
 import { Badge, type BadgeProps } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { formatCurrency, formatDate } from '@/lib/utils';
 import type { ExpenseRow } from '@/hooks/queries/use-expenses';
-
-const CATEGORY_LABELS: Record<string, string> = {
-  utilities: 'Utilities',
-  supplies: 'Supplies',
-  staff_meals: 'Staff Meals',
-  miscellaneous: 'Miscellaneous',
-};
 
 const CATEGORY_BADGE_VARIANTS: Record<string, BadgeProps['variant']> = {
   utilities: 'pending',
@@ -20,10 +14,6 @@ const CATEGORY_BADGE_VARIANTS: Record<string, BadgeProps['variant']> = {
   staff_meals: 'warning',
   miscellaneous: 'inactive',
 };
-
-export function categoryLabel(category: string): string {
-  return CATEGORY_LABELS[category] ?? category;
-}
 
 export function createExpenseColumns(onViewReceipt: (expense: ExpenseRow) => void): ColumnDef<ExpenseRow>[] {
   return [
@@ -38,13 +28,18 @@ export function createExpenseColumns(onViewReceipt: (expense: ExpenseRow) => voi
     cell: ({ row }) => row.original.branch_name,
   },
   {
-    id: 'category',
-    header: 'Category',
-    cell: ({ row }) => (
-      <Badge variant={CATEGORY_BADGE_VARIANTS[row.original.category] ?? 'secondary'}>
-        {CATEGORY_LABELS[row.original.category] ?? row.original.category}
-      </Badge>
-    ),
+    id: 'expense_type',
+    header: 'Type',
+    cell: ({ row }) => {
+      const { expense_type_id: typeId, expense_type_name: recorded, expense_type_current_name: current, category } = row.original;
+      return (
+        <span className="inline-flex flex-col items-start gap-0.5">
+          {/* A typed expense's category is only a placeholder, so it never picks the color. */}
+          <Badge variant={typeId ? 'secondary' : (CATEGORY_BADGE_VARIANTS[category] ?? 'secondary')}>{expenseDisplayName(row.original)}</Badge>
+          {typeId && current && current !== recorded && <span className="text-xs text-muted-foreground">now called {current}</span>}
+        </span>
+      );
+    },
   },
   {
     id: 'vendorName',

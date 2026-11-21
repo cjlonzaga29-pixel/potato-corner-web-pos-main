@@ -1,0 +1,101 @@
+[
+  {
+    "step": "terminal: no-discount cash sale completes through the UI",
+    "ms": 576,
+    "total": 101,
+    "ok": true,
+    "at": "2026-11-21T06:28:30.692Z"
+  },
+  {
+    "step": "terminal: custom-discount sale completes with the peso discount",
+    "ms": 1671,
+    "total": 82,
+    "discount": 20,
+    "ok": true,
+    "at": "2026-11-21T06:28:33.998Z"
+  },
+  {
+    "step": "terminal: free and paid supply issues confirmed on screen",
+    "freeMs": 155,
+    "paidMs": 95,
+    "ok": true,
+    "at": "2026-11-21T06:28:36.573Z"
+  },
+  {
+    "step": "terminal: after a lost reply and reload, the terminal shows the sale as completed",
+    "committed": true,
+    "shown": true,
+    "text": "Sale completed ₱103.00 Cash Order #03 · 1 item (terminal reference, not the receipt number) 1x P62 Fries 3 — Regular ₱10",
+    "ok": true,
+    "at": "2026-11-21T06:28:48.374Z"
+  },
+  {
+    "step": "terminal: lost supply reply, server outcome and screen after reload",
+    "committed": true,
+    "screen": "Working Current Cashier: Ana Reyes since 9:17 AM Switch Cashier Start Break Clock Out Products Extra Supplies Pending Done Extra Supplies For additional cups, tissue or bags only. Packaging that comes",
+    "ok": true,
+    "at": "2026-11-21T06:28:59.820Z"
+  },
+  {
+    "step": "db: exactly one transaction per sale (3 sales, the lost one included)",
+    "count": 3,
+    "totals": [
+      101,
+      82,
+      103
+    ],
+    "ok": true,
+    "at": "2026-11-21T06:29:07.887Z"
+  },
+  {
+    "step": "db: every sale deducted exactly once (3 recipe lines each)",
+    "movements": 9,
+    "statuses": [
+      "completed",
+      "completed",
+      "completed"
+    ],
+    "ok": true,
+    "at": "2026-11-21T06:29:07.887Z"
+  },
+  {
+    "step": "db: exactly one issue per supply operation (free, paid, lost paid)",
+    "issues": [
+      {
+        "id": "d00e3dd5-a13b-4e7e-bc9f-aeefb2b85d2b",
+        "kind": "paid",
+        "paymentMethod": "cash",
+        "amountCollected": 5,
+        "lines": 1
+      },
+      {
+        "id": "cff2fca5-f37f-4b41-ae99-5a0944909e1a",
+        "kind": "paid",
+        "paymentMethod": "cash",
+        "amountCollected": 10,
+        "lines": 1
+      },
+      {
+        "id": "722e8194-805d-477a-a673-f0616af5e1a3",
+        "kind": "free",
+        "paymentMethod": null,
+        "amountCollected": 0,
+        "lines": 1
+      }
+    ],
+    "ok": true,
+    "at": "2026-11-21T06:29:07.887Z"
+  },
+  {
+    "step": "db: supply stock fell by exactly the units issued (1 + 2 + 1)",
+    "before": 99993,
+    "after": 99989,
+    "ok": true,
+    "at": "2026-11-21T06:29:07.887Z"
+  },
+  {
+    "step": "db: one collection per paid issue (10 + 5)",
+    "ok": true,
+    "at": "2026-11-21T06:29:07.888Z"
+  }
+]

@@ -268,7 +268,7 @@ export const attendanceRepository = {
         // deactivated, or terminated employee still shows a name instead of
         // a raw UUID — see Cross-Dashboard Correctness audit.
         include: { employee: { select: { firstName: true, lastName: true, employeeId: true, status: true } }, breaks: breaksInclude },
-        orderBy: { clockInServerTime: 'desc' },
+        orderBy: [{ clockInServerTime: 'desc' }, { id: 'desc' }],
         skip: (filters.page - 1) * filters.limit,
         take: filters.limit,
       }),

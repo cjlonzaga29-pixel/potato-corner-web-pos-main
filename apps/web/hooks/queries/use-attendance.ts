@@ -90,7 +90,7 @@ function buildAttendanceQueryString(filters: AttendanceListFilters): string {
   return params.toString();
 }
 
-export function useAttendanceByBranch(branchId: string | null | undefined, filters: AttendanceListFilters = {}) {
+export function useAttendanceByBranch(branchId: string | null | undefined, filters: AttendanceListFilters = {}, options: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: ['attendance-branch', branchId, filters],
     queryFn: async () => {
@@ -98,7 +98,7 @@ export function useAttendanceByBranch(branchId: string | null | undefined, filte
       if (!response.data) throw new Error(errorMessage(response, 'Failed to load attendance records'));
       return response.data;
     },
-    enabled: Boolean(branchId),
+    enabled: Boolean(branchId) && (options.enabled ?? true),
     placeholderData: keepPreviousData,
   });
 }

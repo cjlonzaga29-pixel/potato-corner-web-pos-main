@@ -199,7 +199,7 @@ export function usePayrollExport(branchId: string | null, runId: string | null) 
       const response = await fetchAuthenticated(`${base(branchId as string)}/runs/${runId}/export?${qs.toString()}`);
       if (!response.ok) {
         const body = (await response.json().catch(() => null)) as { error?: { message?: string } } | null;
-        throw new Error(body?.error?.message ?? `Export failed (${response.status})`);
+        throw new Error(body?.error?.message ?? 'The file could not be made. Try again, choose a shorter date range, or download a CSV.');
       }
       const blob = await response.blob();
       const filename = parseContentDisposition(response.headers.get('content-disposition'), `payroll.${input.format}`);

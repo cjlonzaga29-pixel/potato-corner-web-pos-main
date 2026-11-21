@@ -115,7 +115,7 @@ export async function requestReportExport(input: ExportRequestInput): Promise<Ex
     // Never hand raw HTML/text back to the UI — read it defensively for
     // logging purposes only, and surface a generic, safe message.
     await response.text().catch(() => '');
-    throw new ReportExportError('Failed to request report export. Please try again.');
+    throw new ReportExportError('The file could not be made. Try again, choose a shorter date range, or download a CSV.');
   }
 
   if (contentType.includes('application/json')) {

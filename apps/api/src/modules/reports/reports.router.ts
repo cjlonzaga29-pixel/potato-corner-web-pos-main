@@ -1,4 +1,5 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
+import { cancelPdfWhenClientLeaves } from '../../lib/reports/pdf-render-pool.js';
 import { ExportRequestSchema, InventoryAnalyticsQuerySchema, ReportFiltersSchema, ROLES, type ExportRequestInput, type ReportType } from '@potato-corner/shared';
 import { reportsService } from './reports.service.js';
 import { ReportError } from './reports.types.js';
@@ -57,6 +58,12 @@ function parseFilters(query: unknown): { ok: true; filters: ReportFilters } | { 
       paymentMethod: parsed.data.payment_method,
       status: parsed.data.status,
       search: parsed.data.search,
+      discountKey: parsed.data.discount_key,
+      expenseTypeId: parsed.data.expense_type_id,
+      expenseCategory: parsed.data.expense_category,
+      expenseUnassigned: parsed.data.expense_unassigned,
+      reportView: parsed.data.report_view,
+      productName: parsed.data.product_name,
     },
   };
 }
@@ -80,6 +87,7 @@ function realtimeRoute(path: string, handler: (filters: ReportFilters, actorId: 
   });
 }
 
+realtimeRoute('/period-summary', (f, id, role) => reportsService.getReportPeriodSummary(f, id, role));
 realtimeRoute('/daily-sales', (f, id, role) => reportsService.getDailySalesReport(f, id, role));
 realtimeRoute('/shift-summary', (f, id, role) => reportsService.getShiftSummaryReport(f, id, role));
 realtimeRoute('/cash-reconciliation', (f, id, role) => reportsService.getCashReconciliationReport(f, id, role));
@@ -201,7 +209,7 @@ router.get('/inventory-analytics', authenticate, adminSupervisorOrBranch, requir
 // branch_id under `filters`. The same allow/deny rule is applied inline
 // instead, reading `body.filters.branch_id` — mirroring the existing
 // precedent in inventory.router.ts for routes branchGuard can't cover.
-router.post('/export', authenticate, adminSupervisorOrBranch, requirePasswordChange, validate(ExportRequestSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/export', authenticate, adminSupervisorOrBranch, requirePasswordChange, validate(ExportRequestSchema), cancelPdfWhenClientLeaves, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
     const body = req.body as ExportRequestInput;
@@ -228,6 +236,12 @@ router.post('/export', authenticate, adminSupervisorOrBranch, requirePasswordCha
       paymentMethod: body.filters.payment_method,
       status: body.filters.status,
       search: body.filters.search,
+      discountKey: body.filters.discount_key,
+      expenseTypeId: body.filters.expense_type_id,
+      expenseCategory: body.filters.expense_category,
+      expenseUnassigned: body.filters.expense_unassigned,
+      reportView: body.filters.report_view,
+      productName: body.filters.product_name,
     };
     const branchId = filters.branchId ?? null;
     const result = await reportsService.requestExport(body.report_type as ReportType, filters, body.format, req.user.user_id, req.user.role, branchId);

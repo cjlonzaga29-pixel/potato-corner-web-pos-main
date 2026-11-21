@@ -14,6 +14,7 @@ import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { StatusBadge } from '@/components/shared/status-badge';
 import { ReceiptModal } from '@/components/pos/receipt-modal';
 import { formatCurrency, formatDateTime } from '@/lib/utils';
+import { saleDiscountName } from '@/lib/discount-report';
 import { useAuth } from '@/hooks/use-auth';
 import { useTransaction, useTransactions, useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
 
@@ -62,7 +63,7 @@ export default function BranchSalesPage() {
     {
       id: 'discount_type',
       header: 'Discount',
-      cell: ({ row }) => (row.original.discount_type ? humanizeSnake(row.original.discount_type) : '—'),
+      cell: ({ row }) => saleDiscountName(row.original) ?? '—',
     },
     { id: 'status', header: 'Status', cell: ({ row }) => <StatusBadge status={row.original.status} type="transaction" /> },
     { id: 'created_at', header: 'Date', cell: ({ row }) => formatDateTime(row.original.created_at) },

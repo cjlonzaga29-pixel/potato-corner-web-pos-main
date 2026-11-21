@@ -7,6 +7,9 @@ import type { PosCatalogProduct, CreateTransactionInput } from '@potato-corner/s
 import type { SaleSnapshot } from '@/components/pos/sale-status-modal';
 import { useAuthStore } from '@/stores/auth.store';
 import { useTerminalOperatorStore } from '@/stores/terminal-operator.store';
+// POS-PERF-P62 — page-level tests, 1.4-2.4s each alone (render 0.65s, opening checkout 0.66s, ~0.12s per role query) on the P62 laptop and about 4x slower
+// in the full parallel suite, past the 5s default there (P62 runbook §7). This file only.
+vi.setConfig({ testTimeout: 15_000 });
 
 const {
   mockAddItem,
@@ -2494,6 +2497,31 @@ describe('TerminalPage — uncertain checkout resolution (POS-PERF-P15R2)', () =
     expect(mockClearPendingCheckoutAttempt).toHaveBeenCalled();
   });
 
+  it('P59 — a sale recovered after a reload clears the cart that survived it, so it cannot be charged a second time', async () => {
+    mockClearCart.mockClear();
+    mockReadPendingCheckoutAttempt.mockReturnValue({ idempotencyKey: 'key-from-before-reload', savedAt: Date.now(), orderRef: 1 });
+    mockResolveAndFenceCheckoutAttempt.mockResolvedValueOnce({
+      status: 'found',
+      transaction: { id: 'txn-9', receipt_number: 'BR-009', subtotal: 50, discount_amount: 0, discount_type: null, total_amount: 50, payment_method: 'cash', cash_tendered: 50, change_given: 0, items: [] },
+    });
+
+    render(<TerminalPage />);
+
+    await waitFor(() => expect(screen.getByText('Sale completed')).toBeInTheDocument());
+    expect(mockClearCart).toHaveBeenCalledTimes(1);
+  });
+
+  it('P59 — a reload whose attempt never committed keeps the cart, which is still unsold', async () => {
+    mockClearCart.mockClear();
+    mockReadPendingCheckoutAttempt.mockReturnValue({ idempotencyKey: 'key-never-committed', savedAt: Date.now(), orderRef: 1 });
+    mockResolveAndFenceCheckoutAttempt.mockResolvedValueOnce({ status: 'not-found' });
+
+    render(<TerminalPage />);
+
+    await waitFor(() => expect(mockClearPendingCheckoutAttempt).toHaveBeenCalled());
+    expect(mockClearCart).not.toHaveBeenCalled();
+  });
+
   it('clears the pending record on mount when the recovered attempt resolves not-found', async () => {
     mockReadPendingCheckoutAttempt.mockReturnValue({ idempotencyKey: 'key-never-committed', savedAt: Date.now(), orderRef: 1 });
     mockResolveAndFenceCheckoutAttempt.mockResolvedValueOnce({ status: 'not-found' });
@@ -3743,9 +3771,9 @@ describe('TerminalPage — P49 promotions are not applied in the P55 checkout', 
   });
 });
 
-// POS-PERF-P50 — the terminal still sends the rates its total was computed
-// with (tax_basis, never an amount); the statutory rate for PWD/Senior,
-// null otherwise (a manual peso discount has no rate).
+// POS-PERF-P50 — the terminal sends the basis its total was computed with
+// (tax_basis, never an amount). POS-PERF-P63 — VAT retired: every charge,
+// online or queued, is manual_total_v1 with vat_rate and discount_rate null.
 describe('TerminalPage — P50 tax basis', () => {
   beforeEach(() => {
     mockRefetchDiscountPolicy.mockClear();

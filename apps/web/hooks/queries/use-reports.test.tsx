@@ -27,12 +27,14 @@ const { ReportExportError } = await import('@/lib/report-export-client');
 const { toast } = await import('sonner');
 const {
   useDailySalesReport,
+  useDashboardSalesTrendReport,
   useBranchComparisonReport,
   useRequestExport,
   useReportsRealtimeSync,
   useReportsTrendsRealtimeSync,
   useInventoryAnalyticsRealtimeSync,
 } = await import('./use-reports.js');
+const { useAuthStore } = await import('@/stores/auth.store');
 
 function wrapper({ children }: { children: ReactNode }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -52,6 +54,39 @@ describe('useDailySalesReport', () => {
     const { result } = renderHook(() => useDailySalesReport({ branch_id: 'b1' }), { wrapper });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(apiClient).toHaveBeenCalledWith(expect.stringContaining('/api/reports/daily-sales?'));
+  });
+});
+
+describe('useDashboardSalesTrendReport (POS-PERF-P62)', () => {
+  const asRole = (role: 'super_admin' | 'supervisor') =>
+    useAuthStore.getState().setAuth({ id: role, role, email: null, firstName: '', lastName: '', branchIds: role === 'supervisor' ? ['b1'] : [] }, 't');
+
+  it('a supervisor without a branch yet sends nothing (the API answers 400)', () => {
+    asRole('supervisor');
+    const { result } = renderHook(() => useDashboardSalesTrendReport({ date_from: '2026-11-01', date_to: '2026-11-21' }), { wrapper });
+    expect(result.current.fetchStatus).toBe('idle');
+    expect(apiClient).not.toHaveBeenCalled();
+  });
+
+  it('nothing is sent before the session says who the user is', () => {
+    useAuthStore.getState().clearAuth();
+    const { result } = renderHook(() => useDashboardSalesTrendReport({ date_from: '2026-11-01', date_to: '2026-11-21' }), { wrapper });
+    expect(result.current.fetchStatus).toBe('idle');
+  });
+
+  it('a super admin may ask for every branch at once', async () => {
+    asRole('super_admin');
+    vi.mocked(apiClient).mockResolvedValue({ data: { report_type: 'DAILY_SALES', data: [], total: 0, page: 1, limit: 25 }, error: null, meta: null });
+    const { result } = renderHook(() => useDashboardSalesTrendReport({ date_from: '2026-11-01', date_to: '2026-11-21' }), { wrapper });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(apiClient).toHaveBeenCalledWith(expect.not.stringContaining('branch_id'));
+  });
+
+  it('a supervisor with a branch fetches it', async () => {
+    asRole('supervisor');
+    vi.mocked(apiClient).mockResolvedValue({ data: { report_type: 'DAILY_SALES', data: [], total: 0, page: 1, limit: 25 }, error: null, meta: null });
+    const { result } = renderHook(() => useDashboardSalesTrendReport({ branch_id: 'b1', date_from: '2026-11-01', date_to: '2026-11-21' }), { wrapper });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
   });
 });
 

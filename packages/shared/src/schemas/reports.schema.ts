@@ -1,8 +1,9 @@
 // packages/shared/src/schemas/reports.schema.ts
 import { z } from 'zod';
 import { SALE_CALCULATION_MODES } from '../tax/sale-tax.js';
-import { REPORT_TYPE, TRANSACTION_STATUS, PAYMENT_METHOD, type ReportType, type TransactionStatus, type PaymentMethod } from '../constants/status.js';
+import { EXPENSE_CATEGORY, REPORT_TYPE, TRANSACTION_STATUS, PAYMENT_METHOD, type ReportType, type TransactionStatus, type PaymentMethod } from '../constants/status.js';
 import { MAX_LIST_LIMIT } from '../constants/pagination.js';
+import { discountKeySchema } from '../discounts/discount-display.js';
 
 const reportTypeValues = Object.values(REPORT_TYPE) as [ReportType, ...ReportType[]];
 const transactionStatusValues = Object.values(TRANSACTION_STATUS) as [TransactionStatus, ...TransactionStatus[]];
@@ -30,8 +31,33 @@ export const ReportFiltersSchema = z.object({
   payment_method: z.enum(paymentMethodValues).optional(),
   status: z.enum(transactionStatusValues).optional(),
   search: z.string().max(100).optional(),
+  // POS-PERF-P59 — Discount Report's type filter (see discountIdentityKey). Other reports ignore it.
+  discount_key: discountKeySchema.optional(),
+  // POS-PERF-P60 — the Expenses report's type filter, as GET /api/expenses. Other reports ignore these.
+  expense_type_id: z.uuid().optional(),
+  expense_category: z.enum(Object.values(EXPENSE_CATEGORY) as [string, ...string[]]).optional(),
+  expense_unassigned: z.boolean().optional(),
+  // POS-PERF-P59 — the Sold Product Transactions tab shares DAILY_SALES's report_type.
+  // This tells its export apart, so it holds every status unless one is chosen, and
+  // carries the tab's product filter, its own title and its own file name.
+  report_view: z.enum(['sold_product_transactions']).optional(),
+  product_name: z.string().trim().min(1).max(200).optional(),
 });
 export type ReportFiltersInput = z.infer<typeof ReportFiltersSchema>;
+
+/** POS-PERF-P59 — the user-facing name of a report. The report_type code and its URL stay as they were. */
+const REPORT_TYPE_DISPLAY_NAMES: Partial<Record<ReportType, string>> = {
+  DAILY_SALES: 'Daily Sales Report (DSR)',
+  DISCOUNT_COMPLIANCE: 'Discount Report',
+  INVENTORY_CONSUMPTION_SUMMARY: 'Stock Used Summary Report',
+};
+
+export function reportTypeDisplayName(reportType: ReportType): string {
+  const named = REPORT_TYPE_DISPLAY_NAMES[reportType];
+  if (named) return named;
+  const words = reportType.split('_').map((word) => word.charAt(0) + word.slice(1).toLowerCase());
+  return `${words.join(' ')} Report`;
+}
 
 export const ExportRequestSchema = z.object({
   report_type: z.enum(reportTypeValues),
@@ -137,6 +163,38 @@ export const CashReconciliationReportRowSchema = z.object({
 });
 export type CashReconciliationReportRow = z.infer<typeof CashReconciliationReportRowSchema>;
 
+/**
+ * POS-PERF-P59 — figures for one branch and period across every matching record,
+ * independent of the page of rows a report table is showing.
+ */
+export const ReportPeriodSummarySchema = z.object({
+  sales: z.object({
+    completed_count: z.number().int(),
+    completed_total_amount: z.number(),
+    completed_discount_amount: z.number(),
+    voided_count: z.number().int(),
+    voided_total_amount: z.number(),
+    refunded_count: z.number().int(),
+    refunded_total_amount: z.number(),
+  }),
+  movements: z.object({
+    total_count: z.number().int(),
+    receiving_count: z.number().int(),
+    waste_count: z.number().int(),
+    adjustment_count: z.number().int(),
+    extra_supply_count: z.number().int().optional(),
+    sale_count: z.number().int(),
+  }),
+  attendance: z.object({
+    record_count: z.number().int(),
+    open_count: z.number().int(),
+    work_minutes: z.number().int(),
+    overtime_minutes: z.number().int(),
+  }),
+  sold_product_names: z.array(z.string()),
+});
+export type ReportPeriodSummary = z.infer<typeof ReportPeriodSummarySchema>;
+
 export const VoidRefundReportRowSchema = z.object({
   transaction_id: z.uuid(),
   transaction_number: z.string(),
@@ -148,6 +206,7 @@ export const VoidRefundReportRowSchema = z.object({
   reason: z.string().nullable(),
   actioned_by_name: z.string().nullable(),
   actioned_at: z.iso.datetime().nullable(),
+  created_at: z.string(),
 });
 export type VoidRefundReportRow = z.infer<typeof VoidRefundReportRowSchema>;
 
@@ -167,6 +226,21 @@ export const DiscountComplianceReportRowSchema = z.object({
    * discount types. Optional only because an older API omits it.
    */
   total_vat_exempt_sales: z.number().nullable().optional(),
+  /** POS-PERF-P59 — group and filter by this (discountIdentityKey), never by name. Optional only because an older API omits them. */
+  discount_key: z.string().optional(),
+  /** The manual type's id; null for anything else, or a manual sale with no saved type. */
+  discount_type_id: z.string().nullable().optional(),
+  /** The saved name on the newest sale in this row (discountDisplayName). */
+  discount_name: z.string().optional(),
+  /** Other saved names of this same type in the period, after a rename. */
+  discount_other_names: z.array(z.string()).optional(),
+  /** From each sale's saved evidence (discountProofRequirement): sales that required proof, those with and without it, and sales where nothing saved says. */
+  proof_required_count: z.number().int().optional(),
+  proof_available_count: z.number().int().optional(),
+  proof_missing_count: z.number().int().optional(),
+  proof_unknown_count: z.number().int().optional(),
+  /** proofCompletionPercent: null means N/A (no sale in this row required proof). */
+  proof_completion_percent: z.number().nullable().optional(),
 });
 export type DiscountComplianceReportRow = z.infer<typeof DiscountComplianceReportRowSchema>;
 
@@ -217,6 +291,8 @@ export const InventoryValueSummarySchema = z.object({
   waste_cost: z.number(),
   adjustment_in_value: z.number(),
   adjustment_out_value: z.number(),
+  /** POS-PERF-P61 — carrying cost of stock given out through Extra Supplies. Not in adjustment_out_value. */
+  extra_supply_value: z.number().optional(),
   transfer_in_value: z.number(),
   transfer_out_value: z.number(),
 });

@@ -129,7 +129,7 @@ describe.skipIf(!canRunIntegrationTests)('transactions integration — option gr
 
   function sale(items: ReturnType<typeof line>[], idempotencyKey: string | null = null) {
     return transactionsService.createTransaction(
-      { branchId, shiftId, cashierId, items, paymentMethod: 'cash', cashTendered: 5000, isOfflineTransaction: false, idempotencyKey },
+      { branchId, shiftId, cashierId, items, paymentMethod: 'cash', discountFlow: 'manual_v1' as const, calculationMode: 'manual_total_v1' as const, discountChoice: 'none_applicable' as const, cashTendered: 5000, isOfflineTransaction: false, idempotencyKey },
       null,
     );
   }
@@ -421,8 +421,8 @@ describe.skipIf(!canRunIntegrationTests)('transactions integration — option gr
         cashierId,
         deviceId: `p46r2-device-${tag}`,
         transactions: [
-          { offlineProvisionalNumber: `PC-P46R2-OFFLINE-${tag}-1`, shiftId, items: [line('fries', [])], paymentMethod: 'cash', cashTendered: 500, clientCreatedAt: now },
-          { offlineProvisionalNumber: `PC-P46R2-OFFLINE-${tag}-2`, shiftId, items: [line('fries', ['Cheese'])], paymentMethod: 'cash', cashTendered: 500, clientCreatedAt: now + 1 },
+          { offlineProvisionalNumber: `PC-P46R2-OFFLINE-${tag}-1`, shiftId, items: [line('fries', [])], paymentMethod: 'cash', discountFlow: 'manual_v1' as const, calculationMode: 'manual_total_v1' as const, discountChoice: 'none_applicable' as const, cashTendered: 500, clientCreatedAt: now },
+          { offlineProvisionalNumber: `PC-P46R2-OFFLINE-${tag}-2`, shiftId, items: [line('fries', ['Cheese'])], paymentMethod: 'cash', discountFlow: 'manual_v1' as const, calculationMode: 'manual_total_v1' as const, discountChoice: 'none_applicable' as const, cashTendered: 500, clientCreatedAt: now + 1 },
         ],
       },
       null,

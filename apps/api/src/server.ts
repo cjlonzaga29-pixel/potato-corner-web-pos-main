@@ -12,6 +12,7 @@ import { createInventoryDeductionWorker } from './modules/inventory-deduction/in
 import { createAuditOutboxWorker } from './modules/audit-outbox/audit-outbox.worker.js';
 import { authRepository } from './modules/auth/auth.repository.js';
 import { disconnectPrisma, prisma } from './lib/prisma.js';
+import { pdfRenderPool } from './lib/reports/pdf-render-pool.js';
 import {
   extractSafeConnectionMetadata,
   maybeRunDatabaseRoundTripDiagnostics,
@@ -111,6 +112,7 @@ async function start(): Promise<void> {
     console.log(`${signal} received — shutting down gracefully.`);
     await Promise.all([inventoryDeductionWorker.stop(), auditOutboxWorker.stop()]);
     await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+    await pdfRenderPool.shutdown();
     await disconnectPrisma();
     process.exit(0);
   }

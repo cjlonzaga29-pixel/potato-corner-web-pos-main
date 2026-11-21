@@ -1,5 +1,6 @@
 'use client';
 
+import { ExtraSupplySummaryCard } from '@/components/extra-supplies/extra-supply-summary-card';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -133,6 +134,8 @@ export default function BranchDashboardPage() {
         actions={<DashboardConnectionBadge isConnected={isConnected} isReconnecting={isReconnecting} />}
       />
 
+      <ExtraSupplySummaryCard title="Today's Extra Supplies" branchId={branchId} dateFrom={manilaToday()} dateTo={manilaToday()} historyPath="/branch/extra-supplies" />
+
       <div className="app-kpi-grid-4">
         <KpiCard
           title="Gross Sales Today"
@@ -163,7 +166,7 @@ export default function BranchDashboardPage() {
           isLoading={isLoadingStats}
           icon={TrendingDown}
         />
-        <KpiCard title="Staff Clocked In" value={todayStats?.staffTimedInCount ?? 0} isLoading={isLoadingStats} icon={Users} />
+        <KpiCard title="Crew on Duty" value={todayStats?.staffTimedInCount ?? 0} isLoading={isLoadingStats} icon={Users} />
         <KpiCard
           title={alertsData || isAlertsLoading ? 'Items Needing Stock' : 'Items At Stock Threshold'}
           value={alertsData ? alertCount : (todayStats?.lowStockIngredientCount ?? 0)}

@@ -26,6 +26,8 @@ const FILTER_LABELS: Record<ChangesFilter, string> = {
   order_deductions: 'Orders',
 };
 
+const EXTRA_SUPPLY_REFERENCE_TYPE = 'extra_supply_issue';
+
 const MOVEMENT_TYPE_LABELS: Record<InventoryStockMovementResponse['movement_type'], string> = {
   RECEIVING: 'Stock In',
   ADJUSTMENT_IN: 'Adjustment (In)',
@@ -76,7 +78,7 @@ export function StockChangesView() {
       id: 'movement_type',
       header: 'Action',
       cell: ({ row }) => (
-        <Badge variant={row.original.quantity_change < 0 ? 'outline' : 'secondary'}>{MOVEMENT_TYPE_LABELS[row.original.movement_type]}</Badge>
+        <Badge variant={row.original.quantity_change < 0 ? 'outline' : 'secondary'}>{row.original.reference_type === EXTRA_SUPPLY_REFERENCE_TYPE ? 'Extra Supply Issue' : MOVEMENT_TYPE_LABELS[row.original.movement_type]}</Badge>
       ),
     },
     {

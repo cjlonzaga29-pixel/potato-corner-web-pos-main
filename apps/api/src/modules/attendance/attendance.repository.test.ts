@@ -191,7 +191,7 @@ describe('attendanceRepository.findByBranch', () => {
         clockInServerTime: { gte: new Date('2026-07-01T00:00:00.000Z'), lte: new Date('2026-07-15T23:59:59.000Z') },
       },
       include: { employee: { select: { firstName: true, lastName: true, employeeId: true, status: true } }, breaks: BREAKS_INCLUDE },
-      orderBy: { clockInServerTime: 'desc' },
+      orderBy: [{ clockInServerTime: 'desc' }, { id: 'desc' }],
       skip: 10,
       take: 10,
     });

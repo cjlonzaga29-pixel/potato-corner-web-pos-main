@@ -18,6 +18,7 @@ import { parseDurationMs } from '../../lib/duration.js';
 import { sendPasswordResetEmail } from '../../lib/email.js';
 import { encryptField, decryptField } from '../../lib/encryption.js';
 import { revokedTokenHash } from '../../middleware/authenticate.js';
+import { forgetNotRevoked } from '../../lib/verify-access-token.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { employeesRepository } from '../employees/employees.repository.js';
 import { staffPinService } from '../staff-pin/staff-pin.service.js';
@@ -99,15 +100,18 @@ function generateRefreshToken(): string {
 // lock (see authRepository.withAdvisoryLock) alone, which reopened the race:
 // the lock serializes check-then-rotate but a second near-duplicate request
 // still saw the token as already-rotated and got REFRESH_INVALID. The result
-// cache has since been reinstated on Postgres (RefreshTokenRotationCache) —
-// see refreshToken() below. Reuse of a token from a different device still
-// throws REFRESH_INVALID either way.
+// cache has since been reinstated on Postgres (RefreshTokenRotationCache).
+// P62 moved every check ahead of it and bounded it; see refreshToken() below.
 type RefreshTokenPair = RefreshResponse & { refreshToken: string };
 
 /** Blacklists an access token until its own expiry — same TTL, no longer, no shorter. */
 async function blacklistToken(accessToken: string, expiresAt: Date): Promise<void> {
   if (expiresAt.getTime() <= Date.now()) return;
-  await authRepository.insertRevokedToken(revokedTokenHash(accessToken), expiresAt);
+  const tokenHash = revokedTokenHash(accessToken);
+  await authRepository.insertRevokedToken(tokenHash, expiresAt);
+  // POS-PERF-P62 — without this, a token checked moments before logout stayed
+  // accepted from verify-access-token.ts's in-process cache for up to 60s.
+  forgetNotRevoked(tokenHash);
 }
 
 function decodeExpiry(accessToken: string): Date {
@@ -137,6 +141,28 @@ function assertBranchAccountOperational(user: {
   if (!user.branchAssignments.some((a) => a.branch.status === 'active')) {
     throw new AuthError('BRANCH_INACTIVE', 'This branch is not currently active', 403);
   }
+}
+
+/** One advisory lock per device session (user + device), shared by refresh, replay revocation and logout. */
+function refreshSessionLockId(session: { userId: string; deviceId: string }): bigint {
+  return hashToLockId(sha256Hex(`refresh-session:${session.userId}:${session.deviceId}`));
+}
+
+/** A new access token from the user's current record: role, branches and the password-change flag as they are now. */
+function accessTokenFor(user: {
+  id: string;
+  role: Role;
+  email: string | null;
+  mustChangePassword: boolean;
+  branchAssignments: { branchId: string }[];
+}): string {
+  return generateAccessToken({
+    id: user.id,
+    role: user.role,
+    email: user.email,
+    branchIds: user.branchAssignments.map((assignment) => assignment.branchId),
+    mustChangePassword: user.mustChangePassword,
+  });
 }
 
 function toUserSummary(user: {
@@ -275,60 +301,105 @@ export const authService = {
     };
   },
 
+  /**
+   * POS-PERF-P62 — rotation with a bounded allowance for a lost response.
+   *
+   * Every request for one device's session (user + device) takes the same
+   * advisory lock, so refreshes from several tabs, a reload and the web
+   * middleware run one at a time, and so do logout and replay revocation.
+   *
+   * Every check runs on the presented token before anything is returned:
+   * it must exist, be unexpired, belong to this device, and its user must be
+   * active (and, for a branch account, operational). Then:
+   *
+   * - Live token: rotate, and remember the encrypted successor for
+   *   ROTATION_GRACE_MS, in case the response never reaches the browser.
+   * - Rotated token whose successor is still unused, unexpired and on this
+   *   device, within ROTATION_GRACE_MS: return that same successor with a
+   *   new access token. The client simply missed the first answer; nothing
+   *   new is granted.
+   * - Revoked without a successor (logout, password change, session revoke):
+   *   refused.
+   * - Anything else is a real replay (the successor was already used, or the
+   *   grace period is over): the device's whole session is revoked and the
+   *   request refused.
+   *
+   * Every refusal is 401 REFRESH_INVALID, which the web treats as a final
+   * sign-out; a lock or database failure surfaces as a 5xx, which it does not.
+   */
   async refreshToken(refreshTokenValue: string, deviceId: string): Promise<RefreshTokenPair> {
+    const invalid = () => new AuthError('REFRESH_INVALID', 'Invalid or expired refresh token', 401);
     const tokenHash = sha256Hex(refreshTokenValue);
-    const lockId = hashToLockId(tokenHash);
+    const session = await authRepository.findRefreshTokenSession(refreshTokenValue);
+    if (!session) throw invalid();
 
-    return authRepository.withAdvisoryLock(lockId, async (tx) => {
-      const cached = await authRepository.findRotationCacheTx(tx, tokenHash);
-      if (cached) {
-        return { access_token: cached.cachedAccessToken, refreshToken: cached.cachedRefreshToken };
-      }
-
+    const outcome = await authRepository.withAdvisoryLock(refreshSessionLockId(session), async (tx): Promise<RefreshTokenPair | 'replay'> => {
       const stored = await authRepository.findRefreshTokenTx(tx, refreshTokenValue);
-
-      if (!stored || stored.expiresAt.getTime() < Date.now() || stored.deviceId !== deviceId) {
-        throw new AuthError('REFRESH_INVALID', 'Invalid or expired refresh token', 401);
+      if (!stored || stored.expiresAt.getTime() <= Date.now() || stored.deviceId !== deviceId || !stored.user.isActive) {
+        throw invalid();
       }
 
       if (stored.revokedAt) {
-        // No cache hit above means this isn't a near-duplicate racing behind
-        // an already-cached rotation — it's a token presented after its
-        // cache entry expired (>10s stale) or a genuine stolen-token replay.
+        // Revoked by logout, a password change or a session revoke: there is no successor to hand back.
+        if (!stored.replacedBy) throw invalid();
+
+        const successor = await authRepository.findRefreshTokenByIdTx(tx, stored.replacedBy);
+        const cached = await authRepository.findRotationCacheTx(tx, tokenHash);
+        const successorUnused =
+          successor !== null && successor.revokedAt === null && successor.expiresAt.getTime() > Date.now() && successor.deviceId === deviceId;
+        if (cached && successorUnused) {
+          let successorToken: string | null = null;
+          try {
+            successorToken = decryptField(cached.cachedRefreshToken);
+          } catch {
+            // A row written before P62 stored the token unencrypted; it can't be trusted here.
+          }
+          if (successorToken && sha256Hex(successorToken) === successor.tokenHash) {
+            assertBranchAccountOperational(stored.user);
+            return { access_token: accessTokenFor(stored.user), refreshToken: successorToken };
+          }
+          throw invalid();
+        }
+
+        // A successor revoked by logout means the session already ended: nothing more to revoke.
+        if (successor && successor.revokedAt && !successor.replacedBy) throw invalid();
+
         console.warn('Refresh token reuse detected', { userId: stored.user.id, tokenId: stored.id });
-        throw new AuthError('REFRESH_INVALID', 'Invalid or expired refresh token', 401);
+        await authRepository.revokeDeviceSessionTx(tx, stored.userId, stored.deviceId);
+        // Returned, not thrown: a throw here would roll back the revocation above.
+        return 'replay';
       }
 
       // Same defense-in-depth as login() — a branch going inactive between
       // this token's issue and now must not let its account keep refreshing.
       assertBranchAccountOperational(stored.user);
 
-      const branchIds = stored.user.branchAssignments.map((assignment) => assignment.branchId);
       const newRefreshToken = generateRefreshToken();
       const newExpiresAt = new Date(Date.now() + parseDurationMs(config.jwt.refreshTokenTtl));
       await authRepository.rotateRefreshTokenTx(tx, stored.id, newRefreshToken, newExpiresAt);
+      await authRepository.insertRotationCacheTx(tx, tokenHash, encryptField(newRefreshToken), newExpiresAt);
 
-      const accessToken = generateAccessToken({
-        id: stored.user.id,
-        role: stored.user.role,
-        email: stored.user.email,
-        branchIds,
-        mustChangePassword: stored.user.mustChangePassword,
-      });
-
-      await authRepository.insertRotationCacheTx(tx, tokenHash, accessToken, newRefreshToken, newExpiresAt);
-
-      return { access_token: accessToken, refreshToken: newRefreshToken };
+      return { access_token: accessTokenFor(stored.user), refreshToken: newRefreshToken };
     });
+    if (outcome === 'replay') throw invalid();
+    return outcome;
   },
 
+  /**
+   * POS-PERF-P62 — ends this device's whole session, not just the presented
+   * token: after a lost refresh response the cookie can still hold the rotated
+   * token while its successor is live, and revoking only the cookie's token
+   * left that successor (and the lost-response allowance) usable.
+   */
   async logout(accessToken: string, refreshTokenValue: string | undefined): Promise<void> {
     await blacklistToken(accessToken, decodeExpiry(accessToken));
 
     if (refreshTokenValue) {
-      const stored = await authRepository.findRefreshToken(refreshTokenValue);
-      if (stored && !stored.revokedAt) {
-        await authRepository.revokeRefreshToken(stored.id);
+      const session = await authRepository.findRefreshTokenSession(refreshTokenValue);
+      if (session) {
+        await authRepository.withAdvisoryLock(refreshSessionLockId(session), (tx) =>
+          authRepository.revokeDeviceSessionTx(tx, session.userId, session.deviceId),
+        );
       }
     }
 

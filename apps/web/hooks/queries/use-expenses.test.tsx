@@ -17,6 +17,32 @@ function wrapper({ children }: { children: ReactNode }) {
 beforeEach(() => vi.clearAllMocks());
 
 describe('useExpenses', () => {
+  const listOf = (id: string) => ({ data: { expenses: [{ id }], total: 1, total_amount: 1, page: 1, limit: 25 }, error: null, meta: null });
+
+  it('never shows another branch or type while the next one loads, but keeps rows across its own pages', async () => {
+    vi.mocked(apiClient).mockResolvedValueOnce(listOf('row-a') as never);
+    const { result, rerender } = renderHook((filters: { branch_id?: string; expense_type_id?: string; page?: number }) => useExpenses(filters), {
+      wrapper,
+      initialProps: { branch_id: 'branch-a' },
+    });
+    await waitFor(() => expect(result.current.data?.expenses[0]?.id).toBe('row-a'));
+
+    // Another page of the same filters may stand in while it loads.
+    vi.mocked(apiClient).mockReturnValueOnce(new Promise(() => {}));
+    rerender({ branch_id: 'branch-a', page: 2 } as never);
+    expect(result.current.data?.expenses[0]?.id).toBe('row-a');
+
+    // Another type may not.
+    vi.mocked(apiClient).mockReturnValueOnce(new Promise(() => {}));
+    rerender({ branch_id: 'branch-a', expense_type_id: 'type-1' } as never);
+    expect(result.current.data).toBeUndefined();
+
+    // Nor may another branch.
+    vi.mocked(apiClient).mockReturnValueOnce(new Promise(() => {}));
+    rerender({ branch_id: 'branch-b' });
+    expect(result.current.data).toBeUndefined();
+  });
+
   it('fetches the expense list from GET /api/expenses', async () => {
     vi.mocked(apiClient).mockResolvedValue({
       data: { expenses: [], total: 0, total_amount: 0, page: 1, limit: 25 },

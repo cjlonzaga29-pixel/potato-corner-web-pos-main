@@ -8,55 +8,191 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
 
 ## Observed state
 
-- **Observed:** 2026-11-02
-- **Branch:** `feat/pos-perf-p58-custom-product-types`, on `origin/main` `a92c587` (fetched 2026-11-02). Pushed for review through a PR: not merged or deployed.
-- **Tested code:** `cd862cf`, on `3e0df7b`, `b9d3de4`. Every commit after it changes docs only.
-- **Docs:** the review, the rollout steps and the limitation triage are in a second docs commit after `8137321`.
-- **Working tree after that commit:** only `.vscode/settings.json` should remain modified. It is unrelated; never stage it with P58.
-- **Other worktrees:** six older P51–P55R3 worktrees, all marked `prunable`. Nothing here authorizes removing them.
+- **Observed:** 2026-11-21
+- **Branch:** `feat/pos-perf-p62-performance-and-reliability`, carrying P59 → P63 from `origin/main` `6931b10`. Pushed for the combined PR (see Latest). **Not merged, nothing deployed, production not accessed.**
+- **P63 code commit:** `8e0fe4b`; docs follow it.
+- **PR:** [#45](https://github.com/cjlonzaga29-pixel/potato-corner-web-pos-main/pull/45) (draft, combined P59–P63). CI green on `2435689` ([run 44908947453](https://github.com/cjlonzaga29-pixel/potato-corner-web-pos-main/actions/runs/44908947453)). **Not merged: hosted blockers below.** Auto-merge is disabled in the repo and `main` has no required checks, so any merge must be a normal merge of a CI-green exact HEAD after the blockers clear.
+- **Working tree:** only `.vscode/settings.json` is modified (the owner's personal setting). Never stage it.
+- **Local leftovers (task-owned, safe to delete):** `C:\p64` (P63: stack root, logs, stopped Postgres data), `C:\p63`, `C:\p62`, `C:\p59r`, `C:\p59c`. No P63 service is left running.
 
-## Task status: P58 and P58R, verified locally
+## Latest: P63 — VAT retired (owner decision, CR-010), verified locally
 
-P58 custom product types and the P58R race fix are finished on this branch. See
-[`runbooks/pos-perf-p58-custom-product-types.md`](runbooks/pos-perf-p58-custom-product-types.md), §11 for the evidence and limits.
-
-The pre-PR review changed no code (§11.9). Neither reported limitation blocks the release (§11.10).
-
-**Remaining, each needing your go-ahead:** human review, merge, production approval. Follow the release steps in §8, including the read-only check in §11.7 before and after the deployment. Check the PR itself for its URL and CI result.
-
-## Read next
-
-1. [`PROJECT_MAP.md`](PROJECT_MAP.md), "Products, builder, product types" section
-2. Runbook §8 for overlap, release steps and rollback, then §11 including the review in §11.9 and §11.10
-3. `lockAndAssertMayEnable` in `apps/api/src/modules/products/products.service.ts`
-
-## Verification evidence
-
-All on local disposable databases, on `cd862cf`'s code.
+Every new sale is subtotal − the supervisor-set discount. The server refuses any VAT-calculated new sale (`VAT_CALCULATION_RETIRED`) after the replay paths. History is stored as-is and never recalculated, and no migration or column drop was made. VAT settings and statutory-rate editors are removed. A type named "PWD" is a manual type. Details: [`runbooks/pos-perf-p63-vat-retired.md`](runbooks/pos-perf-p63-vat-retired.md) §4 has the results.
 
 | Check | Result |
 | --- | --- |
-| Race tests, real Postgres | 16 / 16 |
-| Full API suite | 3,648 passed, 5 skipped, 0 failed |
-| Full web suite | 1,627 passed, 0 failed. An earlier run under load had 12 timeouts (runbook §11.6) |
-| Shared suite | 54 passed |
-| Typecheck, lint, builds | Clean; 0 lint errors |
-| Browser, service worker blocked | 53 / 53 |
-| Browser, service worker active | 37 / 37. Ordinary Chromium, not an installed PWA |
-| Physical camera, real devices, deployed cutover | **Not tested** |
+| Full API | Run 1: 1 failed (P38R2 publication budget, cross-file FK race, passes alone, untouched since before P59). **Run 2: 0 failed, 3,805 passed** |
+| Full web, default settings | **0 failed, 1,721 passed** |
+| Shared, typecheck, lint, builds | 83 passed; clean; 0 errors; pass |
+| Browser, final builds, service worker active | P62 terminal flows 10/10; P63 driver 10/10 ("PWD"-named type, no VAT on screen, offline sync once, Settings) |
+| Hosted / staging | **NOT RUN: no isolated nonproduction environment exists** (see release blockers) |
+
+**Operator prerequisite before production approval:** reload every terminal onto P58 or later, and check that no terminal still has queued offline sales from an older build. Any `VAT_CALCULATION_RETIRED` refusal after release is reconciled by hand against the shift's cash; there is no recording screen, by design.
+
+**Release blockers (unchanged by P63):**
+- Hosted checks (P62 §12.8) need an isolated staging environment. None exists: the `staging` GitHub environment has no secrets, there is no `staging` branch, `deploy-staging.yml` has never run, and Vercel previews have no API.
+- Client-IP keying behind Vercel (the per-IP limits are shared), the same as `main` today.
+- PDF capacity on Render is unmeasured.
+- `main` has no branch protection or required checks, and repo auto-merge is disabled.
+
+## Latest: web test flakes fixed, full web suite green (local only)
+
+Started at `aaae67b`; test-only changes plus docs, committed on top. Two subagents fixed one test file each; the lead reviewed the combined P59–P62 release (P62 runbook §12.9).
+
+| Check | Result |
+| --- | --- |
+| `login-form` countdown | Cause: the test moved the fake clock before the countdown effect had run (screen rendered outside `act`). Test now waits for "2:05" first. 5/5 runs; reproduced and fixed under injected render delay |
+| `daily-sales-drilldown` 18 failures | Cause: a timed-out `await act(async …)` under fake timers left React's act scope open, so no later render in the file committed. Search test made synchronous, real timers restored after each test, cold mount warmed in `beforeAll`. 19/19 × 3; a forced timeout no longer cascades |
+| Affected files | 34/34 |
+| **Full web, one run, default settings** | **1,725 passed, 0 failed, 184 files, exit 0, 531.75s** (machine not idle: owner's Chrome/VS Code) |
+| Web typecheck / lint | Clean / 0 errors (5 warnings, unchanged) |
+| API | Unchanged since run 2 at `5952a62` (0 failed); not re-run |
+| Builds, browser | Not re-run: no application code changed |
+
+**Remaining release blockers:** owner decisions (PDF capacity §11.2, Extra Supplies rollback §12.7, P59 VAT decisions, P60 type setup) and every hosted check (§12.8, NOT RUN). See §12.9.
+
+## Earlier: P62 readiness batch, verified locally — not release-ready
+
+All local gaps from the previous batch are closed or diagnosed; hosted checks are NOT RUN. See runbook §12.
+
+| Check | Result |
+| --- | --- |
+| Requests before session restore (browser, 4 accounts, reload + client nav) | Supervisor per reload 16 → 14 requests; 1 tokenless 401 + 1 `daily-sales` 400 → 0. Admin/Branch/staff already 0. The "13 Admin calls" were the driver's own aborted requests |
+| Session set (final web build) | 12/12; 12 injected failures counted apart; 0 unexpected |
+| Screen totals vs API vs DB (Admin + Supervisor reports, Supervisor + Branch dashboards) | 34/34, discounts non-zero |
+| PDF, saturation 4×3 week PDFs | 4/12 before and after; refusals ~25s → 0.8–1.2s. Sheets 120 → 61. Under browser+terminal load: 2/12, 2 admitted renders still hit 25s |
+| Terminal under PDF load, SW active | 10/10; one sale/deduction/issue/collection per operation |
+| Full API | Run 1: 2 failed (diagnosed, fixed). Run 2 `5952a62`: **0 failed**, 3,845 passed |
+| Full web, final `032d07b` | Run 1: **1 failed** (`login-form` countdown, unexplained, untouched area). Run 2: **18 failed** in `daily-sales-drilldown` (5s timeout under load, passes alone). **No fully green web run on final code** |
+| Shared, typecheck, lint, builds | 83 passed; clean; 0 errors; pass |
+
+**Release blockers (at that time):** hosted checks (§12.8, NOT RUN); PDF capacity (§11.2); Extra Supplies rollback acceptance (§12.7); unexplained failures (P57 hook, P58 race, refresh 500s; `login-form` and `daily-sales-drilldown` since fixed, see Latest).
+
+**Next:** owner decisions; with authorization, the hosted checklist in §12.8.
+
+## Earlier: P61, verified locally
+
+Supervisors set up Extra Supplies cards on existing inventory items. Cashiers give them free or for payment from a terminal tab, with exactly-once retries. History, reports and Inventory Movements read the same records. One additive migration; no reversal exists. See [`runbooks/pos-perf-p61-extra-supplies.md`](runbooks/pos-perf-p61-extra-supplies.md).
+
+| Check on `95c7b5e`, disposable local databases, sequential | Result |
+| --- | --- |
+| Full API suite, default parallel | **1 failed** (`flavors`), 3,775 passed, 5 skipped |
+| Full API suite, one file at a time | 3,776 passed, 5 skipped, 0 failed |
+| Full web suite, 5s timeout | **2 failed** (timeouts: `admin/attendance`, `dialog-host`), 1,688 passed |
+| Full web suite, 20s timeout | 1,690 passed, 0 failed |
+| Shared suite | 83 passed |
+| Typecheck, lint, production builds | Clean; 0 errors; pass |
+| Migration rehearsal, 20,000 sales | Pass; 87 tables byte-identical, no drift |
+| Browser, final builds, service worker active | 73 / 73, after 14 earlier runs; four found real bugs (runbook §8) |
+| Real devices, camera, hosted Storage, realtime, a real old API, rollback | **Not tested** |
+
+**Rollout:** migration, API, then web. **Rollback:** code only, and an open shift would lose cash supply collections from expected cash (runbook §7).
+
+**New findings, not fixed (runbook §10):** a reload during a slow token refresh can sign a user out; the API suite fails intermittently in parallel, cause not proved; the global rate limit is shared per IP.
+
+**Next:** performance diagnosis across Admin, Supervisor and Branch, including PDF rendering isolation, before combined release.
+
+## Earlier: P60, verified locally
+
+Supervisors create expense types for their branches and sort expenses into filtered views over one ledger. Existing expenses stay legacy: no backfill, seeds or guessing. Two additive migrations. Dashboards and Admin Reports get a type breakdown that drills into the ledger, and exports are server-made. It also fixes expense route bugs that predate P60, including a cross-branch read through `branch_id`. See [`runbooks/pos-perf-p60-expense-types.md`](runbooks/pos-perf-p60-expense-types.md).
+
+| Check, on disposable local databases, sequential | Result |
+| --- | --- |
+| Full API suite, real Postgres, final code | 3,733 passed, 5 skipped, 0 failed. **The first run, before the final code, had 1 failed test and 1 failed suite; the cause was not proved (runbook §6)** |
+| Shared suite | 83 passed |
+| Full web suite | 1,670 passed, 0 failed |
+| Typecheck, production builds | Clean; pass |
+| Lint | 0 errors |
+| Migration rehearsal, 20,000 expenses | Pass; 85 tables byte-identical, no drift |
+| Browser, final builds, service worker active | 86 / 86 on a complete run, plus 11 / 11 for checks it read too early. Earlier runs in runbook §6, one of which found a real stale-rows bug |
+| Real devices, camera, printing, offline, hosted Storage, realtime, mixed old/new versions | **Not tested** |
+
+**Rollout:** migrations, API, then web. **Rollback:** code only; never drop the schema. Supervisors must create types before branch accounts can save expenses in the new web (runbook §5, §8).
+
+## Earlier: P59, verified locally
+
+Visible VAT removed, saved discount names shown everywhere, Discount Report with proof over required sales only, DSR wording,
+and "Managed by Super Admin" removed. Presentation only, with no migration. See
+[`runbooks/pos-perf-p59-reports-and-ui-cleanup.md`](runbooks/pos-perf-p59-reports-and-ui-cleanup.md).
+
+**Owner decisions to confirm before release** (runbook, top section): receipts without VAT lines, exports without VAT columns, and no VAT registration screen.
+
+**Readiness follow-up, also local only:** report limits now label partial results, the Admin drill-down pages through the server, and the real terminal was verified with the service worker active. It found and fixed a reload-recovery bug that could charge a sale twice. See runbook §10.
+
+**PDF cap and report coverage, also local only:** Supervisor and Branch record-level PDFs stop at 100 rows and CSVs at 10,000, labelled inside the file when cut short. Every Supervisor tab now pages through the server, and its cards read full-period aggregates. See runbook §11.
+
+## Read next
+
+0. For P62: its runbook §1 for the auth protocol, §3 for PDF bounds, §7 for test results, §9 for what's missing. For P61: its runbook §5 for recovery, §7 for rollback, §10 for release blockers. For P60: its runbook §1 for scope rules, §5 for compatibility, §8 for rollout. The rest of this list is P59.
+1. The P59 runbook's owner decisions, §11 for the latest work and its rollout order, §10 for the follow-up, then §8 for limits
+2. `packages/shared/src/discounts/discount-display.ts` for the name, identity and proof rules
+3. [`PROJECT_MAP.md`](PROJECT_MAP.md), "Manual discounts and proof uploads" and "Dashboards, reports and stock alerts"
+
+## P59 verification evidence
+
+On a new disposable database, sequential. The full API run is at `3172435`; `0d86464` changes web tests only. Everything else is at `0d86464`.
+
+| Check | Result |
+| --- | --- |
+| Full API suite, real Postgres | 3,700 passed, 5 skipped (opt-in measurement), 0 failed |
+| Shared suite | 73 passed |
+| Full web suite | 1,655 passed, 0 failed |
+| Typecheck, production builds | Clean; pass |
+| Lint | 0 errors |
+| Browser, final builds, service worker active | 44 / 44, on a complete re-run; the first run was 43 / 44 (runbook §11) |
+| Generated CSV and PDF files | Read; PDF text extracted, appearance not inspected |
+
+**Blocking, on one laptop, 100-row Discount PDF against idle:** PDF 1.65s to 2.38s. Worst `/health` 1.35s to 1.79s (idle 6ms). Checkout 1.42s to 2.04s (idle median 128ms). Each sale and deduction happened exactly once.
+
+Earlier: on a disposable local database, at `e6a4d1a`, run sequentially.
+
+| Check | Result |
+| --- | --- |
+| Full API suite | 3,666 passed, 5 skipped, 0 failed |
+| Shared suite | 73 passed |
+| Full web suite | 1,633 passed, 0 failed |
+| Typecheck, lint, production builds | Clean; 0 lint errors |
+| Browser, final builds, service worker blocked | 87 / 87 |
+| Generated CSV and PDF files | Opened and read |
+
+On a new disposable database and real local Storage, at `61b4df1`, run sequentially.
+
+| Check | Result |
+|---|---|
+| Terminal browser run, final builds, service worker active | 95 / 95, on a complete run from fresh data |
+| Earlier complete run, `050056d` | 86 / 90. It found the double-charge bug |
+| Shared suite | 73 passed |
+| API report and discount integration tests | 344 passed. **Full API suite not re-run; last full run `e6a4d1a`** |
+| Full web suite | 1,644 passed, 0 failed |
+| Typecheck, production builds | Clean; pass |
+| Lint | 0 errors |
+| Real devices, physical camera (gallery upload used), printing, offline sales in this run, hosted Storage, mixed old/new versions | **Not tested** |
+
+Earlier failures are recorded in runbook §7 and §10.
 
 ## Known blockers and notes
 
-- No blockers for review. Production was not accessed, and local Git says nothing about what is deployed.
-- **Tax:** `.claude/CLAUDE.md` now separates the statutory PWD/Senior formula from `manual_total_v1`. No tax code changed.
-- **Found, not changed:** `.env.example` calls `ENCRYPTION_KEY` hex, but the code decodes base64 (runbook §11.8).
-- **Test setup:** the API environment needs a base64 `ENCRYPTION_KEY` and `TEST_REDIS_URL` set, or tests fail or skip.
+- **Still open from P59, not fixed by P60:** PDF blocking and the uncapped routes (both below) and the owner decisions (P59 section) block release.
+- **Found in P60, not changed:** see runbook §7.
+- Production was not accessed, and local Git says nothing about what is deployed.
+- **P62:** PDF rendering runs in a bounded worker with a 25s interactive deadline (P62 runbook §3). Hosted timing not measured. Capacity is an owner decision (§11).
+- **Test environment (P62):** fixed in `db80eb0`; `with-test-postgres.ts` now exits nonzero on any failure.
+- **Unresolved: the Transaction PDF route is uncapped.** `GET /api/transactions/export/pdf`, behind the Daily Sales drill-down, took 9.6s and stalled `/health` for 8.4s at about 267 rows, and allows 2,000. Admin's synchronous PDFs also stay uncapped below 2,000 rows. Decide before release. See runbook §11.
+- **Owner to note:** a branch with more than 100 sales a week gets a partial PDF on the default 7-day range. CSV stays complete up to 10,000 rows.
+- **Deploy order:** API before web, or the new Void/Refund tab lists every sale during the overlap. See runbook §11.
+- **Ship soon:** the double-charge fix (`61b4df1`). The bug predates P59, so a deployed build probably has it. Not checked.
+- **One unexplained stop:** a PIN step stalled once in the 86/90 run and did not recur. Cause not established.
+- **Found, not changed:** the service worker can't install while logged out (`/apple-touch-icon.png` redirects). See runbook §10.
+- **Cleanup:** `C:\p59r` and `C:\p59c` (browser profiles from these local runs) are still there; a safety check blocked removing them. Safe to delete by hand.
+- **Next batches:** Extra Supplies setup, terminal, and inventory and history integration, then performance and PDF isolation last, before release. The Discount Report aggregate's cost belongs in the performance review (runbook §8).
+- **Test setup:** the API environment needs a base64 `ENCRYPTION_KEY` and `TEST_REDIS_URL` set, or tests fail or skip. Set every value explicitly. Docker Desktop was off and had to be started for the disposable database.
+- **Browser setup:** keep Chromium profile paths short on Windows; a long one breaks `CacheStorage`. Ports 55158 to 55557 are reserved here. With only local Storage running, `supabase status` omits the keys.
+- **Found, not changed:** staff get 403 from Export on `/branch/reports`, which isn't in their sidebar.
 
 ## Actions
 
 **Permitted:** read code; run local tests against disposable databases; update this handoff and the affected map entries.
 
-**Needs separate authorization:** further pushes, merge, deployment, production access, branch switches, stashes,
-removing worktrees, migrations outside a verified local database.
+**Needs separate authorization:** pushes, PRs, merges, deployment, production access, stashes, removing worktrees, migrations outside a verified local database.
 
 Record the code SHA that was actually observed or tested, never a guess at a future docs commit.

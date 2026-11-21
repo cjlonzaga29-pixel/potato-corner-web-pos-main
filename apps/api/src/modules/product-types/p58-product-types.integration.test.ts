@@ -499,7 +499,7 @@ describe.skipIf(!canRunIntegrationTests)('P58 custom product types', () => {
         shiftId: ids.shift,
         cashierId: ids.cashier,
         items: [{ productId: item.productId, productVariantId: item.variantId, quantity: 1, ...(promotionAck ? { promotionAck } : {}) }],
-        paymentMethod: 'cash',
+        paymentMethod: 'cash', discountFlow: 'manual_v1' as const, calculationMode: 'manual_total_v1' as const, discountChoice: 'none_applicable' as const,
         cashTendered: 5000,
         isOfflineTransaction: false,
         idempotencyKey: null,

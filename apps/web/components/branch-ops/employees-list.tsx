@@ -129,7 +129,7 @@ export function EmployeesList({ basePath }: { basePath: string }) {
         // accounts that share the branch are changed by a Super Admin (the
         // server refuses it either way — this just doesn't offer it).
         if (employee.role !== ROLES.STAFF) {
-          return <span className="whitespace-nowrap text-xs text-muted-foreground">Managed by Super Admin</span>;
+          return null;
         }
         const stop = (action: () => void) => (event: MouseEvent) => {
           event.stopPropagation();

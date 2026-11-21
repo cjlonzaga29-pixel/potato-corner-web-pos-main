@@ -105,6 +105,6 @@ describe('productIneligibilityReason (P49)', () => {
     expect(productIneligibilityReason({ classification: 'regular', status: 'active', variants: [] })).toMatch(/Promotional or Seasonal/);
     expect(productIneligibilityReason({ classification: 'promotional', status: 'archived', variants: [] })).toMatch(/Archived/);
     expect(productIneligibilityReason({ classification: 'promotional', status: 'discontinued', variants: [] })).toMatch(/discontinued/);
-    expect(productIneligibilityReason({ classification: 'promotional', status: 'active', variants: [{ vatableCapAmount: 99 }] })).toMatch(/VATable price cap/);
+    expect(productIneligibilityReason({ classification: 'promotional', status: 'active', variants: [{ vatableCapAmount: 99 }] })).toMatch(/price cap/);
   });
 });

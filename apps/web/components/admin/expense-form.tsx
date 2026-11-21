@@ -4,7 +4,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { Loader2 } from 'lucide-react';
-import { createExpenseSchema } from '@potato-corner/shared';
+import { expenseFieldsSchema } from '@potato-corner/shared';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { CurrencyInput } from '@/components/shared/forms/currency-input';
@@ -23,7 +23,7 @@ const CATEGORY_OPTIONS: { value: ExpenseCategory; label: string }[] = [
   { value: 'miscellaneous', label: 'Miscellaneous' },
 ];
 
-const formSchema = createExpenseSchema.extend({
+const formSchema = expenseFieldsSchema.extend({
   incurred_at: z.string().min(1, 'Date is required'),
 });
 
@@ -49,12 +49,14 @@ function toDefaultValues(initialValues?: Partial<ExpenseFormValues>): FormValues
 interface ExpenseFormProps {
   mode: 'create' | 'edit';
   initialValues?: Partial<ExpenseFormValues>;
+  /** POS-PERF-P60 — a typed expense shows the name it was recorded under instead of a category, and sends none. */
+  recordedTypeName?: string | null;
   onSubmit: (values: ExpenseFormValues) => Promise<void>;
   isSubmitting: boolean;
   onCancel: () => void;
 }
 
-export function ExpenseForm({ mode, initialValues, onSubmit, isSubmitting, onCancel }: ExpenseFormProps) {
+export function ExpenseForm({ mode, initialValues, recordedTypeName, onSubmit, isSubmitting, onCancel }: ExpenseFormProps) {
   const { data: branchData, isLoading: branchesLoading } = useBranches({ status: 'active', limit: 100 });
   const form = useForm<FormValues>({ resolver: zodResolver(formSchema), defaultValues: toDefaultValues(initialValues) });
 
@@ -62,7 +64,7 @@ export function ExpenseForm({ mode, initialValues, onSubmit, isSubmitting, onCan
     const parsed = formSchema.parse(values);
     await onSubmit({
       branch_id: parsed.branch_id,
-      category: parsed.category as ExpenseCategory,
+      ...(recordedTypeName ? {} : { category: parsed.category as ExpenseCategory }),
       amount: parsed.amount,
       vendor_name: parsed.vendor_name || undefined,
       description: parsed.description || undefined,
@@ -100,6 +102,12 @@ export function ExpenseForm({ mode, initialValues, onSubmit, isSubmitting, onCan
           )}
         />
 
+        {recordedTypeName ? (
+          <div className="space-y-1 text-sm" data-testid="expense-recorded-type">
+            <p className="font-medium">Type</p>
+            <p className="[overflow-wrap:anywhere]">{recordedTypeName}</p>
+          </div>
+        ) : (
         <FormField
           control={form.control}
           name="category"
@@ -126,6 +134,7 @@ export function ExpenseForm({ mode, initialValues, onSubmit, isSubmitting, onCan
             </FormItem>
           )}
         />
+        )}
 
         {/* CurrencyInput's onChange(value: number) doesn't match the (event) signature FormFieldWrapper clones onto children — wired directly via Controller instead. */}
         <FormField

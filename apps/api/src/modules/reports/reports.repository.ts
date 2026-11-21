@@ -1,18 +1,28 @@
 import { Prisma, type $Enums } from '@prisma/client';
 import {
+  discountDisplayName,
+  discountIdentityKey,
+  discountProofRequirement,
+  DISCOUNT_PROOF_REQUIREMENT_LABELS,
   isVatExemptDiscountType,
+  proofCompletionPercent,
+  readManualDiscountEvidence,
   resolveCalculationMode,
+  MANUAL_DISCOUNT_TYPE,
   MANUAL_TOTAL_CALCULATION,
   TAX_NOT_CALCULATED_LABEL,
+  type ReportPeriodSummary,
   type SaleCalculationMode,
 } from '@potato-corner/shared';
 import { prisma } from '../../lib/prisma.js';
 import { manilaDateKey, dayBounds, monthBounds } from '../../lib/manila-time.js';
 import { availableStock, classifyStockStatus } from '../universal-inventory/stock-classification.js';
 import { universalInventoryRepository } from '../universal-inventory/universal-inventory.repository.js';
+import { EXTRA_SUPPLY_MOVEMENT_REFERENCE } from '../universal-inventory/universal-inventory.types.js';
 import { convertQuantity, UnitConversionError } from '../product-components/unit-conversion.util.js';
 import { computeFinancialMetrics } from '../../lib/financial-metrics.js';
 import { decryptField } from '../../lib/encryption.js';
+import { discountKeyWhere } from '../../lib/discount-key-where.js';
 import type {
   ReportFilters,
   ReportType,
@@ -94,6 +104,7 @@ function mapVoidRefundRow(tx: VoidRefundTransaction): VoidRefundReportRow {
     reason: isVoided ? tx.voidReason : tx.refundReason,
     actioned_by_name: actionedBy ? `${actionedBy.firstName} ${actionedBy.lastName}` : null,
     actioned_at: (isVoided ? tx.voidedAt : tx.refundedAt)?.toISOString() ?? null,
+    created_at: tx.createdAt.toISOString(),
   };
 }
 
@@ -377,16 +388,20 @@ export const reportsRepository = {
     const createdAt = dateRangeFilter(filters);
     const rows = await prisma.transaction.findMany({
       where: {
-        status: filters.status ?? 'completed',
+        ...(filters.status ? { status: filters.status } : filters.anyStatus ? {} : { status: 'completed' as const }),
+        ...(filters.productName && { items: { some: { productNameSnapshot: filters.productName } } }),
         ...(filters.branchId && { branchId: filters.branchId }),
         ...(createdAt && { createdAt }),
         ...(filters.cashierId && { cashierId: filters.cashierId }),
         ...(filters.paymentMethod && { paymentMethod: filters.paymentMethod }),
         ...(filters.search && { transactionNumber: { contains: filters.search, mode: 'insensitive' } }),
+        ...(filters.discountedOnly && { discountType: { not: null } }),
+        ...discountKeyWhere(filters.discountKey),
       },
       select: {
         id: true,
         transactionNumber: true,
+        status: true,
         paymentMethod: true,
         totalAmount: true,
         vatAmount: true,
@@ -394,6 +409,8 @@ export const reportsRepository = {
         discountAmount: true,
         discountType: true,
         discountRateUsed: true,
+        manualDiscountTypeId: true,
+        manualDiscountSnapshot: true,
         createdAt: true,
         cashier: { select: { firstName: true, lastName: true } },
         branch: { select: { name: true } },
@@ -410,7 +427,7 @@ export const reportsRepository = {
         // Discount Compliance exports that read from this function.
         discountCustomerIdEncrypted: true,
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: filters.limit,
     });
     return rows.map((row) => {
@@ -429,15 +446,21 @@ export const reportsRepository = {
       }
       // POS-PERF-P55R2 — no VAT figure for a manual-total sale (blank, not 0).
       const isManualTotal = resolveCalculationMode(row.calculationMode) === MANUAL_TOTAL_CALCULATION;
+      const evidence = readManualDiscountEvidence(row.manualDiscountSnapshot);
       return {
         transaction_id: row.id,
         receipt_number: row.transactionNumber,
+        status: row.status,
         payment_method: row.paymentMethod,
         total_amount: row.totalAmount.toNumber(),
         vat_amount: isManualTotal ? null : row.vatAmount.toNumber(),
         tax_calculation: isManualTotal ? TAX_NOT_CALCULATED_LABEL : null,
         discount_amount: row.discountAmount.toNumber(),
         discount_type: row.discountType,
+        // POS-PERF-P59 — from the saved sale only, never the current type.
+        discount_name: discountDisplayName(row.discountType, evidence.name),
+        discount_key: row.discountType ? discountIdentityKey(row.discountType, row.manualDiscountTypeId) : null,
+        discount_proof_requirement: row.discountType ? DISCOUNT_PROOF_REQUIREMENT_LABELS[discountProofRequirement(row.discountType, evidence.require_proof)] : null,
         discount_rate_used: row.discountRateUsed?.toNumber() ?? null,
         discount_id_reference: discountIdReference,
         created_at: row.createdAt.toISOString(),
@@ -530,93 +553,123 @@ export const reportsRepository = {
     return transactions.map(mapVoidRefundRow);
   },
 
-  // PDF-export-only counterpart to getVoidRefund, used exclusively by
-  // reports.service.ts's VOID_REFUND PDF branch. The Supervisor/Branch
-  // Reports page's Void/Refund tab (branch-ops/reports-view.tsx) does NOT
-  // render getVoidRefund's combined, interleaved-by-date rows — it composes
-  // its table from two independent status-filtered transaction queries
-  // (voided, then refunded), each capped at the page's own limit. Mirrors
-  // that exact composition (two separate queries, voided rows first, each
-  // ordered desc by createdAt and capped at filters.limit) so the exported
-  // PDF's rows, order, and row count match what the screen and its KPI
-  // totals (Total Voided/Refunded, Voided/Refunded Amount) actually show.
+  // Supervisor/Branch Void/Refund export. POS-PERF-P59 — one newest-first query,
+  // matching that tab's table, which now pages through the same combined rows.
+  // getVoidRefund above stays for Admin. filters.limit is the caller's bound.
   async getVoidRefundForExport(filters: ReportFilters): Promise<VoidRefundReportRow[]> {
     const range = dateRangeFilter(filters);
-    const include = {
-      branch: { select: { name: true } },
-      cashier: { select: { firstName: true, lastName: true } },
-      voidedBy: { select: { firstName: true, lastName: true } },
-      refundedBy: { select: { firstName: true, lastName: true } },
-    } as const;
-    const [voided, refunded] = await Promise.all([
-      prisma.transaction.findMany({
-        where: { status: 'voided', ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) },
-        include,
-        orderBy: { createdAt: 'desc' },
-        take: filters.limit,
-      }),
-      prisma.transaction.findMany({
-        where: { status: 'refunded', ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) },
-        include,
-        orderBy: { createdAt: 'desc' },
-        take: filters.limit,
-      }),
-    ]);
-    return [...voided.map(mapVoidRefundRow), ...refunded.map(mapVoidRefundRow)];
+    const rows = await prisma.transaction.findMany({
+      where: { status: { in: ['voided', 'refunded'] }, ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) },
+      include: {
+        branch: { select: { name: true } },
+        cashier: { select: { firstName: true, lastName: true } },
+        voidedBy: { select: { firstName: true, lastName: true } },
+        refundedBy: { select: { firstName: true, lastName: true } },
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: filters.limit,
+    });
+    return rows.map(mapVoidRefundRow);
   },
 
-  async getDiscountCompliance(filters: ReportFilters): Promise<DiscountComplianceReportRow[]> {
+  async getDiscountCompliance(filters: ReportFilters): Promise<Array<DiscountComplianceReportRow & { proof_completion_label: string }>> {
     const range = dateRangeFilter(filters);
+    // POS-PERF-P59 — read per sale, not a groupBy: the name and the proof
+    // requirement are inside the saved JSON snapshot. Newest first, so the first
+    // name seen for a type is the one its row shows.
     const [rows, branches] = await Promise.all([
-      prisma.transaction.groupBy({
-        by: ['branchId', 'discountType', 'calculationMode'],
-        where: { discountType: { not: null }, status: 'completed', ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) },
-        _count: { _all: true },
-        _sum: { discountAmount: true, vatExemptAmount: true, totalAmount: true },
+      prisma.transaction.findMany({
+        where: {
+          discountType: { not: null },
+          status: 'completed',
+          ...(filters.branchId && { branchId: filters.branchId }),
+          ...(range && { createdAt: range }),
+          ...discountKeyWhere(filters.discountKey),
+        },
+        select: {
+          branchId: true,
+          discountType: true,
+          calculationMode: true,
+          manualDiscountTypeId: true,
+          manualDiscountSnapshot: true,
+          discountProofKey: true,
+          discountAmount: true,
+          vatExemptAmount: true,
+          totalAmount: true,
+        },
+        orderBy: { createdAt: 'desc' },
       }),
       prisma.branch.findMany({ select: { id: true, name: true } }),
     ]);
     const branchNameById = new Map(branches.map((b) => [b.id, b.name]));
-    // POS-PERF-P55R2 — one row per branch, discount type and calculation.
+    // One row per branch, discount identity and calculation (POS-PERF-P55R2).
     // NULL (recorded before P55R2) and 'legacy_vat_v1' are the same VAT
     // calculation, so they are merged and historical rows read as before.
-    const merged = new Map<string, DiscountComplianceReportRow & { calculation_mode: SaleCalculationMode }>();
+    const merged = new Map<string, DiscountComplianceReportRow & { calculation_mode: SaleCalculationMode; discount_other_names: string[] }>();
     for (const row of rows) {
       if (row.discountType === null) continue;
       const calculationMode = resolveCalculationMode(row.calculationMode);
-      const key = `${row.branchId}|${row.discountType}|${calculationMode}`;
+      const discountKey = discountIdentityKey(row.discountType, row.manualDiscountTypeId);
+      const key = `${row.branchId}|${discountKey}|${calculationMode}`;
+      const evidence = readManualDiscountEvidence(row.manualDiscountSnapshot);
+      const name = discountDisplayName(row.discountType, evidence.name) ?? '';
       const existing = merged.get(key) ?? {
         branch_id: row.branchId,
         branch_name: branchNameById.get(row.branchId) ?? 'Unknown Branch',
         discount_type: row.discountType,
+        discount_key: discountKey,
+        discount_type_id: row.discountType === MANUAL_DISCOUNT_TYPE ? row.manualDiscountTypeId : null,
+        discount_name: name,
+        discount_other_names: [],
         calculation_mode: calculationMode,
         transaction_count: 0,
         total_discount_amount: 0,
         total_vat_exempt_amount: 0,
         total_vat_exempt_sales: 0,
+        proof_required_count: 0,
+        proof_available_count: 0,
+        proof_missing_count: 0,
+        proof_unknown_count: 0,
       };
-      existing.transaction_count += row._count._all;
-      existing.total_discount_amount = round2(existing.total_discount_amount + (row._sum.discountAmount?.toNumber() ?? 0));
+      if (name !== existing.discount_name && !existing.discount_other_names.includes(name)) existing.discount_other_names.push(name);
+      existing.transaction_count += 1;
+      existing.total_discount_amount = round2(existing.total_discount_amount + row.discountAmount.toNumber());
+      const hasProof = row.discountProofKey !== null;
+      const requirement = discountProofRequirement(row.discountType, evidence.require_proof);
+      if (requirement === 'required') {
+        existing.proof_required_count = (existing.proof_required_count ?? 0) + 1;
+        if (hasProof) existing.proof_available_count = (existing.proof_available_count ?? 0) + 1;
+        else existing.proof_missing_count = (existing.proof_missing_count ?? 0) + 1;
+      } else if (requirement === 'unknown') {
+        existing.proof_unknown_count = (existing.proof_unknown_count ?? 0) + 1;
+      }
       if (calculationMode === MANUAL_TOTAL_CALCULATION) {
         // VAT was not calculated: no non-VATable or VAT-exempt figure exists.
         existing.total_vat_exempt_amount = null;
         existing.total_vat_exempt_sales = null;
       } else {
-        existing.total_vat_exempt_amount = round2((existing.total_vat_exempt_amount ?? 0) + (row._sum.vatExemptAmount?.toNumber() ?? 0));
+        existing.total_vat_exempt_amount = round2((existing.total_vat_exempt_amount ?? 0) + row.vatExemptAmount.toNumber());
         // POS-PERF-P50 — a PWD/Senior sale is VAT-exempt in full, but its
         // vatExemptAmount only holds the VAT-cap overflow (usually 0), so the
         // exempt-sales figure comes from the stored totals instead. Stored
         // amounts only — never recomputed from current settings.
         existing.total_vat_exempt_sales = isVatExemptDiscountType(row.discountType)
-          ? round2((existing.total_vat_exempt_sales ?? 0) + (row._sum.totalAmount?.toNumber() ?? 0))
+          ? round2((existing.total_vat_exempt_sales ?? 0) + row.totalAmount.toNumber())
           : 0;
       }
       merged.set(key, existing);
     }
-    return [...merged.values()].map((row) => ({
-      ...row,
-      tax_calculation: row.calculation_mode === MANUAL_TOTAL_CALCULATION ? TAX_NOT_CALCULATED_LABEL : null,
-    }));
+    return [...merged.values()]
+      .map((row) => {
+        const completion = proofCompletionPercent(row.proof_required_count ?? 0, row.proof_available_count ?? 0);
+        return {
+          ...row,
+          tax_calculation: row.calculation_mode === MANUAL_TOTAL_CALCULATION ? TAX_NOT_CALCULATED_LABEL : null,
+          proof_completion_percent: completion,
+          proof_completion_label: completion === null ? 'N/A' : `${completion}%`,
+        };
+      })
+      .sort((x, y) => x.branch_name.localeCompare(y.branch_name) || (x.discount_name ?? '').localeCompare(y.discount_name ?? ''));
   },
 
   async getPaymentMethodMix(filters: ReportFilters): Promise<PaymentMethodMixReportRow[]> {
@@ -643,7 +696,7 @@ export const reportsRepository = {
     const movements = await prisma.inventoryStockMovement.findMany({
       where: { ...(filters.branchId && { branchId: filters.branchId }), ...(range && { createdAt: range }) },
       include: { branch: { select: { name: true } }, inventoryItem: { select: { name: true } }, unit: { select: { code: true } } },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       skip: (filters.page - 1) * filters.limit,
       take: filters.limit,
     });
@@ -701,6 +754,61 @@ export const reportsRepository = {
     }));
   },
 
+  // POS-PERF-P59 — the Supervisor/Branch Reports figures, as database aggregates
+  // over every matching record, however many rows a table is showing. Same
+  // filters as those tables and their exports. Product names are bounded: they
+  // only fill a filter menu.
+  async getReportPeriodSummary(filters: ReportFilters): Promise<ReportPeriodSummary> {
+    const range = dateRangeFilter(filters);
+    const branchWhere = filters.branchId ? { branchId: filters.branchId } : {};
+    const createdWhere = { ...branchWhere, ...(range && { createdAt: range }) };
+    const attendanceWhere = { deletedAt: null, ...branchWhere, ...(range && { clockInServerTime: range }) };
+
+    const [sales, movements, attendance, openCount, products] = await Promise.all([
+      prisma.transaction.groupBy({ by: ['status'], where: createdWhere, _count: { _all: true }, _sum: { totalAmount: true, discountAmount: true } }),
+      prisma.inventoryStockMovement.groupBy({ by: ['movementType', 'referenceType'], where: createdWhere, _count: { _all: true } }),
+      prisma.attendanceRecord.aggregate({ where: attendanceWhere, _count: { _all: true }, _sum: { actualWorkMinutes: true, overtimeMinutes: true } }),
+      prisma.attendanceRecord.count({ where: { ...attendanceWhere, clockOutServerTime: null } }),
+      prisma.transactionItem.findMany({
+        where: { transaction: createdWhere },
+        distinct: ['productNameSnapshot'],
+        select: { productNameSnapshot: true },
+        orderBy: { productNameSnapshot: 'asc' },
+        take: 500,
+      }),
+    ]);
+
+    const sale = (status: string) => sales.find((row) => row.status === status);
+    const extraSupplyMovements = movements.filter((row) => row.referenceType === EXTRA_SUPPLY_MOVEMENT_REFERENCE).reduce((sum, row) => sum + row._count._all, 0);
+    const movementCount = (...types: string[]) => movements.filter((row) => types.includes(row.movementType)).reduce((sum, row) => sum + row._count._all, 0);
+    return {
+      sales: {
+        completed_count: sale('completed')?._count._all ?? 0,
+        completed_total_amount: sale('completed')?._sum.totalAmount?.toNumber() ?? 0,
+        completed_discount_amount: sale('completed')?._sum.discountAmount?.toNumber() ?? 0,
+        voided_count: sale('voided')?._count._all ?? 0,
+        voided_total_amount: sale('voided')?._sum.totalAmount?.toNumber() ?? 0,
+        refunded_count: sale('refunded')?._count._all ?? 0,
+        refunded_total_amount: sale('refunded')?._sum.totalAmount?.toNumber() ?? 0,
+      },
+      movements: {
+        total_count: movements.reduce((sum, row) => sum + row._count._all, 0),
+        receiving_count: movementCount('RECEIVING'),
+        waste_count: movementCount('WASTE'),
+        adjustment_count: movementCount('ADJUSTMENT_IN', 'ADJUSTMENT_OUT') - extraSupplyMovements,
+        extra_supply_count: extraSupplyMovements,
+        sale_count: movementCount('SALE'),
+      },
+      attendance: {
+        record_count: attendance._count._all,
+        open_count: openCount,
+        work_minutes: attendance._sum.actualWorkMinutes ?? 0,
+        overtime_minutes: attendance._sum.overtimeMinutes ?? 0,
+      },
+      sold_product_names: products.map((row) => row.productNameSnapshot),
+    };
+  },
+
   // Value-based summary cards for the Inventory Activity/Audit hub (Business
   // Accountability V2 §B1). current_inventory_value is a point-in-time
   // snapshot (branch-filtered only, not date-filtered -- stock on hand
@@ -713,10 +821,15 @@ export const reportsRepository = {
     const range = dateRangeFilter(filters);
     const branchWhere = filters.branchId ? { branchId: filters.branchId } : {};
 
-    const [movementSums, stockRows] = await Promise.all([
+    const [movementSums, extraSupplySum, stockRows] = await Promise.all([
       prisma.inventoryStockMovement.groupBy({
         by: ['movementType'],
         where: { ...branchWhere, ...(range && { createdAt: range }) },
+        _sum: { totalCost: true },
+      }),
+      // POS-PERF-P61 — stored as ADJUSTMENT_OUT for old-API compatibility, reported apart from manual adjustments.
+      prisma.inventoryStockMovement.aggregate({
+        where: { ...branchWhere, ...(range && { createdAt: range }), referenceType: EXTRA_SUPPLY_MOVEMENT_REFERENCE },
         _sum: { totalCost: true },
       }),
       prisma.inventoryStock.findMany({
@@ -737,7 +850,8 @@ export const reportsRepository = {
       stock_received_value: round2(sumFor('RECEIVING')),
       waste_cost: round2(Math.abs(sumFor('WASTE'))),
       adjustment_in_value: round2(sumFor('ADJUSTMENT_IN')),
-      adjustment_out_value: round2(Math.abs(sumFor('ADJUSTMENT_OUT'))),
+      adjustment_out_value: round2(Math.abs(sumFor('ADJUSTMENT_OUT')) - Math.abs(extraSupplySum?._sum.totalCost?.toNumber() ?? 0)),
+      extra_supply_value: round2(Math.abs(extraSupplySum?._sum.totalCost?.toNumber() ?? 0)),
       transfer_in_value: round2(sumFor('TRANSFER_IN')),
       transfer_out_value: round2(Math.abs(sumFor('TRANSFER_OUT'))),
     };
@@ -980,7 +1094,7 @@ export const reportsRepository = {
     const records = await prisma.attendanceRecord.findMany({
       where: { deletedAt: null, ...(filters.branchId && { branchId: filters.branchId }), ...(range && { clockInServerTime: range }) },
       include: { employee: { select: { firstName: true, lastName: true } }, branch: { select: { name: true } } },
-      orderBy: { clockInServerTime: 'desc' },
+      orderBy: [{ clockInServerTime: 'desc' }, { id: 'desc' }],
       skip: (filters.page - 1) * filters.limit,
       take: filters.limit,
     });

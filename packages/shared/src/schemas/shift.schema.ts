@@ -102,6 +102,11 @@ export const shiftSummarySchema = z.object({
   other_sales_total: z.number(),
   gross_sales_total: z.number(),
   total_sales: z.number(),
+  /** POS-PERF-P61 — Extra Supplies collected on this shift. Not sales. Optional: an older API doesn't send them. */
+  extra_supply_cash_total: z.number().optional(),
+  extra_supply_collections_total: z.number().optional(),
+  /** gross_sales_total + extra_supply_collections_total. */
+  total_collections: z.number().optional(),
   cash_sales_count: z.number().int(),
   gcash_sales_count: z.number().int(),
   maya_sales_count: z.number().int(),

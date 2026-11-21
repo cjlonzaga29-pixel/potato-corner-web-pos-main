@@ -15,6 +15,7 @@ import type { IngredientWeightKgRow, PackagingPcRow, IngredientWeightTotalsKg, P
 import type { ReportFilters } from '../../modules/reports/reports.types.js';
 import { escapeCsvField } from './csv.js';
 import { manilaDateKey } from '../manila-time.js';
+import { renderPdfIsolated } from './pdf-render-pool.js';
 
 const MISSING_CONVERSION_WARNING = 'Some ingredients have no weight conversion configured — shown in native units only, excluded from the KG totals.';
 
@@ -31,17 +32,17 @@ const e = React.createElement;
 const KG_HEADERS = [
   'Ingredient',
   'Base Unit',
-  'Opening Stock',
-  'Consumed Today',
-  'Consumed This Month',
+  'Beginning Stock (Beg.)',
+  'Stock Used Today (Sales)',
+  'Stock Used This Month (Sales)',
   'Remaining',
-  'Opening Stock (KG)',
-  'Consumed Today (KG)',
-  'Consumed This Month (KG)',
+  'Beginning Stock (KG)',
+  'Stock Used Today - Sales (KG)',
+  'Stock Used This Month - Sales (KG)',
   'Remaining (KG)',
   'Status',
 ];
-const PC_HEADERS = ['Packaging', 'Opening Stock (PC)', 'Consumed Today (PC)', 'Consumed This Month (PC)', 'Remaining (PC)'];
+const PC_HEADERS = ['Packaging', 'Beginning Stock (PC)', 'Stock Used Today - Sales (PC)', 'Stock Used This Month - Sales (PC)', 'Remaining (PC)'];
 
 const statusLabel = (status: IngredientWeightKgRow['status']) => (status === 'converted' ? 'Converted' : 'Conversion Needed');
 const kgCell = (v: number | null) => (v === null ? '—' : v);
@@ -59,7 +60,7 @@ export function generateInventorySummaryCsv(split: InventorySummarySplit): Buffe
   const { ingredientWeightKg, packagingPc, ingredientWeightTotalsKg, packagingTotalsPc, excludedIngredientCount } = split;
 
   const lines = [
-    'Ingredient Weight Consumption (KG)',
+    'Ingredient Stock Used (KG)',
     KG_HEADERS.join(','),
     ...ingredientWeightKg.map((r) =>
       [
@@ -94,7 +95,7 @@ export function generateInventorySummaryCsv(split: InventorySummarySplit): Buffe
       .map(escapeCsvField)
       .join(','),
     '',
-    'Packaging Consumption (PC)',
+    'Packaging Stock Used (PC)',
     PC_HEADERS.join(','),
     ...packagingPc.map((r) =>
       [r.ingredient_name, r.opening_stock_pc, r.consumed_today_pc, r.consumed_this_month_pc, r.remaining_pc].map(escapeCsvField).join(','),
@@ -167,7 +168,8 @@ function buildTable(headers: string[], rows: (string | number)[][], totalRow: (s
  * missing-conversion warning line when applicable. No duplicate summary
  * cards.
  */
-export async function generateInventorySummaryPdf(
+/** Runs in the PDF worker (pdf-render.worker.ts) only. Everything else calls generateInventorySummaryPdf. */
+export async function renderInventorySummaryPdf(
   filters: ReportFilters,
   split: InventorySummarySplit,
   branchName: string | null,
@@ -228,9 +230,9 @@ export async function generateInventorySummaryPdf(
         e(Text, { style: styles.title }, 'Inventory Summary Report'),
         e(Text, { style: styles.meta }, `Branch: ${branchName ?? 'All Branches'} | Date range: ${dateRangeLabel} | Generated: ${generatedAt}`),
       ),
-      e(Text, { style: styles.sectionTitle }, 'Ingredient Weight Consumption (KG)'),
+      e(Text, { style: styles.sectionTitle }, 'Ingredient Stock Used (KG)'),
       kgTable,
-      e(Text, { style: styles.sectionTitle }, 'Packaging Consumption (PC)'),
+      e(Text, { style: styles.sectionTitle }, 'Packaging Stock Used (PC)'),
       pcTable,
       ...(excludedIngredientCount > 0 ? [e(Text, { key: 'kg-warning', style: styles.meta }, MISSING_CONVERSION_WARNING)] : []),
       e(Text, {
@@ -242,4 +244,8 @@ export async function generateInventorySummaryPdf(
   );
 
   return renderToBuffer(doc as never);
+}
+
+export function generateInventorySummaryPdf(...args: Parameters<typeof renderInventorySummaryPdf>): Promise<Buffer> {
+  return renderPdfIsolated('inventorySummary', args);
 }

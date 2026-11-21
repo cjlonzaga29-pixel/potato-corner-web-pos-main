@@ -237,39 +237,101 @@ describe('reportsRepository.getVoidRefund', () => {
 });
 
 describe('reportsRepository.getDiscountCompliance', () => {
-  it('groups by branch and discount type, excluding null discount_type', async () => {
-    vi.mocked(prisma.transaction.groupBy).mockResolvedValue([
-      { branchId: 'b1', discountType: 'pwd', _count: { _all: 3 }, _sum: { discountAmount: decimal(60), vatExemptAmount: decimal(30), totalAmount: decimal(270) } },
-      { branchId: 'b1', discountType: 'employee', _count: { _all: 1 }, _sum: { discountAmount: decimal(10), vatExemptAmount: decimal(5), totalAmount: decimal(45) } },
+  const TYPE_A = 'aaaaaaaa-1111-4111-8111-111111111111';
+  const TYPE_B = 'bbbbbbbb-1111-4111-8111-111111111111';
+  const sale = (overrides: Record<string, unknown>) => ({
+    branchId: 'b1',
+    discountType: 'pwd',
+    calculationMode: null,
+    manualDiscountTypeId: null,
+    manualDiscountSnapshot: null,
+    discountProofKey: null,
+    discountAmount: decimal(20),
+    vatExemptAmount: decimal(0),
+    totalAmount: decimal(80),
+    ...overrides,
+  });
+  const manualSale = (typeId: string, name: string, requireProof: boolean, proofKey: string | null, overrides: Record<string, unknown> = {}) =>
+    sale({
+      discountType: 'manual',
+      calculationMode: 'manual_total_v1',
+      manualDiscountTypeId: typeId,
+      manualDiscountSnapshot: { source: 'manual', discount_type_id: typeId, name, require_proof: requireProof, amount: 20 },
+      discountProofKey: proofKey,
+      ...overrides,
+    });
+
+  beforeEach(() => {
+    vi.mocked(prisma.branch.findMany).mockResolvedValue([
+      { id: 'b1', name: 'SM North' },
+      { id: 'b2', name: 'SM South' },
     ] as never);
-    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
+  });
 
-    const rows = await reportsRepository.getDiscountCompliance(baseFilters);
-
-    // P50 — a PWD/Senior sale is VAT-exempt in full (stored total); other types have no exempt sales.
-    expect(rows).toEqual([
-      { branch_id: 'b1', branch_name: 'SM North', discount_type: 'pwd', calculation_mode: 'legacy_vat_v1', transaction_count: 3, total_discount_amount: 60, total_vat_exempt_amount: 30, total_vat_exempt_sales: 270, tax_calculation: null },
-      { branch_id: 'b1', branch_name: 'SM North', discount_type: 'employee', calculation_mode: 'legacy_vat_v1', transaction_count: 1, total_discount_amount: 10, total_vat_exempt_amount: 5, total_vat_exempt_sales: 0, tax_calculation: null },
-    ]);
-    expect(prisma.transaction.groupBy).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining({ discountType: { not: null } }) }),
+  it('reads completed discounted sales in the filtered range, newest first', async () => {
+    vi.mocked(prisma.transaction.findMany).mockResolvedValue([] as never);
+    await reportsRepository.getDiscountCompliance({ ...baseFilters, discountKey: `manual:${TYPE_A}` });
+    expect(prisma.transaction.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ status: 'completed', discountType: 'manual', manualDiscountTypeId: TYPE_A }),
+        orderBy: { createdAt: 'desc' },
+      }),
     );
   });
 
-  it('P55R2 — merges NULL and legacy_vat_v1 groups; a manual-total row has no VAT figures and its own row', async () => {
-    vi.mocked(prisma.transaction.groupBy).mockResolvedValue([
-      { branchId: 'b1', discountType: 'pwd', calculationMode: null, _count: { _all: 2 }, _sum: { discountAmount: decimal(40), vatExemptAmount: decimal(0), totalAmount: decimal(160) } },
-      { branchId: 'b1', discountType: 'pwd', calculationMode: 'legacy_vat_v1', _count: { _all: 1 }, _sum: { discountAmount: decimal(20), vatExemptAmount: decimal(0), totalAmount: decimal(80) } },
-      { branchId: 'b1', discountType: 'manual', calculationMode: 'manual_total_v1', _count: { _all: 4 }, _sum: { discountAmount: decimal(200), vatExemptAmount: decimal(0), totalAmount: decimal(1800) } },
+  it('P50/P55R2 — merges NULL and legacy_vat_v1, keeps stored VAT API figures, and a manual-total row has none', async () => {
+    vi.mocked(prisma.transaction.findMany).mockResolvedValue([
+      sale({}),
+      sale({ calculationMode: 'legacy_vat_v1', vatExemptAmount: decimal(5) }),
+      sale({ discountType: 'employee', discountAmount: decimal(10), totalAmount: decimal(45), vatExemptAmount: decimal(5) }),
+      manualSale(TYPE_A, 'PWD', false, null),
     ] as never);
-    vi.mocked(prisma.branch.findMany).mockResolvedValue([{ id: 'b1', name: 'SM North' }] as never);
 
     const rows = await reportsRepository.getDiscountCompliance(baseFilters);
 
-    expect(rows).toEqual([
-      { branch_id: 'b1', branch_name: 'SM North', discount_type: 'pwd', calculation_mode: 'legacy_vat_v1', transaction_count: 3, total_discount_amount: 60, total_vat_exempt_amount: 0, total_vat_exempt_sales: 240, tax_calculation: null },
-      { branch_id: 'b1', branch_name: 'SM North', discount_type: 'manual', calculation_mode: 'manual_total_v1', transaction_count: 4, total_discount_amount: 200, total_vat_exempt_amount: null, total_vat_exempt_sales: null, tax_calculation: 'Not calculated (manual total)' },
+    expect(rows.find((r) => r.discount_type === 'pwd')).toMatchObject({ calculation_mode: 'legacy_vat_v1', transaction_count: 2, total_discount_amount: 40, total_vat_exempt_amount: 5, total_vat_exempt_sales: 160, tax_calculation: null });
+    expect(rows.find((r) => r.discount_type === 'employee')).toMatchObject({ transaction_count: 1, total_vat_exempt_amount: 5, total_vat_exempt_sales: 0 });
+    expect(rows.find((r) => r.discount_type === 'manual')).toMatchObject({ calculation_mode: 'manual_total_v1', total_vat_exempt_amount: null, total_vat_exempt_sales: null, tax_calculation: 'Not calculated (manual total)' });
+  });
+
+  it('P59 — names a row from the snapshot, never the word Manual; same-named types and branches stay apart', async () => {
+    vi.mocked(prisma.transaction.findMany).mockResolvedValue([
+      manualSale(TYPE_A, 'PWD', true, 'k1'),
+      manualSale(TYPE_B, 'PWD', true, null, { branchId: 'b2' }),
+    ] as never);
+
+    const rows = await reportsRepository.getDiscountCompliance(baseFilters);
+
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => [r.branch_name, r.discount_name, r.discount_key])).toEqual([
+      ['SM North', 'PWD', `manual:${TYPE_A}`],
+      ['SM South', 'PWD', `manual:${TYPE_B}`],
     ]);
+    expect(JSON.stringify(rows.map((r) => r.discount_name))).not.toContain('Manual');
+  });
+
+  it('P59 — a renamed type stays one row: the newest saved name shows, the older one is kept', async () => {
+    vi.mocked(prisma.transaction.findMany).mockResolvedValue([manualSale(TYPE_A, 'PWD 2026', true, 'k1'), manualSale(TYPE_A, 'PWD', true, 'k2')] as never);
+    const rows = await reportsRepository.getDiscountCompliance(baseFilters);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ discount_name: 'PWD 2026', discount_other_names: ['PWD'], transaction_count: 2 });
+  });
+
+  it('P59 — proof: only saved required sales count; optional, statutory and missing-snapshot sales are not in the denominator', async () => {
+    vi.mocked(prisma.transaction.findMany).mockResolvedValue([
+      manualSale(TYPE_A, 'Req', true, 'k1'),
+      manualSale(TYPE_A, 'Req', true, null),
+      manualSale(TYPE_B, 'Opt', false, 'k2'),
+      sale({ discountProofKey: 'k3' }),
+      sale({ discountType: 'manual', calculationMode: 'manual_total_v1', manualDiscountTypeId: null, discountProofKey: 'k4' }),
+    ] as never);
+
+    const rows = await reportsRepository.getDiscountCompliance(baseFilters);
+
+    expect(rows.find((r) => r.discount_key === `manual:${TYPE_A}`)).toMatchObject({ proof_required_count: 2, proof_available_count: 1, proof_missing_count: 1, proof_unknown_count: 0, proof_completion_percent: 50, proof_completion_label: '50%' });
+    expect(rows.find((r) => r.discount_key === `manual:${TYPE_B}`)).toMatchObject({ proof_required_count: 0, proof_available_count: 0, proof_missing_count: 0, proof_unknown_count: 0, proof_completion_percent: null, proof_completion_label: 'N/A' });
+    expect(rows.find((r) => r.discount_key === 'type:pwd')).toMatchObject({ proof_required_count: 0, proof_unknown_count: 1, proof_completion_percent: null });
+    expect(rows.find((r) => r.discount_key === 'manual:unspecified')).toMatchObject({ discount_name: 'Unspecified discount', proof_unknown_count: 1, proof_completion_percent: null });
   });
 });
 
@@ -456,7 +518,7 @@ describe('reportsRepository.getInventoryMovement', () => {
           branchId: 'b1',
           createdAt: { gte: new Date('2026-07-01T00:00:00.000Z'), lte: new Date('2026-07-31T23:59:59.999Z') },
         }),
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         skip: 10,
         take: 10,
       }),

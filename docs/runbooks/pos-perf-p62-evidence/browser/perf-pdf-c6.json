@@ -1,0 +1,70 @@
+{
+  "label": "c6",
+  "concurrent": 6,
+  "days": 7,
+  "at": "2026-11-21T06:27:41.712Z",
+  "exports": [
+    {
+      "n": 1,
+      "status": 200,
+      "ms": 19659,
+      "bytes": 291891,
+      "isPdf": true,
+      "code": null,
+      "retryAfter": null
+    },
+    {
+      "n": 2,
+      "status": 503,
+      "ms": 25054,
+      "bytes": 164,
+      "isPdf": false,
+      "code": "PDF_TIMEOUT",
+      "retryAfter": "60"
+    },
+    {
+      "n": 3,
+      "status": 503,
+      "ms": 2356,
+      "bytes": 175,
+      "isPdf": false,
+      "code": "PDF_BUSY",
+      "retryAfter": "60"
+    },
+    {
+      "n": 4,
+      "status": 503,
+      "ms": 25055,
+      "bytes": 175,
+      "isPdf": false,
+      "code": "PDF_BUSY",
+      "retryAfter": "60"
+    },
+    {
+      "n": 5,
+      "status": 503,
+      "ms": 25055,
+      "bytes": 164,
+      "isPdf": false,
+      "code": "PDF_TIMEOUT",
+      "retryAfter": "60"
+    },
+    {
+      "n": 6,
+      "status": 503,
+      "ms": 25056,
+      "bytes": 164,
+      "isPdf": false,
+      "code": "PDF_TIMEOUT",
+      "retryAfter": "60"
+    }
+  ],
+  "exportsWallMs": 25060,
+  "health": {
+    "samples": 337,
+    "rttP50": 17,
+    "rttP95": 19,
+    "rttMax": 1160,
+    "worstGapMs": 1225
+  }
+}

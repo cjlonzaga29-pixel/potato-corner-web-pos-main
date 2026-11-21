@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import type { PayrollEmployeeResult, PayrollRunDetail } from '@potato-corner/shared';
-import { buildPayrollCsv, buildPayrollPdf, csvCell, payrollExportFilename, statusLabel, wrapLongTokens } from './payroll-export.js';
+// POS-PERF-P62 — layout tests call the renderer directly; that requests go through
+// the isolated worker is covered by src/lib/reports/p62-pdf-isolation.test.ts.
+import { buildPayrollCsv, renderPayrollPdf as buildPayrollPdf, csvCell, payrollExportFilename, statusLabel, wrapLongTokens } from './payroll-export.js';
 
 function employee(i: number, name: string): PayrollEmployeeResult {
   return {
@@ -122,7 +124,11 @@ describe('payroll export', () => {
   });
 
   it('PDF: renders a multi-page document with long names', async () => {
-    const pdf = await buildPayrollPdf(detail());
+    // POS-PERF-P62 — ten employees (both long-name rows included) still put the
+    // detail on later pages (more than 8 forces the page break); all 32 took
+    // 35-40s on this thread and failed the 60s limit under the full suite.
+    const full = detail();
+    const pdf = await buildPayrollPdf({ ...full, employees: full.employees.slice(0, 10) });
     expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
     const pages = (pdf.toString('latin1').match(/\/Type\s*\/Page[^s]/g) ?? []).length;
     expect(pages).toBeGreaterThan(2);

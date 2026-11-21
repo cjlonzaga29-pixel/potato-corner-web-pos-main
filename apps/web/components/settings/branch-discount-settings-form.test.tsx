@@ -3,10 +3,9 @@ import { render, screen, cleanup, fireEvent, within } from '@testing-library/rea
 import type { BranchDiscountSettingsResponse } from '@potato-corner/shared';
 
 /**
- * POS-PERF-P50R — one branch's Discounts & VAT form: organization default vs
- * branch value per field, statutory bounds explained, the required-choice
- * switch, VAT registration shown as an explicit assumption (Super Admin
- * records it; non-VAT cannot be chosen), stale-save explanation.
+ * POS-PERF-P50R — one branch's Discounts form. POS-PERF-P63 — VAT retired:
+ * only the required-choice switch remains; stored override rates are re-sent
+ * unchanged on save; stale-save explanation; read-only for non-editors.
  */
 const { mockSave, mockSaveTax, MockSettingsSaveError } = vi.hoisted(() => {
   class MockSettingsSaveError extends Error {
@@ -63,71 +62,68 @@ afterEach(() => {
 });
 
 describe('BranchDiscountSettingsForm (P50R)', () => {
-  it('starts on the organization defaults; Save is disabled until something changes', () => {
+  // POS-PERF-P63 — VAT retired: the PWD/Senior/Employee rate editors and the
+  // statutory preview are gone. Only the required-choice switch remains.
+  it('renders only the "Cashier must choose a discount" switch; no rate inputs or preview', () => {
     render(<BranchDiscountSettingsForm data={data()} />);
-    expect(screen.getByLabelText('PWD')).toBeDisabled();
-    expect(screen.getByLabelText('Employee')).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Save for Main' })).toBeDisabled();
-    expect(within(screen.getByTestId('branch-row-senior')).queryByRole('spinbutton')).not.toBeInTheDocument();
-    expect(screen.getByTestId('branch-row-senior')).toHaveTextContent('exactly 20%');
+    const form = screen.getByTestId(`branch-discount-form-${BRANCH}`);
+    expect(within(form).getByRole('switch', { name: 'Cashier must choose a discount' })).toBeInTheDocument();
+    expect(within(form).getAllByRole('switch')).toHaveLength(1);
+    expect(within(form).queryByRole('spinbutton')).not.toBeInTheDocument();
+    expect(within(form).queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(within(form).queryByRole('textbox')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('PWD')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Employee')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('branch-row-senior')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('branch-row-pwd')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('branch-row-employee')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('discount-preview')).not.toBeInTheDocument();
+    expect(form.textContent).not.toMatch(/Senior Citizen|\bPWD\b|RA 9994|RA 10754/);
   });
 
-  it('sets a branch Employee rate and the required choice, sending the version it loaded', () => {
+  it('Save is disabled until the switch changes, and enabled again only while it differs', () => {
     render(<BranchDiscountSettingsForm data={data()} />);
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Employee uses the organization default' }));
-    fireEvent.change(screen.getByLabelText('Employee'), { target: { value: '10' } });
+    const save = screen.getByRole('button', { name: 'Save for Main' });
+    expect(save).toBeDisabled();
+    const toggle = screen.getByRole('switch', { name: 'Cashier must choose a discount' });
+    fireEvent.click(toggle);
+    expect(save).toBeEnabled();
+    fireEvent.click(toggle);
+    expect(save).toBeDisabled();
+  });
+
+  it('with no override, saves null rates plus the new requireDiscountChoice and the version it loaded', () => {
+    render(<BranchDiscountSettingsForm data={data()} />);
     fireEvent.click(screen.getByRole('switch', { name: 'Cashier must choose a discount' }));
-    // The preview recomputes with the branch values (₱112 − 10% = ₱100.80).
-    expect(screen.getByTestId('discount-preview')).toHaveTextContent('Employee (10%)');
-    expect(screen.getByTestId('discount-preview')).toHaveTextContent('₱100.80');
     fireEvent.click(screen.getByRole('button', { name: 'Save for Main' }));
     expect(mockSave).toHaveBeenCalledWith(
-      { pwdPercentage: null, employee: { percentage: 10, isEnabled: true }, requireDiscountChoice: true, expectedUpdatedAt: null },
+      { pwdPercentage: null, employee: null, requireDiscountChoice: true, expectedUpdatedAt: null },
       expect.any(Object),
     );
   });
 
-  it('PWD can be raised but not set below 20%; the preview shows the VAT-exempt total', () => {
-    render(<BranchDiscountSettingsForm data={data()} />);
-    fireEvent.click(screen.getByRole('checkbox', { name: 'PWD uses the organization default' }));
-    fireEvent.change(screen.getByLabelText('PWD'), { target: { value: '15' } });
-    expect(screen.getByText(/does not allow less than 20%/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Save for Main' })).toBeDisabled();
-
-    fireEvent.change(screen.getByLabelText('PWD'), { target: { value: '25' } });
-    // ₱112 → ₱100 without VAT → 25% off → ₱75.00, VAT ₱0.00.
-    const preview = screen.getByTestId('discount-preview');
-    const pwdRow = within(preview).getByText('PWD (25%)').closest('tr') as HTMLElement;
-    expect(pwdRow).toHaveTextContent('₱75.00');
-    fireEvent.click(screen.getByRole('button', { name: 'Save for Main' }));
-    expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({ pwdPercentage: 25, employee: null }), expect.any(Object));
-  });
-
-  it('returning a field to the organization default sends null for it', () => {
+  it('re-sends the stored override rates unchanged (never reset), changing only requireDiscountChoice', () => {
     render(
       <BranchDiscountSettingsForm
-        data={data({ override: { employee: { percentage: 5, isEnabled: false }, pwdPercentage: null, requireDiscountChoice: false }, updatedAt: SAVED_AT })}
+        data={data({ override: { employee: { percentage: 5, isEnabled: false }, pwdPercentage: 25, requireDiscountChoice: true }, updatedAt: SAVED_AT })}
       />,
     );
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Employee uses the organization default' }));
+    const toggle = screen.getByRole('switch', { name: 'Cashier must choose a discount' });
+    expect(toggle).toBeChecked();
+    fireEvent.click(toggle);
     fireEvent.click(screen.getByRole('button', { name: 'Save for Main' }));
-    expect(mockSave).toHaveBeenCalledWith({ pwdPercentage: null, employee: null, requireDiscountChoice: false, expectedUpdatedAt: SAVED_AT }, expect.any(Object));
+    expect(mockSave).toHaveBeenCalledTimes(1);
+    expect(mockSave).toHaveBeenCalledWith(
+      { pwdPercentage: 25, employee: { percentage: 5, isEnabled: false }, requireDiscountChoice: false, expectedUpdatedAt: SAVED_AT },
+      expect.any(Object),
+    );
   });
 
-  it('VAT registration: an unconfirmed assumption is stated; supervisors cannot record it', () => {
-    render(<BranchDiscountSettingsForm data={data()} />);
-    expect(screen.getByTestId('vat-registration-status')).toHaveTextContent('Not confirmed');
-    expect(screen.getByRole('note')).toHaveTextContent('Assumption, not yet confirmed');
-    expect(screen.getByText(/Only a Super Admin records/)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Record' })).not.toBeInTheDocument();
-  });
-
-  it('a Super Admin records VAT registration with the version loaded; non-VAT is listed but not selectable', () => {
+  it('POS-PERF-P59 — no VAT registration section or VAT wording, for a Super Admin either', () => {
     render(<BranchDiscountSettingsForm data={data({ canEditTaxProfile: true })} />);
-    expect(screen.getByText(/Non-VAT registration cannot be chosen/)).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('Where it was confirmed (optional)'), { target: { value: 'COR seen' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Record' }));
-    expect(mockSaveTax).toHaveBeenCalledWith({ vatRegistration: 'unconfirmed', note: 'COR seen', expectedUpdatedAt: null }, expect.any(Object));
+    expect(screen.queryByText(/registration/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Record' })).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/\bVAT\b|VAT-exempt/);
   });
 
   it('a stale save explains that someone else changed the branch', () => {

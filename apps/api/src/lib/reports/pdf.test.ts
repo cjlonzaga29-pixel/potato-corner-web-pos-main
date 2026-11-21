@@ -1,6 +1,8 @@
 // apps/api/src/lib/reports/pdf.test.ts
 import { describe, it, expect } from 'vitest';
-import { generatePdf, computeColumnLayout, estimateTextWidthPt } from './pdf.js';
+// POS-PERF-P62 — layout tests call the renderer directly; that requests go through
+// the isolated worker is covered by src/lib/reports/p62-pdf-isolation.test.ts.
+import { renderReportPdf as generatePdf, computeColumnLayout, estimateTextWidthPt } from './pdf.js';
 
 describe('generatePdf', () => {
   it('renders a non-empty PDF buffer starting with the %PDF magic bytes', async () => {

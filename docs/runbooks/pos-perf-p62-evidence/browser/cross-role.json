@@ -1,0 +1,58 @@
+[
+  {
+    "step": "cross-role: expense summary is identical for every role allowed to read it",
+    "statuses": {
+      "admin": 200,
+      "supervisor": 200,
+      "branch": 200
+    },
+    "roles": [
+      "admin",
+      "supervisor",
+      "branch"
+    ],
+    "ok": true,
+    "at": "2026-11-21T06:46:10.858Z"
+  },
+  {
+    "step": "cross-role: period summary is identical for every role allowed to read it",
+    "statuses": {
+      "admin": 200,
+      "supervisor": 200,
+      "branch": 200
+    },
+    "roles": [
+      "admin",
+      "supervisor",
+      "branch"
+    ],
+    "ok": true,
+    "at": "2026-11-21T06:46:11.053Z"
+  },
+  {
+    "step": "cross-role: payment mix is identical for every role allowed to read it",
+    "statuses": {
+      "admin": 200,
+      "supervisor": 200,
+      "branch": 200
+    },
+    "roles": [
+      "admin",
+      "supervisor",
+      "branch"
+    ],
+    "ok": true,
+    "at": "2026-11-21T06:46:11.112Z"
+  },
+  {
+    "step": "cross-role: switching the Supervisor to another branch changes the figures",
+    "ok": true,
+    "at": "2026-11-21T06:46:11.146Z"
+  },
+  {
+    "step": "cross-role: a Branch account cannot read another branch's figures",
+    "status": 403,
+    "ok": true,
+    "at": "2026-11-21T06:46:11.147Z"
+  }
+]

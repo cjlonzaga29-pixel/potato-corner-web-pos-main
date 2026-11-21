@@ -16,6 +16,7 @@ import { ReceiptModal } from '@/components/pos/receipt-modal';
 import { ViewPaymentProofDialog } from '@/components/shared/transactions/view-payment-proof-dialog';
 import { ViewDiscountProofDialog } from '@/components/shared/transactions/view-discount-proof-dialog';
 import { formatCurrency } from '@/lib/utils';
+import { saleDiscountName } from '@/lib/discount-report';
 import { downloadTransactionsPdf, type TransactionPdfFilters } from '@/lib/transaction-export-client';
 import { useDiscountAuditTrail, useTransaction, useTransactions } from '@/hooks/queries/use-transactions';
 
@@ -161,13 +162,6 @@ export function DailySalesDrilldown({ open, onOpenChange, branchId, branchName, 
     },
     { id: 'subtotal', header: () => moneyHeader('Subtotal'), cell: ({ row }) => money(row.original.subtotal) },
     {
-      id: 'vat_amount',
-      header: () => moneyHeader('VAT'),
-      // POS-PERF-P55R2 — a manual-total sale has no VAT figure.
-      cell: ({ row }) =>
-        row.original.vat_amount === null ? <div className="whitespace-nowrap text-right text-muted-foreground">Not calculated</div> : money(row.original.vat_amount),
-    },
-    {
       id: 'discount_amount',
       header: () => moneyHeader('Discount'),
       cell: ({ row }) => (row.original.discount_amount > 0 ? money(row.original.discount_amount) : <div className="text-right">—</div>),
@@ -175,7 +169,7 @@ export function DailySalesDrilldown({ open, onOpenChange, branchId, branchName, 
     {
       id: 'discount_type',
       header: 'Discount Type',
-      cell: ({ row }) => <span className="whitespace-nowrap">{row.original.discount_type ? humanizeSnake(row.original.discount_type) : '—'}</span>,
+      cell: ({ row }) => <span className="whitespace-nowrap">{saleDiscountName(row.original) ?? '—'}</span>,
     },
     {
       id: 'customer_id',

@@ -1,9 +1,17 @@
-import type { ReportType } from '@potato-corner/shared';
+import { PARTIAL_EXPORT_FILENAME_MARKER, type ReportType } from '@potato-corner/shared';
 import type { ReportFilters } from '../../modules/reports/reports.types.js';
 import { manilaDateKey } from '../manila-time.js';
 
+/** POS-PERF-P59 — reports whose user-facing name changed. The report_type code stays. */
+const RENAMED_REPORT_FILENAMES: Partial<Record<ReportType, string>> = {
+  DISCOUNT_COMPLIANCE: 'DiscountReport',
+  INVENTORY_CONSUMPTION_SUMMARY: 'StockUsedSummary',
+};
+
 /** DAILY_SALES -> DailySales */
 function pascalCase(reportType: ReportType): string {
+  const renamed = RENAMED_REPORT_FILENAMES[reportType];
+  if (renamed) return renamed;
   return reportType
     .split('_')
     .map((word) => word.charAt(0) + word.slice(1).toLowerCase())
@@ -29,15 +37,17 @@ function toDateStamp(date: Date | undefined): string {
  * known, falling back to a single date stamp (or today) when one or both are
  * missing. Distinct from the Supabase Storage object path
  * (`reports/{userId}/{timestamp}-{type}.{ext}`, still used by the async/
- * large-report path), which only needs to be unique, not readable.
+ * large-report path), which only needs to be unique, not readable. A file
+ * holding only part of the matching rows says so in its name.
  */
-export function buildExportFilename(reportType: ReportType, format: 'csv' | 'pdf', filters: ReportFilters): string {
-  const name = pascalCase(reportType);
+export function buildExportFilename(reportType: ReportType, format: 'csv' | 'pdf', filters: ReportFilters, options: { partial?: boolean; name?: string } = {}): string {
+  const name = options.name ?? pascalCase(reportType);
+  const ending = `${options.partial ? PARTIAL_EXPORT_FILENAME_MARKER : ''}.${format}`;
   if (filters.dateFrom && filters.dateTo) {
     const from = toDateStamp(filters.dateFrom);
     const to = toDateStamp(filters.dateTo);
-    return from === to ? `${name}_${from}.${format}` : `${name}_${from}_to_${to}.${format}`;
+    return from === to ? `${name}_${from}${ending}` : `${name}_${from}_to_${to}${ending}`;
   }
   const dateStamp = toDateStamp(filters.dateTo ?? filters.dateFrom);
-  return `${name}_${dateStamp}.${format}`;
+  return `${name}_${dateStamp}${ending}`;
 }

@@ -60,7 +60,7 @@ export function productIneligibilityReason(
     return 'Archived and discontinued products cannot have a discount.';
   }
   if (product.variants.some((variant) => variant.vatableCapAmount !== null)) {
-    return 'This product has a size with a VATable price cap. How a discount splits across that cap is not defined, so discounts are not supported for it.';
+    return 'This product has a size with a price cap. How a discount splits across that cap is not defined, so discounts are not supported for it.';
   }
   return null;
 }

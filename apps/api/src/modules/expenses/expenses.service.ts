@@ -1,7 +1,9 @@
+import { createHash } from 'node:crypto';
 import sharp from 'sharp';
-import { ROLES, SOCKET_EVENTS, type JwtPayload } from '@potato-corner/shared';
+import { ROLES, SOCKET_EVENTS, expenseDisplayName, legacyExpenseCategoryLabel, type ExpenseListQuery, type ExpenseSummaryQuery, type ExpenseSummaryResponse, type JwtPayload } from '@potato-corner/shared';
 import { expensesRepository } from './expenses.repository.js';
-import { ExpenseError, type CreateExpenseData, type ExpenseFilters, type UpdateExpenseData } from './expenses.types.js';
+import { expenseTypesRepository } from '../expense-types/expense-types.repository.js';
+import { ExpenseError, type CreateExpenseData, type UpdateExpenseData } from './expenses.types.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { getAccessibleBranchIds, assertBranchAccess } from '../../lib/branch-access.js';
@@ -19,6 +21,9 @@ interface ExpenseRow {
   id: string;
   branchId: string;
   category: string;
+  expenseTypeId: string | null;
+  expenseTypeName: string | null;
+  expenseType: { id: string; name: string; isActive: boolean } | null;
   amount: { toNumber(): number };
   vendorName: string | null;
   description: string | null;
@@ -45,6 +50,10 @@ async function toResponse(row: ExpenseRow) {
     branch_id: row.branchId,
     branch_name: row.branch.name,
     category: row.category,
+    expense_type_id: row.expenseTypeId,
+    expense_type_name: row.expenseTypeName,
+    expense_type_current_name: row.expenseType?.name ?? null,
+    expense_type_is_active: row.expenseType?.isActive ?? null,
     amount: row.amount.toNumber(),
     vendor_name: row.vendorName,
     description: row.description,
@@ -58,7 +67,8 @@ async function toResponse(row: ExpenseRow) {
 
 interface CreateExpenseInput {
   branch_id: string;
-  category: string;
+  category?: string;
+  expense_type_id?: string;
   amount: number;
   vendor_name?: string;
   description?: string;
@@ -67,10 +77,26 @@ interface CreateExpenseInput {
 
 type UpdateExpenseInput = Partial<CreateExpenseInput>;
 
+/** What a retry of the same submission must match. Key order is fixed here, so equal submissions hash equally. */
+function requestHash(data: CreateExpenseInput): string {
+  const fields = [data.branch_id, data.category ?? null, data.expense_type_id ?? null, data.amount.toFixed(2), data.vendor_name ?? null, data.description ?? null, data.incurred_at];
+  return createHash('sha256').update(JSON.stringify(fields)).digest('hex');
+}
+
+const keyReused = () =>
+  new ExpenseError('EXPENSE_KEY_REUSED', 'An earlier attempt of this form may already have saved an expense with different details. Check the ledger, then start a new expense if it is missing.', 409);
+
+/** Reads every caller's branches live. An explicit branch outside them is refused, never quietly widened or emptied. */
+async function resolveLedgerScope(actor: JwtPayload, branchId: string | undefined) {
+  if (branchId) await assertBranchAccess(actor, branchId, ExpenseError);
+  return getAccessibleBranchIds(actor);
+}
+
 export const expensesService = {
-  async getExpenses(actor: JwtPayload, filters: Omit<ExpenseFilters, 'branchIds'>) {
-    const branchIds = await getAccessibleBranchIds(actor);
-    const { expenses, total, totalAmount } = await expensesRepository.findAll({ ...filters, branchIds });
+  async getExpenses(actor: JwtPayload, query: ExpenseListQuery) {
+    const branchIds = await resolveLedgerScope(actor, query.branch_id);
+    const { date_from: dateFrom, date_to: dateTo, ...filters } = query;
+    const { expenses, total, totalAmount } = await expensesRepository.findAll({ ...filters, dateFrom, dateTo, branchIds });
     return {
       expenses: await Promise.all((expenses as ExpenseRow[]).map(toResponse)),
       total,
@@ -78,6 +104,32 @@ export const expensesService = {
       page: filters.page,
       limit: filters.limit,
     };
+  },
+
+  /** A deactivated type stays on its line, and an expense of a type outside the caller's scope is still named. */
+  async getSummary(actor: JwtPayload, query: ExpenseSummaryQuery): Promise<ExpenseSummaryResponse> {
+    const branchIds = await resolveLedgerScope(actor, query.branch_id);
+    const { date_from: dateFrom, date_to: dateTo, ...filters } = query;
+    const rows = await expensesRepository.summarize({ ...filters, dateFrom, dateTo, branchIds });
+    const typeIds = rows.flatMap((row) => (row.expenseTypeId ? [row.expenseTypeId] : []));
+    const types = typeIds.length > 0 ? await expenseTypesRepository.findNames(typeIds) : [];
+    const groups = rows
+      .map((row) => {
+        const type = types.find((t) => t.id === row.expenseTypeId);
+        return {
+          key: row.key,
+          kind: row.expenseTypeId ? ('type' as const) : ('legacy' as const),
+          expense_type_id: row.expenseTypeId,
+          category: row.category,
+          name: row.expenseTypeId ? (type?.name ?? 'Unknown type') : legacyExpenseCategoryLabel(row.category ?? ''),
+          is_active: row.expenseTypeId ? (type?.isActive ?? false) : null,
+          count: row.count,
+          total_amount: row.amount,
+        };
+      })
+      .sort((a, b) => b.total_amount - a.total_amount || a.name.localeCompare(b.name));
+    const cents = groups.reduce((sum, group) => sum + Math.round(group.total_amount * 100), 0);
+    return { total: groups.reduce((sum, group) => sum + group.count, 0), total_amount: cents / 100, groups };
   },
 
   async getExpense(id: string, actor: JwtPayload) {
@@ -93,31 +145,39 @@ export const expensesService = {
   },
 
   async createExpense(data: CreateExpenseInput, actor: JwtPayload, ipAddress: string | null, idempotencyKey?: string) {
-    if (idempotencyKey) {
-      const existingKey = await expensesRepository.findIdempotencyKey(idempotencyKey, actor.user_id);
-      if (existingKey?.expenseId) {
-        const existing = (await expensesRepository.findById(existingKey.expenseId)) as ExpenseRow | null;
-        if (existing) return await toResponse(existing);
-      }
-    }
-
+    // First, so a revoked assignment can't read an earlier result back through a replay.
     await assertBranchAccess(actor, data.branch_id, ExpenseError);
 
     const createData: CreateExpenseData = {
       branchId: data.branch_id,
-      category: data.category,
+      // The shared schema requires one of the two. Old clients record a legacy expense
+      // here, under the category they chose; the repository stores the placeholder for a typed one.
+      category: data.category ?? '',
       amount: data.amount,
       vendorName: data.vendor_name,
       description: data.description,
       incurredAt: manilaDateStringToUtc(data.incurred_at),
     };
 
-    const created = (await expensesRepository.create(createData, actor.user_id)) as ExpenseRow;
-    const response = await toResponse(created);
+    const hash = idempotencyKey ? requestHash(data) : null;
+    const outcome = await expensesRepository.create(
+      createData,
+      actor.user_id,
+      data.expense_type_id,
+      idempotencyKey && hash ? { key: idempotencyKey, userId: actor.user_id, requestHash: hash } : null,
+    );
 
-    if (idempotencyKey) {
-      await expensesRepository.recordIdempotencyKey(idempotencyKey, actor.user_id, created.id);
+    if (!outcome.created) {
+      const prior = outcome.replayOf;
+      // Rows an older API wrote carry no hash: a matching user and key is all there is to compare.
+      if (!prior || prior.userId !== actor.user_id || (prior.requestHash && prior.requestHash !== hash)) throw keyReused();
+      const existing = prior.expenseId ? ((await expensesRepository.findById(prior.expenseId)) as ExpenseRow | null) : null;
+      if (!existing) throw keyReused();
+      return toResponse(existing);
     }
+
+    const created = outcome.created as ExpenseRow;
+    const response = await toResponse(created);
 
     await recordAuditLog({
       action: 'EXPENSE_CREATED',
@@ -138,7 +198,7 @@ export const expensesService = {
         type: 'expense_created',
         branchId: data.branch_id,
         expenseId: created.id,
-        category: response.category,
+        category: expenseDisplayName(response),
         amount: response.amount,
         vendorName: response.vendor_name ?? null,
         createdByName: response.created_by_name,
@@ -154,6 +214,17 @@ export const expensesService = {
     const existing = await expensesService.getExpense(id, actor);
     const before = await toResponse(existing);
 
+    const targetBranchId = data.branch_id ?? existing.branchId;
+    if (targetBranchId !== existing.branchId) await assertBranchAccess(actor, targetBranchId, ExpenseError);
+
+    // A typed expense's category is a placeholder. An older form resends it unchanged, which is harmless; changing it means nothing.
+    if (existing.expenseTypeId && data.category && data.category !== existing.category) {
+      throw new ExpenseError('EXPENSE_CATEGORY_NOT_EDITABLE', 'This expense uses an expense type, not a category. Reload to see it.', 409);
+    }
+
+    const newTypeId = data.expense_type_id && data.expense_type_id !== existing.expenseTypeId ? data.expense_type_id : null;
+    const typeToCheck = newTypeId ?? (targetBranchId !== existing.branchId ? existing.expenseTypeId : null);
+
     const updateData: UpdateExpenseData = {
       ...(data.branch_id && { branchId: data.branch_id }),
       ...(data.category && { category: data.category }),
@@ -163,7 +234,12 @@ export const expensesService = {
       ...(data.incurred_at && { incurredAt: manilaDateStringToUtc(data.incurred_at) }),
     };
 
-    const updated = (await expensesRepository.update(id, updateData)) as ExpenseRow;
+    const updated = (await expensesRepository.update(
+      id,
+      updateData,
+      // Unchanged type and branch aren't re-checked: a deactivated type's history stays editable, and its recorded name stays.
+      typeToCheck ? { expenseTypeId: typeToCheck, branchId: targetBranchId, recordName: Boolean(newTypeId) } : undefined,
+    )) as ExpenseRow;
     const response = await toResponse(updated);
 
     await recordAuditLog({

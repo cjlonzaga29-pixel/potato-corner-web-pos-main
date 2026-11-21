@@ -508,7 +508,7 @@ describe.skipIf(!isLocalDatabase)('P57 recipe shortages and discount amount mode
     expect((await sale(tokens.ana, branch.a, [line('Plain', 'Regular')], { ...claim, proof_upload_id: proofId })).status).toBe(201);
     expect((await sale(tokens.ana, branch.a, [line('Plain', 'Regular')], { ...claim, proof_upload_id: proofId })).body.error?.code).toBe('MANUAL_DISCOUNT_PROOF_ALREADY_USED');
 
-    // A legacy client's statutory sale is unchanged (₱100 ÷ 1.12 × 0.8 = ₱71.43, VAT ₱0).
+    // POS-PERF-P63 — a legacy client's statutory sale is refused, never recalculated.
     const legacy = await call('POST', '/api/transactions', tokens.ana, {
       branch_id: branch.a,
       items: [line('Plain', 'Regular')],
@@ -520,8 +520,8 @@ describe.skipIf(!isLocalDatabase)('P57 recipe shortages and discount amount mode
       discount_id_reference: 'PWD-1',
       tax_basis: { vat_rate: 12, discount_rate: 20 },
     });
-    expect(legacy.status).toBe(201);
-    expect(legacy.body.data).toMatchObject({ discount_type: 'pwd', total_amount: 71.43, vat_amount: 0 });
+    expect(legacy.status).toBe(422);
+    expect(legacy.body.error?.code).toBe('VAT_CALCULATION_RETIRED');
 
     // Offline: a queued manual discount is refused visibly; a no-discount row syncs.
     const base = { items: [line('Plain', 'Regular')], payment_method: 'cash', cash_tendered: 1000, client_created_at: Date.now() - 60_000, tax_basis: BASIS, discount_flow: 'manual_v1' };

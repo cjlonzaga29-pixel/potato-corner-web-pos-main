@@ -12,7 +12,7 @@ const {
   mockUseExpenses,
   mockUseSelectedBranch,
   mockUseBranches,
-  mockDownloadCsv,
+  mockExportMutate,
 } = vi.hoisted(() => ({
   mockPush: vi.fn(),
   mockUsePathname: vi.fn(() => '/admin/expenses'),
@@ -20,7 +20,7 @@ const {
   mockUseExpenses: vi.fn(),
   mockUseSelectedBranch: vi.fn(),
   mockUseBranches: vi.fn(),
-  mockDownloadCsv: vi.fn(),
+  mockExportMutate: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -34,6 +34,19 @@ vi.mock('@/hooks/queries/use-expenses', () => ({
   useExpensesRealtimeSync: vi.fn(),
 }));
 
+vi.mock('@/hooks/queries/use-expense-types', () => ({
+  useExpenseTypes: () => ({ data: [], isLoading: false, isError: false }),
+}));
+
+vi.mock('@/hooks/queries/use-reports', () => ({
+  useRequestExport: () => ({ mutate: mockExportMutate, isPending: false }),
+}));
+
+// Covered by expense-breakdown-card.test.tsx.
+vi.mock('@/components/reports/expense-breakdown-card', () => ({
+  ExpenseBreakdownCard: () => null,
+}));
+
 vi.mock('@/hooks/use-selected-branch', () => ({
   useSelectedBranch: mockUseSelectedBranch,
 }));
@@ -41,11 +54,6 @@ vi.mock('@/hooks/use-selected-branch', () => ({
 vi.mock('@/hooks/queries/use-branches', () => ({
   useBranches: mockUseBranches,
 }));
-
-vi.mock('@/lib/utils', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/utils')>();
-  return { ...actual, downloadCsv: mockDownloadCsv };
-});
 
 /**
  * The real Select is Radix-based (portals, pointer-capture) and has no
@@ -219,18 +227,24 @@ describe('ExpensesPage', () => {
   it('pushes an updated category URL param when the category filter changes', () => {
     render(<ExpensesPage />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Utilities' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Utilities (legacy)' }));
 
     expect(mockPush).toHaveBeenCalledWith('/admin/expenses?category=utilities&page=1', { scroll: false });
   });
 
-  it('calls downloadCsv when the Export CSV button is clicked', () => {
+  it('asks the server for the CSV with the page\'s filters when Export CSV is clicked, so it isn\'t only the page on screen', () => {
+    mockUseSearchParams.mockReturnValue(new URLSearchParams('branch_id=branch-1&category=utilities&date_from=2026-08-01'));
     render(<ExpensesPage />);
 
     fireEvent.click(screen.getByRole('button', { name: /Export CSV/ }));
 
-    expect(mockDownloadCsv).toHaveBeenCalledTimes(1);
-    expect(mockDownloadCsv).toHaveBeenCalledWith(expect.stringMatching(/^expenses-\d{4}-\d{2}-\d{2}\.csv$/), expect.any(Array), expect.any(Array));
+    expect(mockExportMutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        report_type: 'EXPENSES',
+        format: 'csv',
+        filters: expect.objectContaining({ branch_id: 'branch-1', expense_category: 'utilities', date_from: '2026-08-01' }),
+      }),
+    );
   });
 
   it('disables the Export CSV button when there are no rows', () => {

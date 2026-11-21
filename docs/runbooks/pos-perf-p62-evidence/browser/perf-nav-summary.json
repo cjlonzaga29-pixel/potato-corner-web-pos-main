@@ -1,0 +1,242 @@
+[
+  {
+    "visit": "admin cold /admin/dashboard",
+    "firstDataMedianMs": 1671,
+    "usableMedianMs": 3285,
+    "usableMaxMs": 3906,
+    "apiRequestsMedian": 27,
+    "non2xx": 39
+  },
+  {
+    "visit": "admin cold /admin/products",
+    "firstDataMedianMs": 1069,
+    "usableMedianMs": 2031,
+    "usableMaxMs": 2202,
+    "apiRequestsMedian": 3,
+    "non2xx": 0
+  },
+  {
+    "visit": "admin cold /admin/inventory",
+    "firstDataMedianMs": 586,
+    "usableMedianMs": 1594,
+    "usableMaxMs": 1901,
+    "apiRequestsMedian": 3,
+    "non2xx": 0
+  },
+  {
+    "visit": "admin cold /admin/reports",
+    "firstDataMedianMs": 581,
+    "usableMedianMs": 1650,
+    "usableMaxMs": 1659,
+    "apiRequestsMedian": 6,
+    "non2xx": 0
+  },
+  {
+    "visit": "admin cold /admin/expenses",
+    "firstDataMedianMs": 755,
+    "usableMedianMs": 1865,
+    "usableMaxMs": 1960,
+    "apiRequestsMedian": 7,
+    "non2xx": 0
+  },
+  {
+    "visit": "admin warm /admin/dashboard",
+    "firstDataMedianMs": 742,
+    "usableMedianMs": 2183,
+    "usableMaxMs": 2323,
+    "apiRequestsMedian": 14,
+    "non2xx": 0
+  },
+  {
+    "visit": "admin warm /admin/products",
+    "firstDataMedianMs": 746,
+    "usableMedianMs": 1466,
+    "usableMaxMs": 1579,
+    "apiRequestsMedian": 3,
+    "non2xx": 0
+  },
+  {
+    "visit": "admin warm /admin/inventory",
+    "firstDataMedianMs": 606,
+    "usableMedianMs": 1171,
+    "usableMaxMs": 1228,
+    "apiRequestsMedian": 3,
+    "non2xx": 0
+  },
+  {
+    "visit": "admin warm /admin/reports",
+    "firstDataMedianMs": 554,
+    "usableMedianMs": 1552,
+    "usableMaxMs": 1566,
+    "apiRequestsMedian": 6,
+    "non2xx": 0
+  },
+  {
+    "visit": "admin warm /admin/expenses",
+    "firstDataMedianMs": 577,
+    "usableMedianMs": 1369,
+    "usableMaxMs": 1472,
+    "apiRequestsMedian": 7,
+    "non2xx": 0
+  },
+  {
+    "visit": "supervisor cold /supervisor/dashboard",
+    "firstDataMedianMs": 1438,
+    "usableMedianMs": 3389,
+    "usableMaxMs": 3651,
+    "apiRequestsMedian": 20,
+    "non2xx": 26
+  },
+  {
+    "visit": "supervisor cold /supervisor/products",
+    "firstDataMedianMs": 1224,
+    "usableMedianMs": 2037,
+    "usableMaxMs": 3139,
+    "apiRequestsMedian": 6,
+    "non2xx": 3
+  },
+  {
+    "visit": "supervisor cold /supervisor/inventory",
+    "firstDataMedianMs": 848,
+    "usableMedianMs": 1567,
+    "usableMaxMs": 1745,
+    "apiRequestsMedian": 6,
+    "non2xx": 3
+  },
+  {
+    "visit": "supervisor cold /supervisor/reports",
+    "firstDataMedianMs": 873,
+    "usableMedianMs": 2094,
+    "usableMaxMs": 2238,
+    "apiRequestsMedian": 16,
+    "non2xx": 3
+  },
+  {
+    "visit": "supervisor cold /supervisor/expenses",
+    "firstDataMedianMs": 651,
+    "usableMedianMs": 1428,
+    "usableMaxMs": 1935,
+    "apiRequestsMedian": 7,
+    "non2xx": 3
+  },
+  {
+    "visit": "supervisor warm /supervisor/dashboard",
+    "firstDataMedianMs": 1299,
+    "usableMedianMs": 2279,
+    "usableMaxMs": 2467,
+    "apiRequestsMedian": 16,
+    "non2xx": 6
+  },
+  {
+    "visit": "supervisor warm /supervisor/products",
+    "firstDataMedianMs": 1004,
+    "usableMedianMs": 1760,
+    "usableMaxMs": 2130,
+    "apiRequestsMedian": 6,
+    "non2xx": 3
+  },
+  {
+    "visit": "supervisor warm /supervisor/inventory",
+    "firstDataMedianMs": 669,
+    "usableMedianMs": 1498,
+    "usableMaxMs": 1741,
+    "apiRequestsMedian": 6,
+    "non2xx": 3
+  },
+  {
+    "visit": "supervisor warm /supervisor/reports",
+    "firstDataMedianMs": 821,
+    "usableMedianMs": 1924,
+    "usableMaxMs": 2396,
+    "apiRequestsMedian": 16,
+    "non2xx": 3
+  },
+  {
+    "visit": "supervisor warm /supervisor/expenses",
+    "firstDataMedianMs": 980,
+    "usableMedianMs": 1708,
+    "usableMaxMs": 1849,
+    "apiRequestsMedian": 7,
+    "non2xx": 3
+  },
+  {
+    "visit": "branch cold /branch/dashboard",
+    "firstDataMedianMs": 1040,
+    "usableMedianMs": 3061,
+    "usableMaxMs": 3072,
+    "apiRequestsMedian": 13,
+    "non2xx": 4
+  },
+  {
+    "visit": "branch cold /branch/products",
+    "firstDataMedianMs": 801,
+    "usableMedianMs": 1978,
+    "usableMaxMs": 2152,
+    "apiRequestsMedian": 11,
+    "non2xx": 0
+  },
+  {
+    "visit": "branch cold /branch/inventory",
+    "firstDataMedianMs": 492,
+    "usableMedianMs": 1013,
+    "usableMaxMs": 1779,
+    "apiRequestsMedian": 3,
+    "non2xx": 0
+  },
+  {
+    "visit": "branch cold /branch/reports",
+    "firstDataMedianMs": 592,
+    "usableMedianMs": 1712,
+    "usableMaxMs": 1902,
+    "apiRequestsMedian": 11,
+    "non2xx": 0
+  },
+  {
+    "visit": "branch cold /branch/expenses",
+    "firstDataMedianMs": 432,
+    "usableMedianMs": 1081,
+    "usableMaxMs": 1353,
+    "apiRequestsMedian": 6,
+    "non2xx": 0
+  },
+  {
+    "visit": "branch warm /branch/dashboard",
+    "firstDataMedianMs": 447,
+    "usableMedianMs": 1601,
+    "usableMaxMs": 1664,
+    "apiRequestsMedian": 11,
+    "non2xx": 0
+  },
+  {
+    "visit": "branch warm /branch/products",
+    "firstDataMedianMs": 505,
+    "usableMedianMs": 1683,
+    "usableMaxMs": 1823,
+    "apiRequestsMedian": 11,
+    "non2xx": 0
+  },
+  {
+    "visit": "branch warm /branch/inventory",
+    "firstDataMedianMs": 415,
+    "usableMedianMs": 973,
+    "usableMaxMs": 1057,
+    "apiRequestsMedian": 3,
+    "non2xx": 0
+  },
+  {
+    "visit": "branch warm /branch/reports",
+    "firstDataMedianMs": 475,
+    "usableMedianMs": 1641,
+    "usableMaxMs": 1755,
+    "apiRequestsMedian": 11,
+    "non2xx": 0
+  },
+  {
+    "visit": "branch warm /branch/expenses",
+    "firstDataMedianMs": 480,
+    "usableMedianMs": 1186,
+    "usableMaxMs": 1496,
+    "apiRequestsMedian": 6,
+    "non2xx": 0
+  }
+]

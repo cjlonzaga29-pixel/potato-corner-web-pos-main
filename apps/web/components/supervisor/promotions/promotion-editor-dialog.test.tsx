@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react';
 import type { PromotionEligibleProduct, PromotionResponse } from '@potato-corner/shared';
+// POS-PERF-P62 — page-level tests, 1.6s alone on the P62 laptop and about 4x slower
+// in the full parallel suite, past the 5s default there (P62 runbook §7). This file only.
+vi.setConfig({ testTimeout: 15_000 });
 
 /**
  * POS-PERF-P49 — the promotion editor: clear per-item wording with examples,
@@ -206,16 +209,16 @@ describe('PromotionEditorDialog — Create/Edit Discount (P50R)', () => {
     await waitFor(() => expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({ application_mode: 'cashier_selected', product_ids: [PRODUCT_REGULAR] })));
   });
 
-  it('explains the taxable VAT treatment and previews taxable amount, VAT and final price', () => {
+  it('POS-PERF-P59 — previews original, discount and final price, with no VAT wording', () => {
     renderEditor();
-    expect(screen.getByTestId('promotion-vat-treatment')).toHaveTextContent('never makes a sale VAT-exempt');
     fireEvent.click(screen.getByRole('checkbox', { name: 'Promo Fries' }));
     fireEvent.change(screen.getByLabelText('Percent off (1–100)'), { target: { value: '10' } });
-    // ₱39.00 − ₱3.90 = ₱35.10; VAT = 35.10 × 12/112 = ₱3.76; taxable net of VAT ₱31.34.
-    const row = within(screen.getByRole('table', { name: 'Price preview' })).getByText('Promo Fries — Regular').closest('tr') as HTMLElement;
-    expect(row).toHaveTextContent('₱31.34');
-    expect(row).toHaveTextContent('₱3.76');
+    const table = within(screen.getByRole('table', { name: 'Price preview' }));
+    const row = table.getByText('Promo Fries — Regular').closest('tr') as HTMLElement;
+    expect(row).toHaveTextContent('₱3.90');
     expect(row).toHaveTextContent('₱35.10');
+    expect(screen.queryByTestId('promotion-vat-treatment')).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/\bVAT\b|VATable|VAT-exempt/);
   });
 
   it('an existing promotion from an older API (no mode) edits as automatic', () => {

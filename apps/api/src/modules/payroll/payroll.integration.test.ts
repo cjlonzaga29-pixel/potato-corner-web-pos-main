@@ -265,7 +265,7 @@ describe.skipIf(!isLocalDatabase)('payroll integration (real Postgres)', () => {
     for (const line of lines) expect(csv).toContain(`,${line.calculatedTotal.toFixed(2)},FINALIZED`);
     const pdf = await buildPayrollPdf(after);
     expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
-  });
+  }, 90_000); // POS-PERF-P62 — renders a real PDF through the worker, so this includes a cold worker start (about 10s under tsx on the P62 laptop; runbook §3).
 
   it('refuses a stale preview and writes nothing', async () => {
     await payrollService.savePolicy(supA, branchA, policyInput(0));

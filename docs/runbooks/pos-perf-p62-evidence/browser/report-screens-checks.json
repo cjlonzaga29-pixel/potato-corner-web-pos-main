@@ -1,0 +1,375 @@
+[
+  {
+    "step": "db: authoritative figures",
+    "branch": "MAIN01",
+    "from": "2026-11-15",
+    "to": "2026-11-21",
+    "completedCount": 1447,
+    "gross": 179762,
+    "discounts": 20,
+    "completedTotal": 179742,
+    "voidedCount": 15,
+    "voidedTotal": 1890,
+    "refundedCount": 16,
+    "refundedTotal": 2004,
+    "expenses": 71006,
+    "expenseCount": 160,
+    "netSales": 177738,
+    "todayCompleted": 143,
+    "todayGross": 17573,
+    "todayExpenses": 10074.5,
+    "windowFrom": "2026-11-14",
+    "windowGross": 207058,
+    "ok": true,
+    "at": "2026-11-21T08:58:25.686Z"
+  },
+  {
+    "step": "api: figures per role",
+    "admin": {
+      "completedCount": 1447,
+      "completedTotal": 179742,
+      "discounts": 20,
+      "voidedCount": 15,
+      "refundedCount": 16,
+      "voidedTotal": 1890,
+      "refundedTotal": 2004,
+      "dsrGross": 179762,
+      "dsrNet": 177738,
+      "dsrExpenses": 71006
+    },
+    "supervisor": {
+      "completedCount": 1447,
+      "completedTotal": 179742,
+      "discounts": 20,
+      "voidedCount": 15,
+      "refundedCount": 16,
+      "voidedTotal": 1890,
+      "refundedTotal": 2004,
+      "dsrGross": 179762,
+      "dsrNet": 177738,
+      "dsrExpenses": 71006
+    },
+    "branch": {
+      "completedCount": 1447,
+      "completedTotal": 179742,
+      "discounts": 20,
+      "voidedCount": 15,
+      "refundedCount": 16,
+      "voidedTotal": 1890,
+      "refundedTotal": 2004,
+      "dsrGross": 179762,
+      "dsrNet": 177738,
+      "dsrExpenses": 71006
+    },
+    "ok": true,
+    "at": "2026-11-21T08:58:39.159Z"
+  },
+  {
+    "step": "screens: values as displayed",
+    "admin": {
+      "fin": {
+        "Gross Sales": "₱179,762",
+        "Discounts": "₱20",
+        "Refunds": "₱2,004",
+        "Net Sales": "₱177,738",
+        "Operating Expenses": "₱71,006",
+        "Net Operating Result": "₱106,732"
+      },
+      "dsr": {
+        "Gross Sales — Selected Period": "₱179,762",
+        "Completed": "1,447",
+        "Voided": "15",
+        "Refunded": "16"
+      },
+      "expenses": {
+        "Expenses": "160",
+        "Total Amount": "71,006"
+      },
+      "voids": {
+        "Voided": "15",
+        "Refunded": "16",
+        "Total Amount": "3,894"
+      }
+    },
+    "supervisor": {
+      "selectedBranch": "Main Branch",
+      "dashboard": {
+        "Gross Sales Today": "₱17,573",
+        "Gross Sales This Month": "₱558,767",
+        "Today's Transactions": "143",
+        "Average Order Value": "₱122.89",
+        "Today's Expenses": "₱10,074.50",
+        "Crew on Duty": "2",
+        "Low Stock Items": "0",
+        "Inventory Alerts": "0",
+        "Gross Sales — Last 7 Days": "₱207,058.00"
+      },
+      "sales": {
+        "Total Transactions": "1,447",
+        "Total Sales — Selected Period": "₱179,742",
+        "Discounts Given": "₱20"
+      },
+      "voids": {
+        "Total Voided": "15",
+        "Total Refunded": "16",
+        "Voided Amount": "₱1,890",
+        "Refunded Amount": "₱2,004"
+      }
+    },
+    "branch": {
+      "dashboard": {
+        "Gross Sales Today": "₱17,573",
+        "Gross Sales This Month": "₱558,767",
+        "Today's Transactions": "143",
+        "Average Order Value": "₱122.89",
+        "Today's Expenses": "₱10,074.50",
+        "Crew on Duty": "2",
+        "Items Needing Stock": "0",
+        "Inventory Alerts": "0",
+        "Gross Sales — Last 7 Days": "₱207,058.00"
+      },
+      "reportsUrl": "/branch/dashboard"
+    },
+    "ok": true,
+    "at": "2026-11-21T08:59:33.748Z"
+  },
+  {
+    "step": "reconcile: Admin Financial Summary · Gross Sales = DB gross",
+    "shown": 179762,
+    "expected": 179762,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.749Z"
+  },
+  {
+    "step": "reconcile: Admin Financial Summary · Discounts = DB discounts",
+    "shown": 20,
+    "expected": 20,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.749Z"
+  },
+  {
+    "step": "reconcile: Admin Financial Summary · Refunds = DB refunded total",
+    "shown": 2004,
+    "expected": 2004,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.749Z"
+  },
+  {
+    "step": "reconcile: Admin Financial Summary · Net Sales = DB gross − discounts − refunds",
+    "shown": 177738,
+    "expected": 177738,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.749Z"
+  },
+  {
+    "step": "reconcile: Admin Financial Summary · Operating Expenses = DB expenses",
+    "shown": 71006,
+    "expected": 71006,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.749Z"
+  },
+  {
+    "step": "reconcile: Admin DSR · Completed = DB completed count",
+    "shown": 1447,
+    "expected": 1447,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.750Z"
+  },
+  {
+    "step": "reconcile: Admin DSR · Voided = DB voided count",
+    "shown": 15,
+    "expected": 15,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.750Z"
+  },
+  {
+    "step": "reconcile: Admin DSR · Refunded = DB refunded count",
+    "shown": 16,
+    "expected": 16,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.750Z"
+  },
+  {
+    "step": "reconcile: Admin Expenses · Total Amount = DB expenses",
+    "shown": 71006,
+    "expected": 71006,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.750Z"
+  },
+  {
+    "step": "reconcile: Admin Void/Refund · Voided = DB voided count",
+    "shown": 15,
+    "expected": 15,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.750Z"
+  },
+  {
+    "step": "reconcile: Admin Void/Refund · Refunded = DB refunded count",
+    "shown": 16,
+    "expected": 16,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.750Z"
+  },
+  {
+    "step": "screens: the Supervisor selected the same branch in its own selector",
+    "selected": "Main Branch",
+    "ok": true,
+    "at": "2026-11-21T08:59:33.750Z"
+  },
+  {
+    "step": "reconcile: Supervisor Reports · Total Transactions = DB completed count",
+    "shown": 1447,
+    "expected": 1447,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.750Z"
+  },
+  {
+    "step": "reconcile: Supervisor Reports · Total Sales — Selected Period = DB completed totals",
+    "shown": 179742,
+    "expected": 179742,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.750Z"
+  },
+  {
+    "step": "reconcile: Supervisor Reports · Discounts Given = DB discounts",
+    "shown": 20,
+    "expected": 20,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.750Z"
+  },
+  {
+    "step": "reconcile: Supervisor Reports · Total Voided = DB voided count",
+    "shown": 15,
+    "expected": 15,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.750Z"
+  },
+  {
+    "step": "reconcile: Supervisor Reports · Total Refunded = DB refunded count",
+    "shown": 16,
+    "expected": 16,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.750Z"
+  },
+  {
+    "step": "reconcile: Supervisor Reports · Voided Amount = DB voided total",
+    "shown": 1890,
+    "expected": 1890,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.750Z"
+  },
+  {
+    "step": "reconcile: Supervisor Reports · Refunded Amount = DB refunded total",
+    "shown": 2004,
+    "expected": 2004,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.750Z"
+  },
+  {
+    "step": "screens: the Branch account has no Reports screen (sent to its dashboard)",
+    "url": "/branch/dashboard",
+    "ok": true,
+    "at": "2026-11-21T08:59:33.750Z"
+  },
+  {
+    "step": "reconcile: Supervisor Dashboard · Gross Sales Today = DB today gross",
+    "shown": 17573,
+    "expected": 17573,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.750Z"
+  },
+  {
+    "step": "reconcile: Supervisor Dashboard · Today's Transactions = DB today completed",
+    "shown": 143,
+    "expected": 143,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.750Z"
+  },
+  {
+    "step": "reconcile: Supervisor Dashboard · Today's Expenses = DB today expenses",
+    "shown": 10074.5,
+    "expected": 10074.5,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.750Z"
+  },
+  {
+    "step": "reconcile: Supervisor Dashboard · Gross Sales — Last 7 Days = DB gross 2026-11-14..2026-11-21",
+    "shown": 207058,
+    "expected": 207058,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.750Z"
+  },
+  {
+    "step": "reconcile: Branch Dashboard · Gross Sales Today = DB today gross",
+    "shown": 17573,
+    "expected": 17573,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.750Z"
+  },
+  {
+    "step": "reconcile: Branch Dashboard · Today's Transactions = DB today completed",
+    "shown": 143,
+    "expected": 143,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.750Z"
+  },
+  {
+    "step": "reconcile: Branch Dashboard · Today's Expenses = DB today expenses",
+    "shown": 10074.5,
+    "expected": 10074.5,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.750Z"
+  },
+  {
+    "step": "reconcile: Branch Dashboard · Gross Sales — Last 7 Days = DB gross 2026-11-14..2026-11-21",
+    "shown": 207058,
+    "expected": 207058,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.750Z"
+  },
+  {
+    "step": "reconcile: API as admin = DB",
+    "completedCount": 1447,
+    "completedTotal": 179742,
+    "discounts": 20,
+    "voidedCount": 15,
+    "refundedCount": 16,
+    "voidedTotal": 1890,
+    "refundedTotal": 2004,
+    "dsrGross": 179762,
+    "dsrNet": 177738,
+    "dsrExpenses": 71006,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.751Z"
+  },
+  {
+    "step": "reconcile: API as supervisor = DB",
+    "completedCount": 1447,
+    "completedTotal": 179742,
+    "discounts": 20,
+    "voidedCount": 15,
+    "refundedCount": 16,
+    "voidedTotal": 1890,
+    "refundedTotal": 2004,
+    "dsrGross": 179762,
+    "dsrNet": 177738,
+    "dsrExpenses": 71006,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.751Z"
+  },
+  {
+    "step": "reconcile: API as branch = DB",
+    "completedCount": 1447,
+    "completedTotal": 179742,
+    "discounts": 20,
+    "voidedCount": 15,
+    "refundedCount": 16,
+    "voidedTotal": 1890,
+    "refundedTotal": 2004,
+    "dsrGross": 179762,
+    "dsrNet": 177738,
+    "dsrExpenses": 71006,
+    "ok": true,
+    "at": "2026-11-21T08:59:33.751Z"
+  }
+]

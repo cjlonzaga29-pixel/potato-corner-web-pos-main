@@ -4,11 +4,8 @@ import { Suspense } from 'react';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { NotificationPreferencesSection } from '@/components/settings/notification-preferences-section';
-import { DiscountSettingsSection } from '@/components/settings/discount-settings-section';
 import { BranchDiscountSettingsSection } from '@/components/settings/branch-discount-settings-section';
-import { LegacyDiscountSettings } from '@/components/settings/legacy-discount-settings';
 import { ManualDiscountTypesSection } from '@/components/settings/manual-discount-types-section';
-import { TaxSettingsSection } from '@/components/settings/tax-settings-section';
 import { WorkHoursOverviewSection } from '@/components/settings/work-hours-overview-section';
 import { WriteGateSettingsSection } from '@/components/settings/write-gate-settings-section';
 
@@ -56,12 +53,8 @@ function SettingsPageContent() {
         <TabsContent value="discounts" className="space-y-4">
           {/* POS-PERF-P55 — read-only for Super Admin; supervisors manage their branches' types. */}
           <ManualDiscountTypesSection />
-          {/* POS-PERF-P56 — statutory rates and legacy VAT settings, unchanged, below what cashiers use. */}
-          <LegacyDiscountSettings>
-            <DiscountSettingsSection canEdit />
-            <BranchDiscountSettingsSection />
-            <TaxSettingsSection />
-          </LegacyDiscountSettings>
+          {/* POS-PERF-P63 — VAT retired: no statutory rate editors; only the per-branch discount decision remains. */}
+          <BranchDiscountSettingsSection />
         </TabsContent>
 
         {/* POS-PERF-P40 — read-only here; supervisors edit per branch in their console. */}

@@ -25,8 +25,8 @@ const PERIOD_DAYS: Record<Period, number> = { '7d': 7, '30d': 30, '90d': 90, '1y
 
 const fastMoverColumns: ColumnDef<InventoryFastMover>[] = [
   { accessorKey: 'name', header: 'Ingredient' },
-  { accessorKey: 'total_consumed', header: 'Total Consumed', cell: ({ row }) => `${row.original.total_consumed} ${row.original.unit}` },
-  { accessorKey: 'avg_daily_consumption', header: 'Avg Daily Consumption', cell: ({ row }) => row.original.avg_daily_consumption.toFixed(2) },
+  { accessorKey: 'total_consumed', header: 'Total Stock Used', cell: ({ row }) => `${row.original.total_consumed} ${row.original.unit}` },
+  { accessorKey: 'avg_daily_consumption', header: 'Avg Daily Usage', cell: ({ row }) => row.original.avg_daily_consumption.toFixed(2) },
 ];
 
 const ADJUSTMENT_TYPE_LABEL: Record<string, string> = {
@@ -126,7 +126,7 @@ export function InventoryAnalyticsPanel({ branchId }: InventoryAnalyticsPanelPro
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-sm font-medium">Top Consumed Products</CardTitle>
+          <CardTitle className="text-sm font-medium">Top Stock Used</CardTitle>
         </CardHeader>
         <CardContent>
           <DataTable
@@ -134,7 +134,7 @@ export function InventoryAnalyticsPanel({ branchId }: InventoryAnalyticsPanelPro
             columns={fastMoverColumns}
             data={topConsumed}
             isLoading={isLoading}
-            emptyState={<EmptyState title="No consumption data" description="Nothing consumed in this period." />}
+            emptyState={<EmptyState title="No stock used" description="No stock used in this period." />}
           />
         </CardContent>
       </Card>

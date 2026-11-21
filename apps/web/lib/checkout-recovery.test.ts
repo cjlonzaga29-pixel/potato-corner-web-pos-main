@@ -262,4 +262,8 @@ describe('isDefiniteNoCommitErrorCode', () => {
     // POS-PERF-P50 — refused before the sale's $transaction opens.
     expect(isDefiniteNoCommitErrorCode('TAX_SETTINGS_CHANGED')).toBe(true);
   });
+
+  it('POS-PERF-P63 — treats VAT_CALCULATION_RETIRED as definite no-commit (refused before any lookup)', () => {
+    expect(isDefiniteNoCommitErrorCode('VAT_CALCULATION_RETIRED')).toBe(true);
+  });
 });

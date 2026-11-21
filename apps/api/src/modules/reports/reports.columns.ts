@@ -12,11 +12,8 @@ export const DAILY_SALES_TRANSACTION_COLUMNS: ReportColumn<DailySalesTransaction
   { key: 'receipt_number', header: 'Receipt #' },
   { key: 'payment_method', header: 'Payment' },
   { key: 'total_amount', header: 'Total' },
-  { key: 'vat_amount', header: 'VAT' },
-  // POS-PERF-P55R2 — only in exports that contain a manual-total sale.
-  { key: 'tax_calculation', header: 'Tax Calculation', omitWhenEmpty: true },
   { key: 'discount_amount', header: 'Discount' },
-  { key: 'discount_type', header: 'Discount Type' },
+  { key: 'discount_name', header: 'Discount Type' },
   // reports.service.ts's requestExport strips this column for the 'branch'
   // role before rendering — same supervisor/super_admin-only rule as
   // getDiscountAuditTrail, since this array alone can't express RBAC.
@@ -25,8 +22,14 @@ export const DAILY_SALES_TRANSACTION_COLUMNS: ReportColumn<DailySalesTransaction
   { key: 'cashier_name', header: 'Cashier' },
 ];
 
+/** POS-PERF-P59 — this tab's file can hold voided and refunded sales, so each row says which. */
+export const SOLD_PRODUCT_TRANSACTION_COLUMNS: ReportColumn<DailySalesTransactionRow>[] = [
+  ...DAILY_SALES_TRANSACTION_COLUMNS,
+  { key: 'status', header: 'Status' },
+];
+
 /**
- * Task 209.5 — Discount Compliance's own column set for the Supervisor/
+ * Task 209.5 — the Discount Report's own column set for the Supervisor/
  * Branch CSV/PDF export (see reports.service.ts's DISCOUNT_COMPLIANCE
  * redirect branch), sourced from the same getDailySalesTransactions rows as
  * DAILY_SALES_TRANSACTION_COLUMNS above but never sharing that array — this
@@ -39,13 +42,12 @@ export const DISCOUNT_COMPLIANCE_TRANSACTION_COLUMNS: ReportColumn<DailySalesTra
   { key: 'created_at', header: 'Date/Time' },
   { key: 'branch_name', header: 'Branch' },
   { key: 'cashier_name', header: 'Cashier' },
-  { key: 'discount_type', header: 'Discount Type' },
+  { key: 'discount_name', header: 'Discount Type' },
   { key: 'discount_rate_used', header: 'Discount Rate Used' },
   { key: 'discount_id_reference', header: 'Customer ID / Reference' },
   { key: 'discount_amount', header: 'Discount Amount' },
+  { key: 'discount_proof_requirement', header: 'Proof Requirement' },
   { key: 'discount_proof_available', header: 'Proof Available' },
-  // POS-PERF-P55R2 — only in exports that contain a manual-total sale.
-  { key: 'tax_calculation', header: 'Tax Calculation', omitWhenEmpty: true },
 ];
 
 export const REPORT_COLUMNS: Record<ReportType, ReportColumn<Record<string, unknown>>[]> = {
@@ -56,16 +58,12 @@ export const REPORT_COLUMNS: Record<ReportType, ReportColumn<Record<string, unkn
     { key: 'gross_sales', header: 'Gross Sales' },
     { key: 'discount_total', header: 'Discounts' },
     { key: 'refund_total', header: 'Refunds' },
-    { key: 'vat_total', header: 'VAT', partialCoverageHeader: 'VAT (VAT-calculated sales only)' },
     { key: 'net_sales', header: 'Net Sales' },
     { key: 'expense_total', header: 'Operating Expenses' },
     { key: 'net_operating_result', header: 'Net Operating Result' },
     { key: 'completed_count', header: 'Completed' },
     { key: 'voided_count', header: 'Voided' },
     { key: 'refunded_count', header: 'Refunded' },
-    // POS-PERF-P55R2 — only in exports whose period has manual-total sales.
-    { key: 'tax_not_calculated_count', header: 'Sales Without VAT Calculation', omitWhenEmpty: true },
-    { key: 'tax_not_calculated_sales', header: 'Amount Paid Without VAT Calculation', omitWhenEmpty: true },
   ],
   SHIFT_SUMMARY: [
     { key: 'shift_id', header: 'Shift ID', isAudit: true },
@@ -111,13 +109,14 @@ export const REPORT_COLUMNS: Record<ReportType, ReportColumn<Record<string, unkn
   ],
   DISCOUNT_COMPLIANCE: [
     { key: 'branch_name', header: 'Branch' },
-    { key: 'discount_type', header: 'Discount Type' },
+    { key: 'discount_name', header: 'Discount Type' },
     { key: 'transaction_count', header: 'Transactions' },
     { key: 'total_discount_amount', header: 'Total Discount' },
-    { key: 'total_vat_exempt_sales', header: 'VAT-Exempt Sales (PWD/Senior)' },
-    { key: 'total_vat_exempt_amount', header: 'Non-VATable Amount (VAT cap)' },
-    // POS-PERF-P55R2 — only in exports that contain a manual-total row.
-    { key: 'tax_calculation', header: 'Tax Calculation', omitWhenEmpty: true },
+    { key: 'proof_required_count', header: 'Proof Required' },
+    { key: 'proof_available_count', header: 'Proof Available' },
+    { key: 'proof_missing_count', header: 'Proof Missing' },
+    { key: 'proof_unknown_count', header: 'Proof Requirement Unknown' },
+    { key: 'proof_completion_label', header: 'Proof Completion' },
   ],
   INVENTORY_MOVEMENT: [
     { key: 'movement_id', header: 'Movement ID', isAudit: true },
@@ -153,9 +152,9 @@ export const REPORT_COLUMNS: Record<ReportType, ReportColumn<Record<string, unkn
     { key: 'branch_id', header: 'Branch ID', isAudit: true },
     { key: 'branch_name', header: 'Branch' },
     { key: 'unit', header: 'Unit' },
-    { key: 'quantity_consumed', header: 'Quantity Consumed' },
+    { key: 'quantity_consumed', header: 'Stock Used' },
     { key: 'unit_cost', header: 'Unit Cost' },
-    { key: 'consumption_value', header: 'Consumption Value' },
+    { key: 'consumption_value', header: 'Stock Used Value' },
     { key: 'has_unknown_cost', header: 'Has Unknown-Cost Movements', isAudit: true },
     { key: 'movement_count', header: 'Sales Movements' },
   ],
@@ -171,17 +170,17 @@ export const REPORT_COLUMNS: Record<ReportType, ReportColumn<Record<string, unkn
     { key: 'branch_id', header: 'Branch ID', isAudit: true },
     { key: 'branch_name', header: 'Branch' },
     { key: 'unit', header: 'Unit' },
-    { key: 'opening_stock', header: 'Opening Stock' },
-    { key: 'consumed_today', header: 'Consumed Today' },
-    { key: 'consumed_this_month', header: 'Consumed This Month' },
+    { key: 'opening_stock', header: 'Beginning Stock (Beg.)' },
+    { key: 'consumed_today', header: 'Stock Used Today (Sales)' },
+    { key: 'consumed_this_month', header: 'Stock Used This Month (Sales)' },
     { key: 'remaining_stock', header: 'Remaining' },
   ],
   ATTENDANCE_SUMMARY: [
     { key: 'employee_id', header: 'Employee ID', isAudit: true },
     { key: 'employee_name', header: 'Employee' },
     { key: 'branch_name', header: 'Branch' },
-    { key: 'clock_in', header: 'Clock In' },
-    { key: 'clock_out', header: 'Clock Out' },
+    { key: 'clock_in', header: 'Time In' },
+    { key: 'clock_out', header: 'Time Out' },
     { key: 'actual_work_minutes', header: 'Minutes Worked' },
     { key: 'overtime_minutes', header: 'Overtime Minutes' },
     { key: 'break_minutes', header: 'Break Minutes' },
@@ -251,7 +250,8 @@ export const REPORT_COLUMNS: Record<ReportType, ReportColumn<Record<string, unkn
   EXPENSES: [
     { key: 'incurred_at', header: 'Date' },
     { key: 'branch', header: 'Branch' },
-    { key: 'category', header: 'Category' },
+    { key: 'expense_type', header: 'Type' },
+    { key: 'current_type_name', header: 'Type Now Called' },
     { key: 'vendor_name', header: 'Vendor' },
     { key: 'amount', header: 'Amount' },
     { key: 'created_by_name', header: 'Recorded By' },

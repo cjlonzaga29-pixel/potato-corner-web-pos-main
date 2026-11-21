@@ -1,0 +1,12 @@
+/** POS-PERF-P61 — one honest name per cost source, so a stated figure never reads as an accounting cost. */
+export function costSourceLabel(source: 'inventory' | 'configured' | 'unknown'): string {
+  if (source === 'inventory') return 'inventory cost';
+  if (source === 'configured') return 'stated cost';
+  return 'cost not known';
+}
+
+/** The role's own history page, read from the URL it's on: /admin/..., /supervisor/... or /branch/.... */
+export function extraSuppliesHistoryPath(pathname: string | null): string {
+  const role = pathname?.split('/')[1];
+  return `/${role === 'admin' || role === 'supervisor' ? role : 'branch'}/extra-supplies`;
+}

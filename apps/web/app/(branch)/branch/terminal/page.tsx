@@ -9,14 +9,10 @@ import {
   ROLES,
   STAFF_PIN_MAX_LENGTH,
   STAFF_PIN_MIN_LENGTH,
-  VAT_RATE_PERCENT,
   MANUAL_DISCOUNT_FLOW,
-  computeSaleTax,
   computeManualTotal,
   fixedDiscountEffectiveAmount,
   manualDiscountEligibleSubtotal,
-  discountRateFor,
-  isVatExemptDiscountType,
   MANUAL_TOTAL_CALCULATION,
   type SaleDiscountRates,
 } from '@potato-corner/shared';
@@ -43,6 +39,8 @@ import { CartLineItem, type CartLine } from '@/components/pos/cart-line-item';
 import type { DiscountChoice } from '@/components/pos/payment-footer';
 import type { ManualDiscountFooterState, ManualDiscountMode } from '@/components/pos/manual-discount-fields';
 import { CheckoutWorkspace } from '@/components/pos/checkout-workspace';
+import { ExtraSuppliesPanel } from '@/components/pos/extra-supplies-panel';
+import { extraSupplyDraftKey, useExtraSupplyDraftStore } from '@/stores/extra-supply-draft.store';
 import { splitAddOnLines, isAddOnsGroup, chosenQuantity, type AddOnAssignments } from '@/lib/pos/split-add-ons';
 import { cartLineKey, type PosCartItem, type PosCartSelectedOption } from '@/stores/cart.store';
 import { toAvailabilityLines, useCartStockValidation } from '@/hooks/use-cart-stock-validation';
@@ -269,23 +267,6 @@ function dialogGroupsFor(variant: PosCatalogProduct['variants'][number]): AddOns
 /** Live-configured percentages (Discount Settings), or the same 20/20/20 defaults the server falls back to before any supervisor has saved a change — see settings.types.ts DEFAULT_DISCOUNT_POLICY. */
 type PreviewDiscountRates = SaleDiscountRates;
 const DEFAULT_PREVIEW_DISCOUNT_RATES: PreviewDiscountRates = { pwd: 20, senior_citizen: 20, employee: 20 };
-
-/**
- * Client-side preview — POS-PERF-P50: the same computeSaleTax the server's
- * computeAmounts runs, so the total shown is computed exactly as it will be
- * charged. The server still recomputes and persists the authoritative
- * figures, and refuses (TAX_SETTINGS_CHANGED) if its rates differ from the
- * ones this preview used (sent as tax_basis).
- */
-function previewAmounts(
-  cartLines: { lineTotal: number; quantity: number; vatableCapAmount: number | null; promotionDiscount?: number }[],
-  discountType: DiscountChoice,
-  discountRates: PreviewDiscountRates = DEFAULT_PREVIEW_DISCOUNT_RATES,
-) {
-  const subtotal = round2(cartLines.reduce((sum, l) => sum + l.lineTotal, 0));
-  const { discountAmount, vatAmount, totalAmount } = computeSaleTax(subtotal, cartLines, discountType === 'none' ? null : discountType, discountRates);
-  return { discountAmount, vatAmount, totalAmount };
-}
 
 /**
  * POS-PERF-P55 — the cashier's peso entry: a plain amount with at most two
@@ -1010,7 +991,12 @@ export default function TerminalPage() {
   // POS-PERF-P24 — the former separate "Needs Action" tab was removed;
   // failed/uncertain orders ('error' status) now stay persistently visible
   // inside Pending (see pendingOrderEntries below) instead of a fourth tab.
-  const [activeMainTab, setActiveMainTab] = useState<'products' | 'pending' | 'done'>('products');
+  const [activeMainTab, setActiveMainTab] = useState<'products' | 'supplies' | 'pending' | 'done'>('products');
+  // The panel only checks an unresolved issue while it is open, so a reload or reconnect must not leave it unseen behind Products.
+  const hasUnresolvedSupplyIssue = useExtraSupplyDraftStore((state) => Boolean(branchId && operatorId && state.drafts[extraSupplyDraftKey(branchId, operatorId)]?.pending));
+  useEffect(() => {
+    if (hasUnresolvedSupplyIssue) setActiveMainTab('supplies');
+  }, [hasUnresolvedSupplyIssue]);
   // "View Receipt" from the order tabs — see
   // handleViewDetachedSaleReceipt's doc comment for why this is deliberately
   // separate from saleTransaction/isReceiptViewOpen.
@@ -1196,8 +1182,11 @@ export default function TerminalPage() {
   // succeed, time out, or the tab will close mid-flight. On the next mount
   // of this page, any attempt left pending for this branch is resolved
   // against the server exactly like an in-session dropped response is
-  // (same bounded poll) — this tab's own cart/payment state is gone after a
-  // reload, but the server's record of what actually happened is not.
+  // (same bounded poll). POS-PERF-P59 — the cart survives a reload in
+  // sessionStorage, so a confirmed attempt clears it here exactly as
+  // handleCharge's own resolve does: otherwise "Next Customer" or Escape leaves
+  // the sold items in the cart, and charging them mints a new key and a second
+  // real sale.
   useEffect(() => {
     if (!branchId) return;
     const pending = readPendingCheckoutAttempt(branchId);
@@ -1212,6 +1201,8 @@ export default function TerminalPage() {
         clearPendingCheckoutAttempt(branchId);
         idempotencyKeyRef.current = null;
         lastChargeFingerprintRef.current = null;
+        clearCart();
+        resetPaymentFields();
         // POS-PERF-P21 — a pre-existing pending record saved before orderRef
         // existed has none; mint a fresh one rather than show a fake "#01".
         setSaleSnapshot(transactionToSaleSnapshot(outcome.transaction, pending.orderRef ?? nextOrderRef(branchId)));
@@ -1229,6 +1220,7 @@ export default function TerminalPage() {
     };
     // Deliberately branchId-only: this recovers at most once per mount per
     // branch, not every time unrelated state changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [branchId]);
 
   function handleRecheckPendingAttempt() {
@@ -1246,6 +1238,8 @@ export default function TerminalPage() {
         setUnresolvedAttemptNotice(false);
         idempotencyKeyRef.current = null;
         lastChargeFingerprintRef.current = null;
+        clearCart();
+        resetPaymentFields();
         setSaleSnapshot(transactionToSaleSnapshot(outcome.transaction, pending.orderRef ?? nextOrderRef(branchId)));
         setSaleTransaction(outcome.transaction);
         setSalePhase('success');
@@ -2079,17 +2073,12 @@ export default function TerminalPage() {
     : manualFixedAmount !== null
       ? fixedDiscountEffectiveAmount(manualFixedAmount, manualEligibleSubtotal)
       : manualParsed.value;
-  // POS-PERF-P55R2 — this checkout calculates subtotal − peso discount =
-  // amount to pay, with no VAT extracted, added or deducted (vatAmount null:
-  // not calculated). Only the statutory PWD/Senior discount keeps its VAT
-  // exemption formula, the same computeSaleTax the server runs.
-  const isStatutorySelected = isVatExemptDiscountType(discountType === 'none' ? null : discountType);
+  // POS-PERF-P55R2 / P63 — every sale is subtotal − peso discount = amount
+  // to pay. VAT is not a feature: nothing is extracted, added or exempted
+  // (vatAmount null: not calculated), the same as the server.
   const { discountAmount, vatAmount, totalAmount } = useMemo(
-    (): { discountAmount: number; vatAmount: number | null; totalAmount: number } =>
-      isStatutorySelected
-        ? previewAmounts(cartLines, discountType, discountRatesPreview)
-        : { ...computeManualTotal(subtotal, manualAmountValue), vatAmount: null },
-    [cartLines, discountType, discountRatesPreview, isStatutorySelected, manualAmountValue, subtotal],
+    (): { discountAmount: number; vatAmount: number | null; totalAmount: number } => ({ ...computeManualTotal(subtotal, manualAmountValue), vatAmount: null }),
+    [manualAmountValue, subtotal],
   );
   const manualChangedTotal =
     manualAmountValue !== null && manualConfirmedSubtotal !== null && Math.round(subtotal * 100) !== Math.round(manualConfirmedSubtotal * 100)
@@ -2108,7 +2097,7 @@ export default function TerminalPage() {
     if (isChargeInFlight) return 'Checkout is already processing.';
     if (optionRecovery?.status === 'checking') return 'Checking the current product options…';
     if (taxNotice?.status === 'checking') return 'Loading the current discount settings…';
-    if (taxNotice?.buildMismatch) return 'This terminal uses an outdated VAT rate. Reload the page before charging.';
+    if (taxNotice?.buildMismatch) return 'This terminal uses outdated settings. Reload the page before charging.';
     if (cartOptionIssueCount > 0) return 'Update the items marked in the order before charging.';
     if (stockValidation.status === 'checking' || stockValidation.pendingKeys.size > 0) return 'Checking stock for the latest cart changes…';
     if (!isClockedIn) return 'Clock in before completing a sale.';
@@ -2398,15 +2387,10 @@ export default function TerminalPage() {
       // POS-PERF-P50 — the rates the total on screen was computed with. Never
       // an amount: the server refuses a mismatch instead of charging a
       // different total (TAX_SETTINGS_CHANGED).
-      // POS-PERF-P55R2 — every other sale says it is a manual total (no VAT).
+      // POS-PERF-P55R2 / P63 — every sale says it is a manual total (no VAT).
       // vat_rate null also makes a pre-P55R2 API refuse it rather than drop
       // the mode and calculate VAT. Queued offline sales keep this as sent.
-      tax_basis: isStatutorySelected
-        ? {
-            vat_rate: VAT_RATE_PERCENT,
-            discount_rate: discountRateFor(discountType === 'none' ? null : discountType, discountRatesPreview),
-          }
-        : { calculation_mode: MANUAL_TOTAL_CALCULATION, vat_rate: null, discount_rate: null },
+      tax_basis: { calculation_mode: MANUAL_TOTAL_CALCULATION, vat_rate: null, discount_rate: null },
       cash_tendered: paymentMethod === 'cash' ? tenderedNumber : undefined,
       // POS-PERF-P25R — optional payment reference, re-added at the owner's
       // request. gcash_reference_number backs both GCash and Maya (the
@@ -2717,7 +2701,7 @@ export default function TerminalPage() {
       }
       if (error instanceof TransactionApiError && error.code === 'TAX_SETTINGS_CHANGED') {
         const details = readTaxSettingsChange(error.details);
-        const base = { previousTotal: totalAmount, serverTotal: details.serverTotal, buildMismatch: details.serverVatRate !== null && details.serverVatRate !== VAT_RATE_PERCENT };
+        const base = { previousTotal: totalAmount, serverTotal: details.serverTotal, buildMismatch: details.serverVatRate !== null };
         setTaxNotice({ status: 'checking', ...base });
         void refetchDiscountPolicy()
           .then((result) => {
@@ -3514,9 +3498,9 @@ export default function TerminalPage() {
   // cashier is now looking at, recomputed with the current rates.
   const taxRecoveryNotice = taxNotice ? (
     <div role="status" data-testid="tax-settings-change-notice" className="mb-3 space-y-1.5 rounded-lg border border-amber-500/40 bg-amber-50 p-3 text-xs dark:bg-amber-950/20">
-      <p className="font-semibold">VAT or discount settings changed — the sale was not charged. Your cart is kept.</p>
+      <p className="font-semibold">Discount settings changed — the sale was not charged. Your cart is kept.</p>
       {taxNotice.buildMismatch && (
-        <p className="font-semibold text-destructive">This terminal&apos;s VAT rate is out of date. Reload the page, then ring the sale again.</p>
+        <p className="font-semibold text-destructive">This terminal&apos;s settings are out of date. Reload the page, then ring the sale again.</p>
       )}
       {taxNotice.status === 'checking' && (
         <p className="flex items-center gap-2">
@@ -3560,7 +3544,6 @@ export default function TerminalPage() {
         ) : null
       }
       subtotal={subtotal}
-      vatAmount={vatAmount}
       discountAmount={discountAmount}
       totalAmount={totalAmount}
       discountType={discountType}
@@ -3703,6 +3686,7 @@ export default function TerminalPage() {
         <Tabs value={activeMainTab} onValueChange={(value) => setActiveMainTab(value as typeof activeMainTab)}>
           <TabsList aria-label="POS sections" className="app-control w-full items-stretch justify-start overflow-x-auto sm:w-auto">
             <TabsTrigger value="products" className="h-full">Products</TabsTrigger>
+            <TabsTrigger value="supplies" className="h-full">Extra Supplies</TabsTrigger>
             <TabsTrigger value="pending" className="h-full">
               Pending{pendingTabCount > 0 ? ` (${pendingTabCount})` : ''}
             </TabsTrigger>
@@ -3827,7 +3811,20 @@ export default function TerminalPage() {
         </>
         )}
 
-        {activeMainTab !== 'products' && (
+        {/* POS-PERF-P61 — its own draft, separate from this page's cart, which the cart
+            panel keeps intact below. Keyed so a cashier change can't carry state over. */}
+        {activeMainTab === 'supplies' && branchId && operatorId && (
+          <ExtraSuppliesPanel
+            key={`${branchId}:${operatorId}`}
+            branchId={branchId}
+            cashierId={operatorId}
+            isOnline={isOnline}
+            operatorToken={operatorToken}
+            refreshOperatorToken={operatorToken ? refreshEmployeeToken : undefined}
+          />
+        )}
+
+        {(activeMainTab === 'pending' || activeMainTab === 'done') && (
           <div className="lg:flex-1 lg:overflow-y-auto">
             <OfflineSalesList
               status={activeMainTab}
@@ -4006,7 +4003,7 @@ export default function TerminalPage() {
           compact header (`.app-pos-cart-header`) and the checkout footer
           (`checkoutBarElement`) stay `flex-shrink-0` so Checkout is never
           pushed offscreen by a long cart. */}
-      {isDesktop && (
+      {isDesktop && activeMainTab !== 'supplies' && (
         <div className="app-pos-cart-width hidden min-h-0 flex-col border-t lg:flex lg:min-h-0 lg:flex-none lg:overflow-hidden lg:border-t-0">
           <div className="app-pos-cart-header flex shrink-0 items-center justify-between gap-2 border-b bg-card px-3">
             <h2 className="text-sm font-semibold">Cart</h2>
@@ -4040,7 +4037,7 @@ export default function TerminalPage() {
           compact subtotal + Checkout), same as the desktop panel; Checkout
           closes the Sheet and opens the full-screen/step CheckoutWorkspace
           instead of squeezing payment UI into the bottom sheet. */}
-      {!isDesktop && (
+      {!isDesktop && activeMainTab !== 'supplies' && (
         <>
           <div className="sticky bottom-0 z-20 border-t bg-card p-3 lg:hidden">
             <Button

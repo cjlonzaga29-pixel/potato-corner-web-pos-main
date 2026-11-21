@@ -2,6 +2,7 @@ import type { Prisma } from '@prisma/client';
 import type { ImageProofType, PaymentMethod } from '@potato-corner/shared';
 import { prisma } from '../../lib/prisma.js';
 import { resolveDateRangeBoundary } from '../../lib/manila-time.js';
+import { discountKeyWhere } from '../../lib/discount-key-where.js';
 import type { TransactionListFilters } from './transactions.types.js';
 import type { DiscountAuditFilters } from './transactions.types.js';
 import type { PromotionLineSnapshot } from '../discounts/discounts.types.js';
@@ -133,9 +134,14 @@ function buildListWhere(filters: TransactionListFilters): Prisma.TransactionWher
   return {
     ...(filters.branchId && { branchId: filters.branchId }),
     ...(filters.shiftId && { shiftId: filters.shiftId }),
+    ...(filters.statusGroup === 'void_refund' && { status: { in: ['voided' as const, 'refunded' as const] } }),
     ...(filters.status && { status: filters.status }),
+    ...(filters.cashierId && { cashierId: filters.cashierId }),
+    ...(filters.productName && { items: { some: { productNameSnapshot: filters.productName } } }),
     ...(filters.paymentMethod && { paymentMethod: filters.paymentMethod }),
     ...(filters.receiptSearch && { transactionNumber: { contains: filters.receiptSearch, mode: 'insensitive' as const } }),
+    ...(filters.discountedOnly && { discountType: { not: null } }),
+    ...discountKeyWhere(filters.discountKey),
     ...((filters.dateFrom || filters.dateTo) && {
       createdAt: {
         // dateFrom/dateTo are bare Manila business dates (YYYY-MM-DD) —
@@ -179,6 +185,8 @@ export const transactionsRepository = {
       status: 'completed',
       ...(filters.branchIds !== 'all' ? { branchId: { in: filters.branchIds } } : {}),
       ...(filters.discountType ? { discountType: filters.discountType } : {}),
+      ...discountKeyWhere(filters.discountKey),
+      ...(filters.transactionIds && { id: { in: filters.transactionIds } }),
       ...(filters.dateFrom || filters.dateTo
         ? {
             createdAt: {
@@ -199,6 +207,8 @@ export const transactionsRepository = {
           discountType: true,
           discountAmount: true,
           discountRateUsed: true,
+          manualDiscountTypeId: true,
+          manualDiscountSnapshot: true,
           discountCustomerIdEncrypted: true,
           discountCustomerIdHash: true,
           // Task 209.16 — existence flag + capture mode for the Discount
@@ -210,7 +220,7 @@ export const transactionsRepository = {
           discountProofType: true,
           createdAt: true,
         },
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         skip: (filters.page - 1) * filters.limit,
         take: filters.limit,
       }),
@@ -494,7 +504,7 @@ export const transactionsRepository = {
       prisma.transaction.findMany({
         where,
         include: transactionInclude,
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         skip: (filters.page - 1) * filters.limit,
         take: filters.limit,
       }),

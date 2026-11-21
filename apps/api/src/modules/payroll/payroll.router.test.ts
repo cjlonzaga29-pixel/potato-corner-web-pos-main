@@ -78,6 +78,8 @@ function mockRes(): MockRes & Record<string, unknown> {
     res.headers[name.toLowerCase()] = value;
     return res;
   });
+  // POS-PERF-P62 — the export route listens for the client leaving (cancelPdfWhenClientLeaves).
+  res.once = vi.fn(() => res);
   return res;
 }
 

@@ -25,8 +25,9 @@ export function escapeCsvField(value: unknown): string {
 /**
  * Peso amounts are written as plain numbers (no currency symbol) for
  * spreadsheet compatibility — formatting is the viewer's job, not ours.
+ * `notice`, when given, is the file's first line, above the column headers.
  */
-export function generateCsv<T extends Record<string, unknown>>(data: T[], columns: Array<ReportColumn<T>>): Buffer {
+export function generateCsv<T extends Record<string, unknown>>(data: T[], columns: Array<ReportColumn<T>>, notice?: string): Buffer {
   const rendered = columnsForRows(columns, data);
   const visibleColumns = rendered.filter((c) => !c.isAudit);
   const auditColumns = rendered.filter((c) => c.isAudit);
@@ -35,5 +36,5 @@ export function generateCsv<T extends Record<string, unknown>>(data: T[], column
   const headerRow = [...visibleColumns.map((c) => c.header), ...auditColumns.map((c) => `_${c.header}`)].join(',');
   const dataRows = data.map((row) => orderedColumns.map((c) => escapeCsvField(row[c.key])).join(','));
 
-  return Buffer.from([headerRow, ...dataRows].join('\n'), 'utf-8');
+  return Buffer.from([...(notice ? [escapeCsvField(notice)] : []), headerRow, ...dataRows].join('\n'), 'utf-8');
 }

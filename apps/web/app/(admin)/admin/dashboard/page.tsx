@@ -9,6 +9,8 @@ import { useSelectedBranch } from '@/hooks/use-selected-branch';
 import { useDashboardSalesTrendReport } from '@/hooks/queries/use-reports';
 import { useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
 import { useExpensesRealtimeSync } from '@/hooks/queries/use-expenses';
+import { ExpenseBreakdownCard } from '@/components/reports/expense-breakdown-card';
+import { ExtraSupplySummaryCard } from '@/components/extra-supplies/extra-supply-summary-card';
 import { manilaToday, manilaMonthStart } from '@/lib/manila-date';
 import { BranchSelector } from '@/components/admin/branch-selector';
 import { DashboardKpiRow } from '@/components/admin/dashboard-kpi-row';
@@ -115,7 +117,7 @@ function AdminDashboardPageContent() {
           tooltip="Expenses recorded for the Manila business day, across every branch in scope."
         />
         <KpiCard
-          title="Staff Clocked In"
+          title="Crew on Duty"
           value={staffClockedIn ?? 0}
           isLoading={isLoadingBranchStats}
           icon={Users}
@@ -128,6 +130,16 @@ function AdminDashboardPageContent() {
           isLoading={activeTotal.isLoading || inactiveTotal.isLoading || closedTotal.isLoading}
         />
       </div>
+
+      <ExpenseBreakdownCard
+        title="Today's Expenses by Type"
+        branchId={branchFilter}
+        dateFrom={manilaToday()}
+        dateTo={manilaToday()}
+        ledgerPath="/admin/expenses"
+      />
+
+      <ExtraSupplySummaryCard title="Today's Extra Supplies" branchId={branchFilter} dateFrom={manilaToday()} dateTo={manilaToday()} historyPath="/admin/extra-supplies" />
 
       <WidgetErrorBoundary label="Sales Trend">
         <SalesAnalyticsSection branchId={branchFilter} />

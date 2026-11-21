@@ -12,7 +12,7 @@ import type { Server } from 'node:http';
 const canRunIntegrationTests = Boolean(process.env.TEST_DATABASE_URL);
 
 const { app } = await import('../../app.js');
-const { pdfRenderPool, PdfRenderError } = await import('./pdf-render-pool.js');
+const { pdfRenderPool, PdfRenderError, PDF_REQUEST_DEADLINE_MS } = await import('./pdf-render-pool.js');
 const { generateSuperAdminToken, generateStaffToken } = await import('../../test-utils/auth-tokens.js');
 
 describe.skipIf(!canRunIntegrationTests)('P62 PDF routes', () => {
@@ -55,7 +55,11 @@ describe.skipIf(!canRunIntegrationTests)('P62 PDF routes', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe('application/pdf');
     expect(Buffer.from(await response.arrayBuffer()).subarray(0, 4).toString()).toBe('%PDF');
-    expect(render).toHaveBeenCalledWith('transactions', expect.any(Array), expect.any(AbortSignal));
+    // POS-PERF-P62 — with the request's deadline, so the pool can refuse at once what can't finish in time.
+    expect(render).toHaveBeenCalledWith('transactions', expect.any(Array), expect.any(AbortSignal), expect.any(Number));
+    const deadlineAt = (render.mock.calls[0] as unknown[])[3] as number;
+    expect(deadlineAt).toBeGreaterThan(Date.now());
+    expect(deadlineAt).toBeLessThanOrEqual(Date.now() + PDF_REQUEST_DEADLINE_MS);
   }, 120_000);
 
   it('refuses an unauthorized role before any render is queued', async () => {

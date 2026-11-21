@@ -585,6 +585,24 @@ describe('apiLimiter (P62 verified identity)', async () => {
     expect(await hit(apiLimiter, mockReq({ ip: randomUUID(), headers: bearer(token) }))).toEqual({ allowed: false, status: 429 });
   });
 
+  it('a user at the shared limit can still log out, within a separate bounded budget', async () => {
+    // P62 browser run: a 429 on logout left the session live and "Log out" did nothing.
+    const { LOGOUT_LIMIT_PER_USER_PER_MINUTE } = await import('./rate-limiter.js');
+    const token = generateTestToken(ROLES.BRANCH, { userId: randomUUID() });
+    const as = (path: string) => mockReq({ ip: randomUUID(), headers: bearer(token), method: 'POST', path } as Partial<Request>);
+    for (let i = 0; i < API_LIMIT_PER_USER_PER_MINUTE; i++) await hit(apiLimiter, mockReq({ ip: randomUUID(), headers: bearer(token) }));
+    expect(await hit(apiLimiter, as('/api/transactions'))).toEqual({ allowed: false, status: 429 });
+    expect((await hit(apiLimiter, as('/api/auth/logout'))).allowed).toBe(true);
+    for (let i = 1; i < LOGOUT_LIMIT_PER_USER_PER_MINUTE; i++) await hit(apiLimiter, as('/api/auth/logout-all'));
+    expect(await hit(apiLimiter, as('/api/auth/logout'))).toEqual({ allowed: false, status: 429 });
+  });
+
+  it('an unverified caller gets no logout budget: it stays on the per-IP limit', async () => {
+    const ip = randomUUID();
+    for (let i = 0; i < API_LIMIT_PER_IP_PER_MINUTE; i++) await hit(apiLimiter, mockReq({ ip }));
+    expect(await hit(apiLimiter, mockReq({ ip, method: 'POST', path: '/api/auth/logout' } as Partial<Request>))).toEqual({ allowed: false, status: 429 });
+  });
+
   it('counts forged, unsigned, expired and malformed tokens, and spoofable headers, against the IP', async () => {
     const ip = randomUUID();
     const victim = randomUUID();

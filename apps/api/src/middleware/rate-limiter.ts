@@ -251,9 +251,30 @@ export function verifiedRateLimitUserId(req: Request): string | null {
   return null;
 }
 
+/**
+ * POS-PERF-P62 — signing out must not depend on the shared budget. Found in the
+ * P62 browser run: a logout refused with 429 left the server session and its
+ * cookies in place, the web cleared itself, and its middleware sent /login
+ * straight back to the dashboard, so "Log out" appeared to do nothing. Every
+ * terminal of a branch shares one account's budget, so a busy branch can be at
+ * the limit. A verified user's logout has its own, separate per-user budget.
+ */
+export const LOGOUT_LIMIT_PER_USER_PER_MINUTE = 30;
+const LOGOUT_PATHS = new Set(['/api/auth/logout', '/api/auth/logout-all']);
+
+const logoutLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: LOGOUT_LIMIT_PER_USER_PER_MINUTE,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (_req: Request, res: Response) => `logout:${String(res.locals.rateLimitUserId)}`,
+  handler: rateLimitHandler,
+});
+
 export const apiLimiter: RequestHandler = (req, res, next) => {
   const userId = verifiedRateLimitUserId(req);
   if (userId === null) return unauthenticatedApiLimiter(req, res, next);
   res.locals.rateLimitUserId = userId;
+  if (req.method === 'POST' && LOGOUT_PATHS.has(req.path)) return logoutLimiter(req, res, next);
   return authenticatedApiLimiter(req, res, next);
 };

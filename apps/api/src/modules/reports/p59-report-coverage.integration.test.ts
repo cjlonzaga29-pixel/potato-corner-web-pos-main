@@ -86,6 +86,27 @@ describe('report-day fixture time (pure, no clock freezing)', () => {
   });
 });
 
+/**
+ * The sale's inventory-deduction job is claimable by any deduction worker that
+ * another test file runs against this shared database, at any moment. Left
+ * alone, it can add one stock movement to this branch after a test counted the
+ * branch's movements (seen in CI: 102 CSV rows instead of 101). Take the job
+ * out of the claimable set while it is still pending; if a worker has already
+ * claimed it, wait for that worker to finish. Either way the branch's movement
+ * count is stable afterwards.
+ */
+async function settleSaleDeductionJob(transactionId: string): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    const { count } = await prisma.inventoryDeductionJob.deleteMany({ where: { transactionId, status: 'pending' } });
+    if (count > 0) return;
+    const job = await prisma.inventoryDeductionJob.findUnique({ where: { transactionId }, select: { status: true } });
+    if (!job || job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') return;
+    if (Date.now() > deadline) throw new Error(`deduction job for ${transactionId} still ${job.status} after 30s`);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+}
+
 describe.skipIf(!isLocalDatabase)('P59 Supervisor report coverage (real Express + Postgres)', () => {
   const tag = randomUUID().slice(0, 8);
   // One base instant for the whole file: `today` and every time-sensitive fixture
@@ -192,6 +213,7 @@ describe.skipIf(!isLocalDatabase)('P59 Supervisor report coverage (real Express 
     expect(saleRes.status).toBe(201);
     templateId = saleRes.body.data.id as string;
     completedCount = 1;
+    await settleSaleDeductionJob(templateId);
     // The real sale and its stock movement carry the server's clock: if the run
     // crossed Manila midnight since `base`, keep them (and every copy) on `today`.
     const sale = await prisma.transaction.findUniqueOrThrow({ where: { id: templateId }, select: { createdAt: true } });

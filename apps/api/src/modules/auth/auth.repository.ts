@@ -43,6 +43,7 @@ export const authRepository = {
         firstName: true,
         lastName: true,
         isActive: true,
+        deletedAt: true,
         mustChangePassword: true,
         branchAssignments: { where: { removedAt: null }, select: { branchId: true } },
       },

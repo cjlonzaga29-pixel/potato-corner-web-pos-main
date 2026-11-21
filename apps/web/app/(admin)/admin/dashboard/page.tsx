@@ -1,7 +1,6 @@
 'use client';
 
 import { Suspense } from 'react';
-import { useSocketStore } from '@/stores/socket.store';
 import { useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
 import { useBranchRealtimeSync, useAllBranchStats, useBranches, useBranchPresence, type PaymentBreakdown } from '@/hooks/queries/use-branches';
@@ -19,7 +18,7 @@ import { DashboardActiveBranchesCard } from '@/components/admin/dashboard-active
 import { DashboardBranchPerformanceTable } from '@/components/admin/dashboard-branch-performance-table';
 import { SalesAnalyticsSection } from '@/components/shared/dashboard/sales-analytics-section';
 import { WidgetErrorBoundary } from '@/components/shared/widget-error-boundary';
-import { DashboardPageHeader, DashboardConnectionBadge } from '@/components/shared/dashboard/dashboard-page-header';
+import { DashboardPageHeader } from '@/components/shared/dashboard/dashboard-page-header';
 import { KpiCard } from '@/components/shared/charts/kpi-card';
 import { TrendingDown, Users } from 'lucide-react';
 import { MAX_LIST_LIMIT } from '@potato-corner/shared';
@@ -34,9 +33,6 @@ import { MAX_LIST_LIMIT } from '@potato-corner/shared';
 // on the Supervisor dashboard and inventory pages; the org-wide rollup is
 // still on /admin/inventory. Sales/branch figures are unchanged.
 function AdminDashboardPageContent() {
-  const isConnected = useSocketStore((s) => s.isConnected);
-  const isReconnecting = useSocketStore((s) => s.isReconnecting);
-
   const { selectedBranchId } = useSelectedBranch();
   const branchFilter = selectedBranchId === 'all' ? undefined : selectedBranchId;
 
@@ -91,12 +87,7 @@ function AdminDashboardPageContent() {
       <DashboardPageHeader
         title="Super Admin Dashboard"
         subtitle="Live overview across every branch."
-        actions={
-          <>
-            <BranchSelector />
-            <DashboardConnectionBadge isConnected={isConnected} isReconnecting={isReconnecting} />
-          </>
-        }
+        actions={<BranchSelector />}
       />
 
       <DashboardKpiRow
@@ -139,7 +130,7 @@ function AdminDashboardPageContent() {
         ledgerPath="/admin/expenses"
       />
 
-      <ExtraSupplySummaryCard title="Today's Extra Supplies" branchId={branchFilter} dateFrom={manilaToday()} dateTo={manilaToday()} historyPath="/admin/extra-supplies" />
+      <ExtraSupplySummaryCard title="Today's Extra Supplies" branchId={branchFilter} dateFrom={manilaToday()} dateTo={manilaToday()} historyPath="/admin/reports?tab=EXTRA_SUPPLIES" />
 
       <WidgetErrorBoundary label="Sales Trend">
         <SalesAnalyticsSection branchId={branchFilter} />

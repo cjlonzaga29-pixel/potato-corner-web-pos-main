@@ -1237,6 +1237,7 @@ describe('authService.resetPassword', () => {
       userId: 'user-1',
       expiresAt: new Date(Date.now() + 60_000),
     } as never);
+    vi.mocked(authRepository.findUserById).mockResolvedValue({ id: 'user-1', deletedAt: null } as never);
 
     await authService.resetPassword('valid-token', 'NewPassword1');
 
@@ -1271,11 +1272,24 @@ describe('authService.resetPassword', () => {
     expect(authRepository.updatePasswordHash).not.toHaveBeenCalled();
   });
 
+  it('POS-PERF-P64 — refuses a token whose account was removed, without touching the password', async () => {
+    vi.mocked(authRepository.findPasswordResetToken).mockResolvedValue({
+      userId: 'user-1',
+      expiresAt: new Date(Date.now() + 60_000),
+    } as never);
+    vi.mocked(authRepository.findUserById).mockResolvedValue({ id: 'user-1', deletedAt: new Date() } as never);
+
+    await expect(authService.resetPassword('stale-token', 'NewPassword1')).rejects.toMatchObject({ code: 'RESET_TOKEN_INVALID' });
+    expect(authRepository.updatePasswordHash).not.toHaveBeenCalled();
+    expect(authRepository.deletePasswordResetToken).toHaveBeenCalledTimes(1);
+  });
+
   it('a token can only be used once — the token is deleted on success so replay fails downstream lookups', async () => {
     vi.mocked(authRepository.findPasswordResetToken).mockResolvedValue({
       userId: 'user-1',
       expiresAt: new Date(Date.now() + 60_000),
     } as never);
+    vi.mocked(authRepository.findUserById).mockResolvedValue({ id: 'user-1', deletedAt: null } as never);
 
     await authService.resetPassword('one-time-token', 'NewPassword1');
 

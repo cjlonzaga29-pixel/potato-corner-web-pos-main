@@ -2,7 +2,7 @@
 
 Navigation only, not proof of what the code does today. Rules live in [`.claude/CLAUDE.md`](../.claude/CLAUDE.md), architecture in [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md), and
 the current state of work in [`CURRENT_HANDOFF.md`](CURRENT_HANDOFF.md). Paths were checked against the working tree on
-2026-11-03. Update the affected entries when files move. Keep this file under 180 lines and link runbooks, not details.
+2026-11-03 (P64 entries 2026-11-22). Update the affected entries when files move. Keep this file under 180 lines and link runbooks, not details.
 
 Shorthand: `API/` = `apps/api/src/modules/`, `WEB/` = `apps/web/`, `SHARED/` = `packages/shared/src/schemas/`,
 `RUN/` = `docs/runbooks/`.
@@ -101,7 +101,7 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 
 ## Attendance, PIN, breaks, cashier sessions
 
-- **UI:** `WEB/app/(branch)/branch/clock-in/page.tsx`, `WEB/app/(branch)/branch/attendance/page.tsx`,
+- **UI:** `WEB/app/(branch)/branch/clock-in/page.tsx`, `WEB/app/(branch)/branch/attendance/page.tsx`, Admin read-only `WEB/components/admin/admin-attendance-report.tsx` (Reports `?tab=ATTENDANCE_RECORDS`; `/admin/attendance` redirects, P64),
   `WEB/components/branch-ops/attendance-view.tsx`, `WEB/components/pos/pin-keypad.tsx`
 - **Cashier session (browser):** `WEB/stores/terminal-operator.store.ts`, `WEB/hooks/use-terminal-operator.ts`
 - **API:** `API/attendance/attendance.router.ts`, `API/attendance/attendance.service.ts`,
@@ -141,7 +141,7 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 
 ## Extra Supplies
 
-- **All:** `API/extra-supplies/`, `SHARED/extra-supply.schema.ts`, `WEB/components/pos/extra-supplies-panel.tsx`, `WEB/components/extra-supplies/`, `WEB/hooks/queries/use-extra-supplies.ts`, `WEB/stores/extra-supply-draft.store.ts`, `apps/api/scripts/test-p61-migration-on-populated-data.ts`, `RUN/pos-perf-p61-extra-supplies.md`
+- **All:** `API/extra-supplies/`, `SHARED/extra-supply.schema.ts`, `WEB/components/pos/extra-supplies-panel.tsx`, `WEB/components/extra-supplies/` (Admin views it only under Reports `?tab=EXTRA_SUPPLIES`; `/admin/extra-supplies` redirects via `WEB/lib/admin-report-redirect.ts`, P64), `WEB/hooks/queries/use-extra-supplies.ts`, `WEB/stores/extra-supply-draft.store.ts`, `apps/api/scripts/test-p61-migration-on-populated-data.ts`, `RUN/pos-perf-p61-extra-supplies.md`
 
 ## Stock transfers
 
@@ -161,6 +161,7 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 - **Branch and catalog scope:** `apps/api/src/lib/branch-access.ts`, `apps/api/src/lib/catalog-authority.ts`
 - **Auth module:** `API/auth/auth.router.ts`, `API/auth/auth.service.ts` (refresh protocol: `refreshToken`, grace `ROTATION_GRACE_MS` in `auth.repository.ts`); schema `SHARED/auth.schema.ts`
 - **Web session:** `WEB/lib/auth-refresh.ts` (refresh verdicts, Web Lock), `WEB/lib/api-client.ts` (401 handling, `IDENTITY_CHANGED`; P62: protected requests wait for the session, `isPublicApiPath`), `WEB/stores/auth.store.ts` `sessionStatus`, `WEB/stores/branch.store.ts` (reloaded branch is a hint until the token grants it), `WEB/hooks/use-identity-scoped-query-cache.ts`, `WEB/lib/offline/purge-api-response-cache.ts`; SW rules in `apps/web/next.config.ts`
+- **Account removal (P64):** `deleteEmployee`/`removeSupervisorKeepingHistory` in `API/employees/employees.service.ts`, `removeWithHistory`/`lockNonRemovedUser` in `employees.repository.ts`, marker `removedAccountRevocationHash` in `apps/api/src/lib/verify-access-token.ts`, fixture cleanup `API/employees/fixture-account-cleanup.ts` + `apps/api/scripts/p64-fixture-account-cleanup.ts`, dialog `WEB/components/supervisor/employees/remove-employee-dialog.tsx`; tests `API/employees/p64-account-removal.integration.test.ts`, `apps/api/scripts/test-p64-migration-on-populated-data.ts`, driver `tests/e2e/manual/p64/`; runbook `RUN/pos-perf-p64-account-removal-and-dashboard-cleanup.md`
 - **Rate limits:** `apps/api/src/middleware/rate-limiter.ts` (`apiLimiter` keys verified users; logout has its own per-user budget). Proxy trust: `app.set('trust proxy', 1)` in `apps/api/src/app.ts`, tested by `apps/api/src/p62-proxy-trust.test.ts`
 - **Tests:** `apps/api/src/middleware/rbac.test.ts`, `apps/api/src/lib/branch-access.test.ts`,
   `API/p40-route-boundaries.test.ts`, `API/products/products.branch-isolation.integration.test.ts`

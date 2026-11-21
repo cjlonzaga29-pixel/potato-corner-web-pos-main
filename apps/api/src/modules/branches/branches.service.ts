@@ -6,7 +6,7 @@ import { branchesRepository } from './branches.repository.js';
 import { BranchError, type BranchListFilters, type CreateBranchData, type UpdateBranchData } from './branches.types.js';
 import { productInventoryRepository } from '../product-inventory/product-inventory.repository.js';
 import { flavorsRepository } from '../flavors/flavors.repository.js';
-import { employeesRepository } from '../employees/employees.repository.js';
+import { AccountRemovedError, employeesRepository } from '../employees/employees.repository.js';
 import { authRepository } from '../auth/auth.repository.js';
 import { inventoryService } from '../inventory/inventory.service.js';
 import { universalInventoryService } from '../universal-inventory/universal-inventory.service.js';
@@ -530,6 +530,11 @@ export const branchesService = {
     if (user.role !== ROLES.SUPERVISOR) {
       throw new BranchError('USER_NOT_SUPERVISOR', 'Only users with the supervisor role can be assigned to a branch', 422);
     }
+    // POS-PERF-P64 — a removed account never gets branch access back. The
+    // repository re-checks under the user's row lock for a racing removal.
+    if (user.deletedAt) {
+      throw new BranchError('USER_REMOVED', 'This account has been removed and cannot be assigned to a branch', 409);
+    }
 
     const branch = await branchesRepository.findById(branchId);
     if (!branch) throw new BranchError('BRANCH_NOT_FOUND', 'Branch not found', 404);
@@ -543,7 +548,15 @@ export const branchesService = {
       return existing;
     }
 
-    const assignment = await branchesRepository.assignUser(userId, branchId);
+    let assignment: Awaited<ReturnType<typeof branchesRepository.assignUser>>;
+    try {
+      assignment = await branchesRepository.assignUser(userId, branchId);
+    } catch (error) {
+      if (error instanceof AccountRemovedError) {
+        throw new BranchError('USER_REMOVED', 'This account has been removed and cannot be assigned to a branch', 409);
+      }
+      throw error;
+    }
 
     await recordAuditLog({
       action: 'SUPERVISOR_ASSIGNED',

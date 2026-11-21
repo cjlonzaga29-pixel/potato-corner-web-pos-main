@@ -216,7 +216,9 @@ export const authService = {
       user.lockedUntil = null;
     }
 
-    if (!user.isActive) {
+    // POS-PERF-P64 — a removed account is always inactive (CHECK constraint);
+    // deletedAt is tested too so the refusal never depends on that alone.
+    if (!user.isActive || user.deletedAt) {
       throw new AuthError('ACCOUNT_INACTIVE', 'This account has been deactivated', 403);
     }
 
@@ -335,7 +337,7 @@ export const authService = {
 
     const outcome = await authRepository.withAdvisoryLock(refreshSessionLockId(session), async (tx): Promise<RefreshTokenPair | 'replay'> => {
       const stored = await authRepository.findRefreshTokenTx(tx, refreshTokenValue);
-      if (!stored || stored.expiresAt.getTime() <= Date.now() || stored.deviceId !== deviceId || !stored.user.isActive) {
+      if (!stored || stored.expiresAt.getTime() <= Date.now() || stored.deviceId !== deviceId || !stored.user.isActive || stored.user.deletedAt) {
         throw invalid();
       }
 
@@ -508,7 +510,8 @@ export const authService = {
 
     // Always behave the same way regardless of whether the email exists —
     // the router returns a generic success message either way.
-    if (!user) return;
+    // A removed account (POS-PERF-P64) gets no reset email: it must never regain a password.
+    if (!user || user.deletedAt) return;
 
     const token = randomOpaqueToken();
     const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_SECONDS * 1000);
@@ -541,6 +544,13 @@ export const authService = {
       throw new AuthError('RESET_TOKEN_INVALID', 'Invalid or expired reset token', 400);
     }
     const userId = stored.userId;
+    // POS-PERF-P64 — removal deletes reset tokens, but a token read just
+    // before a concurrent removal must not set a password on a removed account.
+    const owner = await authRepository.findUserById(userId);
+    if (!owner || owner.deletedAt) {
+      await authRepository.deletePasswordResetToken(tokenHash);
+      throw new AuthError('RESET_TOKEN_INVALID', 'Invalid or expired reset token', 400);
+    }
 
     const newHash = await bcrypt.hash(newPassword, BCRYPT_COST_FACTOR);
     await authRepository.updatePasswordHash(userId, newHash);
@@ -773,6 +783,9 @@ export const authService = {
     const user = await authRepository.findUserById(userId);
     if (!user) {
       throw new AuthError('USER_NOT_FOUND', 'User not found', 404);
+    }
+    if (user.deletedAt) {
+      throw new AuthError('ACCOUNT_REMOVED', 'This account has been removed and cannot be unlocked', 409);
     }
 
     await authRepository.resetLoginAttempts(userId);

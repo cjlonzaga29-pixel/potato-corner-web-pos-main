@@ -346,6 +346,12 @@ model User {
   deactivatedAt      DateTime? @map("deactivated_at")
   deactivatedBy      String?   @map("deactivated_by")
   deactivationReason String?   @map("deactivation_reason")
+  // POS-PERF-P64 — account removed by a Super Admin. The row stays as a
+  // non-login historical record (names on sales, attendance, audit…); a
+  // CHECK constraint in the migration keeps it inactive forever. Distinct
+  // from deactivatedAt, which an ordinary reactivation clears.
+  deletedAt          DateTime? @map("deleted_at")
+  deletedBy          String?   @map("deleted_by")
 
   branchAssignments                UserBranchAssignment[]
   shiftsAsCashier                  Shift[]                @relation("ShiftCashier")
@@ -431,6 +437,7 @@ model User {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  @@index([deletedAt])
   @@map("users")
 }
 

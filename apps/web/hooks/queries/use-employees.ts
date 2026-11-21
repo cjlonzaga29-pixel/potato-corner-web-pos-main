@@ -252,8 +252,27 @@ export type EmployeeHistoryCategory = 'sales' | 'shifts' | 'attendance' | 'audit
 export interface EmployeeDeletionEligibility {
   employee_id: string;
   can_delete: boolean;
-  blocked_reason: 'has_history' | 'branch_account' | null;
+  blocked_reason: 'has_history' | 'branch_account' | 'open_operations' | 'already_removed' | null;
   references: Record<EmployeeHistoryCategory, number>;
+  /** POS-PERF-P64 — absent from older APIs (treated as 'permanent' when can_delete). */
+  mode?: 'permanent' | 'remove_keep_history' | null;
+  prerequisites?: EmployeeRemovalPrerequisites | null;
+}
+
+/** POS-PERF-P64 — what removing a supervisor with history affects (see employeesRepository.getRemovalPrerequisites). */
+export interface EmployeeRemovalPrerequisites {
+  open_shifts: { id: string; branch_name: string }[];
+  open_attendance: { id: string; branch_name: string }[];
+  held_orders: number;
+  pending_inventory_approvals: number;
+  branches: { id: string; name: string }[];
+  branches_left_without_supervisor: { id: string; name: string }[];
+}
+
+export interface EmployeeDeletionResult {
+  deleted: true;
+  /** Absent from older APIs, which only ever deleted permanently. */
+  outcome?: 'permanent' | 'removed' | 'already_removed';
 }
 
 /**
@@ -277,21 +296,26 @@ export function useEmployeeDeletionEligibility(employeeId: string, enabled: bool
   });
 }
 
-/** POS-PERF-P47 — permanent delete of an unused account; the server refuses (EMPLOYEE_HAS_HISTORY) anything with history. */
+/**
+ * POS-PERF-P47 — permanent delete of an unused account. POS-PERF-P64 — for a
+ * supervisor with history (Super Admin only) the server removes access and
+ * keeps the record for history instead; staff with history are still refused.
+ */
 export function useDeleteEmployee(employeeId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async () => {
-      const response = await apiClient<{ deleted: true }>(`/api/employees/${employeeId}`, { method: 'DELETE' });
+      const response = await apiClient<EmployeeDeletionResult>(`/api/employees/${employeeId}`, { method: 'DELETE' });
       if (!response.data) throwEmployeeApiError(response, 'Failed to delete');
       return response.data;
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
       queryClient.removeQueries({ queryKey: ['employee', employeeId] });
       queryClient.removeQueries({ queryKey: ['staff-pin-status', employeeId] });
       void queryClient.invalidateQueries({ queryKey: ['employees'] });
       void queryClient.invalidateQueries({ queryKey: ['supervisors'] });
-      toast.success('Deleted permanently');
+      void queryClient.invalidateQueries({ queryKey: ['branches'] });
+      toast.success(result.outcome === 'removed' || result.outcome === 'already_removed' ? 'Account removed — history kept' : 'Deleted permanently');
     },
     // No toast on error — the dialog shows the message inline next to the action.
   });

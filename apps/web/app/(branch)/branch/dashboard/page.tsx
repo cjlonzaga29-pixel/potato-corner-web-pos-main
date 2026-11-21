@@ -25,11 +25,10 @@ import { DashboardTransactionsFeed } from '@/components/supervisor/dashboard-tra
 import { SalesAnalyticsSection } from '@/components/shared/dashboard/sales-analytics-section';
 import { InventoryConsumptionPanel } from '@/components/shared/dashboard/inventory-consumption-panel';
 import { WidgetErrorBoundary } from '@/components/shared/widget-error-boundary';
-import { DashboardPageHeader, DashboardConnectionBadge } from '@/components/shared/dashboard/dashboard-page-header';
+import { DashboardPageHeader } from '@/components/shared/dashboard/dashboard-page-header';
 import { formatDate } from '@/lib/utils';
 import { manilaToday, manilaMonthStart } from '@/lib/manila-date';
 import { useAuth } from '@/hooks/use-auth';
-import { useSocketStore } from '@/stores/socket.store';
 import { useBranch, useAllBranchStats } from '@/hooks/queries/use-branches';
 import { useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useTransactions, useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
@@ -71,8 +70,6 @@ export default function BranchDashboardPage() {
   const router = useRouter();
   const { user, isLoading: isAuthLoading } = useAuth();
   const branchId = user?.branchIds[0];
-  const isConnected = useSocketStore((s) => s.isConnected);
-  const isReconnecting = useSocketStore((s) => s.isReconnecting);
 
   useShiftsRealtimeSync();
   useTransactionsRealtimeSync();
@@ -131,10 +128,7 @@ export default function BranchDashboardPage() {
       <DashboardPageHeader
         title="Branch Dashboard"
         subtitle={`${branch?.name ?? branchId} — ${formatDate(new Date())}`}
-        actions={<DashboardConnectionBadge isConnected={isConnected} isReconnecting={isReconnecting} />}
       />
-
-      <ExtraSupplySummaryCard title="Today's Extra Supplies" branchId={branchId} dateFrom={manilaToday()} dateTo={manilaToday()} historyPath="/branch/extra-supplies" />
 
       <div className="app-kpi-grid-4">
         <KpiCard
@@ -231,6 +225,9 @@ export default function BranchDashboardPage() {
           onRowClick={() => router.push('/branch/receipts')}
         />
       </div>
+
+      {/* POS-PERF-P64 — secondary to every main section (sales, collections, actions, trend, inventory, transactions), so it comes last in reading order. */}
+      <ExtraSupplySummaryCard title="Today's Extra Supplies" branchId={branchId} dateFrom={manilaToday()} dateTo={manilaToday()} historyPath="/branch/extra-supplies" />
     </div>
   );
 }

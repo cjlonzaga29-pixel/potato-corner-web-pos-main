@@ -14,7 +14,7 @@ describe('admin nav highlighting', () => {
     ['/admin/employees', ['Supervisors']],
     ['/admin/branch-accounts', ['Branches']],
     ['/admin/branches', ['Branches']],
-    ['/admin/attendance', ['Attendance']],
+    ['/admin/attendance', []],
     ['/admin/employeesx', []],
   ])('%s highlights %j', (pathname, expected) => {
     expect(activeLabels(pathname)).toEqual(expected);
@@ -42,5 +42,12 @@ describe('ADMIN_NAV_ITEMS', () => {
     ]) {
       expect(labels).not.toContain(legacy);
     }
+  });
+  it.each([
+    ['Extra Supplies', '/admin/extra-supplies'],
+    ['Attendance', '/admin/attendance'],
+  ])('has no %s entry — Admin reaches it under Reports (POS-PERF-P64)', (label, href) => {
+    expect(ADMIN_NAV_ITEMS.map((item) => item.label)).not.toContain(label);
+    expect(ADMIN_NAV_ITEMS.some((item) => item.href === href || item.children?.some((child) => child.href === href))).toBe(false);
   });
 });

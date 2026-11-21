@@ -242,4 +242,25 @@ describe('BranchDashboardPage', () => {
     expect(screen.getByText('Stock Adjustment')).toBeInTheDocument();
     expect(screen.getByText('Log Expense')).toBeInTheDocument();
   });
+  it('shows no realtime connection badge in the header (POS-PERF-P64)', () => {
+    setup(statsRow());
+    render(<BranchDashboardPage />);
+    expect(screen.getByRole('heading', { name: 'Branch Dashboard' })).toBeInTheDocument();
+    for (const label of ['Connected', 'Connecting', 'Reconnecting', 'Disconnected']) {
+      expect(screen.queryByText(label)).not.toBeInTheDocument();
+    }
+  });
+
+  it("places Today's Extra Supplies after the sales KPIs, collections and quick actions in DOM order, exactly once", () => {
+    setup(statsRow());
+    render(<BranchDashboardPage />);
+    expect(screen.getAllByTestId('extra-supply-summary-card')).toHaveLength(1);
+    const card = screen.getByTestId('extra-supply-summary-card');
+    for (const earlier of ['Gross Sales Today', "Today's Expenses", 'Payment Collections Today', 'Quick Actions', 'Open POS']) {
+      // DOCUMENT_POSITION_FOLLOWING: the card comes after this section in the markup, not just visually.
+      expect(screen.getByText(earlier).compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    // Below every main section: the last element of the page itself.
+    expect(card.parentElement?.lastElementChild).toBe(card);
+  });
 });

@@ -30,6 +30,19 @@ export function revokedTokenHash(token: string): string {
   return sha256Hex(token);
 }
 
+/**
+ * POS-PERF-P64 — a removed account's marker row in the same RevokedToken
+ * table. Removal writes it in the removal transaction (so the out-of-process
+ * fixture cleanup script cuts sessions too), and every access token is checked
+ * against its owner's marker as well as its own hash. The marker only has to
+ * outlive the longest access token issued before the removal; login and
+ * refresh refuse the account from then on.
+ */
+export function removedAccountRevocationHash(userId: string): string {
+  return sha256Hex(`removed-account:${userId}`);
+}
+export const REMOVED_ACCOUNT_MARKER_TTL_MS = 24 * 60 * 60 * 1000;
+
 const NOT_REVOKED_CACHE_TTL_MS = 60_000;
 const notRevokedCache = new Map<string, number>(); // tokenHash → cache-entry expiry
 
@@ -49,7 +62,17 @@ export function forgetNotRevoked(tokenHash: string): void {
   notRevokedCache.delete(tokenHash);
 }
 
-async function isTokenRevoked(tokenHash: string): Promise<boolean> {
+/**
+ * POS-PERF-P64 — an account was removed in this process. The cache is keyed
+ * by token, not user, so it is cleared entirely; removals are rare and the
+ * next request per token simply re-reads the table.
+ */
+export function forgetAccountStatus(userId: string): void {
+  void userId;
+  notRevokedCache.clear();
+}
+
+async function isTokenRevoked(tokenHash: string, userId: string | null): Promise<boolean> {
   const now = Date.now();
   const cachedExpiry = notRevokedCache.get(tokenHash);
   if (cachedExpiry && cachedExpiry > now) {
@@ -62,6 +85,13 @@ async function isTokenRevoked(tokenHash: string): Promise<boolean> {
   });
   if (revoked) {
     return true;
+  }
+  if (userId) {
+    const removed = await prisma.revokedToken.findFirst({
+      where: { tokenHash: removedAccountRevocationHash(userId), expiresAt: { gt: new Date() } },
+      select: { id: true },
+    });
+    if (removed) return true;
   }
 
   notRevokedCache.set(tokenHash, now + NOT_REVOKED_CACHE_TTL_MS);
@@ -99,7 +129,11 @@ export async function verifyAccessToken(token: string): Promise<JwtPayload> {
     throw new AccessTokenError('TOKEN_MALFORMED', error instanceof Error ? error.message : 'jwt malformed');
   }
 
-  if (await isTokenRevoked(revokedTokenHash(token))) {
+  const claimedUserId =
+    decoded && typeof decoded === 'object' && typeof (decoded as { user_id?: unknown }).user_id === 'string'
+      ? (decoded as { user_id: string }).user_id
+      : null;
+  if (await isTokenRevoked(revokedTokenHash(token), claimedUserId)) {
     throw new AccessTokenError('TOKEN_REVOKED', 'token revoked');
   }
 

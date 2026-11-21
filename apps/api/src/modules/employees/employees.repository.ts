@@ -2,6 +2,7 @@ import type { Prisma, EmployeeStatus as PrismaEmployeeStatus } from '@prisma/cli
 import { prisma } from '../../lib/prisma.js';
 import { nextCounterValue } from '../../lib/id-counter.js';
 import { monthBounds } from '../../lib/manila-time.js';
+import { REMOVED_ACCOUNT_MARKER_TTL_MS, removedAccountRevocationHash } from '../../lib/verify-access-token.js';
 import type {
   CreateEmployeeData,
   EmployeeActivityData,
@@ -32,6 +33,7 @@ const employeeSelect = {
   mustChangePassword: true,
   lastLoginAt: true,
   createdAt: true,
+  deletedAt: true,
   branchAssignments: {
     where: { removedAt: null },
     select: {
@@ -58,7 +60,10 @@ export type EmployeeWithGovernmentIds = Prisma.UserGetPayload<{ select: typeof e
 function buildWhere(
   filters: Pick<EmployeeListFilters, 'role' | 'employmentType' | 'isActive' | 'branchIds' | 'excludeRoles' | 'search'>,
 ): Prisma.UserWhereInput {
-  const and: Prisma.UserWhereInput[] = [];
+  // POS-PERF-P64 — removed accounts never appear in operational lists,
+  // selectors, search results or their counts. History screens resolve
+  // names by id through their own joins and keep showing them.
+  const and: Prisma.UserWhereInput[] = [{ deletedAt: null }];
 
   if (filters.role) and.push({ role: filters.role });
   if (filters.employmentType) and.push({ employmentType: filters.employmentType });
@@ -76,7 +81,47 @@ function buildWhere(
     });
   }
 
-  return and.length > 0 ? { AND: and } : {};
+  return { AND: and };
+}
+
+export interface RemovalPrerequisites {
+  /** Blocking: close the shift (count the cash) first. */
+  open_shifts: { id: string; branch_name: string }[];
+  /** Blocking: clock out (or correct the record) first. */
+  open_attendance: { id: string; branch_name: string }[];
+  /** Informational: held carts expire on their own and stay on their branch. */
+  held_orders: number;
+  /** Informational: reviewers can still decide them; the requester name is kept. */
+  pending_inventory_approvals: number;
+  /** Branches whose access is removed. */
+  branches: { id: string; name: string }[];
+  /** Informational: no other active supervisor is assigned; a Super Admin can assign one. */
+  branches_left_without_supervisor: { id: string; name: string }[];
+}
+
+/** Thrown inside the removal transaction to roll it back; never escapes the repository. */
+class RemovalBlocked extends Error {
+  constructor(public readonly prerequisites: RemovalPrerequisites) {
+    super('removal blocked');
+  }
+}
+
+/** POS-PERF-P64 — an ordinary write met an account that a Super Admin has removed. */
+export class AccountRemovedError extends Error {
+  constructor() {
+    super('This account has been removed');
+    this.name = 'AccountRemovedError';
+  }
+}
+
+/**
+ * POS-PERF-P64 — takes the user's row lock and refuses a removed account, so
+ * a branch assignment racing a removal is serialised behind it. The no-op
+ * write (deletedAt stays NULL) is what takes the lock.
+ */
+export async function lockNonRemovedUser(tx: Prisma.TransactionClient, userId: string): Promise<void> {
+  const locked = await tx.user.updateMany({ where: { id: userId, deletedAt: null }, data: { deletedAt: null } });
+  if (locked.count === 0) throw new AccountRemovedError();
 }
 
 /**
@@ -107,7 +152,7 @@ export const employeesRepository = {
 
   /** Minimal projection for requireActiveEmployee's per-request status re-check — avoids the full employeeSelect (branch assignments, etc.) on every hot-path POS/attendance request. */
   findStatusById(id: string) {
-    return prisma.user.findUnique({ where: { id }, select: { status: true, isActive: true } });
+    return prisma.user.findUnique({ where: { id }, select: { status: true, isActive: true, deletedAt: true } });
   },
 
   /** Used only in auth context (includes passwordHash) — never for populating an API response. */
@@ -126,7 +171,7 @@ export const employeesRepository = {
 
   findByBranchIds(branchIds: string[]) {
     return prisma.user.findMany({
-      where: { isActive: true, branchAssignments: { some: { branchId: { in: branchIds }, removedAt: null } } },
+      where: { isActive: true, deletedAt: null, branchAssignments: { some: { branchId: { in: branchIds }, removedAt: null } } },
       orderBy: { firstName: 'asc' },
       select: employeeSelect,
     });
@@ -186,18 +231,22 @@ export const employeesRepository = {
     return tx.user.findUniqueOrThrow({ where: { id: user.id }, select: employeeSelect });
   },
 
+  // POS-PERF-P64 — every ordinary write below matches only a non-removed row,
+  // so a request that read the account just before a concurrent removal fails
+  // with P2025 (mapped to EMPLOYEE_REMOVED) instead of changing a removed
+  // account. The CHECK constraint is the database-level backstop.
   update(id: string, data: UpdateEmployeeData) {
-    return prisma.user.update({ where: { id }, data, select: employeeSelect });
+    return prisma.user.update({ where: { id, deletedAt: null }, data, select: employeeSelect });
   },
 
   /** Single-column write for Branch Account credential edit — email is otherwise immutable via update() (UpdateEmployeeData excludes it). */
   updateEmail(id: string, email: string) {
-    return prisma.user.update({ where: { id }, data: { email }, select: employeeSelect });
+    return prisma.user.update({ where: { id, deletedAt: null }, data: { email }, select: employeeSelect });
   },
 
   deactivate(id: string, deactivatedBy: string, reason: string) {
     return prisma.user.update({
-      where: { id },
+      where: { id, deletedAt: null },
       data: { isActive: false, status: 'inactive', deactivatedAt: new Date(), deactivatedBy, deactivationReason: reason },
       select: employeeSelect,
     });
@@ -214,7 +263,7 @@ export const employeesRepository = {
   setStatus(id: string, status: PrismaEmployeeStatus, changedBy: string, reason: string | null) {
     const isActive = status === 'active';
     return prisma.user.update({
-      where: { id },
+      where: { id, deletedAt: null },
       data: isActive
         ? {
             isActive: true,
@@ -239,7 +288,7 @@ export const employeesRepository = {
   reactivate(id: string, reactivatedBy: string) {
     void reactivatedBy;
     return prisma.user.update({
-      where: { id },
+      where: { id, deletedAt: null },
       data: {
         isActive: true,
         deactivatedAt: null,
@@ -256,6 +305,7 @@ export const employeesRepository = {
   async updateBranchAssignments(userId: string, branchIds: string[], updatedBy: string) {
     void updatedBy;
     return prisma.$transaction(async (tx) => {
+      if (branchIds.length > 0) await lockNonRemovedUser(tx, userId);
       await tx.userBranchAssignment.updateMany({
         where: { userId, removedAt: null },
         data: { removedAt: new Date() },
@@ -409,6 +459,116 @@ export const employeesRepository = {
       await tx.user.delete({ where: { id: userId } });
       return { deleted: true as const };
     });
+  },
+
+  /**
+   * POS-PERF-P64 — what stands in the way of removing this account, and what
+   * the person deciding should know. Only real integrity problems block:
+   * an open shift (cash still to count) and an open clock-in (time still
+   * running). Everything else is reported, never silently changed.
+   */
+  async getRemovalPrerequisites(userId: string, client: Prisma.TransactionClient = prisma): Promise<RemovalPrerequisites> {
+    const [openShifts, openAttendance, heldOrders, pendingApprovals, assignments] = await Promise.all([
+      client.shift.findMany({
+        where: { status: 'active', OR: [{ cashierId: userId }, { openedBy: userId }] },
+        select: { id: true, branch: { select: { name: true } } },
+      }),
+      client.attendanceRecord.findMany({
+        where: { employeeId: userId, clockOutServerTime: null, deletedAt: null },
+        select: { id: true, branch: { select: { name: true } } },
+      }),
+      client.holdOrder.count({ where: { cashierId: userId, status: 'held' } }),
+      client.inventoryApprovalRequest.count({ where: { submittedByUserId: userId, status: 'PENDING' } }),
+      client.userBranchAssignment.findMany({
+        where: { userId, removedAt: null },
+        select: { branchId: true, branch: { select: { name: true } } },
+      }),
+    ]);
+    const branchIds = assignments.map((a) => a.branchId);
+    const coveringAssignments = branchIds.length
+      ? await client.userBranchAssignment.findMany({
+          where: {
+            branchId: { in: branchIds },
+            removedAt: null,
+            userId: { not: userId },
+            user: { role: 'supervisor', isActive: true, deletedAt: null },
+          },
+          select: { branchId: true },
+        })
+      : [];
+    const covered = new Set(coveringAssignments.map((row) => row.branchId));
+    return {
+      open_shifts: openShifts.map((s) => ({ id: s.id, branch_name: s.branch.name })),
+      open_attendance: openAttendance.map((a) => ({ id: a.id, branch_name: a.branch.name })),
+      held_orders: heldOrders,
+      pending_inventory_approvals: pendingApprovals,
+      branches: assignments.map((a) => ({ id: a.branchId, name: a.branch.name })),
+      branches_left_without_supervisor: assignments
+        .filter((a) => !covered.has(a.branchId))
+        .map((a) => ({ id: a.branchId, name: a.branch.name })),
+    };
+  },
+
+  /**
+   * POS-PERF-P64 — removes an account that has history, keeping the row as
+   * a non-login historical record. One transaction: the first write takes
+   * the row lock (serialising concurrent removals, edits, status changes and
+   * branch assignments), the prerequisites are re-checked under it, then
+   * sessions, reset tokens, device PINs and branch access are removed.
+   * Nothing that names the person (sales, expenses, attendance, payroll,
+   * stock movements, proofs, audit) is touched. Returns 'already_removed'
+   * when a concurrent request removed it first, and 'blocked' (with nothing
+   * changed) when a prerequisite fails.
+   */
+  async removeWithHistory(
+    userId: string,
+    removedBy: string,
+    previous: { isActive: boolean; status: PrismaEmployeeStatus },
+  ): Promise<
+    | { outcome: 'removed'; prerequisites: RemovalPrerequisites }
+    | { outcome: 'already_removed' }
+    | { outcome: 'blocked'; prerequisites: RemovalPrerequisites }
+  > {
+    const now = new Date();
+    try {
+      return await prisma.$transaction(async (tx) => {
+        const marked = await tx.user.updateMany({
+          where: { id: userId, deletedAt: null },
+          data: {
+            deletedAt: now,
+            deletedBy: removedBy,
+            isActive: false,
+            status: previous.status === 'active' ? 'inactive' : previous.status,
+            ...(previous.isActive
+              ? { deactivatedAt: now, deactivatedBy: removedBy, deactivationReason: 'Account removed by Super Admin' }
+              : {}),
+          },
+        });
+        if (marked.count === 0) return { outcome: 'already_removed' as const };
+
+        const prerequisites = await employeesRepository.getRemovalPrerequisites(userId, tx);
+        if (prerequisites.open_shifts.length > 0 || prerequisites.open_attendance.length > 0) {
+          throw new RemovalBlocked(prerequisites);
+        }
+
+        await tx.refreshToken.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: now } });
+        await tx.passwordResetToken.deleteMany({ where: { userId } });
+        await tx.pinCredential.deleteMany({ where: { userId } });
+        await tx.userBranchAssignment.updateMany({ where: { userId, removedAt: null }, data: { removedAt: now } });
+        // Ends every already-issued access token for this account (checked by verifyAccessToken).
+        const markerHash = removedAccountRevocationHash(userId);
+        const markerExpiry = new Date(now.getTime() + REMOVED_ACCOUNT_MARKER_TTL_MS);
+        await tx.revokedToken.upsert({
+          where: { tokenHash: markerHash },
+          create: { tokenHash: markerHash, expiresAt: markerExpiry },
+          update: { expiresAt: markerExpiry },
+        });
+        return { outcome: 'removed' as const, prerequisites };
+      });
+    } catch (error) {
+      if (error instanceof RemovalBlocked) return { outcome: 'blocked', prerequisites: error.prerequisites };
+      throw error;
+    }
   },
 
   async hasActiveShift(userId: string): Promise<boolean> {

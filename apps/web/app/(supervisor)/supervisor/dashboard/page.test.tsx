@@ -490,15 +490,15 @@ describe('SupervisorDashboardPage', () => {
     expect(mockUseAttendanceRealtimeSync).toHaveBeenCalled();
   });
 
-  it('renders a labeled Connected badge (not color-only) when connected', () => {
-    mockSocketState({ isConnected: true, isReconnecting: false });
+  it.each([
+    { isConnected: true, isReconnecting: false },
+    { isConnected: false, isReconnecting: true },
+    { isConnected: false, isReconnecting: false },
+  ])('shows no realtime connection badge in the header (POS-PERF-P64) — %o', (state) => {
+    mockSocketState(state);
     render(<SupervisorDashboardPage />);
-    expect(screen.getByText('Connected').closest('div')?.className).toContain('bg-success');
-  });
-
-  it('renders a labeled Disconnected badge when the socket drops', () => {
-    mockSocketState({ isConnected: false, isReconnecting: false });
-    render(<SupervisorDashboardPage />);
-    expect(screen.getByText('Disconnected').closest('div')?.className).toContain('bg-destructive');
+    for (const label of ['Connected', 'Connecting', 'Reconnecting', 'Disconnected']) {
+      expect(screen.queryByText(label)).not.toBeInTheDocument();
+    }
   });
 });

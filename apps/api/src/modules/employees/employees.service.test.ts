@@ -1058,7 +1058,7 @@ describe('POS-PERF-P47 employee management authorization', () => {
     vi.mocked(employeesRepository.findById).mockResolvedValue(buildEmployee() as never);
     vi.mocked(employeesRepository.hardDeleteUnused).mockResolvedValue({ deleted: true });
 
-    await expect(employeesService.deleteEmployee('emp-1', SUPERVISOR_USER, null)).resolves.toEqual({ deleted: true });
+    await expect(employeesService.deleteEmployee('emp-1', SUPERVISOR_USER, null)).resolves.toEqual({ deleted: true, outcome: 'permanent' });
     expect(recordAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
         action: 'EMPLOYEE_DELETED',

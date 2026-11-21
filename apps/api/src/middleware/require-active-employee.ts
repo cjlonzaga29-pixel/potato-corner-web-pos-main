@@ -6,6 +6,11 @@ const ACTIVE_STATUS_CACHE_TTL_MS = 10_000;
 /** userId -> cache-entry expiry. Only a confirmed-ACTIVE result is ever cached (mirrors verify-access-token.ts's isTokenRevoked positive-cache pattern) — a status change is visible on the very next request after the cache entry naturally expires, never masked. */
 const activeStatusCache = new Map<string, number>();
 
+/** POS-PERF-P64 — called when an account is removed in this process, so a cached "active" result cannot outlive the removal. */
+export function forgetActiveStatus(userId: string): void {
+  activeStatusCache.delete(userId);
+}
+
 /**
  * SESSION CONTROL (CR-003): re-validates a `staff` (Employee) session's live
  * status on every request to a branch-operational route (POS, attendance,
@@ -83,7 +88,7 @@ export async function requireActiveSupervisor(req: Request, res: Response, next:
   }
 
   const supervisor = await employeesRepository.findStatusById(userId);
-  if (!supervisor || supervisor.status !== 'active' || !supervisor.isActive) {
+  if (!supervisor || supervisor.status !== 'active' || !supervisor.isActive || supervisor.deletedAt) {
     res.status(403).json({
       data: null,
       error: { code: 'SUPERVISOR_INACTIVE', message: 'This supervisor account is no longer active' },

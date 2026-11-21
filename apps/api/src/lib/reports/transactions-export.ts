@@ -83,15 +83,19 @@ export async function renderTransactionsPdf(rows: TransactionExportRow[], scope:
   const bodyFontSize = Math.max(6, layoutFontSize - 1);
 
   // fixed: true repeats the header row at the top of every page the table spans.
+  // POS-PERF-P62 — the size is set on each cell, not only inherited from the Page:
+  // react-pdf resolved the cell's unitless lineHeight against another size, so every
+  // single-line row took about twice its height (12 rows a sheet; measured, runbook §3).
+  const cellSize = { fontSize: bodyFontSize };
   const headerCells = TRANSACTION_EXPORT_COLUMNS.map((c, i) =>
-    e(Text, { key: String(c.key), style: [styles.cell, { width: columnWidths[i] }] }, c.header),
+    e(Text, { key: String(c.key), style: [styles.cell, cellSize, { width: columnWidths[i] }] }, c.header),
   );
   const bodyRows = rows.map((row, i) =>
     e(
       View,
       { key: i, style: styles.row, wrap: false },
       ...TRANSACTION_EXPORT_COLUMNS.map((c, ci) =>
-        e(Text, { key: String(c.key), style: [styles.cell, { width: columnWidths[ci] }] }, formatCellValue(row[c.key])),
+        e(Text, { key: String(c.key), style: [styles.cell, cellSize, { width: columnWidths[ci] }] }, formatCellValue(row[c.key])),
       ),
     ),
   );

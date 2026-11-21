@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { globalDiscountPolicyLock, DISCOUNT_POLICY_LOCK_WAIT_MS } from '../../test-utils/global-discount-policy-lock.js';
 import { randomUUID } from 'node:crypto';
 import { computeSaleTax, type JwtPayload } from '@potato-corner/shared';
 
@@ -105,6 +106,11 @@ describe.skipIf(!canRunIntegrationTests)('P50 VAT settings and calculation integ
     const subtotal = Math.round(taxLines.reduce((s, l) => s + l.lineTotal, 0) * 100) / 100;
     return { subtotal, ...computeSaleTax(subtotal, taxLines, type, rates) };
   }
+
+  // POS-PERF-P62 — this file rewrites the global discount_policy row: take turns with the other file that does.
+  const policyLock = globalDiscountPolicyLock();
+  beforeAll(() => policyLock.acquire(), DISCOUNT_POLICY_LOCK_WAIT_MS);
+  afterAll(() => policyLock.release());
 
   beforeAll(async () => {
     originalPolicy = (await prisma.systemSetting.findUnique({ where: { key: 'discount_policy' } }))?.value;

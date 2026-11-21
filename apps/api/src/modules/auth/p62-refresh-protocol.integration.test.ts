@@ -58,9 +58,15 @@ describe.skipIf(!canRunIntegrationTests)('P62 refresh protocol', () => {
       body: JSON.stringify({ device_id: deviceId }),
     });
     const body = (await response.json()) as { data: { access_token: string } | null; error: { code: string } | null };
-    const cookie = response.headers.getSetCookie().find((value) => value.startsWith('refresh_token='));
-    const next = cookie ? decodeURIComponent(cookie.slice('refresh_token='.length).split(';')[0] ?? '') : null;
-    return { status: response.status, code: body.error?.code ?? null, accessToken: body.data?.access_token ?? null, next };
+    const setCookies = response.headers.getSetCookie();
+    const valueOf = (name: string) => {
+      const cookie = setCookies.find((value) => value.startsWith(`${name}=`));
+      return cookie === undefined ? undefined : decodeURIComponent(cookie.slice(name.length + 1).split(';')[0] ?? '');
+    };
+    const next = valueOf('refresh_token') || null;
+    // An empty value is how res.clearCookie removes a cookie.
+    const cleared = valueOf('refresh_token') === '' && valueOf('pc_access_hint') === '';
+    return { status: response.status, code: body.error?.code ?? null, accessToken: body.data?.access_token ?? null, next, cleared };
   }
 
   async function liveTokens(userId: string) {
@@ -94,6 +100,20 @@ describe.skipIf(!canRunIntegrationTests)('P62 refresh protocol', () => {
     expect((await refresh(s.token, s.deviceId)).status).toBe(200);
     await authRepository.revokeAllUserTokens(s.userId);
     expect(await refresh(s.token, s.deviceId)).toMatchObject({ status: 401, code: 'REFRESH_INVALID', next: null });
+  });
+
+  it('a session that is over loses its cookies, so /login is not routed from a stale access hint', async () => {
+    // Found in the P62 browser run: cookies restored after logout kept the web
+    // middleware sending /login back to the dashboard until the hint expired.
+    const s = await session();
+    await authRepository.revokeAllUserTokens(s.userId);
+    expect(await refresh(s.token, s.deviceId)).toMatchObject({ status: 401, code: 'REFRESH_INVALID', cleared: true });
+    const missing = await fetch(`${baseUrl}/api/auth/refresh`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ device_id: s.deviceId }) });
+    expect(missing.status).toBe(401);
+    expect(missing.headers.getSetCookie().some((value) => value.startsWith('pc_access_hint=;'))).toBe(true);
+    // A successful refresh sets both, never clears.
+    const live = await session();
+    expect(await refresh(live.token, live.deviceId)).toMatchObject({ status: 200, cleared: false });
   });
 
   it('logout from a stale cookie ends the live successor too', async () => {

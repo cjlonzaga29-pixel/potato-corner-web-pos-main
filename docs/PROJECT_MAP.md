@@ -27,11 +27,12 @@ Playwright config at `tests/e2e/playwright.config.ts`.
   `WEB/components/pos/payment-footer.tsx`
 - **Client state:** `WEB/stores/cart.store.ts`, `WEB/lib/pos/`, `WEB/lib/checkout-recovery.ts`, `WEB/lib/detached-sales.ts`
 - **API (authoritative totals):** `API/transactions/transactions.router.ts`, `API/transactions/transactions.service.ts`
+- **VAT retired (P63, CR-010):** every new sale is the manual total; `assertVatCalculationRetired` refuses VAT-calculated sales after the replay paths. History fixture: `apps/api/src/test-utils/historical-vat-sale.ts`; browser driver `tests/e2e/manual/p62/vat-retired.mjs`
 - **Schema:** `SHARED/transaction.schema.ts`; model `Transaction`
 - **Tests:** `WEB/components/pos/checkout-workspace.test.tsx`, `WEB/stores/cart.store.test.ts`,
   `API/transactions/transactions.service.test.ts`, `API/transactions/checkout-worker.integration.test.ts`, `tests/e2e/pos-workflow.spec.ts`
 - **Runbooks:** `RUN/pos-perf-p15-fast-checkout.md`, `RUN/pos-perf-p41-cart-responsiveness-and-product-editor.md`,
-  `RUN/pos-perf-p46-pos-keypad-and-customization-usability.md`, `RUN/pos-perf-p50-vat-settings-and-calculation-review.md`
+  `RUN/pos-perf-p46-pos-keypad-and-customization-usability.md`, `RUN/pos-perf-p63-vat-retired.md` (supersedes `RUN/pos-perf-p50-vat-settings-and-calculation-review.md`)
 
 ## Inventory: availability, reservations, deduction
 
@@ -90,7 +91,7 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 - **API (types):** `API/discounts/discounts.router.ts`, `API/discounts/discounts.service.ts`
 - **API (calculation and proof):** `API/transactions/transactions.service.ts`; upload and signed-URL routes
   in `API/transactions/transactions.router.ts`; storage client in `apps/api/src/lib/supabase.ts`
-- **Promotions:** `WEB/app/(supervisor)/supervisor/promotions/page.tsx`, `API/discounts/promotion-pricing.ts`,
+- **Promotions (configuration only — no checkout applies them since P63):** `WEB/app/(supervisor)/supervisor/promotions/page.tsx`, `API/discounts/promotion-pricing.ts`,
   `SHARED/promotion.schema.ts`
 - **Schema:** `SHARED/manual-discount.schema.ts`; models `ManualDiscountType`, `ManualDiscountTypeProduct`; display rules `packages/shared/src/discounts/discount-display.ts`
 - **Tests:** `API/transactions/p55-manual-discounts.integration.test.ts`,

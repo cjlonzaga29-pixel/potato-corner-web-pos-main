@@ -6,3 +6,4 @@ The Phase 0 version/package decisions (Zod v4, Express 5, `@ducanh2912/next-pwa`
 
 - [CR-004 — POS Deduction Integrity & Branch Provisioning](CR-004-pos-deduction-integrity.md) — cross-branch ingredient resolution, recipe versioning, idempotent branch provisioning, InventoryMovement/Transaction immutability enforcement.
 - [CR-005 — Product Builder & Recipe Composition Engine](CR-005-product-builder-recipe-composition.md) — composition-driven product/recipe builder, per-flavor ingredient rows, DRAFT/PENDING_APPROVAL/ACTIVE/ARCHIVED lifecycle, recipe versioning on edit. Proposed.
+- [CR-010 — VAT retired as an active feature](CR-010-vat-retired.md) — every new sale is subtotal − discount; VAT-calculated sales refused server-side; history stored as-is, never recalculated. Implemented (POS-PERF-P63).

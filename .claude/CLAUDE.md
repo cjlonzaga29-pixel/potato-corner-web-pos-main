@@ -36,18 +36,11 @@ Step 4: Multiply all quantities by items sold
 Step 5: Deduct atomically
 ```
 
-**PWD/Senior Citizen VAT Formula**
+**VAT — retired (CR-010, owner decision 2026-11-21)**
 
-Per RA 9994 / RA 10754, PWD and Senior Citizen sales are true VAT-exempt transactions — VAT is never charged, not even added back after the discount (updated 2026-07-21, commit 4 of the P1 discount fix; superseded the prior "VAT still charged on discounted base" formula).
+VAT is not an active feature. Every new sale is `manual_total_v1`: subtotal − the supervisor-set discount (a manual or fixed peso discount type, with its eligibility, amount limit and proof rules) = amount to pay. No VAT is extracted, added or exempted, and a type named "PWD" is just a manual type. The server refuses any new VAT-calculated sale (`assertVatCalculationRetired` → `VAT_CALCULATION_RETIRED`) after the replay paths, so already-recorded sales still replay. There is no VAT setting, statutory-rate editor or VAT-registration write.
 
-```
-VATable base = total ÷ 1.12
-Discount = VATable base × 0.20
-Discounted base = VATable base - discount
-Total = discounted base (no VAT added — fully exempt)
-```
-
-This formula still applies to statutory PWD/Senior sales (`calculation_mode: legacy_vat_v1`). It is not how the current checkout totals other sales: since P55R2, those use `manual_total_v1`, which is subtotal − manual peso discount with no VAT calculated (`vatAmount` and `vatExemptAmount` are stored as 0 placeholders). See `assertCalculationMode` and `computeManualTotal` in `apps/api/src/modules/transactions/transactions.service.ts` before touching tax logic.
+History is never rewritten: stored totals, `vat_amount`, `vat_exempt_amount`, `tax_snapshot` and `calculation_mode` (NULL = `legacy_vat_v1`) are read as stored, never recalculated, and the columns stay. The old statutory formula (VATable base = total ÷ 1.12; discount = base × 0.20; total = base − discount, VAT-exempt) only describes how those historical rows were computed. Don't reintroduce VAT without a new change request. See `docs/decisions/CR-010-vat-retired.md`.
 
 **Transaction Number**
 `transaction_number` IS the receipt number. Same field. Same value everywhere. No separate receipt number exists.

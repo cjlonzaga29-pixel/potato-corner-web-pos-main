@@ -9,11 +9,30 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
 ## Observed state
 
 - **Observed:** 2026-11-21
-- **Branch:** `feat/pos-perf-p62-performance-and-reliability`. Local only: not pushed, no PR, nothing deployed, production not accessed.
-- **Ancestry:** P62 → P61 → P60 → P59, all unpushed, from `origin/main` `6931b10`. Merging P62 brings in all of them.
-- **This batch (readiness):** started at `119e321`. Final application code `032d07b` (web); API code unchanged since `e8bae36`. Full API run 2 at `5952a62` (test-only changes after). The docs commit follows.
+- **Branch:** `feat/pos-perf-p62-performance-and-reliability`, carrying P59 → P63 from `origin/main` `6931b10`. Pushed for the combined PR (see Latest). **Not merged, nothing deployed, production not accessed.**
+- **P63 code commit:** `8e0fe4b`; docs follow it.
 - **Working tree:** only `.vscode/settings.json` is modified (the owner's personal setting). Never stage it.
-- **Local leftovers (task-owned, safe to delete):** `C:\p63` (this batch: embedded Postgres `p62_final`, still running on 56441 unless stopped; profiles, builds, logs), `C:\p62`, `C:\p59r`, `C:\p59c`.
+- **Local leftovers (task-owned, safe to delete):** `C:\p64` (P63: stack root, logs, stopped Postgres data), `C:\p63`, `C:\p62`, `C:\p59r`, `C:\p59c`. No P63 service is left running.
+
+## Latest: P63 — VAT retired (owner decision, CR-010), verified locally
+
+Every new sale is subtotal − the supervisor-set discount. The server refuses any VAT-calculated new sale (`VAT_CALCULATION_RETIRED`) after the replay paths. History is stored as-is and never recalculated, and no migration or column drop was made. VAT settings and statutory-rate editors are removed. A type named "PWD" is a manual type. Details: [`runbooks/pos-perf-p63-vat-retired.md`](runbooks/pos-perf-p63-vat-retired.md) §4 has the results.
+
+| Check | Result |
+| --- | --- |
+| Full API | Run 1: 1 failed (P38R2 publication budget, cross-file FK race, passes alone, untouched since before P59). **Run 2: 0 failed, 3,805 passed** |
+| Full web, default settings | **0 failed, 1,721 passed** |
+| Shared, typecheck, lint, builds | 83 passed; clean; 0 errors; pass |
+| Browser, final builds, service worker active | P62 terminal flows 10/10; P63 driver 10/10 ("PWD"-named type, no VAT on screen, offline sync once, Settings) |
+| Hosted / staging | **NOT RUN: no isolated nonproduction environment exists** (see release blockers) |
+
+**Operator prerequisite before production approval:** reload every terminal onto P58 or later, and check that no terminal still has queued offline sales from an older build. Any `VAT_CALCULATION_RETIRED` refusal after release is reconciled by hand against the shift's cash; there is no recording screen, by design.
+
+**Release blockers (unchanged by P63):**
+- Hosted checks (P62 §12.8) need an isolated staging environment. None exists: the `staging` GitHub environment has no secrets, there is no `staging` branch, `deploy-staging.yml` has never run, and Vercel previews have no API.
+- Client-IP keying behind Vercel (the per-IP limits are shared), the same as `main` today.
+- PDF capacity on Render is unmeasured.
+- `main` has no branch protection or required checks, and repo auto-merge is disabled.
 
 ## Latest: web test flakes fixed, full web suite green (local only)
 

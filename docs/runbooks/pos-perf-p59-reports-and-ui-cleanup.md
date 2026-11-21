@@ -13,6 +13,8 @@ familiar Daily Sales Report (DSR) wording, and removes one line of employee-list
 
 ## Decisions the owner should confirm
 
+> **Resolved 2026-11-21 (CR-010, P63):** the owner removed VAT as an active feature, which settles items 1–3 below as intended. The VAT-registration write endpoint is now removed too. See [`pos-perf-p63-vat-retired.md`](pos-perf-p63-vat-retired.md).
+
 These follow the P59 instructions, but they have consequences outside the code:
 
 1. **Receipts no longer show VAT lines.** That includes historical VAT-registered and PWD/Senior VAT-exempt sales. Please confirm this suits the business's receipt obligations with whoever handles BIR compliance. Git revert restores the lines, and the figures are still stored and returned by the API.

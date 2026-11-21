@@ -107,6 +107,8 @@ Shift prerequisites: active account, assigned to branch, opening cash count ente
 
 **Transaction flow:** product selection (branch-filtered, unavailable items hidden) → size/flavor drawer (Add to Order disabled until both selected; closing without completing discards silently) → cart management → discount application → payment → receipt generation → async inventory deduction (BullMQ, non-blocking).
 
+> **Superseded for new sales by [CR-010](../decisions/CR-010-vat-retired.md) (2026-11-21, owner decision): VAT is retired.** Every new sale is subtotal − a supervisor-set discount; the rules and formula below describe how historical sales were calculated and stored, and those stored amounts are never recalculated.
+
 **Discounts:** only one per transaction. PWD (20%, ID required), Senior Citizen (20%, ID required), Employee (configurable %), Manager Override (requires supervisor PIN), Promotional (only if no statutory discount applies — PWD/Senior always take precedence over promotional, never combined).
 
 **PWD/Senior Citizen VAT formula (Philippine law — never modify without explicit instruction):**

@@ -15,7 +15,23 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
 - **Working tree:** only `.vscode/settings.json` is modified (the owner's personal setting). Never stage it.
 - **Local leftovers (task-owned, safe to delete):** `C:\p63` (this batch: embedded Postgres `p62_final`, still running on 56441 unless stopped; profiles, builds, logs), `C:\p62`, `C:\p59r`, `C:\p59c`.
 
-## Task status: P62 readiness batch, verified locally — not release-ready
+## Latest: web test flakes fixed, full web suite green (local only)
+
+Started at `aaae67b`; test-only changes plus docs, committed on top. Two subagents fixed one test file each; the lead reviewed the combined P59–P62 release (P62 runbook §12.9).
+
+| Check | Result |
+| --- | --- |
+| `login-form` countdown | Cause: the test moved the fake clock before the countdown effect had run (screen rendered outside `act`). Test now waits for "2:05" first. 5/5 runs; reproduced and fixed under injected render delay |
+| `daily-sales-drilldown` 18 failures | Cause: a timed-out `await act(async …)` under fake timers left React's act scope open, so no later render in the file committed. Search test made synchronous, real timers restored after each test, cold mount warmed in `beforeAll`. 19/19 × 3; a forced timeout no longer cascades |
+| Affected files | 34/34 |
+| **Full web, one run, default settings** | **1,725 passed, 0 failed, 184 files, exit 0, 531.75s** (machine not idle: owner's Chrome/VS Code) |
+| Web typecheck / lint | Clean / 0 errors (5 warnings, unchanged) |
+| API | Unchanged since run 2 at `5952a62` (0 failed); not re-run |
+| Builds, browser | Not re-run: no application code changed |
+
+**Remaining release blockers:** owner decisions (PDF capacity §11.2, Extra Supplies rollback §12.7, P59 VAT decisions, P60 type setup) and every hosted check (§12.8, NOT RUN). See §12.9.
+
+## Earlier: P62 readiness batch, verified locally — not release-ready
 
 All local gaps from the previous batch are closed or diagnosed; hosted checks are NOT RUN. See runbook §12.
 
@@ -30,7 +46,7 @@ All local gaps from the previous batch are closed or diagnosed; hosted checks ar
 | Full web, final `032d07b` | Run 1: **1 failed** (`login-form` countdown, unexplained, untouched area). Run 2: **18 failed** in `daily-sales-drilldown` (5s timeout under load, passes alone). **No fully green web run on final code** |
 | Shared, typecheck, lint, builds | 83 passed; clean; 0 errors; pass |
 
-**Release blockers:** hosted checks (runbook §12.8, NOT RUN); PDF capacity decision (owner, §11.2); Extra Supplies rollback procedure acceptance (owner, §12.7); unexplained intermittent failures (P57 hook, P58 race, refresh 500s, `login-form` countdown, `daily-sales-drilldown` timeouts; §12.5); no fully green full web run on the final code.
+**Release blockers (at that time):** hosted checks (§12.8, NOT RUN); PDF capacity (§11.2); Extra Supplies rollback acceptance (§12.7); unexplained failures (P57 hook, P58 race, refresh 500s; `login-form` and `daily-sales-drilldown` since fixed, see Latest).
 
 **Next:** owner decisions; with authorization, the hosted checklist in §12.8.
 

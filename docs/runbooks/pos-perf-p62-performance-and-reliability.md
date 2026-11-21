@@ -232,6 +232,7 @@ Every sale and issue under PDF load was still recorded exactly once.
 | **Final full API, `08fcea4`, run 1** | **1 failed file**: P57 shortages `beforeAll` hook timed out (10s), so its 12 tests were skipped; 3,825 passed, 17 skipped; runner exit 1 |
 | **Final full API, `08fcea4`, run 2** | **0 failed**, 3,837 passed, 5 skipped (opt-in measurements); runner exit 0 |
 | **Final full web, `08fcea4`, default 5s, from `c:\`** | **0 failed**, 1,708 passed; exit 0; no duplicate-React errors |
+| Full web, default settings, `aaae67b` code + the two test fixes (run 3) | **0 failed, 1,725 passed, 184 files; exit 0; 531.75s.** First fully green full web run on the final application code. Machine not fully idle (user's Chrome/VS Code ~55–74% CPU, ~1.2 GB RAM free) |
 | Shared | 83 passed |
 | Typecheck API, web, shared | Clean |
 | Lint | API 0 errors (409 warnings: 4 more than before, `no-console` in the new runner scripts); web 0 errors, 5 warnings; shared clean |
@@ -272,7 +273,7 @@ Local stack only (`tests/e2e/manual/p62/stack.sh`): embedded Postgres `p62_brows
 2. **PDF capacity** (owner): one worker. Rows now fit ~23 a sheet (§12.4), and a refusal answers in about 1s with a Retry-After instead of after 25s (§12.4). Capacity itself is unchanged: a 7-day busy-branch Transaction PDF renders in ~15s locally, so one worker completes about one such PDF per 15s and 3 simultaneous requests still get 1 file and 2 refusals. Options: more concurrency (memory on Render, unmeasured), a shorter default range, or CSV first. No cap was changed.
 3. **Extra Supplies rollback** (§5): prohibited with open shifts that have collections; the procedure is written, an owner must accept it.
 4. **Requests before session restore** (§6): fixed in §12.1. The "13 Admin calls" were a driver artifact; the real ones (Supervisor 401 and 400) are gone.
-5. **Final suites** (§12.6): API run 2 green; run 1's two failures diagnosed and fixed. Web: the final-code run had 1 unexplained intermittent failure (`login-form` countdown) in an area this batch didn't change. The P57 hook timeout, the P58 race and the refresh-test 500s did not recur and remain unexplained.
+5. **Final suites** (§12.6): API run 2 green; run 1's two failures diagnosed and fixed. Web: the `login-form` countdown and `daily-sales-drilldown` failures were test-synchronization defects, fixed in tests (§12.5); full web run 3 green. The P57 hook timeout, the P58 race and the refresh-test 500s did not recur and remain unexplained.
 6. Unpushed P59 → P61 owner decisions still apply (their runbooks).
 
 ## 12. Readiness batch (local only)
@@ -398,8 +399,8 @@ An authenticated read (`GET /api/branches/stats`) runs every 500ms throughout. T
 | P57 shortages hook timeout (earlier) | Passed in both full API runs this batch (7.1s, 9.4s for the file) | **Not reproduced; unexplained** |
 | P58 race | `p58-product-types` and `p58r-type-scope-race` passed in both runs | **Not reproduced; unexplained** |
 | Refresh-test 500s (earlier) | The same pair, 8 times in one cluster, full logs kept: 8/8 passed, 0 HTTP 500. The full runs contain no real P2028 / P2024 (the 6 hits are mocked tests). Hypothesis, not proven: Prisma's interactive `$transaction` defaults (2s to get a connection, 5s total) in `withAdvisoryLock` under pool contention would give exactly a burst of 500s | **Not reproduced; unexplained** |
-| `daily-sales-drilldown` (web, final-code run 2) | 18 failures, starting with a 5s test timeout; 2/2 isolated passes; passed in run 1; run took 861s against 598s | **Load-related timeout, cause not proven; not fixed** |
-| `login-form` "returns to the credentials form when the challenge expires" (web, final-code run) | Showed "0:00" where the test expected "0:01", meaning the component saw ≥ 0.5s more fake time than advanced. 3/3 isolated passes; passed in the previous full run; area unchanged in this batch | **Unexplained intermittency** |
+| `daily-sales-drilldown` (web, final-code run 2) | 18 failures, starting with a 5s test timeout. Forcing a timeout (`--testTimeout=150`) on the old file reproduced it exactly: tests 1–2 timed out, 3–19 failed in 1–15ms with "Unable to find", the hooks never called. Cause: the receipt-search test ran `await act(async () => advanceTimersByTimeAsync(350))` under fake timers; a test timed out inside that `act` leaves React's act scope open, so no later render in the file commits. The first timeout itself is the cold first mount (~0.6s idle, more under load) | **Fixed (test only):** the search test is synchronous (`act` + `advanceTimersByTime`, only `setTimeout`/`clearTimeout` faked) and now also asserts nothing is sent before the debounce; `afterEach` always restores real timers; one warm-up mount in `beforeAll`. With `--testTimeout=400` the slow tests now fail alone, no cascade. All assertions kept |
+| `login-form` "returns to the credentials form when the challenge expires" (web, final-code run) | Showed "0:00" where it expected "0:01". Cause: the TOTP screen renders after `await login()` outside `act`, so React runs the countdown effect (`login-form.tsx:117-131`) as a later task. The test waited only for the "Authentication code" field, which can appear first; `secondsLeft` was still its initial 0 and no interval existed, so `advanceTimersByTime(124_000)` advanced nothing. Reproduced with a 20ms per-render busy-wait: 1 of 3 runs failed | **Fixed (test only):** the test waits for "2:05" (the effect's first value) before moving the clock, as its sibling test already did. 6/6 with the busy-wait, 5/5 without. Optional, not made: start `secondsLeft` from the expiry so "0:00" never flashes |
 
 ### 12.6 Suites and checks on the final code
 
@@ -440,3 +441,21 @@ Do not add a public debug endpoint, and do not log credentials or session identi
 2. **Spoofed headers.** Send a forged `X-Forwarded-For` from a client, both direct and via Vercel. The recorded address must not be the forged one. Send 101 failed logins with rotating forged values from one network: it must get 429.
 3. **Budgets not combined.** 101 failed logins from network A must not block login or unauthenticated requests from network B, and two branches behind different networks must not share a budget. If Render sees one Vercel egress address for everyone, decide between `trust proxy` 2 (only if Vercel's forwarded entry is reliable) and different keys. Don't change it on the local two-proxy simulation alone (§4).
 4. **Proxy timeout and worker resources.** Time a 7-day busy-branch Transaction PDF through Vercel on staging data. Confirm that `PDF_BUSY` / `PDF_TIMEOUT` arrive as JSON before the hosted proxy's limit, that the 25s deadline suits it, and record Render memory during one render before considering a second worker.
+
+### 12.9 Combined P59–P62 release review (local, against `origin/main` `6931b10`)
+
+Range: 50 commits (P59 12, P60 3, P61 2, P62 32), 299 files. `.vscode/settings.json` is **not** in the range.
+
+**Migrations (3, all additive; apply before the API):**
+- `20261104120000_pos_perf_p60_expense_types`: new tables; `expenses.expense_type_id` / `expense_type_name` nullable; FK and CHECK added `NOT VALID`; `expense_idempotency_keys.request_hash` nullable.
+- `20261104120100_pos_perf_p60_validate_expense_type_fk`: validates both, in its own transaction.
+- `20261105120000_pos_perf_p61_extra_supplies`: new tables only.
+- No drops, renames, type changes or data updates. The two removed `schema.prisma` lines are realigned relations. P62 has no migration.
+
+**Order:** migrations → API → web. P60/P61 need the API before the web; the P59 overlap shows "Unspecified discount"/several "Manual" rows until both are updated; P62 works in either order (§5).
+
+**PDF:** typed JSON errors (`PDF_BUSY` 503 + Retry-After, `PDF_TIMEOUT` 503 + Retry-After, `PDF_TOO_LARGE` 413, `PDF_FAILED` 500); worker crash/exit/hang ends in `PDF_FAILED`/`PDF_TIMEOUT`, never a stuck request. The Transaction PDF caps at `TRANSACTION_PDF_MAX_ROWS` = 2,000; one worker, so capacity stays an owner decision (§11.2).
+
+**Local blockers:** none open in code or suites. Remaining are owner decisions: PDF capacity (§11.2), Extra Supplies rollback procedure (§12.7), P59 VAT/receipt decisions, P60 expense-type setup before rollout. Still unexplained but not recurring: P57 hook timeout, P58 race, refresh-test 500s (§12.5).
+
+**Hosted-only, NOT RUN:** §12.8 (client IP path, spoofed headers, separate budgets, proxy timeout and Render memory), real devices/camera/printing, hosted Storage and realtime, mixed old/new versions in hosting, rollback rehearsal on hosted data.

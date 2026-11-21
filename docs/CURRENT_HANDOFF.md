@@ -11,6 +11,7 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
 - **Observed:** 2026-11-21
 - **Branch:** `feat/pos-perf-p62-performance-and-reliability`, carrying P59 → P63 from `origin/main` `6931b10`. Pushed for the combined PR (see Latest). **Not merged, nothing deployed, production not accessed.**
 - **P63 code commit:** `8e0fe4b`; docs follow it.
+- **PR:** [#45](https://github.com/cjlonzaga29-pixel/potato-corner-web-pos-main/pull/45) (draft, combined P59–P63). CI green on `2435689` ([run 44908947453](https://github.com/cjlonzaga29-pixel/potato-corner-web-pos-main/actions/runs/44908947453)). **Not merged: hosted blockers below.** Auto-merge is disabled in the repo and `main` has no required checks, so any merge must be a normal merge of a CI-green exact HEAD after the blockers clear.
 - **Working tree:** only `.vscode/settings.json` is modified (the owner's personal setting). Never stage it.
 - **Local leftovers (task-owned, safe to delete):** `C:\p64` (P63: stack root, logs, stopped Postgres data), `C:\p63`, `C:\p62`, `C:\p59r`, `C:\p59c`. No P63 service is left running.
 

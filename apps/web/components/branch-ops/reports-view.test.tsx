@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, within, cleanup, fireEvent, act, waitFor } from '@testing-library/react';
 import type { InventoryConsumptionSummaryReportRow, InventoryStockMovementResponse, ReportPeriodSummary, UnitOfMeasureResponse, InventoryItemResponse, TransactionResponse } from '@potato-corner/shared';
 import { ReportsView } from './reports-view';
+// POS-PERF-P62 — page-level tests, 1.1-1.4s each alone on the P62 laptop and about 4x slower
+// in the full parallel suite, past the 5s default there (P62 runbook §7). This file only.
+vi.setConfig({ testTimeout: 15_000 });
 
 const {
   mockUseBranchStore,

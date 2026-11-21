@@ -7,6 +7,9 @@ import type { PosCatalogProduct, CreateTransactionInput } from '@potato-corner/s
 import type { SaleSnapshot } from '@/components/pos/sale-status-modal';
 import { useAuthStore } from '@/stores/auth.store';
 import { useTerminalOperatorStore } from '@/stores/terminal-operator.store';
+// POS-PERF-P62 — page-level tests, 1.4-2.4s each alone (render 0.65s, opening checkout 0.66s, ~0.12s per role query) on the P62 laptop and about 4x slower
+// in the full parallel suite, past the 5s default there (P62 runbook §7). This file only.
+vi.setConfig({ testTimeout: 15_000 });
 
 const {
   mockAddItem,

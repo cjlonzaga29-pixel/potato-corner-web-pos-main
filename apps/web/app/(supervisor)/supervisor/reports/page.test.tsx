@@ -11,6 +11,9 @@ import type {
   UnitOfMeasureResponse,
 } from '@potato-corner/shared';
 import SupervisorReportsPage from './page';
+// POS-PERF-P62 — page-level tests, 1.1-1.9s each alone on the P62 laptop and about 4x slower
+// in the full parallel suite, past the 5s default there (P62 runbook §7). This file only.
+vi.setConfig({ testTimeout: 15_000 });
 
 const {
   mockUseBranchStore,

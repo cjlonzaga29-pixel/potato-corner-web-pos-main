@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react';
 import type { PromotionEligibleProduct, PromotionResponse } from '@potato-corner/shared';
+// POS-PERF-P62 — page-level tests, 1.6s alone on the P62 laptop and about 4x slower
+// in the full parallel suite, past the 5s default there (P62 runbook §7). This file only.
+vi.setConfig({ testTimeout: 15_000 });
 
 /**
  * POS-PERF-P49 — the promotion editor: clear per-item wording with examples,

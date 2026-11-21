@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { inflateSync } from 'node:zlib';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
+import { clampToManilaReportDay, manilaReportDay } from './report-day-fixture.js';
 
 /**
  * POS-PERF-P59 — Supervisor report coverage, through the real Express app against
@@ -54,9 +55,65 @@ function csvDataRows(text: string): string[] {
 const SALE_DISCOUNT = 2.5;
 const SALE_TOTAL = 247.5;
 
+describe('report-day fixture time (pure, no clock freezing)', () => {
+  const manila = (time: string) => new Date(`2026-11-22T${time}+08:00`);
+  const hourBefore = (at: Date) => new Date(at.getTime() - 3600_000);
+
+  it('12:10 AM Manila: the old `now - 1h` clock-in falls on the previous day; the clamped one stays on today', () => {
+    const base = manila('00:10:00');
+    const { day, dayStart } = manilaReportDay(base);
+    expect(day).toBe('2026-11-22');
+    expect(manilaReportDay(hourBefore(base)).day).toBe('2026-11-21');
+    const clockIn = clampToManilaReportDay(hourBefore(base), base);
+    expect(clockIn).toEqual(dayStart);
+    expect(manilaReportDay(clockIn).day).toBe(day);
+  });
+
+  it('2:00 PM Manila: an ordinary time is left exactly as written', () => {
+    const base = manila('14:00:00');
+    expect(clampToManilaReportDay(hourBefore(base), base)).toEqual(manila('13:00:00'));
+    expect(clampToManilaReportDay(base, base)).toEqual(base);
+  });
+
+  it('11:50 PM Manila: a later instant past midnight is held on today, not tomorrow', () => {
+    const base = manila('23:50:00');
+    const { day, dayEnd } = manilaReportDay(base);
+    const afterMidnight = new Date(base.getTime() + 20 * 60_000);
+    expect(manilaReportDay(afterMidnight).day).toBe('2026-11-23');
+    expect(clampToManilaReportDay(afterMidnight, base)).toEqual(dayEnd);
+    expect(manilaReportDay(dayEnd).day).toBe(day);
+    expect(clampToManilaReportDay(hourBefore(base), base)).toEqual(manila('22:50:00'));
+  });
+});
+
+/**
+ * The sale's inventory-deduction job is claimable by any deduction worker that
+ * another test file runs against this shared database, at any moment. Left
+ * alone, it can add one stock movement to this branch after a test counted the
+ * branch's movements (seen in CI: 102 CSV rows instead of 101). Take the job
+ * out of the claimable set while it is still pending; if a worker has already
+ * claimed it, wait for that worker to finish. Either way the branch's movement
+ * count is stable afterwards.
+ */
+async function settleSaleDeductionJob(transactionId: string): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    const { count } = await prisma.inventoryDeductionJob.deleteMany({ where: { transactionId, status: 'pending' } });
+    if (count > 0) return;
+    const job = await prisma.inventoryDeductionJob.findUnique({ where: { transactionId }, select: { status: true } });
+    if (!job || job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') return;
+    if (Date.now() > deadline) throw new Error(`deduction job for ${transactionId} still ${job.status} after 30s`);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+}
+
 describe.skipIf(!isLocalDatabase)('P59 Supervisor report coverage (real Express + Postgres)', () => {
   const tag = randomUUID().slice(0, 8);
-  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
+  // One base instant for the whole file: `today` and every time-sensitive fixture
+  // are built from it and kept inside its Manila day, so a run at 12:38 AM or
+  // 11:59 PM cannot put a fixture on the day before or after the report filter.
+  const base = new Date();
+  const { day: today, dayEnd } = manilaReportDay(base);
   const ids = { branch: '', otherBranch: '', staff: '', otherStaff: '', supervisor: '', product: '', variant: '', item: '', otherItem: '' };
   const tokens = { staff: '', supervisor: '', otherSupervisor: '' };
   let templateId = '';
@@ -129,7 +186,7 @@ describe.skipIf(!isLocalDatabase)('P59 Supervisor report coverage (real Express 
     await prisma.productComponent.create({ data: { productVariantId: ids.variant, inventoryItemId: ids.item, quantityRequired: 1 } });
     await prisma.inventoryStock.create({ data: { branchId: ids.branch, inventoryItemId: ids.item, quantityOnHand: 1000 } });
     await prisma.branchProductAvailability.create({ data: { branchId: ids.branch, productId: ids.product, isAvailable: true } });
-    await prisma.attendanceRecord.create({ data: { employeeId: ids.staff, branchId: ids.branch, clockInServerTime: new Date(Date.now() - 3600_000), clockInGpsStatus: 'within_radius' } });
+    await prisma.attendanceRecord.create({ data: { employeeId: ids.staff, branchId: ids.branch, clockInServerTime: clampToManilaReportDay(new Date(base.getTime() - 3600_000), base), clockInGpsStatus: 'within_radius' } });
     tokens.staff = generateStaffToken(ids.branch, { userId: ids.staff });
     tokens.supervisor = generateSupervisorToken([ids.branch], { userId: ids.supervisor });
     tokens.otherSupervisor = generateSupervisorToken([ids.otherBranch], { userId: otherSupervisor });
@@ -156,6 +213,18 @@ describe.skipIf(!isLocalDatabase)('P59 Supervisor report coverage (real Express 
     expect(saleRes.status).toBe(201);
     templateId = saleRes.body.data.id as string;
     completedCount = 1;
+    await settleSaleDeductionJob(templateId);
+    // The real sale and its stock movement carry the server's clock: if the run
+    // crossed Manila midnight since `base`, keep them (and every copy) on `today`.
+    const sale = await prisma.transaction.findUniqueOrThrow({ where: { id: templateId }, select: { createdAt: true } });
+    const saleAt = clampToManilaReportDay(sale.createdAt, base);
+    // Raw SQL, like copySale: Transaction rows are immutable through Prisma (CR-004). A fixture on this local database only.
+    // created_at is TIMESTAMP(3) holding UTC: pass it as text read in UTC, never through the session time zone.
+    if (saleAt.getTime() !== sale.createdAt.getTime()) {
+      await prisma.$executeRaw`UPDATE "transactions" SET "created_at" = (${saleAt.toISOString()}::timestamptz AT TIME ZONE 'UTC') WHERE "id" = ${templateId}`;
+    }
+    expect((await prisma.transaction.findUniqueOrThrow({ where: { id: templateId }, select: { createdAt: true } })).createdAt).toEqual(saleAt);
+    await prisma.inventoryStockMovement.updateMany({ where: { branchId: ids.branch, createdAt: { gt: dayEnd } }, data: { createdAt: dayEnd } });
     // Another branch's sale: must count toward nothing here.
     await copySale(templateId, 7, { branch_id: `'${ids.otherBranch}'`, cashier_id: `'${ids.otherStaff}'` });
   }, 60_000);
@@ -280,7 +349,7 @@ describe.skipIf(!isLocalDatabase)('P59 Supervisor report coverage (real Express 
   }, 120_000);
 
   it('Inventory Movement and Attendance PDFs: 100 complete, 101 partial, with counts from the aggregate and no other branch', async () => {
-    const at = new Date();
+    const at = base;
     const movement = (branchId: string, inventoryItemId: string, movementType: 'WASTE' | 'RECEIVING') => ({ branchId, inventoryItemId, movementType, quantityChange: 1, quantityBefore: 0, quantityAfter: 1, createdAt: at });
     const existing = await prisma.inventoryStockMovement.count({ where: { branchId: ids.branch } });
     await prisma.inventoryStockMovement.createMany({ data: Array.from({ length: 100 - existing }, () => movement(ids.branch, ids.item, 'WASTE')) });

@@ -11,7 +11,7 @@ vi.mock('@tanstack/react-query', () => ({
 }));
 
 vi.mock('@/components/extra-supplies/extra-supply-summary-card', () => ({
-  ExtraSupplySummaryCard: () => <div data-testid="extra-supply-summary-card" />,
+  ExtraSupplySummaryCard: vi.fn(() => <div data-testid="extra-supply-summary-card" />),
 }));
 
 vi.mock('@/hooks/queries/use-reports', () => {
@@ -65,6 +65,11 @@ vi.mock('@/components/reports/financial-summary-panel', () => ({
   FinancialSummaryPanel: () => <div>Financial Summary Panel</div>,
 }));
 
+// Its own behaviour (filters, open-now view, read-only) is covered in components/admin/admin-attendance-report.test.tsx.
+vi.mock('@/components/admin/admin-attendance-report', () => ({
+  AdminAttendanceReport: () => <div data-testid="admin-attendance-report">Attendance Records View</div>,
+}));
+
 vi.mock('@/components/reports/inventory-analytics-panel', () => ({
   InventoryAnalyticsPanel: () => <div>Inventory Analytics Panel</div>,
 }));
@@ -79,10 +84,31 @@ vi.mock('@/components/shared/transactions/view-payment-proof-dialog', () => ({
   ViewPaymentProofDialog: () => null,
 }));
 
+const { navigation } = vi.hoisted(() => ({ navigation: { search: new URLSearchParams() } }));
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
   usePathname: () => '/admin/reports',
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => navigation.search,
+}));
+
+// POS-PERF-P64 — the real ExtraSupplyHistory renders inside the Extra Supplies tab; only its data hooks are stubbed.
+const { mockDownloadExtraSupplyCsv, mockUseExtraSupplyIssues } = vi.hoisted(() => ({
+  mockDownloadExtraSupplyCsv: vi.fn(() => Promise.resolve()),
+  mockUseExtraSupplyIssues: vi.fn(),
+}));
+vi.mock('@/hooks/queries/use-extra-supplies', () => ({
+  useExtraSupplies: vi.fn(() => ({ data: [], isLoading: false, isError: false })),
+  useExtraSupplyIssues: mockUseExtraSupplyIssues,
+  useExtraSupplySummary: vi.fn(() => ({
+    data: {
+      issue_count: 0, units_free: 0, units_paid: 0, amount_collected: 0, inventory_cost: 0, configured_cost: 0, unknown_cost_lines: 0,
+      product_sales_total: null, combined_collection_total: null, by_payment_method: [], by_branch: [], by_cashier: [],
+    },
+    isLoading: false,
+    isError: false,
+  })),
+  useExtraSupplyIssue: vi.fn(() => ({ data: undefined, isLoading: false, error: null })),
+  downloadExtraSupplyCsv: mockDownloadExtraSupplyCsv,
 }));
 
 // Radix Select has no jsdom-friendly interaction path without user-event (not a
@@ -136,6 +162,8 @@ beforeEach(() => {
   };
   vi.clearAllMocks();
   realtimeSyncCallback = undefined;
+  navigation.search = new URLSearchParams();
+  mockUseExtraSupplyIssues.mockReturnValue({ data: { issues: [], total: 0, page: 1, limit: 20 }, isLoading: false, isError: false });
 });
 
 afterEach(() => {
@@ -177,8 +205,8 @@ describe('AdminReportsPage', () => {
     render(<AdminReportsPage />);
     const categories: Record<string, string[]> = {
       Finance: ['Financial Summary', 'Daily Sales Report (DSR)', 'Expenses'],
-      Inventory: ['Inventory Analytics', 'Inventory Movement', 'Inventory Summary'],
-      Operations: ['Attendance Summary'],
+      Inventory: ['Inventory Analytics', 'Inventory Movement', 'Inventory Summary', 'Extra Supplies'],
+      Operations: ['Attendance Summary', 'Attendance Records'],
       Compliance: ['Void / Refund', 'Discount Report'],
     };
     for (const [category, tabs] of Object.entries(categories)) {
@@ -705,5 +733,123 @@ describe('AdminReportsPage', () => {
     render(<AdminReportsPage />);
     selectCategory('Compliance');
     expect(screen.queryByRole('tab', { name: 'Audit Log' })).not.toBeInTheDocument();
+  });
+  it('shows no realtime connection badge in the header (POS-PERF-P64)', () => {
+    render(<AdminReportsPage />);
+    expect(screen.getByRole('heading', { name: 'Reports' })).toBeInTheDocument();
+    for (const label of ['Connected', 'Connecting', 'Reconnecting', 'Disconnected']) {
+      expect(screen.queryByText(label)).not.toBeInTheDocument();
+    }
+  });
+
+  describe('Extra Supplies tab (POS-PERF-P64)', () => {
+    function openExtraSupplies() {
+      selectCategory('Inventory');
+      selectReportTab('Extra Supplies');
+    }
+
+    it('renders the shared extra supply history, separate from the Expenses tab', () => {
+      render(<AdminReportsPage />);
+      openExtraSupplies();
+      expect(screen.getByTestId('extra-supply-history')).toBeInTheDocument();
+      expect(screen.getByTestId('history-totals')).toBeInTheDocument();
+      expect(screen.getByText('Nothing issued')).toBeInTheDocument();
+      expect(screen.queryByText('No expenses recorded')).not.toBeInTheDocument();
+    });
+
+    it('opens straight on the tab from ?tab=EXTRA_SUPPLIES and hands the drill-through filters to the history', () => {
+      navigation.search = new URLSearchParams('tab=EXTRA_SUPPLIES&branch_id=branch-1&date_from=2026-11-01&date_to=2026-11-03&kind=paid');
+      render(<AdminReportsPage />);
+      expect(screen.getByRole('button', { name: 'Inventory' })).toHaveAttribute('aria-pressed', 'true');
+      expect(screen.getByRole('tab', { name: 'Extra Supplies' })).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByTestId('extra-supply-history')).toBeInTheDocument();
+      expect(mockUseExtraSupplyIssues).toHaveBeenCalledWith(
+        expect.objectContaining({ branchId: 'branch-1', dateFrom: '2026-11-01', dateTo: '2026-11-03', kind: 'paid' }),
+        1,
+        20,
+      );
+    });
+
+    it('is read-only for Admin: no create, edit, deactivate or reactivate controls', () => {
+      render(<AdminReportsPage />);
+      openExtraSupplies();
+      const history = screen.getByTestId('extra-supply-history');
+      const buttonNames = Array.from(history.querySelectorAll('button')).map((button) => button.textContent ?? '');
+      for (const name of buttonNames) expect(name).not.toMatch(/add|new|create|edit|deactivate|reactivate|delete|remove/i);
+    });
+
+    it('hides the page-level filter bar and its exports, so only the history CSV applies', () => {
+      render(<AdminReportsPage />);
+      openExtraSupplies();
+      expect(screen.queryByRole('button', { name: /export pdf/i })).not.toBeInTheDocument();
+      const csvButtons = screen.getAllByRole('button', { name: /export csv/i });
+      expect(csvButtons).toHaveLength(1);
+      expect(csvButtons[0]).toHaveAttribute('data-testid', 'history-export');
+      expect(screen.queryByLabelText('From', { selector: '#report-filter-from' })).not.toBeInTheDocument();
+    });
+
+    it('the history CSV goes through its own export, never a report-type export request', async () => {
+      render(<AdminReportsPage />);
+      openExtraSupplies();
+      fireEvent.click(screen.getByTestId('history-export'));
+      await waitFor(() => expect(mockDownloadExtraSupplyCsv).toHaveBeenCalledTimes(1));
+      expect(mockUseRequestExport.mutate).not.toHaveBeenCalled();
+    });
+
+    it('brings the page-level filter bar back on leaving the tab', () => {
+      render(<AdminReportsPage />);
+      openExtraSupplies();
+      selectReportTab('Inventory Summary');
+      expect(screen.getByRole('button', { name: /export pdf/i })).toBeInTheDocument();
+    });
+
+    it('the Expenses tab summary card drills through to this tab', async () => {
+      const summaryCard = await import('@/components/extra-supplies/extra-supply-summary-card');
+      render(<AdminReportsPage />);
+      selectReportTab('Expenses');
+      expect(vi.mocked(summaryCard.ExtraSupplySummaryCard)).toHaveBeenCalledWith(
+        expect.objectContaining({ historyPath: '/admin/reports?tab=EXTRA_SUPPLIES' }),
+        undefined,
+      );
+    });
+  });
+  describe('Attendance Records tab (POS-PERF-P64)', () => {
+    it('sits next to Attendance Summary, which stays the category default', () => {
+      render(<AdminReportsPage />);
+      selectCategory('Operations');
+      expect(screen.getByRole('tab', { name: 'Attendance Summary' })).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByRole('tab', { name: 'Attendance Records' })).toBeInTheDocument();
+      expect(screen.queryByTestId('admin-attendance-report')).not.toBeInTheDocument();
+    });
+
+    it('renders the moved admin attendance view', () => {
+      render(<AdminReportsPage />);
+      selectCategory('Operations');
+      selectReportTab('Attendance Records');
+      expect(screen.getByTestId('admin-attendance-report')).toBeInTheDocument();
+    });
+
+    it('opens straight on the tab from ?tab=ATTENDANCE_RECORDS (the /admin/attendance redirect target)', () => {
+      navigation.search = new URLSearchParams('tab=ATTENDANCE_RECORDS');
+      render(<AdminReportsPage />);
+      expect(screen.getByRole('button', { name: 'Operations' })).toHaveAttribute('aria-pressed', 'true');
+      expect(screen.getByRole('tab', { name: 'Attendance Records' })).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByTestId('admin-attendance-report')).toBeInTheDocument();
+    });
+
+    it('hides the page-level filter bar and exports, so no wrong export can be requested', () => {
+      render(<AdminReportsPage />);
+      selectCategory('Operations');
+      selectReportTab('Attendance Records');
+      expect(screen.queryByRole('button', { name: /export csv/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /export pdf/i })).not.toBeInTheDocument();
+      expect(mockUseRequestExport.mutate).not.toHaveBeenCalled();
+    });
+
+    it('keeps Attendance Summary exportable through the page bar', () => {
+      render(<AdminReportsPage />);
+      selectCategory('Operations');
+      expect(screen.getByRole('button', { name: /export csv/i })).toBeInTheDocument();
+    });
   });
 });

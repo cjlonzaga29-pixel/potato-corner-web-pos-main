@@ -7,7 +7,6 @@ import {
   LayoutDashboard,
   Building2,
   Users,
-  ClipboardCheck,
   BarChart3,
   Settings,
   ChevronsLeft,
@@ -15,7 +14,6 @@ import {
   ChevronDown,
   LogOut,
   Loader2,
-  PackagePlus,
 } from 'lucide-react';
 import { ROLE_LABELS } from '@potato-corner/shared';
 import { cn, generateInitials } from '@/lib/utils';
@@ -54,8 +52,8 @@ export const ADMIN_NAV_ITEMS: ReadonlyArray<NavItem> = [
   // highlight Supervisors; the redirecting old list URLs do the same.
   { label: 'Branches', href: '/admin/branches', icon: Building2, activePrefixes: ['/admin/branch-accounts'] },
   { label: 'Supervisors', href: '/admin/supervisors', icon: Users, activePrefixes: ['/admin/employees'] },
-  { label: 'Attendance', href: '/admin/attendance', icon: ClipboardCheck },
-  { label: 'Extra Supplies', href: '/admin/extra-supplies', icon: PackagePlus },
+  // POS-PERF-P64 — Attendance is a Reports view (Operations › Attendance Records); the old URL redirects there.
+  // POS-PERF-P64 — Extra Supplies is a Reports view (Inventory › Extra Supplies); the old URL redirects there.
   { label: 'Reports', href: '/admin/reports', icon: BarChart3 },
   { label: 'Settings', href: '/admin/settings', icon: Settings },
 ];

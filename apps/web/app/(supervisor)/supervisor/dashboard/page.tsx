@@ -12,11 +12,10 @@ import { DashboardTransactionsFeed } from '@/components/supervisor/dashboard-tra
 import { SalesAnalyticsSection } from '@/components/shared/dashboard/sales-analytics-section';
 import { TopProductsPanel } from '@/components/shared/dashboard/top-products-panel';
 import { WidgetErrorBoundary } from '@/components/shared/widget-error-boundary';
-import { DashboardPageHeader, DashboardConnectionBadge } from '@/components/shared/dashboard/dashboard-page-header';
+import { DashboardPageHeader } from '@/components/shared/dashboard/dashboard-page-header';
 import { formatDate } from '@/lib/utils';
 import { manilaToday, manilaMonthStart } from '@/lib/manila-date';
 import { useBranchStore } from '@/stores/branch.store';
-import { useSocketStore } from '@/stores/socket.store';
 import { useBranches, useAllBranchStats } from '@/hooks/queries/use-branches';
 import { useShiftsRealtimeSync } from '@/hooks/queries/use-shifts';
 import { useTransactions, useTransactionsRealtimeSync } from '@/hooks/queries/use-transactions';
@@ -42,8 +41,6 @@ export default function SupervisorDashboardPage() {
   const router = useRouter();
   const activeBranchId = useBranchStore((s) => s.activeBranchId);
   const activeBranch = useBranchStore((s) => s.activeBranch);
-  const isConnected = useSocketStore((s) => s.isConnected);
-  const isReconnecting = useSocketStore((s) => s.isReconnecting);
   // BranchSelector (mounted in the sidebar) drives activeBranchId off this
   // same query — reused here (same key, no extra request) so the dashboard
   // can tell "still loading the active-branch list" and "failed to load it"
@@ -151,7 +148,6 @@ export default function SupervisorDashboardPage() {
         // reload, only its id; fall back to the loaded branch list's name so
         // the header never shows a raw UUID.
         subtitle={`${activeBranch?.name ?? branchesData?.branches.find((b) => b.id === activeBranchId)?.name ?? 'Selected branch'} — ${formatDate(new Date())}`}
-        actions={<DashboardConnectionBadge isConnected={isConnected} isReconnecting={isReconnecting} />}
       />
 
       <div className="app-kpi-grid-4">

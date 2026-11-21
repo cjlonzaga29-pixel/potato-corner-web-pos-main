@@ -169,10 +169,12 @@ describe.skipIf(!isLocalDatabase)('POS-PERF-P47 dashboard and management (real P
     });
 
     it('turns a former deletable person into history-bound once they act (audit actor)', async () => {
-      // supervisorA acted above (PIN set, deletion audit) — super_admin may
-      // manage supervisors but must not destroy that attribution.
+      // supervisorA acted above (PIN set, deletion audit). POS-PERF-P64: a
+      // Super Admin may now delete a supervisor with history, but only as a
+      // removal that keeps the row (and that attribution) — never a
+      // permanent delete.
       const result = await employeesService.getDeletionEligibility(supervisorA.user_id, admin);
-      expect(result.can_delete).toBe(false);
+      expect(result).toMatchObject({ can_delete: true, mode: 'remove_keep_history' });
       expect(result.references.audit).toBeGreaterThan(0);
       // The peer supervisor never acted — deletable by super_admin only.
       await expect(employeesService.getDeletionEligibility(peerSupervisorId, admin)).resolves.toMatchObject({ can_delete: true });

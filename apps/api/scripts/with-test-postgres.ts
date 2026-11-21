@@ -6,7 +6,8 @@
 //
 // Exit status (P62): the wrapped command's own code, 128+n if it was killed by
 // a signal, 1 if setup or migrations fail, and 1 if Postgres could not be
-// stopped after an otherwise passing run. See scripts/lib/test-postgres-run.ts
+// stopped (or stop() timed out) after an otherwise passing run. It never exits
+// 0 unless the run finished with 0 (P65). See scripts/lib/test-postgres-run.ts
 // for why the script must call process.exit itself.
 //
 // Usage (from apps/api):

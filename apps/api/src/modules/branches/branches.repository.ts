@@ -1,6 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import { MANUAL_TOTAL_CALCULATION, PAYMENT_METHOD, type PaymentMethod } from '@potato-corner/shared';
 import { prisma } from '../../lib/prisma.js';
+import { lockNonRemovedUser } from '../employees/employees.repository.js';
 import { nextCounterValue } from '../../lib/id-counter.js';
 import { dayBounds } from '../../lib/manila-time.js';
 import { computeFinancialMetrics } from '../../lib/financial-metrics.js';
@@ -300,9 +301,13 @@ export const branchesRepository = {
     });
   },
 
+  /** POS-PERF-P64 — under the user's row lock, so a concurrent removal cannot be followed by a fresh assignment. */
   assignUser(userId: string, branchId: string) {
-    return prisma.userBranchAssignment.create({
-      data: { userId, branchId, assignedAt: new Date(), removedAt: null },
+    return prisma.$transaction(async (tx) => {
+      await lockNonRemovedUser(tx, userId);
+      return tx.userBranchAssignment.create({
+        data: { userId, branchId, assignedAt: new Date(), removedAt: null },
+      });
     });
   },
 

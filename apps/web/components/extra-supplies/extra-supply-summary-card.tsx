@@ -12,7 +12,7 @@ interface ExtraSupplySummaryCardProps {
   branchId?: string;
   dateFrom?: string;
   dateTo?: string;
-  /** The history page these figures open. */
+  /** The history page these figures open; it may already carry a query string. */
   historyPath: string;
   enabled?: boolean;
 }
@@ -24,11 +24,15 @@ interface ExtraSupplySummaryCardProps {
  */
 export function ExtraSupplySummaryCard({ title, branchId, dateFrom, dateTo, historyPath, enabled = true }: ExtraSupplySummaryCardProps) {
   const summary = useExtraSupplySummary({ branchId, dateFrom, dateTo }, { enabled });
-  const params = new URLSearchParams();
+  // A history path may carry its own query (Admin's opens a Reports tab), so the scope is merged into it.
+  const queryStart = historyPath.indexOf('?');
+  const pathOnly = queryStart === -1 ? historyPath : historyPath.slice(0, queryStart);
+  const params = new URLSearchParams(queryStart === -1 ? '' : historyPath.slice(queryStart + 1));
   if (branchId) params.set('branch_id', branchId);
   if (dateFrom) params.set('date_from', dateFrom);
   if (dateTo) params.set('date_to', dateTo);
-  const href = params.size > 0 ? `${historyPath}?${params.toString()}` : historyPath;
+  const query = params.toString();
+  const href = query ? `${pathOnly}?${query}` : pathOnly;
   const data = summary.data;
 
   return (

@@ -37,18 +37,19 @@ import { getDiscountBreakdownColumns } from '@/components/reports/discount-type-
 import { FinancialSummaryPanel } from '@/components/reports/financial-summary-panel';
 import { InventoryAnalyticsPanel } from '@/components/reports/inventory-analytics-panel';
 import { WidgetErrorBoundary } from '@/components/shared/widget-error-boundary';
-import { DashboardConnectionBadge } from '@/components/shared/dashboard/dashboard-page-header';
 import { createExpenseColumns } from '@/components/admin/expense-columns';
+import { AdminAttendanceReport } from '@/components/admin/admin-attendance-report';
 import { ExpenseBreakdownCard } from '@/components/reports/expense-breakdown-card';
 import { ExtraSupplySummaryCard } from '@/components/extra-supplies/extra-supply-summary-card';
+import { ExtraSupplyHistory } from '@/components/extra-supplies/extra-supply-history';
 import { ViewInventoryMovementProofDialog } from '@/components/shared/transactions/view-inventory-movement-proof-dialog';
 import { ViewExpenseReceiptDialog, type ExpenseReceiptProofData } from '@/components/shared/transactions/view-expense-receipt-dialog';
 import { formatCurrency, formatDateTime } from '@/lib/utils';
 import { discountTypeOptions, mergeDiscountRows, summarizeDiscountProof } from '@/lib/discount-report';
 import { movementTypeLabel } from '@/lib/inventory-movement-labels';
 import { manilaToday, manilaDaysAgo } from '@/lib/manila-date';
+import { ATTENDANCE_RECORDS_REPORT_TAB, EXTRA_SUPPLIES_REPORT_TAB } from '@/lib/admin-report-redirect';
 import { useAuthStore } from '@/stores/auth.store';
-import { useSocketStore } from '@/stores/socket.store';
 import { useExpenses, useExpensesRealtimeSync } from '@/hooks/queries/use-expenses';
 import {
   useDailySalesReport,
@@ -300,11 +301,17 @@ const REPORT_GROUPS: { category: string; reports: { value: string; label: string
       { value: 'INVENTORY_ANALYTICS', label: 'Inventory Analytics' },
       { value: 'INVENTORY_MOVEMENT', label: 'Inventory Movement' },
       { value: 'INVENTORY_SUMMARY', label: 'Inventory Summary' },
+      // POS-PERF-P64 — read-only issue history; its supply cost stays apart from cash Expenses.
+      { value: EXTRA_SUPPLIES_REPORT_TAB, label: 'Extra Supplies' },
     ],
   },
   {
     category: 'Operations',
-    reports: [{ value: 'ATTENDANCE_SUMMARY', label: 'Attendance Summary' }],
+    reports: [
+      { value: 'ATTENDANCE_SUMMARY', label: 'Attendance Summary' },
+      // POS-PERF-P64 — the former /admin/attendance page, read-only (corrections stay with Supervisors).
+      { value: ATTENDANCE_RECORDS_REPORT_TAB, label: 'Attendance Records' },
+    ],
   },
   {
     category: 'Compliance',
@@ -334,8 +341,6 @@ function categoryFor(reportValue: string): string {
 function AdminReportsPageContent() {
   const isDesktop = useIsDesktop();
   const currentUserId = useAuthStore((s) => s.user?.id);
-  const isSocketConnected = useSocketStore((s) => s.isConnected);
-  const isSocketReconnecting = useSocketStore((s) => s.isReconnecting);
   const searchParams = useSearchParams();
   const queryClient = useQueryClient();
   useExpensesRealtimeSync();
@@ -351,6 +356,15 @@ function AdminReportsPageContent() {
     return tabParam && ALL_REPORT_VALUES.has(tabParam) ? tabParam : 'FINANCIAL_SUMMARY';
   });
   const [activeCategory, setActiveCategory] = useState(() => categoryFor(activeReport));
+
+  // A same-page link (e.g. the Expenses tab's Extra Supplies "View history") changes ?tab=
+  // without remounting this page, so follow it here too.
+  const tabParam = searchParams.get('tab');
+  useEffect(() => {
+    if (!tabParam || !ALL_REPORT_VALUES.has(tabParam)) return;
+    setActiveReport(tabParam);
+    setActiveCategory(categoryFor(tabParam));
+  }, [tabParam]);
 
   function selectCategory(category: string) {
     setActiveCategory(category);
@@ -450,9 +464,15 @@ function AdminReportsPageContent() {
     if (activeReport === 'FINANCIAL_SUMMARY') return 'DAILY_SALES';
     if (activeReport === 'INVENTORY_ANALYTICS') return null;
     if (activeReport === 'EXPENSES') return null;
+    // Extra Supplies exports its own filtered CSV from inside the history; Attendance Records has no export of its own
+    // (Attendance Summary is the exportable attendance report). Neither has a report_type here.
+    if (activeReport === EXTRA_SUPPLIES_REPORT_TAB || activeReport === ATTENDANCE_RECORDS_REPORT_TAB) return null;
     return activeReport as ExportRequestInput['report_type'];
   }
 
+  // These views carry their own branch/date (and item/cashier, or supervisor/employee) filters; the page-level
+  // bar would show filters and exports that do not apply to them, so it is hidden on those tabs.
+  const showPageFilterBar = activeReport !== EXTRA_SUPPLIES_REPORT_TAB && activeReport !== ATTENDANCE_RECORDS_REPORT_TAB;
   const exportBranchRequired = BRANCH_REQUIRED_REPORTS.has(activeReport) && !selectedBranchId;
 
   /**
@@ -506,32 +526,31 @@ function AdminReportsPageContent() {
 
   return (
     <div className="app-section app-section-gap">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="min-w-0">
-          <h1 className="app-title font-semibold">Reports</h1>
-          <p className="app-subtitle text-muted-foreground">Real-time and pre-computed reporting across all branches.</p>
-        </div>
-        <DashboardConnectionBadge isConnected={isSocketConnected} isReconnecting={isSocketReconnecting} />
+      <div className="min-w-0">
+        <h1 className="app-title font-semibold">Reports</h1>
+        <p className="app-subtitle text-muted-foreground">Real-time and pre-computed reporting across all branches.</p>
       </div>
       <ReportsSectionTabs basePath="/admin/reports" />
 
-      <ReportFilterBar
-        branchId={selectedBranchId}
-        onBranchChange={setSelectedBranchId}
-        dateFrom={dateFrom}
-        dateTo={dateTo}
-        onDateFromChange={setDateFrom}
-        onDateToChange={setDateTo}
-        onRefresh={handleRefresh}
-        onExportCsv={() => handleExport('csv')}
-        onExportPdf={() => handleExport('pdf')}
-        isRefreshDisabled={refreshDisabled}
-        refreshCooldownSeconds={refreshCooldown}
-        isExportingCsv={isExportingCsv}
-        isExportingPdf={isExportingPdf}
-        exportDisabled={exportBranchRequired}
-        showBranchSelector
-      />
+      {showPageFilterBar && (
+        <ReportFilterBar
+          branchId={selectedBranchId}
+          onBranchChange={setSelectedBranchId}
+          dateFrom={dateFrom}
+          dateTo={dateTo}
+          onDateFromChange={setDateFrom}
+          onDateToChange={setDateTo}
+          onRefresh={handleRefresh}
+          onExportCsv={() => handleExport('csv')}
+          onExportPdf={() => handleExport('pdf')}
+          isRefreshDisabled={refreshDisabled}
+          refreshCooldownSeconds={refreshCooldown}
+          isExportingCsv={isExportingCsv}
+          isExportingPdf={isExportingPdf}
+          exportDisabled={exportBranchRequired}
+          showBranchSelector
+        />
+      )}
 
       <div role="group" aria-label="Report categories" className="flex flex-wrap gap-2 border-b pb-3">
         {REPORT_GROUPS.map((group) => (
@@ -606,7 +625,7 @@ function AdminReportsPageContent() {
                 <KpiCard title="Total Amount" value={expenses.data?.total_amount ?? 0} isLoading={expenses.isLoading} />
               </div>
               <div className="mb-4">
-                <ExtraSupplySummaryCard title="Extra Supplies" branchId={selectedBranchId ?? undefined} dateFrom={dateFrom} dateTo={dateTo} historyPath="/admin/extra-supplies" />
+                <ExtraSupplySummaryCard title="Extra Supplies" branchId={selectedBranchId ?? undefined} dateFrom={dateFrom} dateTo={dateTo} historyPath={`/admin/reports?tab=${EXTRA_SUPPLIES_REPORT_TAB}`} />
                 <ExpenseBreakdownCard
                   title="Expenses by Type"
                   branchId={selectedBranchId ?? undefined}
@@ -792,6 +811,19 @@ function AdminReportsPageContent() {
                 emptyState={<EmptyState title="No attendance records in this range" />}
               />
               </>}
+            </TabsContent>
+
+            <TabsContent value={ATTENDANCE_RECORDS_REPORT_TAB}>
+              <WidgetErrorBoundary label="Attendance Records">
+                <AdminAttendanceReport />
+              </WidgetErrorBoundary>
+            </TabsContent>
+
+            <TabsContent value={EXTRA_SUPPLIES_REPORT_TAB}>
+              {/* History reads a drill-through link's filters, which needs a Suspense boundary. */}
+              <Suspense fallback={null}>
+                <ExtraSupplyHistory />
+              </Suspense>
             </TabsContent>
 
       </Tabs>

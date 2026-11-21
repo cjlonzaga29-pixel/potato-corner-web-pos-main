@@ -14,7 +14,13 @@ import {
   type UpdateEmployeeInput,
   type UpdateBranchAccountCredentialsInput,
 } from '@potato-corner/shared';
-import { employeesRepository, type EmployeeWithAssignments, type EmployeeWithGovernmentIds } from './employees.repository.js';
+import {
+  AccountRemovedError,
+  employeesRepository,
+  type EmployeeWithAssignments,
+  type EmployeeWithGovernmentIds,
+  type RemovalPrerequisites,
+} from './employees.repository.js';
 import { Prisma } from '@prisma/client';
 import { EmployeeError, type EmployeeHistoryCategory } from './employees.types.js';
 import { encryptField, decryptField } from '../../lib/encryption.js';
@@ -26,6 +32,8 @@ import { getAccessibleBranchIds } from '../../lib/branch-access.js';
 import { getIO } from '../../socket/socket.server.js';
 import { staffPinService } from '../staff-pin/staff-pin.service.js';
 import { userRoom } from '../../socket/rooms.js';
+import { forgetAccountStatus } from '../../lib/verify-access-token.js';
+import { forgetActiveStatus } from '../../middleware/require-active-employee.js';
 
 /**
  * SESSION CONTROL (CR-003): the moment an Employee stops being ACTIVE,
@@ -96,6 +104,33 @@ function toEmployeeResponse(employee: EmployeeWithAssignments): EmployeeResponse
   };
 }
 
+const EMPLOYEE_REMOVED_MESSAGE =
+  'This account has been removed. Its history is kept, but it cannot be changed, reactivated or given access again';
+
+/**
+ * POS-PERF-P64 — a removed account (deletedAt set) is a historical record
+ * only: no edit, status change, reactivation, password reset or branch
+ * assignment may touch it. Checked on the row read first, and again by the
+ * repository's `deletedAt: null` write filters for a removal that lands
+ * between the read and the write.
+ */
+function assertNotRemoved(employee: Pick<EmployeeWithAssignments, 'deletedAt'>): void {
+  if (employee.deletedAt) throw new EmployeeError('EMPLOYEE_REMOVED', EMPLOYEE_REMOVED_MESSAGE, 409);
+}
+
+/** Maps a write that lost the race to a concurrent removal onto the same refusal. */
+async function guardRemovedRace<T>(write: () => Promise<T>): Promise<T> {
+  try {
+    return await write();
+  } catch (error) {
+    if (error instanceof AccountRemovedError) throw new EmployeeError('EMPLOYEE_REMOVED', EMPLOYEE_REMOVED_MESSAGE, 409);
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
+      throw new EmployeeError('EMPLOYEE_REMOVED', EMPLOYEE_REMOVED_MESSAGE, 409);
+    }
+    throw error;
+  }
+}
+
 /** super_admin sees everything; supervisor is scoped to their active branch assignments (database-sourced) — never trust a client-supplied branch list. */
 async function assertEmployeeAccess(requestingUser: JwtPayload, employee: EmployeeWithAssignments): Promise<void> {
   const accessible = await getAccessibleBranchIds(requestingUser);
@@ -132,8 +167,22 @@ export interface EmployeeDeletionEligibility {
   employee_id: string;
   can_delete: boolean;
   /** Why permanent deletion is refused when can_delete is false — history references or an account type that is never hard-deleted. */
-  blocked_reason: 'has_history' | 'branch_account' | null;
+  blocked_reason: 'has_history' | 'branch_account' | 'open_operations' | 'already_removed' | null;
   references: Record<EmployeeHistoryCategory, number>;
+  /**
+   * POS-PERF-P64 — what Delete will do: 'permanent' for an account nothing
+   * refers to; 'remove_keep_history' for a supervisor with history (access is
+   * removed, the row stays so history keeps the name). null when refused.
+   * Older clients ignore these fields.
+   */
+  mode: 'permanent' | 'remove_keep_history' | null;
+  prerequisites: RemovalPrerequisites | null;
+}
+
+export interface EmployeeDeletionResult {
+  deleted: true;
+  /** 'permanent' = row deleted; 'removed' = access removed, history kept; 'already_removed' = repeat request. */
+  outcome: 'permanent' | 'removed' | 'already_removed';
 }
 
 // Employees directory = staff + supervisor only. Super Admin and Branch
@@ -335,6 +384,7 @@ export const employeesService = {
   ): Promise<EmployeeResponse> {
     const before = await employeesRepository.findById(employeeId);
     if (!before) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
+    assertNotRemoved(before);
     await assertEmployeeAccess(updatedBy, before);
     assertCanManageTarget(updatedBy, before);
 
@@ -353,11 +403,12 @@ export const employeesService = {
           throw new EmployeeError('BRANCH_ACCESS_DENIED', 'You do not have access to one or more of the requested branches', 400);
         }
       }
-      await employeesRepository.updateBranchAssignments(employeeId, data.branch_ids, updatedBy.user_id);
+      const branchIds = data.branch_ids;
+      await guardRemovedRace(() => employeesRepository.updateBranchAssignments(employeeId, branchIds, updatedBy.user_id));
       await staffPinService.refreshBranchLookupsForUser(employeeId);
     }
 
-    const employee = await employeesRepository.update(employeeId, {
+    const employee = await guardRemovedRace(() => employeesRepository.update(employeeId, {
       firstName: data.first_name,
       lastName: data.last_name,
       phone: data.phone,
@@ -368,7 +419,7 @@ export const employeesService = {
       philhealthNumberEncrypted: data.philhealth_number ? encryptField(data.philhealth_number) : undefined,
       tinNumberEncrypted: data.tin_number ? encryptField(data.tin_number) : undefined,
       pagibigNumberEncrypted: data.pagibig_number ? encryptField(data.pagibig_number) : undefined,
-    });
+    }));
 
     await recordAuditLog({
       action: 'EMPLOYEE_UPDATED',
@@ -392,6 +443,7 @@ export const employeesService = {
   ): Promise<EmployeeResponse> {
     const before = await employeesRepository.findById(employeeId);
     if (!before) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
+    assertNotRemoved(before);
     await assertEmployeeAccess(deactivatedBy, before);
     assertCanManageTarget(deactivatedBy, before);
     if (!before.isActive) throw new EmployeeError('EMPLOYEE_ALREADY_INACTIVE', 'This employee is already deactivated', 409);
@@ -406,7 +458,7 @@ export const employeesService = {
       );
     }
 
-    await employeesRepository.deactivate(employeeId, deactivatedBy.user_id, data.reason);
+    await guardRemovedRace(() => employeesRepository.deactivate(employeeId, deactivatedBy.user_id, data.reason));
     await authRepository.revokeAllUserTokens(employeeId);
     await employeesRepository.updateBranchAssignments(employeeId, [], deactivatedBy.user_id);
     await staffPinService.refreshBranchLookupsForUser(employeeId);
@@ -432,11 +484,12 @@ export const employeesService = {
   async reactivateEmployee(employeeId: string, reactivatedBy: ActorContext, ipAddress: string | null): Promise<EmployeeResponse> {
     const before = await employeesRepository.findById(employeeId);
     if (!before) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
+    assertNotRemoved(before);
     await assertEmployeeAccess(reactivatedBy, before);
     assertCanManageTarget(reactivatedBy, before);
     if (before.isActive) throw new EmployeeError('EMPLOYEE_ALREADY_ACTIVE', 'This employee is already active', 409);
 
-    const employee = await employeesRepository.reactivate(employeeId, reactivatedBy.user_id);
+    const employee = await guardRemovedRace(() => employeesRepository.reactivate(employeeId, reactivatedBy.user_id));
     if (before.role === ROLES.BRANCH) {
       await employeesRepository.restoreMostRecentBranchAssignment(employeeId);
     }
@@ -474,6 +527,7 @@ export const employeesService = {
   ): Promise<EmployeeResponse> {
     const before = await employeesRepository.findById(employeeId);
     if (!before) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
+    assertNotRemoved(before);
     await assertEmployeeAccess(changedBy, before);
     assertCanManageTarget(changedBy, before);
     if (before.status === status) {
@@ -492,7 +546,7 @@ export const employeesService = {
       }
     }
 
-    await employeesRepository.setStatus(employeeId, status, changedBy.user_id, reason);
+    await guardRemovedRace(() => employeesRepository.setStatus(employeeId, status, changedBy.user_id, reason));
 
     if (status !== 'active') {
       // Force logout: refresh revocation blocks re-auth, the socket push +
@@ -537,17 +591,36 @@ export const employeesService = {
   async getDeletionEligibility(employeeId: string, requestingUser: JwtPayload): Promise<EmployeeDeletionEligibility> {
     const employee = await employeesRepository.findById(employeeId);
     if (!employee) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
-    await assertEmployeeAccess(requestingUser, employee);
     assertCanManageTarget(requestingUser, employee);
-
     const references = await employeesRepository.countHistoryReferences(employeeId);
+    if (employee.deletedAt) {
+      return { employee_id: employeeId, can_delete: false, blocked_reason: 'already_removed', references, mode: null, prerequisites: null };
+    }
+    await assertEmployeeAccess(requestingUser, employee);
+
     const hasHistory = Object.values(references).some((count) => count > 0);
     const isBranchAccount = employee.role === ROLES.BRANCH;
+    if (isBranchAccount) {
+      return { employee_id: employeeId, can_delete: false, blocked_reason: 'branch_account', references, mode: null, prerequisites: null };
+    }
+    if (!hasHistory) {
+      return { employee_id: employeeId, can_delete: true, blocked_reason: null, references, mode: 'permanent', prerequisites: null };
+    }
+    // POS-PERF-P64 — only a Super Admin removing a supervisor keeps going
+    // with history (assertCanManageTarget already refused anyone else for a
+    // supervisor target). Staff with history still deactivate, as before.
+    if (employee.role !== ROLES.SUPERVISOR) {
+      return { employee_id: employeeId, can_delete: false, blocked_reason: 'has_history', references, mode: null, prerequisites: null };
+    }
+    const prerequisites = await employeesRepository.getRemovalPrerequisites(employeeId);
+    const blocked = prerequisites.open_shifts.length > 0 || prerequisites.open_attendance.length > 0;
     return {
       employee_id: employeeId,
-      can_delete: !hasHistory && !isBranchAccount,
-      blocked_reason: isBranchAccount ? 'branch_account' : hasHistory ? 'has_history' : null,
+      can_delete: !blocked,
+      blocked_reason: blocked ? 'open_operations' : null,
       references,
+      mode: 'remove_keep_history',
+      prerequisites,
     };
   },
 
@@ -560,11 +633,25 @@ export const employeesService = {
    * Branch accounts are never hard-deleted — they follow their branch's
    * lifecycle. The audit entry keeps the deleted person's full snapshot.
    */
-  async deleteEmployee(employeeId: string, deletedBy: ActorContext, ipAddress: string | null): Promise<{ deleted: true }> {
+  async deleteEmployee(employeeId: string, deletedBy: ActorContext, ipAddress: string | null): Promise<EmployeeDeletionResult> {
     const before = await employeesRepository.findById(employeeId);
     if (!before) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
-    await assertEmployeeAccess(deletedBy, before);
     assertCanManageTarget(deletedBy, before);
+    if (before.deletedAt) {
+      // Repeat request (double click, retry after a lost response): nothing
+      // changes, but the attempt is still audited.
+      await recordAuditLog({
+        action: 'EMPLOYEE_REMOVAL_REPEATED',
+        entityType: 'user',
+        entityId: employeeId,
+        actorId: deletedBy.user_id,
+        actorRole: deletedBy.role,
+        afterState: { removed: true, removed_at: before.deletedAt.toISOString() },
+        ipAddress,
+      });
+      return { deleted: true, outcome: 'already_removed' };
+    }
+    await assertEmployeeAccess(deletedBy, before);
     if (before.role === ROLES.BRANCH) {
       throw new EmployeeError('BRANCH_ACCOUNT_NOT_DELETABLE', 'Branch accounts follow their branch and cannot be deleted here', 400);
     }
@@ -583,6 +670,9 @@ export const employeesService = {
       throw error;
     }
     if (!result.deleted) {
+      if (before.role === ROLES.SUPERVISOR && deletedBy.role === ROLES.SUPER_ADMIN) {
+        return employeesService.removeSupervisorKeepingHistory(before, result.references, deletedBy, ipAddress);
+      }
       throw new EmployeeError(
         'EMPLOYEE_HAS_HISTORY',
         'This person has recorded history and cannot be permanently deleted — deactivate them instead',
@@ -604,7 +694,79 @@ export const employeesService = {
       ipAddress,
     });
 
-    return { deleted: true };
+    return { deleted: true, outcome: 'permanent' };
+  },
+
+  /**
+   * POS-PERF-P64 — Super Admin "Delete" of a supervisor who has history.
+   * The account leaves normal use for good: no login, refresh, PIN or
+   * existing session, no branch access, absent from operational lists. The
+   * row stays (marked deletedAt) so every sale, expense, attendance record,
+   * stock movement, proof and audit entry keeps the real name; nothing is
+   * reassigned or cascaded. Open shifts and open clock-ins must be closed
+   * first — they are never closed on the owner's behalf.
+   */
+  async removeSupervisorKeepingHistory(
+    before: EmployeeWithAssignments,
+    references: Record<EmployeeHistoryCategory, number>,
+    removedBy: ActorContext,
+    ipAddress: string | null,
+  ): Promise<EmployeeDeletionResult> {
+    const result = await employeesRepository.removeWithHistory(before.id, removedBy.user_id, {
+      isActive: before.isActive,
+      status: before.status,
+    });
+    if (result.outcome === 'blocked') {
+      const { open_shifts: shifts, open_attendance: attendance } = result.prerequisites;
+      const steps = [
+        shifts.length ? `close the open shift at ${shifts.map((s) => s.branch_name).join(', ')}` : null,
+        attendance.length ? `clock them out (or correct the attendance record) at ${attendance.map((a) => a.branch_name).join(', ')}` : null,
+      ].filter(Boolean);
+      throw new EmployeeError(
+        'EMPLOYEE_HAS_OPEN_OPERATIONS',
+        `This supervisor still has open work. Before removing the account, ${steps.join(' and ')}.`,
+        409,
+        { prerequisites: result.prerequisites },
+      );
+    }
+    if (result.outcome === 'already_removed') {
+      await recordAuditLog({
+        action: 'EMPLOYEE_REMOVAL_REPEATED',
+        entityType: 'user',
+        entityId: before.id,
+        actorId: removedBy.user_id,
+        actorRole: removedBy.role,
+        afterState: { removed: true, concurrent: true },
+        ipAddress,
+      });
+      return { deleted: true, outcome: 'already_removed' };
+    }
+
+    forgetAccountStatus(before.id);
+    forgetActiveStatus(before.id);
+    await staffPinService.refreshBranchLookupsForUser(before.id);
+    revokeEmployeeSession(before.id, 'deleted');
+
+    await recordAuditLog({
+      action: 'EMPLOYEE_REMOVED',
+      entityType: 'user',
+      entityId: before.id,
+      actorId: removedBy.user_id,
+      actorRole: removedBy.role,
+      beforeState: toEmployeeResponse(before),
+      afterState: {
+        removed: true,
+        history_retained: true,
+        references,
+        branches_removed: result.prerequisites.branches,
+        branches_left_without_supervisor: result.prerequisites.branches_left_without_supervisor,
+        held_orders: result.prerequisites.held_orders,
+        pending_inventory_approvals: result.prerequisites.pending_inventory_approvals,
+      },
+      ipAddress,
+    });
+
+    return { deleted: true, outcome: 'removed' };
   },
 
   async resetEmployeePassword(
@@ -615,6 +777,7 @@ export const employeesService = {
   ): Promise<{ temporaryPassword?: string }> {
     const employee = await employeesRepository.findById(employeeId);
     if (!employee) throw new EmployeeError('EMPLOYEE_NOT_FOUND', 'Employee not found', 404);
+    assertNotRemoved(employee);
     // Branch Employee Authorization: `staff` rows have no login credentials
     // at all — this legacy endpoint (kept for the branch/supervisor/
     // super_admin accounts that still authenticate by password) no longer

@@ -90,8 +90,13 @@ export function RemoveEmployeeDialog({ open, onOpenChange, employee, onDeleted }
       onDeleted?.();
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : 'Failed to delete');
-      // A sale or clock-in may have landed since the dialog opened — re-check.
-      if (deleteError instanceof EmployeeApiError && deleteError.code === 'EMPLOYEE_HAS_HISTORY') void eligibility.refetch();
+      // A sale, shift or clock-in may have landed since the dialog opened — re-check.
+      if (
+        deleteError instanceof EmployeeApiError &&
+        (deleteError.code === 'EMPLOYEE_HAS_HISTORY' || deleteError.code === 'EMPLOYEE_HAS_OPEN_OPERATIONS')
+      ) {
+        void eligibility.refetch();
+      }
     }
   }
 
@@ -139,6 +144,97 @@ export function RemoveEmployeeDialog({ open, onOpenChange, employee, onDeleted }
           Try again
         </Button>
       </>
+    );
+  } else if (data.can_delete && data.mode === 'remove_keep_history') {
+    const prerequisites = data.prerequisites;
+    const uncovered = prerequisites?.branches_left_without_supervisor ?? [];
+    body = (
+      <div className="space-y-3 text-sm">
+        <p>
+          <span className="font-medium">{name}</span> has history ({history.join(', ')}). Deleting removes the account from the system:
+        </p>
+        <ul className="list-disc space-y-1 pl-5">
+          <li>They are signed out everywhere and can no longer log in, refresh a session or use a PIN.</li>
+          <li>
+            Their branch access is removed
+            {prerequisites && prerequisites.branches.length > 0 ? ` (${prerequisites.branches.map((b) => b.name).join(', ')})` : ''}, and they
+            disappear from supervisor lists and selectors.
+          </li>
+          <li>
+            Their history is kept: past sales, expenses, attendance, stock movements, proofs and audit entries still show {name}. The record is
+            retained for that history, not erased, and it cannot be reactivated.
+          </li>
+        </ul>
+        {uncovered.length > 0 && (
+          <div className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 p-3" role="status">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>
+              {uncovered.map((b) => b.name).join(', ')} will have no assigned supervisor. You can assign one from Branches afterwards.
+            </span>
+          </div>
+        )}
+        {prerequisites && (prerequisites.held_orders > 0 || prerequisites.pending_inventory_approvals > 0) && (
+          <p className="text-muted-foreground">
+            {[
+              prerequisites.held_orders > 0 ? `${prerequisites.held_orders} held order(s)` : null,
+              prerequisites.pending_inventory_approvals > 0 ? `${prerequisites.pending_inventory_approvals} pending inventory approval(s)` : null,
+            ]
+              .filter(Boolean)
+              .join(' and ')}{' '}
+            stay on their branch under {name}’s name and can still be handled there.
+          </p>
+        )}
+        <label className="flex items-start gap-2">
+          <Checkbox checked={confirmed} onCheckedChange={(checked) => setConfirmed(checked === true)} className="mt-0.5" />
+          <span>I understand {name} loses all access and cannot be restored, and their history stays.</span>
+        </label>
+      </div>
+    );
+    footer = (
+      <>
+        <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+          Cancel
+        </Button>
+        <Button type="button" variant="danger" disabled={!confirmed || deleteEmployee.isPending} onClick={() => void handleDelete()}>
+          {deleteEmployee.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          Delete account
+        </Button>
+      </>
+    );
+  } else if (data.blocked_reason === 'open_operations') {
+    const prerequisites = data.prerequisites;
+    body = (
+      <div className="space-y-3 text-sm" role="alert">
+        <div className="rounded-md border border-warning/40 bg-warning/10 p-3">
+          <p className="font-medium">{name} still has open work, so the account can’t be deleted yet.</p>
+          <ul className="mt-1 list-disc pl-5 text-muted-foreground">
+            {prerequisites?.open_shifts.map((shift) => (
+              <li key={shift.id}>Open shift at {shift.branch_name}: close it (count the cash) first.</li>
+            ))}
+            {prerequisites?.open_attendance.map((record) => (
+              <li key={record.id}>Still clocked in at {record.branch_name}: clock out or correct the attendance record first.</li>
+            ))}
+          </ul>
+        </div>
+        <p className="text-muted-foreground">Nothing has been changed. Delete again once these are closed.</p>
+      </div>
+    );
+    footer = (
+      <>
+        <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+          Close
+        </Button>
+        <Button type="button" onClick={() => void eligibility.refetch()}>
+          Check again
+        </Button>
+      </>
+    );
+  } else if (data.blocked_reason === 'already_removed') {
+    body = <p className="text-sm text-muted-foreground">{name}’s account has already been removed. Their history is kept.</p>;
+    footer = (
+      <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+        Close
+      </Button>
     );
   } else if (data.can_delete) {
     body = (
@@ -247,7 +343,11 @@ export function RemoveEmployeeDialog({ open, onOpenChange, employee, onDeleted }
       <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Remove {name}</DialogTitle>
-          <DialogDescription>Permanent deletion is only possible for accounts with no history.</DialogDescription>
+          <DialogDescription>
+            {data?.mode === 'remove_keep_history'
+              ? 'Access is removed for good; history keeps their name.'
+              : 'Permanent deletion is only possible for accounts with no history.'}
+          </DialogDescription>
         </DialogHeader>
         {body}
         {error && (

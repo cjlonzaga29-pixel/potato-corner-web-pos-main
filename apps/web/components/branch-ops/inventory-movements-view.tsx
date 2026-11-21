@@ -15,7 +15,7 @@ import { formatDateTime } from '@/lib/utils';
 import { useBranchStore } from '@/stores/branch.store';
 import { useBranchInventoryStock, useInventoryStockMovements } from '@/hooks/queries/use-universal-inventory';
 import { usePathname } from 'next/navigation';
-import { extraSuppliesHistoryPath } from '@/lib/extra-supply-labels';
+import { extraSupplyIssueHref } from '@/lib/extra-supply-labels';
 import { EXTRA_SUPPLY_REFERENCE_TYPE, MOVEMENT_TYPE_LABELS, movementDisplayLabel } from '@/lib/inventory-movement-labels';
 
 interface InventoryMovementsViewProps {
@@ -137,7 +137,7 @@ export function InventoryMovementsView({ branchId }: InventoryMovementsViewProps
         const movement = row.original;
         if (movement.reference_type === EXTRA_SUPPLY_REFERENCE_TYPE && movement.reference_id) {
           return (
-            <a href={`${extraSuppliesHistoryPath(pathname)}?issue=${movement.reference_id}`} className="font-medium text-primary underline-offset-2 hover:underline" data-testid="movement-extra-supply-link">
+            <a href={extraSupplyIssueHref(pathname, movement.reference_id)} className="font-medium text-primary underline-offset-2 hover:underline" data-testid="movement-extra-supply-link">
               View issue
             </a>
           );

@@ -122,4 +122,88 @@ describe('RemoveEmployeeDialog (POS-PERF-P47)', () => {
     expect(screen.getByText(/Already inactive/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Deactivate/ })).not.toBeInTheDocument();
   });
+
+  describe('POS-PERF-P64 — supervisor with history (Super Admin)', () => {
+    const SUPERVISOR = { ...EMPLOYEE, role: 'supervisor', first_name: 'Sam', last_name: 'Cruz' } as unknown as EmployeeResponse;
+    const PREREQS = {
+      open_shifts: [],
+      open_attendance: [],
+      held_orders: 1,
+      pending_inventory_approvals: 0,
+      branches: [{ id: 'b1', name: 'SM North' }],
+      branches_left_without_supervisor: [{ id: 'b1', name: 'SM North' }],
+    };
+
+    it('explains access removal with history kept, warns about coverage, and deletes only after confirmation', async () => {
+      mockEligibility.mockReturnValue({
+        isLoading: false,
+        isError: false,
+        data: { can_delete: true, blocked_reason: null, mode: 'remove_keep_history', references: { ...NO_HISTORY, sales: 12 }, prerequisites: PREREQS },
+      });
+      mockDelete.mockResolvedValue({ deleted: true, outcome: 'removed' });
+      const onOpenChange = vi.fn();
+      render(<RemoveEmployeeDialog open onOpenChange={onOpenChange} employee={SUPERVISOR} />);
+
+      expect(screen.getByText(/12 sales or checkouts/)).toBeInTheDocument();
+      expect(screen.getByText(/history is kept/i)).toBeInTheDocument();
+      expect(screen.getByText(/not erased/i)).toBeInTheDocument();
+      expect(screen.getByText(/SM North will have no assigned supervisor/)).toBeInTheDocument();
+      expect(screen.getByText(/1 held order\(s\)/)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Delete permanently' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /deactivate/i })).not.toBeInTheDocument();
+
+      const button = screen.getByRole('button', { name: 'Delete account' });
+      expect(button).toBeDisabled();
+      fireEvent.click(screen.getByRole('checkbox'));
+      fireEvent.click(button);
+      await waitFor(() => expect(mockDelete).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    });
+
+    it('shows actionable open-work instructions and offers no delete while a shift or clock-in is open', () => {
+      mockEligibility.mockReturnValue({
+        isLoading: false,
+        isError: false,
+        data: {
+          can_delete: false,
+          blocked_reason: 'open_operations',
+          mode: 'remove_keep_history',
+          references: { ...NO_HISTORY, shifts: 3 },
+          prerequisites: { ...PREREQS, open_shifts: [{ id: 's1', branch_name: 'SM North' }], open_attendance: [{ id: 'a1', branch_name: 'SM North' }] },
+        },
+      });
+      render(<RemoveEmployeeDialog open onOpenChange={vi.fn()} employee={SUPERVISOR} />);
+      expect(screen.getByText(/Open shift at SM North: close it/)).toBeInTheDocument();
+      expect(screen.getByText(/Still clocked in at SM North/)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /delete/i })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument();
+    });
+
+    it('re-checks eligibility when the server reports open work at delete time', async () => {
+      const refetch = vi.fn();
+      mockEligibility.mockReturnValue({
+        isLoading: false,
+        isError: false,
+        refetch,
+        data: { can_delete: true, blocked_reason: null, mode: 'remove_keep_history', references: { ...NO_HISTORY, sales: 1 }, prerequisites: PREREQS },
+      });
+      mockDelete.mockRejectedValue(new EmployeeApiError('This supervisor still has open work.', 'EMPLOYEE_HAS_OPEN_OPERATIONS'));
+      render(<RemoveEmployeeDialog open onOpenChange={vi.fn()} employee={SUPERVISOR} />);
+      fireEvent.click(screen.getByRole('checkbox'));
+      fireEvent.click(screen.getByRole('button', { name: 'Delete account' }));
+      await waitFor(() => expect(refetch).toHaveBeenCalled());
+      expect(screen.getByText('This supervisor still has open work.')).toBeInTheDocument();
+    });
+
+    it('says an already-removed account is removed and offers nothing else', () => {
+      mockEligibility.mockReturnValue({
+        isLoading: false,
+        isError: false,
+        data: { can_delete: false, blocked_reason: 'already_removed', mode: null, references: NO_HISTORY, prerequisites: null },
+      });
+      render(<RemoveEmployeeDialog open onOpenChange={vi.fn()} employee={SUPERVISOR} />);
+      expect(screen.getByText(/already been removed/)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /delete|deactivate/i })).not.toBeInTheDocument();
+    });
+  });
 });

@@ -8,14 +8,58 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
 
 ## Observed state
 
-- **Observed:** 2026-11-21
-- **Branch:** `feat/pos-perf-p62-performance-and-reliability`, carrying P59 → P63 from `origin/main` `6931b10`. Pushed for the combined PR (see Latest). **Not merged, nothing deployed, production not accessed.**
-- **P63 code commit:** `8e0fe4b`; docs follow it.
-- **PR:** [#45](https://github.com/cjlonzaga29-pixel/potato-corner-web-pos-main/pull/45) (draft, combined P59–P63). CI green on `2435689` ([run 44908947453](https://github.com/cjlonzaga29-pixel/potato-corner-web-pos-main/actions/runs/44908947453)). **Not merged: hosted blockers below.** Auto-merge is disabled in the repo and `main` has no required checks, so any merge must be a normal merge of a CI-green exact HEAD after the blockers clear.
+- **Observed:** 2026-11-22
+- **Branch:** `feat/pos-perf-p64-account-removal-and-dashboard-cleanup`, from `origin/main` `27e7114`. It has two commits: P64 `52a9555`, and the P65 follow-up (test determinism and runner exit status) on top. **The branch is pushed and has a PR (see the PR for its number and CI). Nothing merged or deployed; production not accessed.**
+- **Reported history, not re-verified here:**
+  - `27e7114` is the merge of PR #46 (the ever-published test isolation fix), the last reported deployment.
+  - PR #45 (combined P59–P63) was merged before it.
+  - This session did not verify production independently.
 - **Working tree:** only `.vscode/settings.json` is modified (the owner's personal setting). Never stage it.
-- **Local leftovers (task-owned, safe to delete):** `C:\p64` (P63: stack root, logs, stopped Postgres data), `C:\p63`, `C:\p62`, `C:\p59r`, `C:\p59c`. No P63 service is left running.
+- **Local leftovers (task-owned, safe to delete):**
+  - `C:\p65`: P65 env, logs, stopped Postgres data, measurement stack and its driver (`C:\p65\lead\measure-revocation.mjs`).
+  - `C:\p64a`: P64 test env, logs, stopped Postgres data.
+  - `C:\p64b`: P64 browser stack, logs, screenshots, CSV and stopped Postgres data.
+  - Older roots: `C:\p64` (P63), `C:\p63`, `C:\p62`, `C:\p59r`, `C:\p59c`.
+  - No P64 service is left running.
+- **Unidentified, left running:** two orphaned embedded-Postgres `io_worker` processes from 2026-11-22 1:51 AM and 2:12 AM. They hold no port and could not be tied to this task with certainty.
+- **Not this session's:** a `stack.sh api` (`dist/server.js`) from 2026-11-21 1:04 PM and older orphaned embedded-Postgres `io_worker` processes from 2026-11-21. They were left untouched.
 
-## Latest: P63 — VAT retired (owner decision, CR-010), verified locally
+## Latest: P64 — supervisor removal with history, test-account cleanup, Reports-only Admin views, dashboard cleanup (local)
+
+Details: [`runbooks/pos-perf-p64-account-removal-and-dashboard-cleanup.md`](runbooks/pos-perf-p64-account-removal-and-dashboard-cleanup.md).
+
+- **Super Admin Delete of a supervisor with history removes access and keeps the record.**
+  - Removed: login, refresh, PIN, existing access tokens (via a removed-account marker in `revoked_tokens`) and branch access. The account leaves operational lists.
+  - Kept: history names the person, and nothing is cascaded.
+  - It cannot be revived through status, reactivation, edit, reset, assignment or unlock. A CHECK constraint also blocks an older API.
+  - An open shift or clock-in blocks the removal, and nothing changes. Branches left without a supervisor are reported as a warning.
+- **Additive migration** `20261121120000_pos_perf_p64_user_account_removal`. It changes no row, and was rehearsed on populated local data.
+- **E2E/smoke cleanup:** `apps/api/scripts/p64-fixture-account-cleanup.ts` works on an exact-ID manifest. It runs a dry run first and needs a matching database host and confirmation token. It refuses Super Admin and Branch accounts. **The production inventory, dry run and execution have NOT been done.** They need the owner's review (runbook §4).
+- **UI:**
+  - The Branch Extra Supplies summary is now last on the dashboard.
+  - Admin Extra Supplies and Attendance live only under Reports (`?tab=EXTRA_SUPPLIES`, `?tab=ATTENDANCE_RECORDS`). Their old URLs redirect, keeping only allowlisted filters.
+  - The dashboard connection badges are gone.
+
+| Check | Result |
+| --- | --- |
+| P64 integration | 12/12 (after fixing a test-email bug) |
+| Focused API | 554/554 (third run; see the runbook for runs 1–2) |
+| Full API (P64) | 1 failed / 3,819 passed: `p59-report-coverage` midnight dependency, **fixed in P65** |
+| **P65 follow-up** (runbook §8) | Report test pinned to one Manila day (old formula reproduced 99/100 at a 12:38 AM base; fixed 11/11). The runner no longer exits 0 after a failed setup (occupied port: 0 → 1; 19/19 runner tests). Out-of-process removal was measured: refresh is refused at once, branch routes in ~0.15 s, auth-only routes in ≤60 s (13.6 s sample); an **open socket is not cut** |
+| Full API (P65, one run) | **1 failed, 3,829 passed, 5 skipped; runner exit 1.** The failure is `p59-export-coverage` Discount PDF `PDF_TIMEOUT` (25 s) under load, in a file this branch doesn't touch. It passed 3/3 alone. Pre-existing and load-sensitive; not re-run |
+| Full web | **1,758/1,758** |
+| Typecheck / lint | Clean / 0 errors (API and web) |
+| Migration rehearsal | Passed: 2,006 users unchanged, no drift |
+| Builds + browser (SW active, emulated desktop/tablet/phone) | Run 1: 32/36 (driver bugs). **Run 2: 36/36** |
+| Hosted / staging | NOT RUN: no isolated environment (unchanged) |
+
+**Next (owner):**
+- Review the PR. Merge and deploy are separate decisions. Order: migrations, then API, then web.
+- No account cleanup until every pre-P64 API instance has retired.
+- After deploy, run the production fixture inventory and dry run (runbook §4) for review before any execution.
+- Provision new smoke accounts before the next smoke run if the old ones are removed.
+
+## Earlier: P63 — VAT retired (owner decision, CR-010), verified locally
 
 Every new sale is subtotal − the supervisor-set discount. The server refuses any VAT-calculated new sale (`VAT_CALCULATION_RETIRED`) after the replay paths. History is stored as-is and never recalculated, and no migration or column drop was made. VAT settings and statutory-rate editors are removed. A type named "PWD" is a manual type. Details: [`runbooks/pos-perf-p63-vat-retired.md`](runbooks/pos-perf-p63-vat-retired.md) §4 has the results.
 
@@ -35,7 +79,7 @@ Every new sale is subtotal − the supervisor-set discount. The server refuses a
 - PDF capacity on Render is unmeasured.
 - `main` has no branch protection or required checks, and repo auto-merge is disabled.
 
-## Latest: web test flakes fixed, full web suite green (local only)
+## Earlier: web test flakes fixed, full web suite green (local only)
 
 Started at `aaae67b`; test-only changes plus docs, committed on top. Two subagents fixed one test file each; the lead reviewed the combined P59–P62 release (P62 runbook §12.9).
 

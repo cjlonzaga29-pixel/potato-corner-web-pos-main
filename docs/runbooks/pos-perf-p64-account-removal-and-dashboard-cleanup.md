@@ -73,7 +73,16 @@ After the commit:
 
 **Residual window, documented rather than fixed.** Opening a shift does not lock the user row. A shift opened in the milliseconds between the removal's prerequisite check and its commit could survive the removal. The removed person cannot use it, because every later request is refused, and it stays visible for a supervisor to close.
 
-**Delay outside this process.** The fixture script (§4) runs in its own process. There, the API's 60-second "token not revoked" cache can delay the refusal of an already-checked token by up to 60 seconds. Refresh and login refuse at once.
+**Delay outside this process.** The fixture script (§4) runs in its own process, so the API's in-memory caches are not cleared and no socket push is sent. Measured once on a local stack (§8.3), with the supervisor's token checked just before execution:
+
+| Path, removed by the CLI | Refused after |
+| --- | --- |
+| Refresh | at once (401) |
+| Branch-scoped reads and supervisor writes (branch access / `requireActiveSupervisor`) | ~0.15 s (403) |
+| Routes that only authenticate (e.g. `GET /api/notifications`) | 13.6 s in the sample (401 `TOKEN_REVOKED`). **Bound: up to 60 s**, the remaining life of that token's "not revoked" cache entry |
+| An already-open realtime socket | **not cut.** It stayed connected for the whole 75 s window; the handshake is the only check. It ends when the browser signs out (first refused request, or the access token's ≤15 min expiry and a refused refresh) or reconnects |
+
+**Operator implication:** after running the CLI, assume a removed fixture account's open browser can still read non-branch data for up to 60 s and receive realtime events until it disconnects. Run the cleanup when the fixture accounts are not signed in; the Delete button (in-process) has neither delay.
 
 ## 3. Operational prerequisites (no silent changes)
 
@@ -227,7 +236,41 @@ Driver `tests/e2e/manual/p64/account-and-reports.mjs`, run on the final producti
 - The 60-second cross-process token-cache delay (§2) was not measured in the browser. The removal ran inside the API process, so the cache was cleared.
 - Hosted/staging checks were not run. No isolated nonproduction environment exists; this is unchanged from P63.
 
-### 7.3 SHAs
+## 8. Follow-up on the same branch (P65): test determinism, runner exit status, revocation timing
 
-- Starting: `27e7114` (`origin/main`, the last reported deployment)
-- Tested: the working tree on top of `27e7114` (all runs above). Final SHA: the P64 commit recorded in `CURRENT_HANDOFF.md`.
+### 8.1 `p59-report-coverage` midnight failure — fixed (test only)
+
+- **Cause:** the fixture clocked in at `now − 1 h` while the report filtered on Manila "today", so from 12:00 to 12:59 AM the record fell on the previous day (99 vs 100). A late-night audit found the same hazard the other way: fixtures and the real sale stamped after 11:59 PM land on tomorrow.
+- **Fix:** one base instant per file. `today` and every time-sensitive fixture come from it, kept inside its Manila day by `API/reports/report-day-fixture.ts` (pure, takes the base as an argument). The process clock is never frozen, so tokens and database timestamps are untouched. Production report code is unchanged, and every coverage assertion is kept. Unit cases: 12:10 AM, 2:00 PM, 11:50 PM.
+- **Proof:** with a temporary base override, since removed, the old formula at a 12:38 AM base gave **10 passed, 1 failed (99 records)**, the original failure. The new code passed 11/11 at the 12:38 AM and 11:50 PM bases, and on the real clock. Failed attempts on the way: a compile error in the temporary override; two `PDF_TIMEOUT` 503s while other embedded Postgres were running (load, not dates); and one wrong raw-SQL timestamp cast, fixed with a UTC text cast and a read-back check.
+
+### 8.2 `with-test-postgres` exited 0 after a failed setup — fixed
+
+- **Cause, confirmed in `embedded-postgres@18.4.0-beta.17`:** on a busy port Postgres exits during startup and `start()` rejects with `undefined`. The following `stop()` never settles, because it waits for an `exit` event the dead process already sent. The event loop drained, `async-exit-hook`'s `beforeExit` ran, and after its 10 s timeout it called `process.exit(0)`. The P62 explicit exit never ran because the run promise never settled.
+- **Fix (`scripts/lib/test-postgres-run.ts`):**
+  - `stop()` is bounded at 15 s. A timeout counts as "Postgres may still be running", so it fails a passing run and keeps a failing code.
+  - An undefined rejection is named.
+  - `exitProcessWith` adds a `beforeExit` guard, placed before the hook, that exits 1 if the run never settled. An `exit` guard turns any exit 0 the run did not decide into 1.
+  - P62's protections are kept: the Windows data-dir EBUSY case is still not fatal, and the script still calls `process.exit` explicitly.
+- **Real runs:** occupied port (a task-owned listener): **before 0, after 1**. A passing child gives 0; a child exiting 7 gives 7.
+- **Regression:** `scripts/lib/test-postgres-run.test.ts` passes 19/19, including 12 real child-process scenarios (setup rejecting undefined, stop hanging after a setup failure, a pass and a fail, drain, early exit 0, signal). Run against the pre-fix runner, the five new scenarios all exited 0. It is part of the normal `vitest run`, and no failing test is left in it.
+
+### 8.3 Cross-process revocation timing (measured)
+
+Local stack `stack.sh`: `P62_ROOT=/c/p65/stack`, ports 56651–56652, database `p62_p65meas`. The driver is outside the repository. It created a supervisor with history, signed it in, opened a socket, ran the CLI dry run (nothing changed), executed with the printed token, and polled. Results are in §2. One sample; the 60 s bound comes from the code, not from repeated runs.
+
+### 8.4 Verification
+
+| Check | Result |
+| --- | --- |
+| `p59-report-coverage`, real clock | 11/11, exit 0 |
+| Runner tests | 19/19 |
+| **Full API, one run, default settings** (fresh embedded Postgres, port 56661) | **1 failed, 3,829 passed, 5 skipped; runner exit 1** (correctly propagated). The failure: `p59-export-coverage` Discount PDF limit, **503 `PDF_TIMEOUT` at 25,026 ms** under full-suite load. Collect time was 811 s against 464 s in the P64 run. File and PDF code untouched by this branch. **Alone: 3/3, exit 0**, but one export took 13.8 s, so it has little headroom under the 25 s deadline. A pre-existing load-sensitive test, not fixed here. The full suite was not re-run. |
+| API typecheck / lint | Clean / 0 errors (6 `no-console` warnings in the runner) |
+| Web, builds, browser | Not re-run: no application or UI code changed since §7. The P64 evidence stands. |
+
+### 8.5 SHAs
+
+- Starting: `27e7114` (`origin/main`, the last reported deployment).
+- P64 (§7): tested as the working tree on top of `27e7114`, then committed as `52a9555`.
+- P65 (§8): tested as the working tree on top of `52a9555`, then committed on top of it. The SHA is in `git log` and the PR.

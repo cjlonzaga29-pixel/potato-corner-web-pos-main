@@ -4,7 +4,7 @@
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { exitCodeFor, isDataDirRemovalError, runWithCluster, type Cluster } from './test-postgres-run';
+import { describeError, exitCodeFor, isDataDirRemovalError, runWithCluster, type Cluster } from './test-postgres-run';
 
 const fixture = path.join(__dirname, 'test-postgres-run.exit-fixture.ts');
 const tsxCli = require.resolve('tsx/cli');
@@ -78,6 +78,37 @@ describe('runWithCluster', () => {
     });
     expect(leftover).toBe(0);
   });
+
+  // P65: embedded-postgres start() rejects with undefined on a port conflict,
+  // then stop() never settles.
+  it('a stop() that never settles fails the run instead of hanging, and keeps a failing code', async () => {
+    const never = () => new Promise<never>(() => {});
+    const lines: string[] = [];
+    const afterSetupFail = await runWithCluster({
+      cluster: cluster({ start: () => Promise.reject(undefined), stop: never }), dbName: 'x',
+      log: (l: string) => { lines.push(l); }, stopTimeoutMs: 50,
+      migrate: () => {}, runCommand: async () => ({ code: 0, signal: null }),
+    });
+    expect(afterSetupFail).toBe(1);
+    expect(lines.join(' | ')).toMatch(/setup failed: rejected without a reason/);
+    expect(lines.join(' | ')).toMatch(/did not finish within 50 ms/);
+    const afterPass = await runWithCluster({
+      cluster: cluster({ stop: never }), dbName: 'x', log: quiet, stopTimeoutMs: 50,
+      migrate: () => {}, runCommand: async () => ({ code: 0, signal: null }),
+    });
+    expect(afterPass).toBe(1);
+    const afterFail = await runWithCluster({
+      cluster: cluster({ stop: never }), dbName: 'x', log: quiet, stopTimeoutMs: 50,
+      migrate: () => {}, runCommand: async () => ({ code: 4, signal: null }),
+    });
+    expect(afterFail).toBe(4);
+  });
+
+  it('describes undefined and non-Error rejections', () => {
+    expect(describeError(undefined)).toMatch(/without a reason/);
+    expect(describeError(new Error('boom'))).toBe('boom');
+    expect(describeError('text')).toBe('text');
+  });
 });
 
 // Real child processes with embedded-postgres's real exit hook registered.
@@ -89,6 +120,11 @@ describe('process exit status with the embedded-postgres exit hook loaded', () =
     ['stop-busy', 0],
     ['stop-fail', 1],
     ['fail-stop-fail', 7],
+    ['setup-undefined', 1],
+    ['pass-stop-hang', 1],
+    ['fail-stop-hang', 7],
+    ['drain', 1],
+    ['early-exit-0', 1],
   ])('%s exits %i', (scenario, expected) => {
     const r = runFixture(scenario);
     expect(r.status, r.output).toBe(expected);

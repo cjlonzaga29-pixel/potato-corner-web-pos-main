@@ -2,7 +2,7 @@
 
 Navigation only, not proof of what the code does today. Rules live in [`.claude/CLAUDE.md`](../.claude/CLAUDE.md), architecture in [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md), and
 the current state of work in [`CURRENT_HANDOFF.md`](CURRENT_HANDOFF.md). Paths were checked against the working tree on
-2026-11-03 (P64 entries 2026-11-22). Update the affected entries when files move. Keep this file under 180 lines and link runbooks, not details.
+2026-11-03 (P64/P65 entries 2026-11-22). Update the affected entries when files move. Keep this file under 180 lines and link runbooks, not details.
 
 Shorthand: `API/` = `apps/api/src/modules/`, `WEB/` = `apps/web/`, `SHARED/` = `packages/shared/src/schemas/`,
 `RUN/` = `docs/runbooks/`.
@@ -23,8 +23,7 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 
 ## POS terminal, cart, checkout
 
-- **UI:** `WEB/app/(branch)/branch/terminal/page.tsx`, `WEB/components/pos/checkout-workspace.tsx`,
-  `WEB/components/pos/payment-footer.tsx`
+- **UI:** `WEB/app/(branch)/branch/terminal/page.tsx`, `WEB/components/pos/checkout-workspace.tsx`, `WEB/components/pos/payment-footer.tsx`
 - **Client state:** `WEB/stores/cart.store.ts`, `WEB/lib/pos/`, `WEB/lib/checkout-recovery.ts`, `WEB/lib/detached-sales.ts`
 - **API (authoritative totals):** `API/transactions/transactions.router.ts`, `API/transactions/transactions.service.ts`
 - **VAT retired (P63, CR-010):** every new sale is the manual total; `assertVatCalculationRetired` refuses VAT-calculated sales after the replay paths. History fixture: `apps/api/src/test-utils/historical-vat-sale.ts`; browser driver `tests/e2e/manual/p62/vat-retired.mjs`
@@ -36,15 +35,11 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 
 ## Inventory: availability, reservations, deduction
 
-- **UI:** `WEB/app/(branch)/branch/inventory/page.tsx`, `WEB/app/(supervisor)/supervisor/inventory/page.tsx`,
-  `WEB/app/(supervisor)/supervisor/inventory-catalog/page.tsx`, `WEB/components/branch-ops/inventory-list.tsx`
+- **UI:** `WEB/app/(branch)/branch/inventory/page.tsx`, `WEB/app/(supervisor)/supervisor/inventory/page.tsx`, `WEB/app/(supervisor)/supervisor/inventory-catalog/page.tsx`, `WEB/components/branch-ops/inventory-list.tsx`
 - **POS availability:** `WEB/hooks/use-cart-stock-validation.ts`, `WEB/lib/pos-product-availability.ts`
-- **Availability calculation:** `API/stock-availability/stock-availability.service.ts`,
-  `API/stock-availability/required-choice-combinations.ts`
-- **Stock and reservations:** `API/universal-inventory/universal-inventory.router.ts`,
-  `API/universal-inventory/universal-inventory.service.ts`, `API/transactions/transactions.service.ts`
-- **Deduction worker:** `API/inventory-deduction/inventory-deduction.worker.ts`,
-  `API/inventory-deduction/inventory-deduction.service.ts`; job runner in `apps/api/src/lib/job-runner.ts`
+- **Availability calculation:** `API/stock-availability/stock-availability.service.ts`, `API/stock-availability/required-choice-combinations.ts`
+- **Stock and reservations:** `API/universal-inventory/universal-inventory.router.ts`, `API/universal-inventory/universal-inventory.service.ts`, `API/transactions/transactions.service.ts`
+- **Deduction worker:** `API/inventory-deduction/inventory-deduction.worker.ts`, `API/inventory-deduction/inventory-deduction.service.ts`; job runner in `apps/api/src/lib/job-runner.ts`
 - **Approvals:** `API/inventory-approval/inventory-approval.router.ts`, `WEB/components/branch-ops/inventory-approvals/`
 - **Schema:** `SHARED/universal-inventory.schema.ts`, `SHARED/inventory-approval.schema.ts`; models `InventoryStock`,
   `InventoryStockMovement`, `InventoryDeductionJob`
@@ -130,7 +125,7 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 
 - **UI:** `WEB/app/(admin)/admin/dashboard/page.tsx`, `WEB/app/(supervisor)/supervisor/dashboard/page.tsx`, `WEB/app/(branch)/branch/dashboard/page.tsx`, `WEB/components/admin/dashboard-low-stock-summary.tsx`, `WEB/components/supervisor/dashboard-inventory-alerts.tsx`, `WEB/app/(admin)/admin/reports/page.tsx`, `WEB/components/branch-ops/reports-view.tsx`, `WEB/components/reports/`
 - **API:** `API/reports/` (exports in `apps/api/src/lib/reports/`); every PDF renders in the worker pool `lib/reports/pdf-render-pool.ts` + `pdf-render.worker.ts` (P62; tests `p62-pdf-isolation.test.ts`, `p62-pdf-routes.integration.test.ts`; benchmark `apps/api/scripts/p62-pdf-render-benchmark.mjs`; interactive request deadline `PDF_REQUEST_DEADLINE_MS` and deadline-aware admission in the pool); partial-file labelling in `export-coverage.ts`; shortage counts in `API/stock-availability/stock-availability.service.ts`; schema `SHARED/reports.schema.ts`
-- **Tests:** `WEB/components/admin/dashboard-low-stock-summary.test.tsx`, `WEB/components/supervisor/dashboard-inventory-alerts.test.tsx`, `API/reports/reports.service.test.ts`, `API/reports/p59-discount-report.integration.test.ts`, `API/reports/p59-export-coverage.integration.test.ts`, `API/reports/p59-report-coverage.integration.test.ts`
+- **Tests:** `WEB/components/admin/dashboard-low-stock-summary.test.tsx`, `WEB/components/supervisor/dashboard-inventory-alerts.test.tsx`, `API/reports/reports.service.test.ts`, `API/reports/p59-discount-report.integration.test.ts`, `API/reports/p59-export-coverage.integration.test.ts`, `API/reports/p59-report-coverage.integration.test.ts` (fixtures pinned to one Manila report day via `API/reports/report-day-fixture.ts`, P65)
 - **Runbooks:** `RUN/pos-perf-p47-dashboard-and-management.md`, `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§2), `RUN/pos-perf-p59-reports-and-ui-cleanup.md`
 
 ## Expenses and expense types
@@ -145,8 +140,7 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 
 ## Stock transfers
 
-- **UI:** `WEB/app/(branch)/branch/inventory/transfer/page.tsx`, `WEB/app/(supervisor)/supervisor/inventory/transfer/page.tsx`,
-  `WEB/components/branch-ops/inventory-transfer-form.tsx`, `WEB/components/branch-ops/transfer-stock-needs-panel.tsx`
+- **UI:** `WEB/app/(branch)/branch/inventory/transfer/page.tsx`, `WEB/app/(supervisor)/supervisor/inventory/transfer/page.tsx`, `WEB/components/branch-ops/inventory-transfer-form.tsx`, `WEB/components/branch-ops/transfer-stock-needs-panel.tsx`
 - **API:** `API/universal-inventory/universal-inventory.router.ts` (`/:branchId/inventory-stock/transfer`),
   `API/universal-inventory/universal-inventory.service.ts`; destination scope in `apps/api/src/lib/branch-access.ts`
 - **Schema:** `SHARED/universal-inventory.schema.ts`; models `InventoryStock`, `InventoryStockMovement`
@@ -171,7 +165,7 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 
 - **Schema and history:** `apps/api/prisma/schema.prisma`, `apps/api/prisma/migrations/`
 - **Safety rules:** "Database & Migration Safety" in [`.claude/CLAUDE.md`](../.claude/CLAUDE.md). Read it before any `prisma migrate` command.
-- **Rehearsals on disposable data:** `apps/api/scripts/with-test-postgres.ts` (exit status: `scripts/lib/test-postgres-run.ts`, tested), `apps/api/scripts/test-p57-migration-on-populated-data.ts`, and the other `apps/api/scripts/test-*-migration*-on-populated-data.ts` scripts
+- **Rehearsals on disposable data:** `apps/api/scripts/with-test-postgres.ts` (exit status, bounded stop and exit-0 guard: `scripts/lib/test-postgres-run.ts`, tested), `apps/api/scripts/test-p57-migration-on-populated-data.ts`, and the other `apps/api/scripts/test-*-migration*-on-populated-data.ts` scripts
 - **Rollback notes:** `docs/migrations/`
 - **Runbook example:** `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§9)
 

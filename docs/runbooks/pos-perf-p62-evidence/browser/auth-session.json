@@ -1,0 +1,95 @@
+[
+  {
+    "step": "session: reloads during a 6s refresh keep the user signed in",
+    "url": "/supervisor/dashboard",
+    "ok": true,
+    "slowRefreshes": 2,
+    "at": "2026-11-21T05:41:38.415Z"
+  },
+  {
+    "step": "session: three tabs reloading together all stay signed in",
+    "states": [
+      "/supervisor/dashboard",
+      "/supervisor/dashboard",
+      "/supervisor/dashboard"
+    ],
+    "ok": true,
+    "at": "2026-11-21T05:42:47.663Z"
+  },
+  {
+    "step": "session: a refresh 503 does not sign the user out",
+    "during": "/supervisor/dashboard",
+    "after": "/supervisor/dashboard",
+    "ok": true,
+    "at": "2026-11-21T05:42:54.186Z"
+  },
+  {
+    "step": "session: a refresh 429 does not sign the user out",
+    "during": "/supervisor/dashboard",
+    "after": "/supervisor/dashboard",
+    "ok": true,
+    "at": "2026-11-21T05:43:59.900Z"
+  },
+  {
+    "step": "session: a refresh gateway HTML 502 does not sign the user out",
+    "during": "/supervisor/dashboard",
+    "after": "/supervisor/dashboard",
+    "ok": true,
+    "at": "2026-11-21T05:45:05.932Z"
+  },
+  {
+    "step": "session: a refresh network failure does not sign the user out",
+    "during": "/supervisor/dashboard",
+    "after": "/supervisor/dashboard",
+    "ok": true,
+    "at": "2026-11-21T05:46:11.729Z"
+  },
+  {
+    "step": "session: the pre-logout refresh cookie, replayed, does not sign back in",
+    "url": "/login",
+    "ok": true,
+    "refreshes": [
+      "401 cleared",
+      "401 cleared",
+      "401 cleared"
+    ],
+    "jar": [
+      "pc_device_id",
+      "csrf-token"
+    ],
+    "at": "2026-11-21T05:47:15.651Z"
+  },
+  {
+    "step": "switch: B lands on their own dashboard after A logged out mid-request",
+    "url": "http://localhost:56433/admin/dashboard",
+    "heldForA": 26,
+    "ok": true,
+    "at": "2026-11-21T05:48:29.383Z"
+  },
+  {
+    "step": "switch: no API response is cached for B to inherit",
+    "left": [],
+    "ok": true,
+    "at": "2026-11-21T05:48:29.383Z"
+  },
+  {
+    "step": "switch: B header initials",
+    "initials": "AD",
+    "bodyChars": 1801,
+    "ok": true,
+    "at": "2026-11-21T05:48:29.383Z"
+  },
+  {
+    "step": "session: the driver stayed within the API rate limits (no 429 seen)",
+    "limited": [
+      "transient:/api/auth/refresh",
+      "transient:/api/auth/refresh",
+      "transient:/api/auth/refresh",
+      "transient:/api/auth/refresh",
+      "transient:/api/auth/refresh"
+    ],
+    "count": 10,
+    "ok": false,
+    "at": "2026-11-21T05:48:29.478Z"
+  }
+]

@@ -1,0 +1,62 @@
+[
+  {
+    "step": "new: while the old worker still controls the page it stores API responses (window exercised)",
+    "ok": true,
+    "writtenByOld": 13,
+    "holdMs": 8000,
+    "at": "2026-11-21T04:47:40.850Z"
+  },
+  {
+    "step": "new: after the new worker takes control, no API response remains (no reload)",
+    "ok": true,
+    "takeoverMs": 6476,
+    "entriesWhileOldWorkerControlled": 13,
+    "left": [],
+    "at": "2026-11-21T04:47:48.247Z"
+  },
+  {
+    "step": "new: the session survives the upgrade",
+    "ok": true,
+    "url": "/supervisor/dashboard",
+    "at": "2026-11-21T04:47:53.413Z"
+  },
+  {
+    "step": "new: the active sw.js routes /api/ NetworkOnly",
+    "ok": true,
+    "at": "2026-11-21T04:47:53.435Z"
+  },
+  {
+    "step": "new: the old apis cache is gone",
+    "ok": true,
+    "caches": [
+      "pages",
+      "static-style-assets",
+      "next-static-js-assets",
+      "static-js-assets",
+      "workbox-precache-v2-http://localhost:56433/",
+      "pages-rsc-prefetch",
+      "cross-origin"
+    ],
+    "at": "2026-11-21T04:47:53.508Z"
+  },
+  {
+    "step": "new: no cache holds an /api/ response",
+    "ok": true,
+    "left": [],
+    "before": 5,
+    "at": "2026-11-21T04:47:53.508Z"
+  },
+  {
+    "step": "new: browsing every Supervisor page stores no API response",
+    "ok": true,
+    "left": [],
+    "at": "2026-11-21T04:48:11.433Z"
+  },
+  {
+    "step": "new: offline, the same request is not answered from any cache",
+    "ok": true,
+    "target": "/api/expense-types?include_inactive=true&branch_id=b3965d34-8e0a-4469-8087-fe779aae533b",
+    "result": "TypeError: Failed to fetch",
+    "at": "2026-11-21T04:48:11.468Z"
+  }
+]

@@ -1,0 +1,25 @@
+{
+  "label": "c1",
+  "concurrent": 1,
+  "days": 7,
+  "at": "2026-11-21T06:26:42.680Z",
+  "exports": [
+    {
+      "n": 1,
+      "status": 200,
+      "ms": 19694,
+      "bytes": 291890,
+      "isPdf": true,
+      "code": null,
+      "retryAfter": null
+    }
+  ],
+  "exportsWallMs": 19697,
+  "health": {
+    "samples": 286,
+    "rttP50": 17,
+    "rttP95": 19,
+    "rttMax": 477,
+    "worstGapMs": 538
+  }
+}

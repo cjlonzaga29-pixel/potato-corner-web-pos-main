@@ -295,7 +295,10 @@ describe.skipIf(!isLocalDatabase)('POS-PERF-P39R2 ever-published marker (real Po
       faults.markerDown = true;
       await expect(productsService.publishProductToBranches(id, [branchA], supervisor, null)).rejects.toThrow('simulated marker write failure');
       expect(await state(id)).toEqual({ status: 'active', everPublished: false, on: [] });
-      expect(await prisma.inventoryStock.count({ where: { inventoryItemId: item } })).toBe(0);
+      // Scoped to the published branch: CR-007's symmetric fan-out gives every tracked item a
+      // zero-stock row in any branch another test file creates meanwhile, which is not a link
+      // this publication made (that made the unscoped count flaky in parallel CI).
+      expect(await prisma.inventoryStock.count({ where: { inventoryItemId: item, branchId: branchA } })).toBe(0);
       const rowIds = (await prisma.branchProductAvailability.findMany({ where: { productId: id }, select: { id: true } })).map((r) => r.id);
       expect(await prisma.auditOutbox.count({ where: { entityId: { in: rowIds } } })).toBe(0);
     }, 60_000);

@@ -483,7 +483,9 @@ describe.skipIf(!canRunIntegrationTests)('P60 expense types', () => {
       bills = await createType(unique('Bills'), [branch]);
       rent = await createType(unique('Rent'), [branch]);
       // Same-day ties across more than one page, plus a row outside the dates and a deleted one.
-      for (let i = 0; i < 60; i += 1) await addExpense(branch, bills.id, 10.1, '2026-09-10');
+      // POS-PERF-P62 — the 60 rows are independent, so they are created ten at a time;
+      // one at a time took 5.1s with two files running and passed 10s in the full suite.
+      for (let i = 0; i < 60; i += 10) await Promise.all(Array.from({ length: 10 }, () => addExpense(branch, bills.id, 10.1, '2026-09-10')));
       for (let i = 0; i < 3; i += 1) await addExpense(branch, rent.id, 500, '2026-09-11');
       await legacyExpense(branch, 'utilities', 33.3, '2026-09-12');
       await addExpense(branch, bills.id, 9999, '2026-10-01');
@@ -569,7 +571,7 @@ describe.skipIf(!canRunIntegrationTests)('P60 expense types', () => {
       if (whole.kind !== 'file') throw new Error('expected a file');
       expect(whole.filename).not.toContain('PARTIAL');
       expect(whole.buffer.toString('utf-8').trim().split('\n')).toHaveLength(102);
-    });
+    }, 90_000); // POS-PERF-P62 — two real PDFs through the worker, including its cold start (6.0s idle on the P62 laptop; runbook §7).
 
     it('no dates in an export means every date, as on the ledger', async () => {
       const csv = await reportsService.requestExport('EXPENSES', { branchId: branch, expenseTypeId: bills.id, page: 1, limit: 25 }, 'csv', ids.supAB, 'supervisor', branch);

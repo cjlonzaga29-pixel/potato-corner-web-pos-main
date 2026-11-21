@@ -442,5 +442,5 @@ describe.skipIf(!isLocalDatabase)('P59 Discount Report (real Express + Postgres)
     const transactionPdf = await fetch(`${baseUrl}/api/transactions/export/pdf?branch_id=${ids.branchA}&date_from=${today}&date_to=${today}`, { headers: { Authorization: `Bearer ${tokens.supA}`, 'X-Device-ID': `p59-${tag}` } });
     expect(transactionPdf.status).toBe(200);
     expect(Buffer.from(await transactionPdf.arrayBuffer()).subarray(0, 5).toString('latin1')).toBe('%PDF-');
-  });
+  }, 90_000); // POS-PERF-P62 — five real PDFs through the worker: 8.7s alone, 6.0s of it the cold start (runbook §7).
 });

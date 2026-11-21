@@ -178,10 +178,13 @@ describe.skipIf(!canRunIntegrationTests)('P61 extra supplies', () => {
   // ---------------------------------------------------------------- setup
   describe('setup', () => {
     it('creates a card that owns no balance and stores the conversion it showed', async () => {
-      const stockRowsBefore = await prisma.inventoryStock.count();
+      // POS-PERF-P62 — counted for this file's own item, at every branch. A whole-table
+      // count also saw rows other test files created in parallel (failed: 6, expected 4).
+      const ownStock = { where: { inventoryItemId: ids.itemCup } };
+      const stockRowsBefore = await prisma.inventoryStock.count(ownStock);
       const created = await card({ entered_quantity: 2, entered_unit_id: ids.unitBox });
       expect(created).toMatchObject({ version: 1, is_active: true, entered_quantity: 2, base_quantity: 100, can_manage: true, issue_count: 0 });
-      expect(await prisma.inventoryStock.count()).toBe(stockRowsBefore);
+      expect(await prisma.inventoryStock.count(ownStock)).toBe(stockRowsBefore);
     });
 
     it('converts through a global conversion and previews exactly what a save stores', async () => {
@@ -709,7 +712,10 @@ describe.skipIf(!canRunIntegrationTests)('P61 extra supplies', () => {
       await runA(cashIssue(cardA.id, cardA.version, 3, 15));
       await runB(cashIssue(cardA.id, cardA.version, 2, 10));
       await runB(freeIssue(cardA.id, cardA.version, 4));
-    });
+      // POS-PERF-P62 — 29 real issue transactions that lock the same stock row, so they
+      // run one at a time: 6.0s measured with only two files running, over the 10s
+      // default hook timeout under the full parallel suite (P62 runbook §7).
+    }, 30_000);
 
     it('the summary covers the whole period, not the page, and matches the rows across pages', async () => {
       const jwt = supJwt();

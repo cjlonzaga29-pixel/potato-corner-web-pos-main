@@ -103,4 +103,33 @@ describe('purgeApiResponseCache (P62)', () => {
     expect([...(stores.get('workbox-precache-v2')?.keys() ?? [])]).toEqual(['https://pos.test/_next/static/app.js']);
     vi.unstubAllGlobals();
   });
+
+  it('purges again when a new service worker takes control, and once more after, until unbound', async () => {
+    // P62 browser run: after an upgrade the old worker kept caching API responses
+    // after the start-up purge, until the new worker claimed the page.
+    vi.useFakeTimers();
+    let purges = 0;
+    vi.stubGlobal('caches', { keys: async () => [], open: async () => ({ keys: async () => [] }), delete: async () => { purges += 1; return true; } });
+    const sw = new EventTarget();
+    Object.defineProperty(navigator, 'serviceWorker', { value: sw, configurable: true });
+    const { CONTROLLER_CHANGE_REPURGE_MS } = await import('./use-identity-scoped-query-cache');
+    const stop = bindIdentityScopedQueryCache(new QueryClient());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(purges).toBe(1); // start-up
+
+    sw.dispatchEvent(new Event('controllerchange'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(purges).toBe(2);
+    await vi.advanceTimersByTimeAsync(CONTROLLER_CHANGE_REPURGE_MS);
+    expect(purges).toBe(3);
+
+    stop();
+    sw.dispatchEvent(new Event('controllerchange'));
+    await vi.advanceTimersByTimeAsync(CONTROLLER_CHANGE_REPURGE_MS);
+    expect(purges).toBe(3);
+
+    Reflect.deleteProperty(navigator, 'serviceWorker');
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
 });

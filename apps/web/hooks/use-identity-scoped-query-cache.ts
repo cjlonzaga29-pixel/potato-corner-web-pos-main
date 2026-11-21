@@ -16,16 +16,36 @@ import { purgeApiResponseCache } from '@/lib/offline/purge-api-response-cache';
  * Offline sales, drafts and unresolved operations live in IndexedDB and are
  * deliberately left alone, so an uncertain sale stays recoverable.
  *
+ * Upgrade: on the first load after an upgrade the previous build's service
+ * worker still controls the page while the new one installs, and it keeps
+ * caching API responses after the start-up purge (seen in the P62 browser run:
+ * four new entries). So the purge also runs when a new worker takes control,
+ * and once more shortly after, for a request the old worker was finishing.
+ *
  * Returns the unsubscribe function.
  */
+export const CONTROLLER_CHANGE_REPURGE_MS = 5000;
+
 export function bindIdentityScopedQueryCache(queryClient: QueryClient): () => void {
   void purgeApiResponseCache();
-  return useAuthStore.subscribe((state, previous) => {
+  const timers: ReturnType<typeof setTimeout>[] = [];
+  const sw = typeof navigator !== 'undefined' ? navigator.serviceWorker : undefined;
+  const onControllerChange = () => {
+    void purgeApiResponseCache();
+    timers.push(setTimeout(() => void purgeApiResponseCache(), CONTROLLER_CHANGE_REPURGE_MS));
+  };
+  sw?.addEventListener('controllerchange', onControllerChange);
+  const unsubscribe = useAuthStore.subscribe((state, previous) => {
     if (state.identityEpoch === previous.identityEpoch) return;
     void queryClient.cancelQueries();
     queryClient.clear();
     void purgeApiResponseCache();
   });
+  return () => {
+    unsubscribe();
+    sw?.removeEventListener('controllerchange', onControllerChange);
+    for (const timer of timers) clearTimeout(timer);
+  };
 }
 
 export function useIdentityScopedQueryCache(queryClient: QueryClient): void {

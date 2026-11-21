@@ -41,6 +41,7 @@ vi.mock('../../lib/supabase.js', () => ({
 
 const { app } = await import('../../app.js');
 const { prisma } = await import('../../lib/prisma.js');
+const { makeHistoricalVatSale, closeHistoricalVatSaleClient } = await import('../../test-utils/historical-vat-sale.js');
 const { generateStaffToken, generateSupervisorToken, generateSuperAdminToken, generateBranchToken } = await import('../../test-utils/auth-tokens.js');
 
 type ApiBody = { data: Record<string, unknown> | null; error: { code: string; message?: string } | null };
@@ -197,7 +198,9 @@ describe.skipIf(!isLocalDatabase)('P59 Discount Report (real Express + Postgres)
     expect(renamed.status).toBe(200);
     sales.loyalty2 = await sell(tokens.ana, ids.branchA, { id: loyalty.id, version: renamed.body.data?.version as number }, 5);
 
-    // A genuine historical statutory sale, through the real legacy calculation.
+    // A historical statutory sale. POS-PERF-P63: the API no longer rings one,
+    // so an ordinary sale is given the stored shape the old formula wrote
+    // (₱500 → ÷1.12 → −20% → ₱357.14, VAT ₱0). Readers report it as stored.
     const statutory = await call('POST', '/api/transactions', tokens.ana, {
       branch_id: ids.branchA,
       items: [{ product_id: ids.product, product_variant_id: ids.variant, quantity: 2, promotion: null }],
@@ -206,12 +209,13 @@ describe.skipIf(!isLocalDatabase)('P59 Discount Report (real Express + Postgres)
       is_offline_transaction: false,
       idempotency_key: randomUUID(),
       discount_flow: 'manual_v1',
-      discount_choice: 'selected',
-      discount_type: 'pwd',
-      discount_id_reference: `PWD-${tag}`,
-      tax_basis: { vat_rate: 12, discount_rate: 20 },
+      discount_choice: 'none_applicable',
+      tax_basis: { calculation_mode: 'manual_total_v1', vat_rate: null, discount_rate: null },
     });
     expect(statutory.status).toBe(201);
+    await makeHistoricalVatSale(prisma, statutory.body.data?.id as string, {
+      subtotal: 500, discountAmount: 89.29, vatAmount: 0, vatExemptAmount: 446.43, totalAmount: 357.14, discountType: 'pwd', storedMode: 'legacy_vat_v1',
+    });
     sales.statutory = statutory.body.data?.id as string;
     receipts[sales.statutory] = statutory.body.data?.receipt_number as string;
 
@@ -222,6 +226,7 @@ describe.skipIf(!isLocalDatabase)('P59 Discount Report (real Express + Postgres)
   }, 120_000);
 
   afterAll(async () => {
+    await closeHistoricalVatSaleClient();
     await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
     if (!setupSucceeded) return;
     const branches = [ids.branchA, ids.branchB];

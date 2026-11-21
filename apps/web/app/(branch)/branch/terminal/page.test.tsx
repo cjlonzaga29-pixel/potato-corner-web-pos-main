@@ -3771,9 +3771,9 @@ describe('TerminalPage — P49 promotions are not applied in the P55 checkout', 
   });
 });
 
-// POS-PERF-P50 — the terminal still sends the rates its total was computed
-// with (tax_basis, never an amount); the statutory rate for PWD/Senior,
-// null otherwise (a manual peso discount has no rate).
+// POS-PERF-P50 — the terminal sends the basis its total was computed with
+// (tax_basis, never an amount). POS-PERF-P63 — VAT retired: every charge,
+// online or queued, is manual_total_v1 with vat_rate and discount_rate null.
 describe('TerminalPage — P50 tax basis', () => {
   beforeEach(() => {
     mockRefetchDiscountPolicy.mockClear();

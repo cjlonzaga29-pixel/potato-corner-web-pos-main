@@ -99,6 +99,7 @@ const TITLES: Record<string, string> = {
   CALCULATION_MODE_REQUIRED: 'POS update needed — not charged',
   CALCULATION_MODE_NOT_SUPPORTED: 'POS update needed — not charged',
   STATUTORY_DISCOUNT_REQUIRES_TAX_CALCULATION: 'POS update needed — not charged',
+  VAT_CALCULATION_RETIRED: 'POS update needed — not charged',
 };
 
 /** Real server codes that prove only that THIS request made no progress, not that anything failed or succeeded — the network/uncertain bucket, same as the synthetic codes above. */

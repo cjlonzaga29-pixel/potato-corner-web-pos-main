@@ -9,11 +9,6 @@ import {
   ROLES,
   TRANSACTION_PDF_MAX_ROWS,
   isAddOnsOptionGroup,
-  computeSaleTax,
-  discountRateFor,
-  VAT_RATE_PERCENT,
-  PRICES_INCLUDE_VAT,
-  isVatExemptDiscountType,
   computeManualTotal,
   fixedDiscountEffectiveAmount,
   manualDiscountEligibleSubtotal,
@@ -28,7 +23,6 @@ import {
   MANUAL_DISCOUNT_TYPE,
   type ImageProofType,
   type ManualDiscountSnapshot,
-  type SaleTaxSnapshot,
   type ManualTotalSaleSnapshot,
 } from '@potato-corner/shared';
 import { manilaDateKey } from '../../lib/manila-time.js';
@@ -46,7 +40,6 @@ import {
   type DiscountAuditFilters,
   type UploadPaymentProofData,
   type UploadDiscountProofData,
-  type TaxBasis,
 } from './transactions.types.js';
 import { settingsService } from '../settings/settings.service.js';
 import { cashRepository } from '../cash/cash.repository.js';
@@ -80,9 +73,8 @@ import { nextCounterValue } from '../../lib/id-counter.js';
 import { createCheckoutLatencyRecorder, timeStage } from '../../lib/checkout-latency-diagnostics.js';
 import { computeDeductionTotals, sortedDeductionTotalEntries } from '../../lib/deduction-totals.js';
 import { inventoryDeductionRepository } from '../inventory-deduction/inventory-deduction.repository.js';
-import { discountsService } from '../discounts/discounts.service.js';
 import { manualDiscountTypesRepository } from '../discounts/discounts.repository.js';
-import type { PromotionLineSnapshot, ResolvedLinePromotion } from '../discounts/discounts.types.js';
+import type { PromotionLineSnapshot } from '../discounts/discounts.types.js';
 
 type ActorContext = { id: string; role: string };
 
@@ -946,164 +938,6 @@ async function resolveCartItems(branchId: string, items: CartItemInput[]): Promi
 }
 
 /**
- * POS-PERF-P49 — authoritative product-promotion pricing for one sale.
- *
- * Every cart line's acknowledgement (what the cashier's screen showed) is
- * compared with what the server resolves *now* from current configuration,
- * bound to this sale's branch and the line's actual product/size. Any
- * difference — expired/disabled/edited/new promotion, changed overlap
- * winner, forged amount, unselected branch, reclassified product — refuses
- * the whole sale with PROMOTION_CHANGED before anything is written, so the
- * customer is never silently charged an amount the cashier did not see.
- *
- * - Offline sales never carry promotions (they cannot be validated at the
- *   time of sale); one that claims one is refused, never repriced.
- * - PWD/Senior/Employee (one discount per transaction, statutory first):
- *   promotions are not applied; a sale claiming both is refused.
- * - A line without the field (older client) gets no promotion and is
- *   charged exactly what that client displayed.
- *
- * Lines are in the same order as data.items (resolveCartItems maps 1:1).
- */
-async function applyLinePromotions(data: CreateTransactionData, items: ResolvedItem[]): Promise<ResolvedItem[]> {
-  const acks = data.items.map((item) => item.promotionAck);
-  const claimsPromotion = acks.some((ack) => ack !== undefined && ack !== null) || data.selectedDiscount !== undefined;
-
-  if (data.isOfflineTransaction) {
-    if (claimsPromotion) {
-      throw new TransactionError(
-        'PROMOTION_OFFLINE_UNSUPPORTED',
-        'This offline sale lists a promotion, but promotions cannot be confirmed offline. It was not recorded; ring it again at the regular price.',
-        422,
-      );
-    }
-    return items;
-  }
-  if (data.discountType) {
-    if (claimsPromotion) {
-      throw new TransactionError(
-        'PROMOTION_NOT_COMBINABLE',
-        'Product promotions cannot be combined with a PWD, Senior Citizen or Employee discount. Only one discount applies per sale.',
-        422,
-      );
-    }
-    return items;
-  }
-  const selected = data.selectedDiscount;
-  if (acks.every((ack) => ack === undefined) && !selected) return items;
-
-  // POS-PERF-P50R — a cashier-selected discount is the sale's one discount:
-  // only it is resolved (automatic promotions are not applied) and every
-  // line is compared, so a line the screen showed undiscounted that the
-  // discount now covers (or the reverse) is refused, never silently priced.
-  const lineAck = (index: number) => (selected ? (acks[index] ?? null) : acks[index]);
-  const pricingLines = items
-    .filter((_, index) => lineAck(index) !== undefined)
-    .map((item) => ({
-      productId: item.productId,
-      productVariantId: item.productVariantId,
-      basePrice: item.basePrice ?? 0,
-      vatableCapAmount: item.vatableCapAmount,
-    }));
-  const current = selected
-    ? await resolveSelectedDiscountLines(data.branchId, selected, pricingLines)
-    : await discountsService.resolvePromotionsForBranch(data.branchId, pricingLines);
-
-  const changes: {
-    line_index: number;
-    product_name: string;
-    variant_name: string;
-    shown: { promotion_id: string; unit_discount: number } | null;
-    current: { promotion_id: string; name: string; unit_discount: number } | null;
-  }[] = [];
-  items.forEach((item, index) => {
-    const ack = lineAck(index);
-    if (ack === undefined) return;
-    const resolved = current.get(item.productVariantId) ?? null;
-    const sameId = (ack?.promotionId ?? null) === (resolved?.promotionId ?? null);
-    const sameAmount = toCents(ack?.unitDiscount ?? 0) === toCents(resolved?.unitDiscount ?? 0);
-    if (!sameId || !sameAmount) {
-      changes.push({
-        line_index: index,
-        product_name: item.productName,
-        variant_name: item.variantName,
-        shown: ack ? { promotion_id: ack.promotionId, unit_discount: ack.unitDiscount } : null,
-        current: resolved ? { promotion_id: resolved.promotionId, name: resolved.name, unit_discount: resolved.unitDiscount } : null,
-      });
-    }
-  });
-  if (changes.length > 0) {
-    throw new TransactionError(
-      'PROMOTION_CHANGED',
-      'A promotion on this order changed since it was added, so the sale was not charged. Review the updated prices, then charge again.',
-      409,
-      { lines: changes },
-    );
-  }
-
-  return items.map((item, index) => {
-    const resolved = lineAck(index) === undefined ? undefined : current.get(item.productVariantId);
-    if (!resolved) return item;
-    const promotionDiscount = round2(resolved.unitDiscount * item.quantity);
-    return {
-      ...item,
-      promotionDiscount,
-      promotionSnapshot: {
-        promotion_id: resolved.promotionId,
-        name: resolved.name,
-        discount_kind: resolved.discountKind,
-        discount_value: resolved.discountValue,
-        version: resolved.version,
-        base_price: item.basePrice ?? 0,
-        unit_discount: resolved.unitDiscount,
-        quantity: item.quantity,
-        application_mode: resolved.applicationMode,
-      },
-    };
-  });
-}
-
-/**
- * POS-PERF-P50R — the claimed cashier-selected discount, re-resolved now for
- * this sale's branch and lines. Disabled, expired, edited (version moved),
- * removed from this branch, never cashier-selected, or covering none of
- * these lines -> PROMOTION_CHANGED with nothing written, like any other
- * promotion change.
- */
-async function resolveSelectedDiscountLines(
-  branchId: string,
-  selected: { promotionId: string; version: number },
-  lines: { productId: string; productVariantId: string; basePrice: number; vatableCapAmount: number | null }[],
-): Promise<Map<string, ResolvedLinePromotion>> {
-  const [entry] = await discountsService.resolveSelectableDiscounts(branchId, lines, { promotionId: selected.promotionId });
-  if (!entry || entry.promotion.version !== selected.version || entry.unitDiscounts.size === 0) {
-    throw new TransactionError(
-      'PROMOTION_CHANGED',
-      'The discount chosen for this sale changed or is no longer available, so the sale was not charged. Review the updated prices, then charge again.',
-      409,
-      {
-        selected_discount: { promotion_id: selected.promotionId, shown_version: selected.version, current_version: entry?.promotion.version ?? null },
-        lines: [],
-      },
-    );
-  }
-  const result = new Map<string, ResolvedLinePromotion>();
-  for (const [variantId, unitDiscount] of entry.unitDiscounts) {
-    result.set(variantId, {
-      promotionId: entry.promotion.id,
-      name: entry.promotion.name,
-      discountKind: entry.promotion.discountKind,
-      discountValue: entry.promotion.discountValue,
-      version: entry.promotion.version,
-      endsOn: entry.promotion.endsOn,
-      unitDiscount,
-      applicationMode: 'cashier_selected',
-    });
-  }
-  return result;
-}
-
-/**
  * Mix & Max slot deduction on the new model: the parent variant's own active
  * Recipe/BOM (ProductComponent) rows represent packaging (box/cup), resolved
  * once regardless of slot count; each slot's actual consumption is resolved
@@ -1173,7 +1007,7 @@ function assertManualFlowShape(data: CreateTransactionData): void {
   if (data.discountType && data.discountType !== DISCOUNT_TYPE.PWD && data.discountType !== DISCOUNT_TYPE.SENIOR_CITIZEN && data.discountType !== MANUAL_DISCOUNT_TYPE) {
     throw new TransactionError(
       'DISCOUNT_NOT_SUPPORTED_IN_MANUAL_FLOW',
-      'This checkout takes a manual peso discount or the statutory PWD/Senior Citizen discount only. Choose a discount type set up for this branch.',
+      'This checkout takes a discount type set up for this branch, entered as a peso amount. Choose one, or "No discount".',
       422,
     );
   }
@@ -1200,42 +1034,33 @@ function assertManualFlowShape(data: CreateTransactionData): void {
 }
 
 /**
- * POS-PERF-P55R2 — the manual-discount checkout calculates without VAT
- * (subtotal − peso discount), and says so in tax_basis.calculation_mode on
- * every sale except the statutory PWD/Senior discount, which keeps its VAT
- * exemption formula (a VAT calculation) and a numeric tax_basis. Nothing is
- * inferred: a sale that does not say which calculation its screen used is
- * refused, never charged under the other one. Returns true for manual total.
+ * POS-PERF-P63 — owner decision: VAT is not an active feature. A new sale
+ * must come from the manual-discount checkout as a manual total (subtotal −
+ * the supervisor-set discount). Anything that would be calculated with VAT —
+ * an older POS's checkout, or the statutory PWD/Senior formula — is refused,
+ * never recalculated another way: the amount collected is never changed. A
+ * supervisor-created type named "PWD" is a manual type and unaffected.
  */
-function assertCalculationMode(data: CreateTransactionData, isManualFlow: boolean): boolean {
-  const isManualTotal = data.calculationMode === MANUAL_TOTAL_CALCULATION;
-  if (!isManualFlow) {
-    if (isManualTotal) {
-      throw new TransactionError('CALCULATION_MODE_NOT_SUPPORTED', 'This sale uses the manual-total checkout but was not sent by it. It was not recorded. Reload the POS, then charge again.', 422);
-    }
-    return false;
-  }
-  const isStatutory = data.discountType === DISCOUNT_TYPE.PWD || data.discountType === DISCOUNT_TYPE.SENIOR_CITIZEN;
-  if (isStatutory && isManualTotal) {
+function assertVatCalculationRetired(data: CreateTransactionData): void {
+  const offline = data.isOfflineTransaction === true;
+  if (data.discountFlow !== MANUAL_DISCOUNT_FLOW || data.calculationMode !== MANUAL_TOTAL_CALCULATION) {
     throw new TransactionError(
-      'STATUTORY_DISCOUNT_REQUIRES_TAX_CALCULATION',
-      'The PWD/Senior Citizen discount keeps its statutory calculation and cannot be charged as a manual total. Reload the POS, then charge again.',
+      'VAT_CALCULATION_RETIRED',
+      offline
+        ? 'This offline sale was rung by an older POS version that calculated VAT. It was not recorded and the amount collected was not changed. It stays in this terminal’s queue: a supervisor must reconcile that cash by hand.'
+        : 'This POS version is out of date. The sale was not charged. Reload the POS, then charge again.',
       422,
     );
   }
-  if (!isStatutory && !isManualTotal) {
+  if (data.discountType === DISCOUNT_TYPE.PWD || data.discountType === DISCOUNT_TYPE.SENIOR_CITIZEN) {
     throw new TransactionError(
-      'CALCULATION_MODE_REQUIRED',
-      data.isOfflineTransaction
-        ? 'This offline sale was rung by an older POS version that calculated the manual-discount checkout differently. It was not recorded, so the amount collected was not changed. Ask a supervisor to review it.'
-        : 'This POS version calculates the sale differently from the server. It was not charged. Reload the POS, then charge again.',
+      'VAT_CALCULATION_RETIRED',
+      offline
+        ? 'This offline sale used the old PWD/Senior Citizen calculation, which is no longer available. It was not recorded and the amount collected was not changed. It stays in this terminal’s queue: a supervisor must reconcile that cash by hand.'
+        : 'The old PWD/Senior Citizen calculation is no longer available. The sale was not charged. Choose a discount type set up for this branch, then charge again.',
       422,
     );
   }
-  if (isStatutory && !data.taxBasis) {
-    throw new TransactionError('CALCULATION_MODE_REQUIRED', 'This sale did not say how its total was calculated. It was not charged. Reload the POS, then charge again.', 422);
-  }
-  return isManualTotal;
 }
 
 /**
@@ -1317,12 +1142,6 @@ async function resolveStatutoryProof(data: CreateTransactionData, storageKey: st
   return proof;
 }
 
-export interface DiscountRates {
-  pwd: number;
-  senior_citizen: number;
-  employee: number;
-}
-
 /** POS-PERF-P15R3 — see transactionsService.resolveCheckoutAttempt's doc comment. */
 export type CheckoutAttemptResolution =
   | { status: 'committed'; transaction: ReturnType<typeof toTransactionResponse>; branchId: string }
@@ -1332,75 +1151,6 @@ export type CheckoutAttemptResolution =
   | { status: 'abandoned'; branchId: string }
   | { status: 'in_progress'; branchId: string }
   | { status: 'not_found'; branchId: null };
-
-/** Same 20%/20%/20% values STATUTORY_DISCOUNT_RATE/EMPLOYEE_DISCOUNT_RATE hardcoded before Discount Settings existed — used only if a caller (e.g. a stale test) omits discountRates. */
-const DEFAULT_DISCOUNT_RATES: DiscountRates = { pwd: 20, senior_citizen: 20, employee: 20 };
-
-/**
- * VAT + discount calculation. PWD/Senior Citizen sales are true VAT-exempt
- * transactions per RA 9994 / RA 10754 (confirmed by business owner) — VAT is
- * never charged on the discounted base, not even added back. Every other
- * discount type (or none) uses the general VAT-inclusive-pricing extraction:
- * the VAT component is embedded in the post-discount total, not added on
- * top of it. discountRates supplies the configured percentage per type
- * (Discount Settings, Task 209.xx) — the VAT-exemption formula/classification
- * itself never changes based on the configured percentage.
- */
-export function computeAmounts(
-  subtotal: number,
-  items: ResolvedItem[],
-  discountType: CreateTransactionData['discountType'],
-  discountRates: DiscountRates = DEFAULT_DISCOUNT_RATES,
-): ComputedAmounts {
-  // POS-PERF-P50 — the formula lives in @potato-corner/shared (computeSaleTax)
-  // so the POS preview and this authoritative calculation cannot drift.
-  // P49 note kept: a promoted line never has a vatableCapAmount (refused at
-  // configuration and skipped at resolution), so its whole discount is VATable.
-  return computeSaleTax(subtotal, items, discountType, discountRates);
-}
-
-/**
- * POS-PERF-P50 — refuses a sale whose screen total was computed with tax
- * settings other than the ones checkout is about to use (a discount rate
- * changed while the cart was open, or before a queued offline sale synced).
- * Runs after the amounts are computed and before anything is written, so the
- * refusal carries the amount that would be charged now for the cashier to
- * confirm. Never repriced silently; absent basis (older client) = no check.
- */
-function assertTaxBasisUnchanged(
-  taxBasis: TaxBasis | undefined,
-  isOffline: boolean,
-  discountType: CreateTransactionData['discountType'],
-  discountRates: DiscountRates,
-  amounts: { subtotal: number; discountAmount: number; vatAmount: number; totalAmount: number },
-): void {
-  if (!taxBasis) return;
-  const currentDiscountRate = discountRateFor(discountType, discountRates);
-  const sameVat = toCents(taxBasis.vatRate) === toCents(VAT_RATE_PERCENT);
-  const sameDiscount =
-    taxBasis.discountRate === null || currentDiscountRate === null
-      ? taxBasis.discountRate === currentDiscountRate
-      : toCents(taxBasis.discountRate) === toCents(currentDiscountRate);
-  if (sameVat && sameDiscount) return;
-  const percent = (rate: number | null) => (rate === null ? 'no discount' : `${rate}%`);
-  throw new TransactionError(
-    'TAX_SETTINGS_CHANGED',
-    isOffline
-      ? `${taxBasis.discountRate === currentDiscountRate ? 'This offline sale was rung under older settings.' : `This offline sale was rung with ${percent(taxBasis.discountRate)}, but checkout now uses ${percent(currentDiscountRate)}.`} It was not recorded, so the amount collected was not changed.`
-      : 'Discount settings changed since this total was shown, so the sale was not charged. Confirm the new total, then charge again.',
-    409,
-    {
-      shown: { vat_rate: taxBasis.vatRate, discount_rate: taxBasis.discountRate },
-      current: { vat_rate: VAT_RATE_PERCENT, discount_rate: currentDiscountRate },
-      amounts: {
-        subtotal: amounts.subtotal,
-        discount_amount: amounts.discountAmount,
-        vat_amount: amounts.vatAmount,
-        total_amount: amounts.totalAmount,
-      },
-    },
-  );
-}
 
 /**
  * Sequence source for the BIR receipt number. Uses the same atomic Postgres
@@ -2508,6 +2258,11 @@ export const transactionsService = {
     }
 
     try {
+      // POS-PERF-P63 — VAT is retired: every new sale is the manual total.
+      // First check after the replay paths above, so an already-recorded sale
+      // of any calculation still replays, and a new VAT-calculated one gets
+      // the same definitive refusal whatever its shift's state — never repriced.
+      assertVatCalculationRetired(data);
       // Task 209.3 — branch and shift are looked up by independent ids
       // (branchId vs shiftId) with no data dependency between them; running
       // them concurrently instead of back-to-back saves one round trip off
@@ -2562,17 +2317,12 @@ export const transactionsService = {
         400,
       );
     }
-    if ((data.discountType === DISCOUNT_TYPE.PWD || data.discountType === DISCOUNT_TYPE.SENIOR_CITIZEN) && !data.discountIdReference) {
-      throw new TransactionError('DISCOUNT_ID_REQUIRED', 'discount_id_reference is required for PWD/Senior Citizen discounts', 422);
-    }
     // POS-PERF-P55 — the new checkout's rules, only for a client that opts in.
     const isManualFlow = data.discountFlow === MANUAL_DISCOUNT_FLOW;
     if (data.manualDiscount && !isManualFlow) {
       throw new TransactionError('MANUAL_DISCOUNT_FLOW_REQUIRED', 'A manual discount can only be sent by the manual-discount checkout.', 422);
     }
     if (isManualFlow) assertManualFlowShape(data);
-    // POS-PERF-P55R2 — which calculation this sale gets is explicit, never inferred.
-    const isManualTotal = assertCalculationMode(data, isManualFlow);
     // P55 — a statutory proof key must name an object under this sale's own
     // branch: before P55 any string was attached, so a forged key could link
     // another branch's ID photo to this sale and expose it through this
@@ -2607,17 +2357,6 @@ export const transactionsService = {
     const discountCalcStartedAt = performance.now();
     const effectivePolicy = await settingsService.getEffectiveDiscountPolicy(data.branchId);
     discountCalcMs = performance.now() - discountCalcStartedAt;
-    const policy = effectivePolicy.policy;
-    const discountRates: DiscountRates = { pwd: policy.pwd.percentage, senior_citizen: policy.senior_citizen.percentage, employee: policy.employee.percentage };
-    if (data.discountType === DISCOUNT_TYPE.PWD || data.discountType === DISCOUNT_TYPE.SENIOR_CITIZEN || data.discountType === DISCOUNT_TYPE.EMPLOYEE) {
-      if (!policy[data.discountType].isEnabled) {
-        throw new TransactionError(
-          'DISCOUNT_TYPE_DISABLED',
-          `${data.discountType} discount is currently disabled in Discount Settings`,
-          422,
-        );
-      }
-    }
     // POS-PERF-P50R — a branch that requires a discount decision: a live sale
     // from a current POS (it sends tax_basis) must carry the cashier's choice.
     // Older clients and offline sales (already paid) are never refused for it.
@@ -2645,7 +2384,6 @@ export const transactionsService = {
     // POS-PERF-P55 — the manual-discount checkout never applies product
     // promotions (automatic or cashier-selected); assertManualFlowShape has
     // already refused any line that claims one.
-    if (!isManualFlow) resolvedItems = await applyLinePromotions(data, resolvedItems);
     catalogResolveMs = performance.now() - catalogResolveStartedAt;
     const subtotal = round2(resolvedItems.reduce((sum, item) => sum + item.lineTotal, 0));
     // POS-PERF-P55R2 — a manual discount may be up to the whole order
@@ -2696,11 +2434,14 @@ export const transactionsService = {
     // POS-PERF-P55R2 — manual total: subtotal − peso discount, no VAT
     // extracted, added or deducted. vatAmount/vatExemptAmount are stored as
     // 0 placeholders (the columns are NOT NULL and older APIs read them);
-    // calculation_mode says they are not a VAT result. Everything else keeps
-    // the unchanged VAT calculation (including PWD/Senior).
-    const { discountAmount, vatAmount, vatExemptAmount, totalAmount, discountRateUsed }: ComputedAmounts = isManualTotal
-      ? { ...computeManualTotal(subtotal, data.manualDiscount?.amount ?? null), vatAmount: 0, vatExemptAmount: 0, discountRateUsed: null }
-      : computeAmounts(subtotal, resolvedItems, data.discountType, discountRates);
+    // calculation_mode says they are not a VAT result.
+    // POS-PERF-P63 — the only calculation for a new sale (assertVatCalculationRetired).
+    const { discountAmount, vatAmount, vatExemptAmount, totalAmount, discountRateUsed }: ComputedAmounts = {
+      ...computeManualTotal(subtotal, data.manualDiscount?.amount ?? null),
+      vatAmount: 0,
+      vatExemptAmount: 0,
+      discountRateUsed: null,
+    };
     if (data.manualDiscount?.expectedTotalAmount !== undefined && toCents(data.manualDiscount.expectedTotalAmount) !== toCents(totalAmount)) {
       throw new TransactionError(
         'MANUAL_DISCOUNT_TOTAL_CHANGED',
@@ -2709,7 +2450,6 @@ export const transactionsService = {
         { shown_total_amount: data.manualDiscount.expectedTotalAmount, amounts: { subtotal, discount_amount: discountAmount, total_amount: totalAmount } },
       );
     }
-    assertTaxBasisUnchanged(data.taxBasis, data.isOfflineTransaction, data.discountType, discountRates, { subtotal, discountAmount, vatAmount, totalAmount });
     // POS-PERF-P49 — a sale whose only discount is product promotions is
     // recorded as 'promotional' so every report's discount breakdown sees it.
     // POS-PERF-P55 — a manual peso discount is recorded as 'manual'.
@@ -2738,46 +2478,16 @@ export const transactionsService = {
             order_subtotal: subtotal,
           }
         : null;
-    const rateType =
-      data.discountType === DISCOUNT_TYPE.PWD || data.discountType === DISCOUNT_TYPE.SENIOR_CITIZEN || data.discountType === DISCOUNT_TYPE.EMPLOYEE
-        ? data.discountType
-        : null;
-    const taxSnapshot: SaleTaxSnapshot | ManualTotalSaleSnapshot = isManualTotal
-      ? {
-          version: 2,
-          calculation_mode: MANUAL_TOTAL_CALCULATION,
-          vat_calculated: false,
-          vat_registration: effectivePolicy.vatRegistration,
-          discount_flow: MANUAL_DISCOUNT_FLOW,
-          discount_source: data.manualDiscount ? 'manual' : null,
-          manual_discount_type_id: manualSnapshot?.discount_type_id ?? null,
-          require_discount_choice: effectivePolicy.requireDiscountChoice,
-          discount_choice: data.discountChoice ?? null,
-        }
-      : {
-      version: 1,
-      vat_rate_percent: VAT_RATE_PERCENT,
-      prices_include_vat: PRICES_INCLUDE_VAT,
+    const taxSnapshot: ManualTotalSaleSnapshot = {
+      version: 2,
+      calculation_mode: MANUAL_TOTAL_CALCULATION,
+      vat_calculated: false,
       vat_registration: effectivePolicy.vatRegistration,
-      calculated_as: 'vat_registered',
-      treatment: isVatExemptDiscountType(data.discountType) ? 'vat_exempt' : 'vatable',
-      discount_basis: discountAmount > 0 ? (isVatExemptDiscountType(data.discountType) ? 'vat_exclusive' : 'vat_inclusive') : null,
-      discount_rate_source: rateType ? effectivePolicy.sources[rateType] : null,
+      discount_flow: MANUAL_DISCOUNT_FLOW,
+      discount_source: data.manualDiscount ? 'manual' : null,
+      manual_discount_type_id: manualSnapshot?.discount_type_id ?? null,
       require_discount_choice: effectivePolicy.requireDiscountChoice,
       discount_choice: data.discountChoice ?? null,
-      selected_discount_id: data.selectedDiscount?.promotionId ?? null,
-      discount_flow: isManualFlow ? MANUAL_DISCOUNT_FLOW : null,
-      discount_source: data.manualDiscount
-        ? 'manual'
-        : isVatExemptDiscountType(data.discountType)
-          ? 'statutory'
-          : rateType
-            ? 'rate'
-            : discountAmount > 0
-              ? 'promotion'
-              : null,
-      manual_discount_type_id: manualSnapshot?.discount_type_id ?? null,
-      calculation_mode: LEGACY_VAT_CALCULATION,
     };
 
     const manualProof = manualResolution?.proof ?? null;
@@ -2866,7 +2576,7 @@ export const transactionsService = {
             offlineProvisionalNumber: data.offlineProvisionalNumber ?? null,
             notes: data.notes ?? null,
             taxSnapshot: taxSnapshot as unknown as Prisma.InputJsonValue,
-            calculationMode: isManualTotal ? MANUAL_TOTAL_CALCULATION : LEGACY_VAT_CALCULATION,
+            calculationMode: MANUAL_TOTAL_CALCULATION,
             // Task 209.47 — only persisted for offline-synced sales (the
             // idempotency key this backs is offlineProvisionalNumber-scoped
             // and that field is itself only ever set for offline sales); a

@@ -275,7 +275,7 @@ describe.skipIf(!isLocalDatabase)('POS-PERF-P38R consistent single-branch public
           shiftId: shiftB.id,
           cashierId,
           items: [{ productId: mainProductId, productVariantId: mainVariantIds[0] ?? '', flavorId, quantity: 1 }],
-          paymentMethod: 'cash',
+          paymentMethod: 'cash', discountFlow: 'manual_v1' as const, calculationMode: 'manual_total_v1' as const, discountChoice: 'none_applicable' as const,
           cashTendered: 100,
           isOfflineTransaction: false,
         },

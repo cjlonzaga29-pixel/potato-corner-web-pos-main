@@ -5,8 +5,6 @@ import Link from 'next/link';
 import { Banknote, TicketPercent } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { BranchDiscountSettingsSection } from '@/components/settings/branch-discount-settings-section';
-import { LegacyDiscountSettings } from '@/components/settings/legacy-discount-settings';
 import { BranchWorkHoursSection } from '@/components/settings/branch-work-hours-section';
 
 /**
@@ -16,7 +14,7 @@ import { BranchWorkHoursSection } from '@/components/settings/branch-work-hours-
  * they manage, never organization-wide) and, since POS-PERF-P40, the Work
  * Hours of the branches they are assigned to.
  *
- * POS-PERF-P56 — legacy statutory discount settings collapsed, unchanged. POS-PERF-P59 — no VAT sections.
+ * POS-PERF-P59 — no VAT sections. POS-PERF-P63 — VAT retired: the legacy statutory rate settings are gone.
  * POS-PERF-P57 — Discount Types moved to the Discounts menu; linked from here.
  */
 export default function SupervisorSettingsPage() {
@@ -58,9 +56,6 @@ export default function SupervisorSettingsPage() {
             </Button>
           </CardHeader>
         </Card>
-        <LegacyDiscountSettings>
-          <BranchDiscountSettingsSection statutoryOnly />
-        </LegacyDiscountSettings>
       </Suspense>
     </div>
   );

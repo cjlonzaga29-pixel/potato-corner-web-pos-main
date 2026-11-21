@@ -179,4 +179,22 @@ describe('SaleStatusModal — P50R discount decision refusals', () => {
     expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
     cleanup();
   });
+
+  it('POS-PERF-P63 — VAT_CALCULATION_RETIRED is a final refusal: "POS update needed — not charged", no Retry', () => {
+    render(
+      <SaleStatusModal
+        phase="error"
+        snapshot={snapshot()}
+        errorMessage="VAT is no longer calculated."
+        errorCode="VAT_CALCULATION_RETIRED"
+        onRetry={vi.fn()}
+        onEditCart={vi.fn()}
+        onViewReceipt={vi.fn()}
+        onNewSale={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('POS update needed — not charged')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+    cleanup();
+  });
 });

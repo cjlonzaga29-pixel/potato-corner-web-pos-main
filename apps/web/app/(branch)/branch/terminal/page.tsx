@@ -9,14 +9,10 @@ import {
   ROLES,
   STAFF_PIN_MAX_LENGTH,
   STAFF_PIN_MIN_LENGTH,
-  VAT_RATE_PERCENT,
   MANUAL_DISCOUNT_FLOW,
-  computeSaleTax,
   computeManualTotal,
   fixedDiscountEffectiveAmount,
   manualDiscountEligibleSubtotal,
-  discountRateFor,
-  isVatExemptDiscountType,
   MANUAL_TOTAL_CALCULATION,
   type SaleDiscountRates,
 } from '@potato-corner/shared';
@@ -271,23 +267,6 @@ function dialogGroupsFor(variant: PosCatalogProduct['variants'][number]): AddOns
 /** Live-configured percentages (Discount Settings), or the same 20/20/20 defaults the server falls back to before any supervisor has saved a change — see settings.types.ts DEFAULT_DISCOUNT_POLICY. */
 type PreviewDiscountRates = SaleDiscountRates;
 const DEFAULT_PREVIEW_DISCOUNT_RATES: PreviewDiscountRates = { pwd: 20, senior_citizen: 20, employee: 20 };
-
-/**
- * Client-side preview — POS-PERF-P50: the same computeSaleTax the server's
- * computeAmounts runs, so the total shown is computed exactly as it will be
- * charged. The server still recomputes and persists the authoritative
- * figures, and refuses (TAX_SETTINGS_CHANGED) if its rates differ from the
- * ones this preview used (sent as tax_basis).
- */
-function previewAmounts(
-  cartLines: { lineTotal: number; quantity: number; vatableCapAmount: number | null; promotionDiscount?: number }[],
-  discountType: DiscountChoice,
-  discountRates: PreviewDiscountRates = DEFAULT_PREVIEW_DISCOUNT_RATES,
-) {
-  const subtotal = round2(cartLines.reduce((sum, l) => sum + l.lineTotal, 0));
-  const { discountAmount, vatAmount, totalAmount } = computeSaleTax(subtotal, cartLines, discountType === 'none' ? null : discountType, discountRates);
-  return { discountAmount, vatAmount, totalAmount };
-}
 
 /**
  * POS-PERF-P55 — the cashier's peso entry: a plain amount with at most two
@@ -2094,17 +2073,12 @@ export default function TerminalPage() {
     : manualFixedAmount !== null
       ? fixedDiscountEffectiveAmount(manualFixedAmount, manualEligibleSubtotal)
       : manualParsed.value;
-  // POS-PERF-P55R2 — this checkout calculates subtotal − peso discount =
-  // amount to pay, with no VAT extracted, added or deducted (vatAmount null:
-  // not calculated). Only the statutory PWD/Senior discount keeps its VAT
-  // exemption formula, the same computeSaleTax the server runs.
-  const isStatutorySelected = isVatExemptDiscountType(discountType === 'none' ? null : discountType);
+  // POS-PERF-P55R2 / P63 — every sale is subtotal − peso discount = amount
+  // to pay. VAT is not a feature: nothing is extracted, added or exempted
+  // (vatAmount null: not calculated), the same as the server.
   const { discountAmount, vatAmount, totalAmount } = useMemo(
-    (): { discountAmount: number; vatAmount: number | null; totalAmount: number } =>
-      isStatutorySelected
-        ? previewAmounts(cartLines, discountType, discountRatesPreview)
-        : { ...computeManualTotal(subtotal, manualAmountValue), vatAmount: null },
-    [cartLines, discountType, discountRatesPreview, isStatutorySelected, manualAmountValue, subtotal],
+    (): { discountAmount: number; vatAmount: number | null; totalAmount: number } => ({ ...computeManualTotal(subtotal, manualAmountValue), vatAmount: null }),
+    [manualAmountValue, subtotal],
   );
   const manualChangedTotal =
     manualAmountValue !== null && manualConfirmedSubtotal !== null && Math.round(subtotal * 100) !== Math.round(manualConfirmedSubtotal * 100)
@@ -2413,15 +2387,10 @@ export default function TerminalPage() {
       // POS-PERF-P50 — the rates the total on screen was computed with. Never
       // an amount: the server refuses a mismatch instead of charging a
       // different total (TAX_SETTINGS_CHANGED).
-      // POS-PERF-P55R2 — every other sale says it is a manual total (no VAT).
+      // POS-PERF-P55R2 / P63 — every sale says it is a manual total (no VAT).
       // vat_rate null also makes a pre-P55R2 API refuse it rather than drop
       // the mode and calculate VAT. Queued offline sales keep this as sent.
-      tax_basis: isStatutorySelected
-        ? {
-            vat_rate: VAT_RATE_PERCENT,
-            discount_rate: discountRateFor(discountType === 'none' ? null : discountType, discountRatesPreview),
-          }
-        : { calculation_mode: MANUAL_TOTAL_CALCULATION, vat_rate: null, discount_rate: null },
+      tax_basis: { calculation_mode: MANUAL_TOTAL_CALCULATION, vat_rate: null, discount_rate: null },
       cash_tendered: paymentMethod === 'cash' ? tenderedNumber : undefined,
       // POS-PERF-P25R — optional payment reference, re-added at the owner's
       // request. gcash_reference_number backs both GCash and Maya (the
@@ -2732,7 +2701,7 @@ export default function TerminalPage() {
       }
       if (error instanceof TransactionApiError && error.code === 'TAX_SETTINGS_CHANGED') {
         const details = readTaxSettingsChange(error.details);
-        const base = { previousTotal: totalAmount, serverTotal: details.serverTotal, buildMismatch: details.serverVatRate !== null && details.serverVatRate !== VAT_RATE_PERCENT };
+        const base = { previousTotal: totalAmount, serverTotal: details.serverTotal, buildMismatch: details.serverVatRate !== null };
         setTaxNotice({ status: 'checking', ...base });
         void refetchDiscountPolicy()
           .then((result) => {

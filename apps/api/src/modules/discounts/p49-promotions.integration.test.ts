@@ -16,16 +16,6 @@ const canRunIntegrationTests = Boolean(process.env.TEST_DATABASE_URL);
 const { prisma } = await import('../../lib/prisma.js');
 const { discountsService } = await import('./discounts.service.js');
 const { productsService } = await import('../products/products.service.js');
-const { transactionsService } = await import('../transactions/transactions.service.js');
-const { receiptsService } = await import('../receipts/receipts.service.js');
-const { reportsRepository } = await import('../reports/reports.repository.js');
-const { manilaDateKey } = await import('../../lib/manila-time.js');
-
-function shiftDays(dateKey: string, days: number): string {
-  const date = new Date(`${dateKey}T12:00:00.000Z`);
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
-}
 
 describe.skipIf(!canRunIntegrationTests)('P49 promotions integration', () => {
   const tag = randomUUID().slice(0, 8);
@@ -40,7 +30,6 @@ describe.skipIf(!canRunIntegrationTests)('P49 promotions integration', () => {
   };
   const productIds: string[] = [];
   const promotionIds: string[] = [];
-  const today = manilaDateKey(new Date());
 
   const supAB = (): JwtPayload => ({ user_id: ids.supAB, role: 'supervisor', email: `supab-${tag}@t.test`, branch_ids: [ids.branchA, ids.branchB], iat: 0, exp: 0 });
   const supA = (): JwtPayload => ({ user_id: ids.supA, role: 'supervisor', email: `supa-${tag}@t.test`, branch_ids: [ids.branchA], iat: 0, exp: 0 });
@@ -66,40 +55,6 @@ describe.skipIf(!canRunIntegrationTests)('P49 promotions integration', () => {
     }
     for (const branchId of branches) await prisma.branchProductAvailability.create({ data: { branchId, productId: row.id, isAvailable: true } });
     return { productId: row.id, variantIds };
-  }
-
-  function line(productId: string, variantId: string, quantity: number, promotion?: { promotionId: string; unitDiscount: number } | null) {
-    return { productId, productVariantId: variantId, quantity, ...(promotion !== undefined ? { promotionAck: promotion } : {}) };
-  }
-
-  function sale(
-    items: ReturnType<typeof line>[],
-    opts: { branchId?: string; shiftId?: string; idempotencyKey?: string | null; discountType?: 'pwd'; offline?: boolean } = {},
-  ) {
-    return transactionsService.createTransaction(
-      {
-        branchId: opts.branchId ?? ids.branchA,
-        shiftId: opts.shiftId ?? ids.shiftA,
-        cashierId: ids.cashier,
-        items,
-        paymentMethod: 'cash',
-        cashTendered: 5000,
-        isOfflineTransaction: opts.offline ?? false,
-        idempotencyKey: opts.idempotencyKey ?? null,
-        ...(opts.discountType ? { discountType: opts.discountType, discountIdReference: `PWD-${randomUUID().slice(0, 6)}` } : {}),
-        ...(opts.offline ? { offlineProvisionalNumber: `PC-P49-OFFLINE-${randomUUID().slice(0, 6)}`, deviceId: `dev-${tag}` } : {}),
-      },
-      null,
-    );
-  }
-
-  async function trace() {
-    const [transactions, jobs, stock] = await Promise.all([
-      prisma.transaction.count({ where: { branchId: { in: [ids.branchA, ids.branchB] } } }),
-      prisma.inventoryDeductionJob.count({ where: { branchId: { in: [ids.branchA, ids.branchB] } } }),
-      prisma.inventoryStock.findMany({ where: { branchId: { in: [ids.branchA, ids.branchB] } }, orderBy: [{ branchId: 'asc' }] }),
-    ]);
-    return { transactions, jobs, stock: stock.map((s) => [s.branchId, s.quantityOnHand.toNumber(), s.quantityReserved.toNumber()]) };
   }
 
   async function catalogPromotion(branchId: string, variantId: string) {
@@ -230,197 +185,6 @@ describe.skipIf(!canRunIntegrationTests)('P49 promotions integration', () => {
     expect(enabled.version).toBe(promo.version + 1);
   });
 
-  // ---------------------------------------------------------------- checkout
-  let tenOff: Awaited<ReturnType<typeof createPromo>>;
-  let promoSaleId = '';
-
-  it('checkout applies a fixed per-unit discount from current configuration and persists the breakdown', async () => {
-    tenOff = await createPromo(supAB(), { name: 'Ten Off', discount_kind: 'fixed_amount', discount_value: 10 });
-    expect(await catalogPromotion(ids.branchA, ids.promoRegular)).toMatchObject({ promotion_id: tenOff.id, unit_discount: 10 });
-    expect(await catalogPromotion(ids.branchB, ids.promoRegular)).toBeNull(); // branch-scoped
-    expect(await catalogPromotion(ids.branchA, ids.regularVariant)).toBeNull(); // regular product never discounted
-
-    const sold = await sale([line(ids.promoProduct, ids.promoRegular, 3, { promotionId: tenOff.id, unitDiscount: 10 })]);
-    promoSaleId = sold.id;
-    expect(sold).toMatchObject({ subtotal: 117, discount_amount: 30, discount_type: 'promotional', discount_rate_used: null, total_amount: 87, vat_amount: 9.32 });
-    expect(sold.items?.[0]).toMatchObject({ unit_price: 39, line_total: 117, discount_amount: 30, promotion: { promotion_id: tenOff.id, name: 'Ten Off', unit_discount: 10 } });
-    const row = await prisma.transactionItem.findFirstOrThrow({ where: { transactionId: sold.id } });
-    expect(row.promotionId).toBe(tenOff.id);
-    expect(row.promotionSnapshot).toMatchObject({ base_price: 39, unit_discount: 10, quantity: 3, version: tenOff.version, discount_kind: 'fixed_amount' });
-  });
-
-  it('inventory arithmetic is unchanged by the promotion (same deduction lines and reservation as a regular-priced sale)', async () => {
-    const promoItem = await prisma.transactionItem.findFirstOrThrow({ where: { transactionId: promoSaleId } });
-    const plain = await sale([line(ids.promoProduct, ids.promoRegular, 3)]); // legacy client: no promotion
-    const plainItem = await prisma.transactionItem.findFirstOrThrow({ where: { transactionId: plain.id } });
-    const strip = (snapshot: unknown) => (snapshot as { inventoryItemId: string; quantity: number }[]).map((l) => [l.inventoryItemId, l.quantity]);
-    expect(strip(promoItem.deductionSnapshot)).toEqual(strip(plainItem.deductionSnapshot));
-    expect(plain).toMatchObject({ subtotal: 117, discount_amount: 0, discount_type: null, total_amount: 117 });
-    expect(await prisma.inventoryDeductionJob.count({ where: { transactionId: { in: [promoSaleId, plain.id] } } })).toBe(2);
-  });
-
-  it('refuses forged amounts, unshown promotions and unselected branches with PROMOTION_CHANGED, leaving no trace', async () => {
-    const before = await trace();
-    const key = randomUUID();
-    await expect(sale([line(ids.promoProduct, ids.promoRegular, 1, { promotionId: tenOff.id, unitDiscount: 39 })], { idempotencyKey: key })).rejects.toMatchObject({ code: 'PROMOTION_CHANGED', statusCode: 409 });
-    expect((await prisma.checkoutAttempt.findUnique({ where: { idempotencyKey: key } }))?.status).toBe('failed');
-    await expect(sale([line(ids.promoProduct, ids.promoRegular, 1, null)])).rejects.toMatchObject({ code: 'PROMOTION_CHANGED' });
-    await expect(sale([line(ids.promoProduct, ids.promoRegular, 1, { promotionId: tenOff.id, unitDiscount: 10 })], { branchId: ids.branchB, shiftId: ids.shiftB })).rejects.toMatchObject({ code: 'PROMOTION_CHANGED' });
-    await expect(sale([line(ids.regularProduct, ids.regularVariant, 1, { promotionId: tenOff.id, unitDiscount: 10 })])).rejects.toMatchObject({ code: 'PROMOTION_CHANGED' });
-    expect(await trace()).toEqual(before);
-  });
-
-  it('details name the changed line, what was shown and what is current', async () => {
-    try {
-      await sale([line(ids.promoProduct, ids.promoRegular, 1, null)]);
-      throw new Error('expected refusal');
-    } catch (error) {
-      expect((error as { details?: unknown }).details).toMatchObject({
-        lines: [{ line_index: 0, shown: null, current: { promotion_id: tenOff.id, unit_discount: 10 } }],
-      });
-    }
-  });
-
-  it('PWD/Senior keeps its statutory formula and is never combined with a promotion', async () => {
-    await expect(sale([line(ids.promoProduct, ids.promoRegular, 1, { promotionId: tenOff.id, unitDiscount: 10 })], { discountType: 'pwd' })).rejects.toMatchObject({ code: 'PROMOTION_NOT_COMBINABLE', statusCode: 422 });
-    const pwd = await sale([line(ids.promoProduct, ids.promoRegular, 1, null)], { discountType: 'pwd' });
-    // 39 / 1.12 = 34.821…; 20% = 6.96; total = round2(34.82… - 6.96) = 27.86, VAT 0 — unchanged statutory path.
-    expect(pwd).toMatchObject({ subtotal: 39, discount_type: 'pwd', discount_amount: 6.96, vat_amount: 0, total_amount: 27.86 });
-    expect(pwd.items?.[0]).toMatchObject({ discount_amount: 0, promotion: null });
-  });
-
-  it('offline: a queued sale claiming a promotion is refused visibly; one without is charged the regular price', async () => {
-    await expect(sale([line(ids.promoProduct, ids.promoRegular, 1, { promotionId: tenOff.id, unitDiscount: 10 })], { offline: true })).rejects.toMatchObject({ code: 'PROMOTION_OFFLINE_UNSUPPORTED', statusCode: 422 });
-    const offline = await sale([line(ids.promoProduct, ids.promoRegular, 2, null)], { offline: true });
-    expect(offline).toMatchObject({ subtotal: 78, discount_amount: 0, total_amount: 78, is_offline_transaction: true });
-    // Through the sync endpoint's service path: the claim fails per item, the other item still syncs.
-    const result = await transactionsService.syncOfflineTransactions(
-      {
-        branchId: ids.branchA,
-        cashierId: ids.cashier,
-        deviceId: `dev-sync-${tag}`,
-        transactions: [
-          { offlineProvisionalNumber: `PC-P49-OFF-${tag}-1`, shiftId: ids.shiftA, items: [line(ids.promoProduct, ids.promoRegular, 1, { promotionId: tenOff.id, unitDiscount: 10 })], paymentMethod: 'cash', cashTendered: 100, clientCreatedAt: 1 },
-          { offlineProvisionalNumber: `PC-P49-OFF-${tag}-2`, shiftId: ids.shiftA, items: [line(ids.promoProduct, ids.promoRegular, 1)], paymentMethod: 'cash', cashTendered: 100, clientCreatedAt: 2 },
-        ],
-      },
-      null,
-    );
-    const byNumber = Object.fromEntries((result as { results: { offline_provisional_number: string; status: string; error?: { code: string } }[] }).results.map((r) => [r.offline_provisional_number, r]));
-    expect(byNumber[`PC-P49-OFF-${tag}-1`]).toMatchObject({ status: 'failed', error: { code: 'PROMOTION_OFFLINE_UNSUPPORTED' } });
-    expect(byNumber[`PC-P49-OFF-${tag}-2`]).toMatchObject({ status: 'synced' });
-  });
-
-  it('overlap: each size gets exactly one promotion, the larger unit discount, deterministically', async () => {
-    const twenty = await createPromo(supAB(), { name: 'Twenty Pct', discount_kind: 'percentage', discount_value: 20 });
-    // Regular 39: 20% = 7.80 < ₱10 → Ten Off. Large 99: 20% = 19.80 > ₱10 → Twenty Pct.
-    expect(await catalogPromotion(ids.branchA, ids.promoRegular)).toMatchObject({ promotion_id: tenOff.id, unit_discount: 10 });
-    expect(await catalogPromotion(ids.branchA, ids.promoLarge)).toMatchObject({ promotion_id: twenty.id, unit_discount: 19.8 });
-    const sold = await sale([
-      line(ids.promoProduct, ids.promoRegular, 2, { promotionId: tenOff.id, unitDiscount: 10 }),
-      line(ids.promoProduct, ids.promoLarge, 1, { promotionId: twenty.id, unitDiscount: 19.8 }),
-    ]);
-    // gross 78 + 99 = 177; discount 20 + 19.80 = 39.80; total 137.20; VAT = round2(137.20 × 12/112) = 14.70
-    expect(sold).toMatchObject({ subtotal: 177, discount_amount: 39.8, total_amount: 137.2, vat_amount: 14.7 });
-    await discountsService.setPromotionEnabled(supAB(), twenty.id, { is_enabled: false, expected_version: twenty.version }, null);
-  });
-
-  it('percentage rounding is per unit, then × quantity', async () => {
-    const promo = await createPromo(supAB(), { name: 'Fifteen', discount_kind: 'percentage', discount_value: 15, product_ids: [ids.sharedSeasonal] });
-    // 60 × 15% = 9.00 per unit
-    expect(await catalogPromotion(ids.branchA, ids.sharedSeasonalVariant)).toMatchObject({ unit_discount: 9 });
-    await discountsService.updatePromotion(supAB(), promo.id, { name: 'Fifteen', discount_kind: 'percentage', discount_value: 12.5, is_enabled: true, product_ids: [ids.sharedSeasonal], branch_ids: [ids.branchA], expected_version: promo.version }, null);
-    // 60 × 12.5% = 7.50; × 3 = 22.50
-    const sold = await sale([line(ids.sharedSeasonal, ids.sharedSeasonalVariant, 3, { promotionId: promo.id, unitDiscount: 7.5 })]);
-    expect(sold).toMatchObject({ subtotal: 180, discount_amount: 22.5, total_amount: 157.5 });
-    const latest = await prisma.promotion.findUniqueOrThrow({ where: { id: promo.id } });
-    await discountsService.setPromotionEnabled(supAB(), promo.id, { is_enabled: false, expected_version: latest.version }, null);
-  });
-
-  it('schedules: future start and past end do not apply; today on either boundary does', async () => {
-    const future = await createPromo(supAB(), { name: 'Future', discount_value: 30, starts_on: shiftDays(today, 1) });
-    const past = await createPromo(supAB(), { name: 'Past', discount_value: 30, ends_on: shiftDays(today, -1) });
-    expect(future.schedule_state).toBe('scheduled');
-    expect(past.schedule_state).toBe('expired');
-    expect(await catalogPromotion(ids.branchA, ids.promoRegular)).toMatchObject({ promotion_id: tenOff.id });
-    const edge = await createPromo(supAB(), { name: 'Today Only', discount_value: 30, starts_on: today, ends_on: today });
-    expect(edge.schedule_state).toBe('active');
-    expect(await catalogPromotion(ids.branchA, ids.promoRegular)).toMatchObject({ promotion_id: edge.id, unit_discount: 30 });
-    await discountsService.setPromotionEnabled(supAB(), edge.id, { is_enabled: false, expected_version: edge.version }, null);
-  });
-
-  it('a changed promotion never rewrites history, and checkout against the stale amount is refused', async () => {
-    const updated = await discountsService.updatePromotion(
-      supAB(),
-      tenOff.id,
-      { name: 'Ten Off (now 5)', discount_kind: 'fixed_amount', discount_value: 5, is_enabled: true, product_ids: [ids.promoProduct], branch_ids: [ids.branchA], expected_version: tenOff.version },
-      null,
-    );
-    expect(updated.version).toBe(tenOff.version + 1);
-    await expect(sale([line(ids.promoProduct, ids.promoRegular, 1, { promotionId: tenOff.id, unitDiscount: 10 })])).rejects.toMatchObject({ code: 'PROMOTION_CHANGED' });
-
-    const history = await transactionsService.getTransactionById(promoSaleId).catch(() => null);
-    const stored = await prisma.transaction.findUniqueOrThrow({ where: { id: promoSaleId }, include: { items: true } });
-    expect(stored.discountAmount.toNumber()).toBe(30);
-    expect(stored.totalAmount.toNumber()).toBe(87);
-    expect(stored.items[0]?.promotionSnapshot).toMatchObject({ name: 'Ten Off', unit_discount: 10 });
-    if (history) expect(history).toMatchObject({ discount_amount: 30, total_amount: 87 });
-
-    const receipt = await receiptsService.getPublicReceipt(stored.transactionNumber);
-    expect(receipt.items[0]).toMatchObject({ line_total: 117, discount_amount: 30, promotion_name: 'Ten Off' });
-    expect(receipt.subtotal - receipt.discount_amount).toBe(receipt.total_amount);
-    tenOff = updated;
-  });
-
-  it('retry with the same idempotency key replays the original sale even after the promotion is disabled', async () => {
-    const key = randomUUID();
-    const items = [line(ids.promoProduct, ids.promoRegular, 2, { promotionId: tenOff.id, unitDiscount: 5 })];
-    const first = await sale(items, { idempotencyKey: key });
-    expect(first).toMatchObject({ discount_amount: 10, total_amount: 68 });
-    const disabled = await discountsService.setPromotionEnabled(supAB(), tenOff.id, { is_enabled: false, expected_version: tenOff.version }, null);
-    const count = await prisma.transaction.count({ where: { idempotencyKey: key } });
-    const replay = await sale(items, { idempotencyKey: key });
-    expect(replay.id).toBe(first.id);
-    expect(replay).toMatchObject({ discount_amount: 10, total_amount: 68 });
-    expect(await prisma.transaction.count({ where: { idempotencyKey: key } })).toBe(count);
-    // A fresh attempt with the now-disabled promotion is refused.
-    await expect(sale(items)).rejects.toMatchObject({ code: 'PROMOTION_CHANGED' });
-    expect(await catalogPromotion(ids.branchA, ids.promoRegular)).toBeNull();
-    // Re-enabling revalidates eligibility (product still promotional → ok).
-    tenOff = await discountsService.setPromotionEnabled(supAB(), tenOff.id, { is_enabled: true, expected_version: disabled.version }, null);
-  });
-
-  it('reclassifying the product to Regular stops the discount immediately, and re-enabling is then refused', async () => {
-    expect(await catalogPromotion(ids.branchA, ids.promoRegular)).toMatchObject({ promotion_id: tenOff.id });
-    await prisma.product.update({ where: { id: ids.promoProduct }, data: { classification: 'regular', isSeasonal: false } });
-    expect(await catalogPromotion(ids.branchA, ids.promoRegular)).toBeNull();
-    await expect(sale([line(ids.promoProduct, ids.promoRegular, 1, { promotionId: tenOff.id, unitDiscount: 5 })])).rejects.toMatchObject({ code: 'PROMOTION_CHANGED' });
-    const disabled = await discountsService.setPromotionEnabled(supAB(), tenOff.id, { is_enabled: false, expected_version: tenOff.version }, null);
-    await expect(discountsService.setPromotionEnabled(supAB(), tenOff.id, { is_enabled: true, expected_version: disabled.version }, null)).rejects.toMatchObject({ code: 'PROMOTION_PRODUCT_INELIGIBLE' });
-    await prisma.product.update({ where: { id: ids.promoProduct }, data: { classification: 'promotional' } });
-  });
-
   // net_sales is gross − discount − refunds (existing definition). For every non-statutory sale (none/
   // promotional) that equals Σ total_amount; a PWD/Senior sale also drops its VAT, so it is checked apart.
-  it('daily sales report reconciles with stored sale totals', async () => {
-    const rows = await reportsRepository.getDailySales({ branchId: ids.branchA, page: 1, limit: 100 });
-    const sums = await prisma.transaction.aggregate({ where: { branchId: ids.branchA, status: 'completed' }, _sum: { subtotal: true, discountAmount: true, totalAmount: true } });
-    const gross = rows.reduce((s, r) => s + r.gross_sales, 0);
-    const discount = rows.reduce((s, r) => s + r.discount_total, 0);
-    const net = rows.reduce((s, r) => s + r.net_sales, 0);
-    expect(Math.round(gross * 100)).toBe(Math.round((sums._sum.subtotal?.toNumber() ?? 0) * 100));
-    expect(Math.round(discount * 100)).toBe(Math.round((sums._sum.discountAmount?.toNumber() ?? 0) * 100));
-    expect(Math.round(net * 100)).toBe(Math.round(((sums._sum.subtotal?.toNumber() ?? 0) - (sums._sum.discountAmount?.toNumber() ?? 0)) * 100));
-    const nonStatutory = await prisma.transaction.findMany({
-      where: { branchId: ids.branchA, status: 'completed', OR: [{ discountType: null }, { discountType: 'promotional' }] },
-      include: { items: true },
-    });
-    for (const t of nonStatutory) {
-      expect(Math.round((t.subtotal.toNumber() - t.discountAmount.toNumber()) * 100)).toBe(Math.round(t.totalAmount.toNumber() * 100));
-      // Line breakdown sums to the transaction: Σ line_total = subtotal, Σ line discount = discount.
-      expect(Math.round(t.items.reduce((s, i) => s + i.lineTotal.toNumber(), 0) * 100)).toBe(Math.round(t.subtotal.toNumber() * 100));
-      expect(Math.round(t.items.reduce((s, i) => s + i.discountAmount.toNumber(), 0) * 100)).toBe(Math.round(t.discountAmount.toNumber() * 100));
-    }
-    expect(nonStatutory.some((t) => t.discountType === 'promotional')).toBe(true);
-  });
 });

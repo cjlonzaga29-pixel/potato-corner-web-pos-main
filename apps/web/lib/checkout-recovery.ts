@@ -140,6 +140,8 @@ const DEFINITE_NO_COMMIT_CODES = new Set([
   'CALCULATION_MODE_REQUIRED',
   'CALCULATION_MODE_NOT_SUPPORTED',
   'STATUTORY_DISCOUNT_REQUIRES_TAX_CALCULATION',
+  // POS-PERF-P63 — VAT retired (assertVatCalculationRetired), before any lookup.
+  'VAT_CALCULATION_RETIRED',
   'DISCOUNT_PROOF_INVALID',
   'DISCOUNT_PROOF_ALREADY_USED',
   // Thrown inside the $transaction callback itself (stock reservation) —

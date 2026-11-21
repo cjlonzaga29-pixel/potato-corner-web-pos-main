@@ -7,7 +7,6 @@ import type {
   DiscountPolicyResponse,
   UpdateNotificationPreferencesInput,
   UpdateDiscountPolicyInput,
-  TaxConfigurationResponse,
   BranchDiscountSettingsResponse,
   UpdateBranchDiscountSettingsInput,
   WorkHoursPolicyResponse,
@@ -89,27 +88,6 @@ export function useUpdateDiscountPolicy() {
       }
       toast.error(error.message);
     },
-  });
-}
-
-/**
- * POS-PERF-P50 — the tax configuration checkout uses (GET /api/settings/tax,
- * read-only for every role). `null` when the API predates P50 (404): the UI
- * then explains it is showing this build's values.
- */
-export function useTaxConfiguration() {
-  const { accessToken, isLoading } = useAuth();
-
-  return useQuery({
-    queryKey: ['settings', 'tax'],
-    queryFn: async (): Promise<TaxConfigurationResponse | null> => {
-      const response = await apiClient<TaxConfigurationResponse>('/api/settings/tax');
-      if (response.data) return response.data;
-      // An API without the route answers its catch-all 404 (app.ts).
-      if (response.error && typeof response.error !== 'string' && response.error.code === 'NOT_FOUND') return null;
-      throw new Error(errorMessage(response, 'Failed to load tax settings'));
-    },
-    enabled: !!accessToken && !isLoading,
   });
 }
 

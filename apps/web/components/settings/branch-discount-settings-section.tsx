@@ -14,7 +14,7 @@ import { BranchDiscountSettingsForm } from './branch-discount-settings-form';
  * sees only branches they manage (the server re-checks every read and save
  * against live assignments); a Super Admin sees every active branch.
  */
-export function BranchDiscountSettingsSection({ statutoryOnly = false }: { statutoryOnly?: boolean }) {
+export function BranchDiscountSettingsSection() {
   const { availableBranches } = useSelectedBranch();
   const [branchId, setBranchId] = useState<string | null>(null);
 
@@ -29,11 +29,9 @@ export function BranchDiscountSettingsSection({ statutoryOnly = false }: { statu
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{statutoryOnly ? 'Statutory discounts by branch' : 'Discounts by branch'}</CardTitle>
+        <CardTitle>Discount decision by branch</CardTitle>
         <CardDescription>
-          {statutoryOnly
-            ? 'PWD and Senior Citizen discounts are set by law and keep their own calculation. Every other sale is subtotal − discount = amount to pay. Saving here changes only the selected branch.'
-            : 'Each branch follows the organization default unless you set a rate for that branch. Saving here changes only the selected branch.'}
+          Whether cashiers must make a discount decision on every sale. Saving here changes only the selected branch.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -72,7 +70,7 @@ export function BranchDiscountSettingsSection({ statutoryOnly = false }: { statu
                 </button>
               </div>
             )}
-            {data && <BranchDiscountSettingsForm key={data.branchId} data={data} statutoryOnly={statutoryOnly} />}
+            {data && <BranchDiscountSettingsForm key={data.branchId} data={data} />}
           </>
         )}
       </CardContent>

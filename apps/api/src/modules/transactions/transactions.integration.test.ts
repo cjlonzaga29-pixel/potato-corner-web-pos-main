@@ -236,7 +236,7 @@ describe.skipIf(!canRunIntegrationTests)('transactions integration — CR-004 PO
         shiftId: branchB.shiftId,
         cashierId,
         items: [{ productId, productVariantId: variantId, quantity: 1 }],
-        paymentMethod: 'cash',
+        paymentMethod: 'cash', discountFlow: 'manual_v1' as const, calculationMode: 'manual_total_v1' as const, discountChoice: 'none_applicable' as const,
         cashTendered: 100,
         isOfflineTransaction: false,
       },
@@ -275,7 +275,7 @@ describe.skipIf(!canRunIntegrationTests)('transactions integration — CR-004 PO
           shiftId: branchC.shiftId,
           cashierId,
           items: [{ productId, productVariantId: variantId, quantity: 1 }],
-          paymentMethod: 'cash',
+          paymentMethod: 'cash', discountFlow: 'manual_v1' as const, calculationMode: 'manual_total_v1' as const, discountChoice: 'none_applicable' as const,
           cashTendered: 100,
           isOfflineTransaction: false,
         },
@@ -304,7 +304,7 @@ describe.skipIf(!canRunIntegrationTests)('transactions integration — CR-004 PO
           shiftId: branchD.shiftId,
           cashierId,
           items: [{ productId, productVariantId: unrecipedVariant.id, quantity: 1 }],
-          paymentMethod: 'cash',
+          paymentMethod: 'cash', discountFlow: 'manual_v1' as const, calculationMode: 'manual_total_v1' as const, discountChoice: 'none_applicable' as const,
           cashTendered: 50,
           isOfflineTransaction: false,
         },
@@ -329,11 +329,11 @@ describe.skipIf(!canRunIntegrationTests)('transactions integration — CR-004 PO
 
     const results = await Promise.allSettled([
       transactionsService.createTransaction(
-        { branchId: branchE.branchId, shiftId: branchE.shiftId, cashierId, items: [{ productId, productVariantId: variantId, quantity: 1 }], paymentMethod: 'cash', cashTendered: 100, isOfflineTransaction: false },
+        { branchId: branchE.branchId, shiftId: branchE.shiftId, cashierId, items: [{ productId, productVariantId: variantId, quantity: 1 }], paymentMethod: 'cash', discountFlow: 'manual_v1' as const, calculationMode: 'manual_total_v1' as const, discountChoice: 'none_applicable' as const, cashTendered: 100, isOfflineTransaction: false },
         null,
       ),
       transactionsService.createTransaction(
-        { branchId: branchE.branchId, shiftId: branchE.shiftId, cashierId, items: [{ productId, productVariantId: variantId, quantity: 1 }], paymentMethod: 'cash', cashTendered: 100, isOfflineTransaction: false },
+        { branchId: branchE.branchId, shiftId: branchE.shiftId, cashierId, items: [{ productId, productVariantId: variantId, quantity: 1 }], paymentMethod: 'cash', discountFlow: 'manual_v1' as const, calculationMode: 'manual_total_v1' as const, discountChoice: 'none_applicable' as const, cashTendered: 100, isOfflineTransaction: false },
         null,
       ),
     ]);
@@ -365,7 +365,7 @@ describe.skipIf(!canRunIntegrationTests)('transactions integration — CR-004 PO
     const results = await Promise.allSettled(
       Array.from({ length: 5 }, () =>
         transactionsService.createTransaction(
-          { branchId: branchF.branchId, shiftId: branchF.shiftId, cashierId, items: [{ productId, productVariantId: variantId, quantity: 1 }], paymentMethod: 'cash', cashTendered: 100, isOfflineTransaction: false },
+          { branchId: branchF.branchId, shiftId: branchF.shiftId, cashierId, items: [{ productId, productVariantId: variantId, quantity: 1 }], paymentMethod: 'cash', discountFlow: 'manual_v1' as const, calculationMode: 'manual_total_v1' as const, discountChoice: 'none_applicable' as const, cashTendered: 100, isOfflineTransaction: false },
           null,
         ),
       ),

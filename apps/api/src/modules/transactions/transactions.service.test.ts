@@ -437,6 +437,11 @@ const baseInput = {
   items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1 }],
   paymentMethod: 'cash' as const,
   isOfflineTransaction: false,
+  // POS-PERF-P63 — a current terminal's sale: the manual-discount checkout's
+  // manual total (VAT is retired; any other shape is refused).
+  discountFlow: 'manual_v1' as const,
+  calculationMode: 'manual_total_v1' as const,
+  discountChoice: 'none_applicable' as const,
 };
 
 beforeEach(() => {
@@ -543,27 +548,121 @@ beforeEach(() => {
   vi.mocked(transactionsRepository.createHoldOrder).mockResolvedValue(holdOrderRow() as never);
 });
 
-describe('transactionsService.createTransaction — VAT calculation', () => {
-  it('extracts VAT via the 12/112 VAT-inclusive formula when there is no discount', async () => {
+const { manualDiscountTypesRepository } = await import('../discounts/discounts.repository.js');
+
+/** POS-PERF-P63 — nothing written: no sale row, no stock reservation/deduction job. */
+function expectNothingWritten() {
+  expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+  expect(prisma.inventoryDeductionJob.create).not.toHaveBeenCalled();
+  expect(prisma.$transaction).not.toHaveBeenCalled();
+}
+
+
+/** POS-PERF-P63 — a copy of a sale input without the current checkout's fields (what an older POS sent). */
+function withoutCheckoutFields<T extends object>(input: T, keys: string[] = ['discountFlow', 'calculationMode', 'discountChoice']): T {
+  const copy = { ...input } as Record<string, unknown>;
+  for (const key of keys) delete copy[key];
+  return copy as T;
+}
+
+describe('transactionsService.createTransaction — manual total (POS-PERF-P63: VAT retired)', () => {
+  it('charges subtotal with no VAT: vatAmount/vatExemptAmount are 0 placeholders and calculation_mode is manual_total_v1', async () => {
     await transactionsService.createTransaction(baseInput, null);
 
     expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({ subtotal: 100, discountAmount: 0, vatAmount: 10.71, totalAmount: 100 }),
+      expect.objectContaining({
+        subtotal: 100,
+        discountAmount: 0,
+        vatAmount: 0,
+        vatExemptAmount: 0,
+        totalAmount: 100,
+        discountRateUsed: null,
+        calculationMode: 'manual_total_v1',
+        taxSnapshot: expect.objectContaining({ version: 2, calculation_mode: 'manual_total_v1', vat_calculated: false, discount_choice: 'none_applicable' }),
+      }),
       expect.anything(),
     );
   });
 
-  it('applies the PWD/Senior Citizen VAT-exempt formula (₱100 item, PWD discount)', async () => {
-    await transactionsService.createTransaction(
-      { ...baseInput, discountType: 'pwd', discountIdReference: 'PWD-000123' },
-      null,
-    );
+  it('refuses a legacy-shape online sale (no discount_flow / calculation mode) with VAT_CALCULATION_RETIRED, nothing written', async () => {
+    const legacy = withoutCheckoutFields(baseInput);
+    await expect(transactionsService.createTransaction(legacy, null)).rejects.toMatchObject({ code: 'VAT_CALCULATION_RETIRED', statusCode: 422 });
+    expectNothingWritten();
+  });
 
-    // Step 1: 100 / 1.12 = 89.2857..., Step 2: ×0.20 = 17.86, Step 3: 71.43.
-    // No VAT is charged — PWD/Senior sales are true VAT-exempt (RA 9994 /
-    // RA 10754), so total is the discounted base with nothing added back.
+  it('refuses a legacy-shape offline sale, saying the amount collected was not changed', async () => {
+    const legacy = withoutCheckoutFields(baseInput);
+    const error = await transactionsService
+      .createTransaction({ ...legacy, isOfflineTransaction: true, offlineProvisionalNumber: 'PC-MNL001-20261121-OFFLINE-1' }, null)
+      .catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: 'VAT_CALCULATION_RETIRED', statusCode: 422 });
+    expect((error as Error).message).toMatch(/amount collected was not changed/);
+    expectNothingWritten();
+  });
+
+  it('refuses the manual flow without manual_total_v1 (an older manual-flow build), nothing written', async () => {
+    const noMode = withoutCheckoutFields(baseInput, ['calculationMode']);
+    await expect(transactionsService.createTransaction(noMode, null)).rejects.toMatchObject({ code: 'VAT_CALCULATION_RETIRED' });
+    expectNothingWritten();
+  });
+
+  it.each(['pwd', 'senior_citizen'] as const)('refuses the statutory %s discount_type even in the manual flow, nothing written', async (discountType) => {
+    await expect(
+      transactionsService.createTransaction({ ...baseInput, discountChoice: 'selected', discountType, discountIdReference: 'ID-1' }, null),
+    ).rejects.toMatchObject({ code: 'VAT_CALCULATION_RETIRED', statusCode: 422 });
+    expectNothingWritten();
+  });
+
+  it.each([
+    ['employee rate', { discountType: 'employee' as const }],
+    ['cashier-selected discount', { selectedDiscount: { promotionId: 'promo-1', version: 1 } }],
+  ])('refuses a legacy-shape %s (no VAT, rate or promotion pricing for a new sale), nothing written', async (_label, extra) => {
+    const legacy = withoutCheckoutFields(baseInput);
+    await expect(transactionsService.createTransaction({ ...legacy, ...extra } as never, null)).rejects.toMatchObject({ code: 'VAT_CALCULATION_RETIRED' });
+    expectNothingWritten();
+  });
+
+  it('accepts a supervisor-created manual type NAMED "PWD" as an ordinary manual total (no statutory formula)', async () => {
+    const spy = vi.spyOn(manualDiscountTypesRepository, 'findForCheckout').mockResolvedValueOnce({
+      id: 'mdt-pwd',
+      branchId: 'branch-1',
+      name: 'PWD',
+      applyToPos: true,
+      requireProof: false,
+      isActive: true,
+      version: 3,
+      amountMode: 'manual',
+      fixedAmount: null,
+      productScope: 'all',
+      products: [],
+    } as never);
+    try {
+      await transactionsService.createTransaction(
+        {
+          ...baseInput,
+          discountChoice: 'selected',
+          discountType: 'manual',
+          manualDiscount: { discountTypeId: 'mdt-pwd', typeVersion: 3, amount: 15, amountMode: 'manual', expectedTotalAmount: 85 },
+        } as never,
+        null,
+      );
+    } finally {
+      spy.mockRestore();
+    }
+
     expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({ discountAmount: 17.86, vatAmount: 0, vatExemptAmount: 0, totalAmount: 71.43 }),
+      expect.objectContaining({
+        subtotal: 100,
+        discountAmount: 15,
+        totalAmount: 85,
+        vatAmount: 0,
+        vatExemptAmount: 0,
+        discountType: 'manual',
+        discountRateUsed: null,
+        manualDiscountTypeId: 'mdt-pwd',
+        calculationMode: 'manual_total_v1',
+        manualDiscountSnapshot: expect.objectContaining({ name: 'PWD', calculation_mode: 'manual_total_v1', amount: 15 }),
+      }),
       expect.anything(),
     );
   });
@@ -574,13 +673,6 @@ describe('transactionsService.createTransaction — payment validation', () => {
     await expect(transactionsService.createTransaction({ ...baseInput, cashTendered: 50 }, null)).rejects.toMatchObject({
       code: 'INSUFFICIENT_CASH_TENDERED',
     });
-    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
-  });
-
-  it('requires discount_id_reference for a PWD/Senior Citizen discount', async () => {
-    await expect(
-      transactionsService.createTransaction({ ...baseInput, discountType: 'senior_citizen' }, null),
-    ).rejects.toMatchObject({ code: 'DISCOUNT_ID_REQUIRED' });
     expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
   });
 
@@ -876,11 +968,10 @@ describe('transactionsService.getDiscountProofUrl', () => {
 });
 
 describe('transactionsService.createTransaction — discount proof linking', () => {
-  it('never attaches discount proof fields for a non-PWD/Senior discount, even if proof fields are somehow supplied', async () => {
+  it('never attaches discount proof fields to a sale without a discount, even if proof fields are somehow supplied', async () => {
     await transactionsService.createTransaction(
       {
         ...baseInput,
-        discountType: 'none',
         discountProofKey: 'branch-1/shift-1/user-1-123.webp',
         discountProofType: 'live_capture',
       } as never,
@@ -891,203 +982,31 @@ describe('transactionsService.createTransaction — discount proof linking', () 
       expect.objectContaining({ discountProofKey: null, discountProofType: null, discountProofUploadedAt: null }),
       expect.anything(),
     );
-  });
-
-  it('does not require discount proof for a PWD/Senior discount — optional per DISCOUNT_PROOF_REQUIREMENT_POLICY_MISSING', async () => {
-    await transactionsService.createTransaction(
-      { ...baseInput, discountType: 'senior_citizen', discountIdReference: 'REF-1' },
-      null,
-    );
-
-    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({ discountProofKey: null, discountProofType: null, discountProofUploadedAt: null }),
-      expect.anything(),
-    );
-  });
-
-  it('links the discount proof key/type/uploadedAt exactly once when a PWD/Senior discount includes both proof fields', async () => {
-    const uploadedAt = new Date('2026-11-01T01:00:00Z');
-    vi.mocked(transactionsRepository.findDiscountProofUploadByStorageKey).mockResolvedValueOnce({
-      id: 'upload-1', branchId: 'branch-1', shiftId: 'shift-1', uploadedById: 'user-1', storageKey: 'branch-1/shift-1/user-1-123.webp',
-      proofType: 'live_capture', transactionId: null, consumedAt: null, createdAt: uploadedAt,
-    });
-    await transactionsService.createTransaction(
-      {
-        ...baseInput,
-        discountType: 'pwd',
-        discountIdReference: 'REF-1',
-        discountProofKey: 'branch-1/shift-1/user-1-123.webp',
-        discountProofType: 'live_capture',
-      },
-      null,
-    );
-
-    expect(transactionsRepository.createTransaction).toHaveBeenCalledTimes(1);
-    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({
-        discountProofKey: 'branch-1/shift-1/user-1-123.webp',
-        discountProofType: 'live_capture',
-        discountProofUploadedAt: uploadedAt,
-      }),
-      expect.anything(),
-    );
-  });
-
-  it('refuses a statutory proof key the upload registry does not bind to this cashier, branch and shift (P55 release fix)', async () => {
-    const row = {
-      id: 'upload-1', branchId: 'branch-1', shiftId: 'shift-1', uploadedById: 'user-1', storageKey: 'branch-1/shift-1/user-1-123.webp',
-      proofType: 'live_capture' as const, transactionId: null as string | null, consumedAt: null, createdAt: new Date(),
-    };
-    const input = { ...baseInput, discountType: 'pwd' as const, discountIdReference: 'REF-1', discountProofKey: row.storageKey, discountProofType: 'live_capture' as const };
-    for (const [registered, code] of [
-      [null, 'DISCOUNT_PROOF_INVALID'],
-      [{ ...row, uploadedById: 'user-2' }, 'DISCOUNT_PROOF_INVALID'],
-      [{ ...row, shiftId: 'shift-0' }, 'DISCOUNT_PROOF_INVALID'],
-      [{ ...row, transactionId: 'txn-0' }, 'DISCOUNT_PROOF_ALREADY_USED'],
-    ] as const) {
-      vi.mocked(transactionsRepository.findDiscountProofUploadByStorageKey).mockResolvedValueOnce(registered as never);
-      await expect(transactionsService.createTransaction(input, null)).rejects.toMatchObject({ code });
-    }
-    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
-  });
-
-  it('drops a partial proof (key without type) back to no-proof rather than persisting an inconsistent pair', async () => {
-    await transactionsService.createTransaction(
-      {
-        ...baseInput,
-        discountType: 'pwd',
-        discountIdReference: 'REF-1',
-        discountProofKey: 'branch-1/shift-1/user-1-123.webp',
-        discountProofType: undefined,
-      } as never,
-      null,
-    );
-
-    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({ discountProofKey: null, discountProofType: null, discountProofUploadedAt: null }),
-      expect.anything(),
-    );
+    expect(transactionsRepository.findDiscountProofUploadByStorageKey).not.toHaveBeenCalled();
   });
 });
 
-// Task 209.xx — centrally configurable PWD/Senior Citizen/Employee discount
-// percentages (Discount Settings). Server-authoritative: the client sends
-// only the discount TYPE (createTransactionSchema has no percentage field),
-// and createTransaction always resolves the actual rate from
-// settingsService.getDiscountPolicy() at the moment of creation, never from
-// anything the client sent.
-describe('transactionsService.createTransaction — configurable discount rates', () => {
-  it('uses the configured PWD percentage (10%, not the old hardcoded 20%) and snapshots it as discountRateUsed', async () => {
-    vi.mocked(settingsService.getDiscountPolicy).mockResolvedValue({
-      pwd: { percentage: 10, isEnabled: true },
-      senior_citizen: { percentage: 20, isEnabled: true },
-      employee: { percentage: 20, isEnabled: true },
-      promotional: { percentage: 20, isEnabled: true },
-      updatedAt: '2026-08-13T00:00:00.000Z',
-      updatedBy: 'supervisor-1',
-    } as never);
-
-    await transactionsService.createTransaction({ ...baseInput, discountType: 'pwd', discountIdReference: 'PWD-1' }, null);
-
-    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({ discountAmount: 8.93, discountRateUsed: 10 }),
-      expect.anything(),
-    );
-  });
-
-  it('a cashier/client cannot override the discount amount — a tampered discount_amount in the payload is ignored, server recomputes from the configured rate', async () => {
-    await transactionsService.createTransaction(
-      { ...baseInput, discountType: 'pwd', discountIdReference: 'PWD-1', discountAmount: 999999 },
-      null,
-    );
-
-    const call = vi.mocked(transactionsRepository.createTransaction).mock.calls[0]?.[0];
-    expect(call?.discountAmount).not.toBe(999999);
-    expect(call?.discountAmount).toBeLessThan(100); // sane PWD discount off a ₱100 sale, nowhere near the tampered value
-  });
-
-  it('rejects PWD when a supervisor has disabled it in Discount Settings, before ever computing an amount', async () => {
-    vi.mocked(settingsService.getDiscountPolicy).mockResolvedValue({
-      pwd: { percentage: 20, isEnabled: false },
-      senior_citizen: { percentage: 20, isEnabled: true },
-      employee: { percentage: 20, isEnabled: true },
-      promotional: { percentage: 20, isEnabled: true },
-      updatedAt: null,
-      updatedBy: null,
-    } as never);
-
-    await expect(
-      transactionsService.createTransaction({ ...baseInput, discountType: 'pwd', discountIdReference: 'PWD-1' }, null),
-    ).rejects.toMatchObject({ code: 'DISCOUNT_TYPE_DISABLED', statusCode: 422 });
-    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
-  });
-
-  it('Employee\'s configured rate is independent of PWD/Senior — changing PWD never changes what Employee charges', async () => {
-    vi.mocked(settingsService.getDiscountPolicy).mockResolvedValue({
-      pwd: { percentage: 5, isEnabled: true },
-      senior_citizen: { percentage: 5, isEnabled: true },
-      employee: { percentage: 30, isEnabled: true },
-      promotional: { percentage: 20, isEnabled: true },
-      updatedAt: null,
-      updatedBy: null,
-    } as never);
-
-    await transactionsService.createTransaction({ ...baseInput, discountType: 'employee' }, null);
-
-    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({ discountRateUsed: 30 }),
-      expect.anything(),
-    );
-  });
-
-  // POS-PERF-P50R — the branch's effective policy is now read for every sale
-  // (it also carries the discount-choice requirement and VAT registration for
-  // the tax snapshot); a no-discount sale still persists no rate.
-  it('a no-discount sale persists discountRateUsed: null and snapshots no discount basis', async () => {
+describe('transactionsService.createTransaction — discount settings no longer price a sale (POS-PERF-P63)', () => {
+  // The branch's effective policy is still read for every sale (discount-choice
+  // requirement and the recorded registration); it never sets an amount or rate.
+  it('a no-discount sale persists discountRateUsed: null and a manual-total snapshot with no VAT basis', async () => {
     await transactionsService.createTransaction(baseInput, null);
 
     expect(settingsService.getEffectiveDiscountPolicy).toHaveBeenCalledWith(baseInput.branchId);
-    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({
-        taxSnapshot: expect.objectContaining({ vat_rate_percent: 12, treatment: 'vatable', discount_basis: null, discount_rate_source: null, vat_registration: 'unconfirmed' }),
-      }),
-      expect.anything(),
-    );
-    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({ discountRateUsed: null }),
-      expect.anything(),
-    );
+    const call = vi.mocked(transactionsRepository.createTransaction).mock.calls[0]?.[0] as unknown as { taxSnapshot: Record<string, unknown>; discountRateUsed: unknown };
+    expect(call.discountRateUsed).toBeNull();
+    expect(call.taxSnapshot).toMatchObject({ version: 2, calculation_mode: 'manual_total_v1', vat_calculated: false, vat_registration: 'unconfirmed' });
+    expect(call.taxSnapshot).not.toHaveProperty('vat_rate_percent');
+    expect(call.taxSnapshot).not.toHaveProperty('treatment');
   });
 
-  // Fast-release regression #6 — createTransactionSchema has no percentage
-  // field at all, so there is no key a client could tamper to smuggle in a
-  // rate. This proves an extra, out-of-schema field on the service-layer
-  // input (bypassing the router's zod validate() entirely, as if someone
-  // called the service directly) still has zero effect: the rate always
-  // comes from settingsService.getDiscountPolicy(), never from the payload.
-  it("a client-supplied discountRateUsed/percentage on the input is not a real field and cannot influence the persisted rate", async () => {
-    vi.mocked(settingsService.getDiscountPolicy).mockResolvedValue({
-      pwd: { percentage: 10, isEnabled: true },
-      senior_citizen: { percentage: 20, isEnabled: true },
-      employee: { percentage: 20, isEnabled: true },
-      promotional: { percentage: 20, isEnabled: true },
-      updatedAt: null,
-      updatedBy: null,
-    } as never);
-
-    const tamperedPayload = {
-      ...baseInput,
-      discountType: 'pwd',
-      discountIdReference: 'PWD-1',
-      discountRateUsed: 99,
-      percentage: 99,
-      discountPercentage: 99,
-    };
+  it('a client-supplied discountAmount/discountRateUsed/percentage cannot change what is charged', async () => {
+    const tamperedPayload = { ...baseInput, discountAmount: 999999, discountRateUsed: 99, percentage: 99, discountPercentage: 99 };
 
     await transactionsService.createTransaction(tamperedPayload as unknown as Parameters<typeof transactionsService.createTransaction>[0], null);
 
     expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({ discountRateUsed: 10 }),
+      expect.objectContaining({ discountAmount: 0, discountRateUsed: null, totalAmount: 100 }),
       expect.anything(),
     );
   });
@@ -1927,7 +1846,7 @@ describe('transactionsService.createTransaction — idempotency key', () => {
 
   it('replays the prior result on the fast path, without resolving the cart or touching the database at all', async () => {
     vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(
-      transactionRow({ id: 'txn-prior', items: idempotentReplayItems }) as never,
+      transactionRow({ id: 'txn-prior', calculationMode: 'manual_total_v1', items: idempotentReplayItems }) as never,
     );
 
     const result = await transactionsService.createTransaction({ ...baseInput, idempotencyKey: 'key-1' }, null);
@@ -1938,9 +1857,45 @@ describe('transactionsService.createTransaction — idempotency key', () => {
     expect(prisma.inventoryDeductionJob.create).not.toHaveBeenCalled();
   });
 
+  it('POS-PERF-P63 — still replays an already-recorded legacy VAT sale (calculation_mode NULL) for an old client retrying the same key, stored VAT amounts intact', async () => {
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(
+      transactionRow({
+        id: 'txn-legacy',
+        calculationMode: null,
+        discountType: 'pwd',
+        discountAmount: decimal(17.86),
+        vatAmount: decimal(0),
+        vatExemptAmount: decimal(0),
+        totalAmount: decimal(71.43),
+        items: idempotentReplayItems,
+      }) as never,
+    );
+    vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(
+      transactionRow({ id: 'txn-legacy-vat', calculationMode: null, vatAmount: decimal(10.71), items: idempotentReplayItems }) as never,
+    );
+    const legacy = withoutCheckoutFields(baseInput);
+
+    const statutory = await transactionsService.createTransaction({ ...legacy, discountType: 'pwd', discountIdReference: 'PWD-1', idempotencyKey: 'key-legacy' }, null);
+    const vatable = await transactionsService.createTransaction({ ...legacy, idempotencyKey: 'key-legacy-2' }, null);
+
+    expect(statutory).toMatchObject({ id: 'txn-legacy', calculation_mode: 'legacy_vat_v1', discount_amount: 17.86, vat_amount: 0, total_amount: 71.43 });
+    expect(vatable).toMatchObject({ id: 'txn-legacy-vat', calculation_mode: 'legacy_vat_v1', vat_amount: 10.71, total_amount: 100 });
+    expect(transactionsRepository.findBranch).not.toHaveBeenCalled();
+    expectNothingWritten();
+  });
+
+  it('POS-PERF-P63 — a legacy-shape request whose key has no recorded sale is refused, not created', async () => {
+    const legacy = withoutCheckoutFields(baseInput);
+    await expect(transactionsService.createTransaction({ ...legacy, idempotencyKey: 'key-legacy-new' }, null)).rejects.toMatchObject({
+      code: 'VAT_CALCULATION_RETIRED',
+    });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+    expect(prisma.inventoryDeductionJob.create).not.toHaveBeenCalled();
+  });
+
   it('rejects the replay (never returns the stored row) when the stored sale belongs to a different branch/shift/cashier than the request presenting the key', async () => {
     vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(
-      transactionRow({ id: 'txn-other-cashier', cashierId: 'user-9', items: idempotentReplayItems }) as never,
+      transactionRow({ id: 'txn-other-cashier', cashierId: 'user-9', calculationMode: 'manual_total_v1', items: idempotentReplayItems }) as never,
     );
 
     await expect(transactionsService.createTransaction({ ...baseInput, idempotencyKey: 'key-1b' }, null)).rejects.toMatchObject({
@@ -1951,7 +1906,7 @@ describe('transactionsService.createTransaction — idempotency key', () => {
 
   it('rejects the replay when the stored sale has a different cart than the request presenting the key (key reused for a different sale)', async () => {
     vi.mocked(transactionsRepository.findByIdempotencyKey).mockResolvedValueOnce(
-      transactionRow({ id: 'txn-different-cart', items: [{ productVariantId: 'variant-9', flavorId: null, quantity: 3 }] }) as never,
+      transactionRow({ id: 'txn-different-cart', calculationMode: 'manual_total_v1', items: [{ productVariantId: 'variant-9', flavorId: null, quantity: 3 }] }) as never,
     );
 
     await expect(transactionsService.createTransaction({ ...baseInput, idempotencyKey: 'key-1c' }, null)).rejects.toMatchObject({
@@ -1984,7 +1939,7 @@ describe('transactionsService.createTransaction — idempotency key', () => {
     vi.mocked(prisma.$transaction).mockRejectedValueOnce(p2002);
     vi.mocked(transactionsRepository.findByIdempotencyKey)
       .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce(transactionRow({ id: 'txn-winner', items: idempotentReplayItems }) as never);
+      .mockResolvedValueOnce(transactionRow({ id: 'txn-winner', calculationMode: 'manual_total_v1', items: idempotentReplayItems }) as never);
 
     const result = await transactionsService.createTransaction({ ...baseInput, idempotencyKey: 'key-3' }, null);
 
@@ -2166,38 +2121,6 @@ describe('transactionsService.createTransaction — receipt number allocation vi
 });
 
 describe('transactionsService.createTransaction — discount ID hashing', () => {
-  it('populates discountCustomerIdHash alongside the encrypted field for a PWD discount', async () => {
-    vi.mocked(transactionsRepository.findBranch).mockResolvedValue({ id: 'branch-1', code: 'MNL001', status: 'active' } as never);
-    vi.mocked(cashRepository.findShiftById).mockResolvedValue({ id: 'shift-1', branchId: 'branch-1', status: 'active' } as never);
-    vi.mocked(transactionsRepository.findVariantsForSale).mockResolvedValue([variantRow()] as never);
-    vi.mocked(transactionsRepository.findBranchProductAvailabilityMap).mockResolvedValue([{ productId: 'product-1', isAvailable: true }] as never);
-    vi.mocked(nextCounterValue).mockResolvedValue(1);
-    vi.mocked(transactionsRepository.createTransaction).mockResolvedValue(transactionRow({ discountType: 'pwd' }) as never);
-
-    await transactionsService.createTransaction(
-      {
-        branchId: 'branch-1',
-        shiftId: 'shift-1',
-        cashierId: 'user-1',
-        items: [{ productId: 'product-1', productVariantId: 'variant-1', quantity: 1 }],
-        paymentMethod: 'cash',
-        discountType: 'pwd',
-        discountIdReference: 'PWD-12345',
-        cashTendered: 200,
-        isOfflineTransaction: false,
-      },
-      null,
-    );
-
-    expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({
-        discountCustomerIdEncrypted: 'encrypted(PWD-12345)',
-        discountCustomerIdHash: 'hashed(PWD-12345)',
-      }),
-      expect.anything(),
-    );
-  });
-
   it('leaves discountCustomerIdHash null when there is no discount ID reference', async () => {
     vi.mocked(transactionsRepository.findBranch).mockResolvedValue({ id: 'branch-1', code: 'MNL001', status: 'active' } as never);
     vi.mocked(cashRepository.findShiftById).mockResolvedValue({ id: 'shift-1', branchId: 'branch-1', status: 'active' } as never);
@@ -2215,6 +2138,9 @@ describe('transactionsService.createTransaction — discount ID hashing', () => 
         paymentMethod: 'cash',
         cashTendered: 200,
         isOfflineTransaction: false,
+        discountFlow: 'manual_v1',
+        calculationMode: 'manual_total_v1',
+        discountChoice: 'none_applicable',
       },
       null,
     );
@@ -2251,6 +2177,9 @@ describe('transactionsService.createTransaction — device id persistence (Task 
         cashTendered: 200,
         isOfflineTransaction: false,
         deviceId: 'device-1',
+        discountFlow: 'manual_v1',
+        calculationMode: 'manual_total_v1',
+        discountChoice: 'none_applicable',
       },
       null,
     );
@@ -2277,6 +2206,8 @@ describe('transactionsService.createTransaction — device id persistence (Task 
         isOfflineTransaction: true,
         offlineProvisionalNumber: 'PC-MNL001-20260810-OFFLINE-0001',
         deviceId: 'device-1',
+        discountFlow: 'manual_v1',
+        calculationMode: 'manual_total_v1',
       },
       null,
     );
@@ -3112,6 +3043,10 @@ describe('transactionsService.syncOfflineTransactions', () => {
     paymentMethod: 'cash' as const,
     cashTendered: 100,
     clientCreatedAt: 1000,
+    // POS-PERF-P63 — what a current terminal queues (the manual total; an
+    // offline sale never carries a manual discount or a discount choice).
+    discountFlow: 'manual_v1' as const,
+    calculationMode: 'manual_total_v1' as const,
     ...overrides,
   });
 
@@ -3384,42 +3319,68 @@ describe('transactionsService.syncOfflineTransactions', () => {
     expect(transactionsRepository.findByOfflineIdentity).toHaveBeenCalledTimes(1);
   });
 
-  // Fast-release regression #2 — an offline device queues a discountType and
-  // a client-computed discountAmount (the offline UI has to show something
-  // before it can reach the server), but syncOfflineTransactions replays
-  // each item through the exact same transactionsService.createTransaction
-  // call path as an online sale, with no offline-specific rate logic. So the
-  // rate actually persisted must come from settingsService.getDiscountPolicy
-  // at SYNC time, not from anything the offline client queued — proven here
-  // by making the client's queued discountAmount (computed against an old
-  // 20% it saw before going offline) disagree with the 12% the server now
-  // has configured, and asserting the server's 12% wins.
-  it('resolves the server-configured discount rate at sync time, ignoring whatever rate the offline client assumed while queued', async () => {
-    vi.mocked(settingsService.getDiscountPolicy).mockResolvedValue({
-      pwd: { percentage: 12, isEnabled: true },
-      senior_citizen: { percentage: 20, isEnabled: true },
-      employee: { percentage: 20, isEnabled: true },
-      promotional: { percentage: 20, isEnabled: true },
-      updatedAt: null,
-      updatedBy: null,
-    } as never);
-    const queuedWhileOffline = offlineItem({
-      offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0200',
-      discountType: 'pwd',
-      discountIdReference: 'PWD-1',
-      discountAmount: 20, // stale client-side guess from the old 20% rate — must be discarded
-    });
+  // POS-PERF-P63 — a sale an older terminal queued (no manual-total mode, or
+  // the statutory PWD/Senior formula) is refused, never repriced: nothing is
+  // written and the rest of the batch still syncs.
+  it.each([
+    ['an older terminal (no discount_flow / calculation mode)', { discountFlow: undefined, calculationMode: undefined }],
+    ['the statutory PWD discount', { discountType: 'pwd', discountIdReference: 'PWD-1', discountAmount: 20 }],
+  ])('refuses a queued sale from %s with VAT_CALCULATION_RETIRED, nothing written', async (_label, overrides) => {
+    const legacy = offlineItem({ offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0300', clientCreatedAt: 1000, ...overrides });
+    const current = offlineItem({ offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0301', clientCreatedAt: 2000 });
 
-    await transactionsService.syncOfflineTransactions(
-      { branchId: 'branch-1', cashierId: 'user-1', deviceId: 'device-1', transactions: [queuedWhileOffline] },
+    const result = await transactionsService.syncOfflineTransactions(
+      { branchId: 'branch-1', cashierId: 'user-1', deviceId: 'device-1', transactions: [legacy, current] },
       null,
     );
 
-    expect(settingsService.getDiscountPolicy).toHaveBeenCalled();
+    expect(result.results).toEqual([
+      expect.objectContaining({ offline_provisional_number: legacy.offlineProvisionalNumber, status: 'failed', error: expect.objectContaining({ code: 'VAT_CALCULATION_RETIRED' }) }),
+      expect.objectContaining({ offline_provisional_number: current.offlineProvisionalNumber, status: 'synced' }),
+    ]);
+    expect(result.results[0]?.error?.message).toMatch(/amount collected was not changed/);
+    expect(transactionsRepository.createTransaction).toHaveBeenCalledTimes(1);
     expect(transactionsRepository.createTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({ discountRateUsed: 12 }),
+      expect.objectContaining({ offlineProvisionalNumber: current.offlineProvisionalNumber, calculationMode: 'manual_total_v1', vatAmount: 0 }),
       expect.anything(),
     );
+  });
+
+  // POS-PERF-P63 — an older terminal resending a sale the server already
+  // recorded under the VAT calculation gets that stored sale back unchanged
+  // (the replay lookup runs before the refusal), never a refusal or a reprice.
+  it('replays an already-recorded legacy VAT sale as synced with its stored amounts', async () => {
+    const legacy = offlineItem({ offlineProvisionalNumber: 'PC-MNL001-20260719-OFFLINE-0400', discountFlow: undefined, calculationMode: undefined, discountType: 'senior_citizen', discountIdReference: 'SC-1' });
+    vi.mocked(transactionsRepository.findByOfflineIdentity).mockResolvedValueOnce(
+      transactionRow({
+        id: 'txn-legacy-offline',
+        calculationMode: null,
+        isOfflineTransaction: true,
+        offlineProvisionalNumber: legacy.offlineProvisionalNumber,
+        discountType: 'senior_citizen',
+        discountAmount: decimal(17.86),
+        vatAmount: decimal(0),
+        vatExemptAmount: decimal(0),
+        totalAmount: decimal(71.43),
+      }) as never,
+    );
+
+    const result = await transactionsService.syncOfflineTransactions(
+      { branchId: 'branch-1', cashierId: 'user-1', deviceId: 'device-1', transactions: [legacy] },
+      null,
+    );
+
+    expect(result.results).toEqual([expect.objectContaining({ offline_provisional_number: legacy.offlineProvisionalNumber, status: 'synced' })]);
+    expect(result.results[0]?.transaction).toMatchObject({
+      id: 'txn-legacy-offline',
+      calculation_mode: 'legacy_vat_v1',
+      discount_amount: 17.86,
+      vat_amount: 0,
+      vat_exempt_amount: 0,
+      total_amount: 71.43,
+    });
+    expect(transactionsRepository.createTransaction).not.toHaveBeenCalled();
+    expect(prisma.inventoryDeductionJob.create).not.toHaveBeenCalled();
   });
 });
 

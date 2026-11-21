@@ -6,7 +6,6 @@ import {
   updatePaymentMethodConfigSchema,
   updateDiscountPolicySchema,
   updateBranchDiscountSettingsSchema,
-  updateBranchTaxProfileSchema,
   updateWorkHoursPolicySchema,
   updateBranchWorkHoursSchema,
   updateWriteGateSchema,
@@ -207,29 +206,6 @@ router.put(
         return;
       }
       const result = await settingsService.updateBranchDiscountSettings(params.data.branchId, req.body, req.user, req.ip ?? null);
-      res.status(200).json({ data: result, error: null, meta: null });
-    } catch (error) {
-      handleSettingsError(error, res, next);
-    }
-  },
-);
-
-/** POS-PERF-P50R — record a branch's VAT registration. Super Admin only (a legal fact the owner supplies). */
-router.put(
-  '/tax/branches/:branchId',
-  authenticate,
-  adminOnly,
-  requirePasswordChange,
-  validate(updateBranchTaxProfileSchema),
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      if (!requireUser(req, res)) return;
-      const params = branchParamSchema.safeParse(req.params);
-      if (!params.success) {
-        res.status(400).json({ data: null, error: { code: 'VALIDATION_ERROR', message: 'Invalid branch id' }, meta: null });
-        return;
-      }
-      const result = await settingsService.updateBranchTaxProfile(params.data.branchId, req.body, req.user, req.ip ?? null);
       res.status(200).json({ data: result, error: null, meta: null });
     } catch (error) {
       handleSettingsError(error, res, next);

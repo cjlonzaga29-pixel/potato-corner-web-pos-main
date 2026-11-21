@@ -123,7 +123,9 @@ export function SaleStatusModal({ phase, snapshot, errorMessage, errorCode, onRe
       errorCode === 'DISCOUNT_PROOF_ALREADY_USED' ||
       // POS-PERF-P55R2 — a calculation-mode refusal: resending the same sale gets the same answer.
       errorCode.startsWith('CALCULATION_MODE_') ||
-      errorCode === 'STATUTORY_DISCOUNT_REQUIRES_TAX_CALCULATION');
+      errorCode === 'STATUTORY_DISCOUNT_REQUIRES_TAX_CALCULATION' ||
+      // POS-PERF-P63 — VAT retired: the same sale is refused again on resend.
+      errorCode === 'VAT_CALCULATION_RETIRED');
   return (
     <Dialog
       open

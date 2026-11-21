@@ -60,7 +60,10 @@ describe.skipIf(!isLocalDatabase)('P53 discounts + breaks (real Express + Postgr
 
   const item = (quantity = 1) => ({ product_id: ids.product, product_variant_id: ids.variant, quantity });
 
-  function checkout(token: string, opts: { key?: string; employeeRate?: number; discountChoice?: 'none_applicable' | 'selected' } = {}) {
+  // POS-PERF-P63 — the current checkout (manual total, no VAT). The Employee
+  // rate belonged to the retired VAT checkout; employeeRate is kept only so
+  // the sequence below reads as before, and never changes what is sent.
+  function checkout(token: string, opts: { key?: string; employeeRate?: number; discountChoice?: 'none_applicable' | null } = {}) {
     return call('POST', '/api/transactions', token, {
       branch_id: ids.branchA,
       items: [item()],
@@ -68,8 +71,9 @@ describe.skipIf(!isLocalDatabase)('P53 discounts + breaks (real Express + Postgr
       cash_tendered: 1000,
       is_offline_transaction: false,
       idempotency_key: opts.key ?? randomUUID(),
-      ...(opts.employeeRate !== undefined ? { discount_type: 'employee', tax_basis: { vat_rate: 12, discount_rate: opts.employeeRate } } : { tax_basis: { vat_rate: 12, discount_rate: null } }),
-      ...(opts.discountChoice ? { discount_choice: opts.discountChoice } : {}),
+      discount_flow: 'manual_v1',
+      tax_basis: { calculation_mode: 'manual_total_v1', vat_rate: null, discount_rate: null },
+      ...(opts.discountChoice === null ? {} : { discount_choice: opts.discountChoice ?? 'none_applicable' }),
     });
   }
 
@@ -218,7 +222,7 @@ describe.skipIf(!isLocalDatabase)('P53 discounts + breaks (real Express + Postgr
     expect(saved.status).toBe(200);
 
     // 6. Ben sells while Ana remains on break: the decision is required and actionable.
-    const noChoice = await checkout(tokens.ben);
+    const noChoice = await checkout(tokens.ben, { discountChoice: null });
     expect(noChoice.status).toBeGreaterThanOrEqual(400);
     expect(noChoice.body.error?.code).toBe('DISCOUNT_CHOICE_REQUIRED');
     const benSale = await checkout(tokens.ben, { discountChoice: 'none_applicable' });
@@ -248,7 +252,8 @@ describe.skipIf(!isLocalDatabase)('P53 discounts + breaks (real Express + Postgr
     // Ben ending "a break" acts only on Ben (he has none) — Ana's stays open.
     expect((await call('POST', '/api/attendance/break/end', tokens.ben, { branch_id: ids.branchA })).body.error?.code).toBe('NOT_ON_BREAK');
     expect(await prisma.attendanceBreak.count({ where: { attendanceRecord: { employeeId: ids.ana }, endedAt: null } })).toBe(1);
-    expect((await call('PUT', `/api/settings/tax/branches/${ids.branchA}`, tokens.supA, { vatRegistration: 'vat_registered', expectedUpdatedAt: null })).status).toBe(403);
+    // POS-PERF-P63 — VAT registration can no longer be recorded by anyone: the route is gone.
+    expect((await call('PUT', `/api/settings/tax/branches/${ids.branchA}`, tokens.supA, { vatRegistration: 'vat_registered', expectedUpdatedAt: null })).status).toBe(404);
 
     // 9. Ana resumes on the SAME record (no new clock-in).
     const resume = await call('POST', '/api/attendance/break/end', tokens.ana, { branch_id: ids.branchA });
@@ -266,27 +271,23 @@ describe.skipIf(!isLocalDatabase)('P53 discounts + breaks (real Express + Postgr
     expect(lateFenced.status).toBeGreaterThanOrEqual(400);
     expect((await salesFor(ids.branchA)).filter((s) => s.idempotencyKey === refusedKey)).toHaveLength(0);
 
-    // 11. The pre-break rate is refused with nothing written; the new rate sells and snapshots its source.
-    const countBeforeStale = (await salesFor(ids.branchA)).length;
-    const staleRate = await checkout(tokens.ana, { employeeRate: orgEmployee, discountChoice: 'selected' });
-    expect(staleRate.body.error?.code).toBe('TAX_SETTINGS_CHANGED');
-    expect((await salesFor(ids.branchA)).length).toBe(countBeforeStale);
-    const fresh = await checkout(tokens.ana, { employeeRate: newEmployee, discountChoice: 'selected' });
+    // 11. POS-PERF-P63 — Ana sells again after the break as a manual total.
+    const fresh = await checkout(tokens.ana);
     expect(fresh.status).toBe(201);
     const freshRow = (await salesFor(ids.branchA)).find((s) => s.id === (fresh.body.data?.id as string));
     expect(freshRow?.cashierId).toBe(ids.ana);
-    expect(freshRow?.discountRateUsed?.toNumber()).toBe(newEmployee);
-    expect(freshRow?.taxSnapshot).toMatchObject({ discount_rate_source: 'branch' });
+    expect(freshRow?.taxSnapshot).toMatchObject({ calculation_mode: 'manual_total_v1' });
 
-    // 12. The queued offline sale (rung at the pre-change rate) now syncs
-    //     under its original cashier and gets a per-row rejection with details.
+    // 12. The queued offline sale (an older POS's VAT/Employee-rate sale) now
+    //     syncs under its original cashier and gets a per-row refusal: never
+    //     recalculated, so the amount collected is not changed.
     const sync = await call('POST', '/api/transactions/sync-offline', tokens.ana, { branch_id: ids.branchA, transactions: [queuedSale] });
     expect(sync.status).toBe(200);
     const results = sync.body.data?.results as { offline_provisional_number: string; status: string; error?: { code: string; message?: string } }[];
     expect(results).toHaveLength(1);
     expect(results[0]?.offline_provisional_number).toBe(queuedId);
     expect(results[0]?.status).not.toBe('synced');
-    expect(results[0]?.error?.code).toBe('TAX_SETTINGS_CHANGED');
+    expect(results[0]?.error?.code).toBe('VAT_CALCULATION_RETIRED');
     expect(results[0]?.error?.message).toBeTruthy();
   });
 });

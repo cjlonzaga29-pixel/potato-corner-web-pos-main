@@ -1,0 +1,74 @@
+{
+  "note": "Disposable local p62_rollback DB; ids omitted from this summary are random UUIDs. Ordinary sales are fixture transaction rows; supply issues via the real P61 service.",
+  "steps": [
+    {
+      "step": "rb-1-setup",
+      "code": "current P62",
+      "phase": "setup",
+      "drawer": 1225,
+      "stock_after_issues": 90,
+      "summary": {
+        "cash_sales_total": 200,
+        "gcash_sales_total": 50,
+        "gross_sales_total": 250,
+        "extra_supply_cash_total": 25,
+        "extra_supply_collections_total": 35,
+        "total_collections": 285,
+        "expected_cash": 1225,
+        "variance_status": null
+      }
+    },
+    {
+      "step": "rb-2-old-summary",
+      "code": "500e97e (pre-P61)",
+      "phase": "summary",
+      "shift_status": "active",
+      "summary": {
+        "cash_sales_total": 200,
+        "gcash_sales_total": 50,
+        "gross_sales_total": 250,
+        "expected_cash": 1200,
+        "variance_status": null
+      }
+    },
+    {
+      "step": "rb-3-old-close",
+      "code": "500e97e (pre-P61)",
+      "phase": "close",
+      "counted": 1225,
+      "closed": {
+        "status": "flagged",
+        "cash_sales_total": 200,
+        "gross_sales_total": 250,
+        "closing_cash_amount": 1225,
+        "expected_closing_cash": 1200,
+        "cash_variance": 25,
+        "variance_approved": null
+      }
+    },
+    {
+      "step": "rb-4-current-verify",
+      "code": "current P62",
+      "phase": "verify",
+      "issues": 4,
+      "stock": 90,
+      "movements": 4,
+      "uncertain_operation": "committed",
+      "saved": {
+        "expected_closing_cash": 1200,
+        "cash_variance": 25,
+        "closing_cash": 1225
+      },
+      "summary": {
+        "cash_sales_total": 200,
+        "gcash_sales_total": 50,
+        "gross_sales_total": 250,
+        "extra_supply_cash_total": 25,
+        "extra_supply_collections_total": 35,
+        "total_collections": 285,
+        "expected_cash": 1200,
+        "variance_status": "PENDING_REVIEW"
+      }
+    }
+  ]
+}

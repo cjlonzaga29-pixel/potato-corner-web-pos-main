@@ -58,7 +58,7 @@ export const shiftResponseSchema = z.object({
   cashier_id: z.uuid(),
   opened_by: z.uuid(),
   closed_by: z.uuid().nullable(),
-  status: z.enum(['active', 'closed', 'flagged']),
+  status: z.enum(['active', 'closed', 'flagged', 'terminated']),
   opening_cash_amount: z.number(),
   closing_cash_amount: z.number().nullable(),
   expected_closing_cash: z.number().nullable(),

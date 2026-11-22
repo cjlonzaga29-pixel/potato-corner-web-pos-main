@@ -17,6 +17,8 @@ interface DeleteBranchDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   branch: BranchResponse;
+  /** POS-PERF-P68 — offered when open work blocks a normal delete. */
+  onForceDelete?: () => void;
 }
 
 const KEPT_LABELS: Record<string, [string, string]> = {
@@ -59,7 +61,12 @@ function normalizeName(value: string): string {
  * open work, the typed name and code, the branch version and a confirmation
  * issued to this Super Admin; this dialog explains them. Cancel sends nothing.
  */
-export function DeleteBranchDialog({ open, onOpenChange, branch }: DeleteBranchDialogProps) {
+export function DeleteBranchDialog({
+  open,
+  onOpenChange,
+  branch,
+  onForceDelete,
+}: DeleteBranchDialogProps) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const eligibility = useBranchDeletionEligibility(branch.id, open);
@@ -170,12 +177,29 @@ export function DeleteBranchDialog({ open, onOpenChange, branch }: DeleteBranchD
             ))}
           </ul>
         </div>
-        <p className="text-muted-foreground">Nothing has been changed. Check again once these are done, or close the branch instead.</p>
+        <p className="text-muted-foreground">
+          Nothing has been changed. Check again once these are done, or close the branch instead.
+          {onForceDelete &&
+            ' A Super Admin can also Force Delete it, which ends this open work explicitly and records what stays unresolved.'}
+        </p>
       </div>
     );
     footer = (
       <>
         {closeButton('Close')}
+        {onForceDelete && (
+          <Button
+            type="button"
+            variant="outline"
+            className="text-destructive"
+            onClick={() => {
+              onOpenChange(false);
+              onForceDelete();
+            }}
+          >
+            Force Delete Branch…
+          </Button>
+        )}
         <Button type="button" onClick={() => void eligibility.refetch()}>
           Check again
         </Button>

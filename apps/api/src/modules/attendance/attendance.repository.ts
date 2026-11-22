@@ -104,7 +104,12 @@ export const attendanceRepository = {
   findActiveRecord(employeeId: string, tx?: Prisma.TransactionClient) {
     const client = tx ?? prisma;
     return client.attendanceRecord.findFirst({
-      where: { employeeId, clockOutServerTime: null, deletedAt: null },
+      where: {
+        employeeId,
+        clockOutServerTime: null,
+        deletedAt: null,
+        administrativelyTerminatedAt: null,
+      },
       orderBy: { clockInServerTime: 'desc' },
     });
   },
@@ -118,7 +123,12 @@ export const attendanceRepository = {
   findActiveRecordWithOpenBreak(employeeId: string, tx?: Prisma.TransactionClient) {
     const client = tx ?? prisma;
     return client.attendanceRecord.findFirst({
-      where: { employeeId, clockOutServerTime: null, deletedAt: null },
+      where: {
+        employeeId,
+        clockOutServerTime: null,
+        deletedAt: null,
+        administrativelyTerminatedAt: null,
+      },
       orderBy: { clockInServerTime: 'desc' },
       include: { breaks: { where: { endedAt: null }, select: { id: true, startedAt: true }, take: 1 } },
     });
@@ -200,7 +210,7 @@ export const attendanceRepository = {
       deletedAt: null,
       ...(filters.branchIds && { branchId: { in: filters.branchIds } }),
       ...(filters.employeeId && { employeeId: filters.employeeId }),
-      ...(filters.openOnly && { clockOutServerTime: null }),
+      ...(filters.openOnly && { clockOutServerTime: null, administrativelyTerminatedAt: null }),
       ...(range && { clockInServerTime: range }),
     };
 
@@ -258,7 +268,12 @@ export const attendanceRepository = {
     } satisfies Prisma.PersonSelect;
     const [open, closedToday] = await Promise.all([
       prisma.attendanceRecord.findMany({
-        where: { branchId, clockOutServerTime: null, deletedAt: null },
+        where: {
+          branchId,
+          clockOutServerTime: null,
+          deletedAt: null,
+          administrativelyTerminatedAt: null,
+        },
         select: {
           id: true,
           employeeId: true,

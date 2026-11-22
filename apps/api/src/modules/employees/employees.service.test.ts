@@ -6,7 +6,7 @@ vi.mock('./employees.repository.js', () => ({
   employeesRepository: {
     findAll: vi.fn(),
     findById: vi.fn(),
-    findByEmail: vi.fn(),
+    findEmailHolder: vi.fn(),
     findWithGovernmentIds: vi.fn(),
     findByBranchIds: vi.fn(),
     generateEmployeeId: vi.fn(),
@@ -186,7 +186,7 @@ describe('employeesService.createEmployee', () => {
 
     expect(employeesRepository.generateEmployeeId).toHaveBeenCalled();
     expect(result.employee_id).toMatch(/^PC-EMP-\d{6}$/);
-    expect(employeesRepository.findByEmail).not.toHaveBeenCalled();
+    expect(employeesRepository.findEmailHolder).not.toHaveBeenCalled();
   });
 
   it('creates a staff employee with no email and no password hash — Employees have no login credentials', async () => {
@@ -213,7 +213,7 @@ describe('employeesService.createEmployee', () => {
   });
 
   it('hashes the initial password with bcrypt when creating a non-staff account', async () => {
-    vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
+    vi.mocked(employeesRepository.findEmailHolder).mockResolvedValue(null);
     vi.mocked(employeesRepository.generateEmployeeId).mockResolvedValue('PC-EMP-000001');
     vi.mocked(employeesRepository.create).mockResolvedValue(
       buildEmployee({ role: ROLES.SUPERVISOR, email: 'juan@potatocorner.test', mustChangePassword: true }) as never,
@@ -270,7 +270,9 @@ describe('employeesService.createEmployee', () => {
   });
 
   it('rejects a duplicate email without calling create when creating a non-staff account', async () => {
-    vi.mocked(employeesRepository.findByEmail).mockResolvedValue(buildEmployee({ role: ROLES.SUPERVISOR }) as never);
+    vi.mocked(employeesRepository.findEmailHolder).mockResolvedValue(
+      buildEmployee({ role: ROLES.SUPERVISOR }) as never,
+    );
 
     await expect(
       employeesService.createEmployee(
@@ -354,7 +356,7 @@ describe('employeesService.createEmployee', () => {
   });
 
   it('rejects a branch actor creating a non-staff account', async () => {
-    vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
+    vi.mocked(employeesRepository.findEmailHolder).mockResolvedValue(null);
 
     await expect(
       employeesService.createEmployee(
@@ -377,7 +379,7 @@ describe('employeesService.createEmployee', () => {
   });
 
   it('allows super_admin to create an employee with any role in any branch', async () => {
-    vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
+    vi.mocked(employeesRepository.findEmailHolder).mockResolvedValue(null);
     vi.mocked(employeesRepository.generateEmployeeId).mockResolvedValue('PC-EMP-000001');
     vi.mocked(employeesRepository.create).mockResolvedValue(buildEmployee({ role: ROLES.SUPERVISOR }) as never);
 
@@ -546,7 +548,7 @@ describe('employeesService.updateBranchAccountCredentials', () => {
 
   it('updates email only, revokes sessions, and never touches the password', async () => {
     vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
-    vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
+    vi.mocked(employeesRepository.findEmailHolder).mockResolvedValue(null);
     vi.mocked(employeesRepository.updateEmail).mockResolvedValue(
       buildEmployee({ id: 'emp-1', role: ROLES.BRANCH, email: 'new@example.com' }) as never,
     );
@@ -570,7 +572,7 @@ describe('employeesService.updateBranchAccountCredentials', () => {
 
   it('updates both email and password in one call', async () => {
     vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
-    vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
+    vi.mocked(employeesRepository.findEmailHolder).mockResolvedValue(null);
     vi.mocked(employeesRepository.updateEmail).mockResolvedValue(
       buildEmployee({ id: 'emp-1', role: ROLES.BRANCH, email: 'new@example.com' }) as never,
     );
@@ -589,7 +591,7 @@ describe('employeesService.updateBranchAccountCredentials', () => {
 
   it('leaving new_password blank keeps the existing password hash unchanged', async () => {
     vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
-    vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
+    vi.mocked(employeesRepository.findEmailHolder).mockResolvedValue(null);
     vi.mocked(employeesRepository.updateEmail).mockResolvedValue(
       buildEmployee({ id: 'emp-1', role: ROLES.BRANCH, email: 'new@example.com' }) as never,
     );
@@ -604,14 +606,19 @@ describe('employeesService.updateBranchAccountCredentials', () => {
 
     await employeesService.updateBranchAccountCredentials('emp-1', { email: '  Branch@Example.com  ' }, ACTOR, null);
 
-    expect(employeesRepository.findByEmail).not.toHaveBeenCalled();
+    expect(employeesRepository.findEmailHolder).not.toHaveBeenCalled();
     expect(employeesRepository.updateEmail).not.toHaveBeenCalled();
     expect(authRepository.revokeAllUserTokens).not.toHaveBeenCalled();
   });
 
   it('rejects a duplicate email already owned by another account', async () => {
     vi.mocked(employeesRepository.findById).mockResolvedValue(targetEmployee as never);
-    vi.mocked(employeesRepository.findByEmail).mockResolvedValue({ id: 'someone-else' } as never);
+    vi.mocked(employeesRepository.findEmailHolder).mockResolvedValue({
+      id: 'someone-else',
+      role: 'branch',
+      deletedAt: null,
+      liveAssignments: 1,
+    } as never);
 
     await expect(
       employeesService.updateBranchAccountCredentials('emp-1', { email: 'taken@example.com' }, ACTOR, null),

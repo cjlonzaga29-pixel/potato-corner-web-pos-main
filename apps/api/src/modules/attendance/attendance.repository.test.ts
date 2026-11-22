@@ -75,7 +75,7 @@ describe('attendanceRepository.findActiveRecord', () => {
     const result = await attendanceRepository.findActiveRecord('employee-1');
 
     expect(prisma.attendanceRecord.findFirst).toHaveBeenCalledWith({
-      where: { employeeId: 'employee-1', clockOutServerTime: null, deletedAt: null },
+      where: { employeeId: 'employee-1', clockOutServerTime: null, deletedAt: null, administrativelyTerminatedAt: null },
       orderBy: { clockInServerTime: 'desc' },
     });
     expect(result).toEqual({ id: 'record-1' });

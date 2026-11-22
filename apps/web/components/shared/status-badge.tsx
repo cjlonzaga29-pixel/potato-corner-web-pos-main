@@ -23,6 +23,8 @@ const STATUS_MAPS: Record<StatusType, Record<string, BadgeVariant>> = {
     active: 'active',
     closed: 'inactive',
     flagged: 'critical',
+    // POS-PERF-P68 — ended by a Force Delete without a cash count.
+    terminated: 'warning',
   },
   inventory: {
     ok: 'active',

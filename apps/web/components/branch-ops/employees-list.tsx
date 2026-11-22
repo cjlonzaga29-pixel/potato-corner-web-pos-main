@@ -95,16 +95,30 @@ export function EmployeesList({ basePath }: { basePath: string }) {
   const [pinEmployee, setPinEmployee] = useState<EmployeeResponse | null>(null);
   const [removeEmployee, setRemoveEmployee] = useState<EmployeeResponse | null>(null);
 
-  const { data, isLoading, isError, refetch } = useEmployees(
-    { branchId: activeBranchId ?? undefined, search: search || undefined, limit: 100 },
+  // POS-PERF-P68 — this is the staff list of the selected branch. Supervisor
+  // and branch login accounts that share the branch are managed elsewhere
+  // (Branch management / Branch Accounts) and are not listed here as staff
+  // rows. The server filters by branch and role and counts the same set.
+  const { data, isLoading, isError, isPlaceholderData, refetch } = useEmployees(
+    {
+      branchId: activeBranchId ?? undefined,
+      role: ROLES.STAFF,
+      search: search || undefined,
+      limit: 100,
+    },
     { enabled: Boolean(activeBranchId) },
   );
-  // useEmployees keeps the previous page while refetching; drop any row that
-  // isn't assigned to the now-active branch so a branch switch never shows
-  // the previous branch's people, even for a moment.
-  const employees = (data?.employees ?? []).filter((employee) =>
-    employee.branch_assignments.some((assignment) => assignment.branch_id === activeBranchId),
+  // useEmployees keeps the previous result while refetching; drop any row
+  // that isn't staff assigned to the now-active branch so a branch switch
+  // never shows the previous branch's people, even for a moment.
+  const employees = (data?.employees ?? []).filter(
+    (employee) =>
+      employee.role === ROLES.STAFF &&
+      employee.branch_assignments.some((assignment) => assignment.branch_id === activeBranchId),
   );
+  // The total belongs to the branch it was counted for; while a switch is
+  // still loading, show none rather than the previous branch's count.
+  const total = data && !isPlaceholderData ? data.total : null;
 
   const columns: ColumnDef<EmployeeResponse>[] = [
     // POS-PERF-P47 — PIN state and the row actions sit right after the name
@@ -196,9 +210,10 @@ export function EmployeesList({ basePath }: { basePath: string }) {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
           <h1 className="text-2xl font-bold">Branch Staff</h1>
-          <p className="text-sm text-muted-foreground">
-            Employees assigned to your branch. Use <span className="font-medium">Set PIN</span> for anyone marked{' '}
-            <span className="font-medium">No PIN</span> — they need it to sign in at the POS and clock in.
+          <p className="text-muted-foreground text-sm">
+            Staff assigned to the selected branch. Use <span className="font-medium">Set PIN</span>{' '}
+            for anyone marked <span className="font-medium">No PIN</span> — they need it to sign in
+            at the POS and clock in.
           </p>
         </div>
         <Button onClick={() => setCreateOpen(true)} className="w-full sm:w-auto">
@@ -207,7 +222,20 @@ export function EmployeesList({ basePath }: { basePath: string }) {
         </Button>
       </div>
 
-      <SearchInput value={search} onChange={setSearch} placeholder="Search by name..." className="max-w-xs" />
+      <div className="flex flex-wrap items-center gap-3">
+        <SearchInput
+          value={search}
+          onChange={setSearch}
+          placeholder="Search by name..."
+          className="max-w-xs"
+        />
+        {total !== null && (
+          <p className="text-muted-foreground text-sm" data-testid="staff-total">
+            {total === 1 ? '1 staff member' : `${total} staff members`}
+            {total > employees.length ? ` (showing first ${employees.length})` : ''}
+          </p>
+        )}
+      </div>
 
       <DataTable
         columns={columns}
@@ -216,7 +244,12 @@ export function EmployeesList({ basePath }: { basePath: string }) {
         isError={isError}
         onRetry={() => void refetch()}
         onRowClick={(employee) => router.push(`${basePath}/employees/${employee.id}`)}
-        emptyState={<EmptyState title="No employees" description="No employees are assigned to your branch yet." />}
+        emptyState={
+          <EmptyState
+            title="No staff yet"
+            description="No staff are assigned to this branch yet. Use Create Employee to add one."
+          />
+        }
       />
 
       <SupervisorCreateEmployeeDialog open={createOpen} onOpenChange={setCreateOpen} />

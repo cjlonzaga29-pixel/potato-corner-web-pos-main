@@ -151,6 +151,32 @@ export const employeesRepository = {
   },
 
   /**
+   * POS-PERF-P68 — who holds this login email, compared case-insensitively
+   * (older rows may predate normalization). Returns only what the caller
+   * needs to explain a conflict: never the password hash. `liveAssignments`
+   * counts assignments that are not removed; assignment rows cascade with
+   * their branch, so any row here points at a live branch.
+   */
+  async findEmailHolder(email: string, client: Prisma.TransactionClient | typeof prisma = prisma) {
+    const holder = await client.user.findFirst({
+      where: { email: { equals: email, mode: 'insensitive' } },
+      select: {
+        id: true,
+        role: true,
+        deletedAt: true,
+        _count: { select: { branchAssignments: { where: { removedAt: null } } } },
+      },
+    });
+    if (!holder) return null;
+    return {
+      id: holder.id,
+      role: holder.role,
+      deletedAt: holder.deletedAt,
+      liveAssignments: holder._count.branchAssignments,
+    };
+  },
+
+  /**
    * Distinctly named on purpose: this is the ONE repository function that
    * returns the encrypted government ID columns. Called only from
    * employeesService.getEmployeePayrollData.
@@ -450,23 +476,33 @@ export const employeesRepository = {
     client: Prisma.TransactionClient = prisma,
     role: string | null = null,
   ): Promise<RemovalPrerequisites> {
-    const [openShifts, openAttendance, heldOrders, pendingApprovals, assignments, unpaidPayroll] = await Promise.all([
-      client.shift.findMany({
-        where: { status: 'active', OR: [{ cashierId: userId }, { openedBy: userId }] },
-        select: { id: true, branch: { select: { name: true } } },
-      }),
-      client.attendanceRecord.findMany({
-        where: { employeeId: userId, clockOutServerTime: null, deletedAt: null },
-        select: { id: true, branch: { select: { name: true } } },
-      }),
-      client.holdOrder.count({ where: { cashierId: userId, status: 'held' } }),
-      client.inventoryApprovalRequest.count({ where: { submittedByUserId: userId, status: 'PENDING' } }),
-      client.userBranchAssignment.findMany({
-        where: { userId, removedAt: null },
-        select: { branchId: true, branch: { select: { name: true } } },
-      }),
-      role === 'staff' ? employeesRepository.findUnpaidPayrollAttendance(userId, client) : Promise.resolve([]),
-    ]);
+    const [openShifts, openAttendance, heldOrders, pendingApprovals, assignments, unpaidPayroll] =
+      await Promise.all([
+        client.shift.findMany({
+          where: { status: 'active', OR: [{ cashierId: userId }, { openedBy: userId }] },
+          select: { id: true, branch: { select: { name: true } } },
+        }),
+        client.attendanceRecord.findMany({
+          where: {
+            employeeId: userId,
+            clockOutServerTime: null,
+            deletedAt: null,
+            administrativelyTerminatedAt: null,
+          },
+          select: { id: true, branch: { select: { name: true } } },
+        }),
+        client.holdOrder.count({ where: { cashierId: userId, status: 'held' } }),
+        client.inventoryApprovalRequest.count({
+          where: { submittedByUserId: userId, status: 'PENDING' },
+        }),
+        client.userBranchAssignment.findMany({
+          where: { userId, removedAt: null },
+          select: { branchId: true, branch: { select: { name: true } } },
+        }),
+        role === 'staff'
+          ? employeesRepository.findUnpaidPayrollAttendance(userId, client)
+          : Promise.resolve([]),
+      ]);
     const branchIds = assignments.map((a) => a.branchId);
     const coveringAssignments = branchIds.length
       ? await client.userBranchAssignment.findMany({

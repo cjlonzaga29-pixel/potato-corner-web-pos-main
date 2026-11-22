@@ -84,19 +84,68 @@ describe('EmployeesList PIN and management actions (POS-PERF-P47)', () => {
     expect(within(rowOf('Otto')).getByRole('button', { name: 'Set PIN for Otto Test' })).toBeInTheDocument();
   });
 
-  it('shows Edit and Delete for staff rows, and no management actions for a supervisor row', () => {
+  it('shows Edit, Status and Delete for staff rows', () => {
     render(<EmployeesList basePath="/supervisor" />);
-    expect(within(rowOf('Nora')).getByRole('button', { name: 'Edit Nora Test' })).toBeInTheDocument();
-    expect(within(rowOf('Nora')).getByRole('button', { name: 'Delete Nora Test permanently' })).toBeInTheDocument();
-    const sam = rowOf('Sam');
-    // POS-PERF-P59 — no explanatory text, and still no actions: the server refuses these changes either way.
-    expect(within(sam).queryByText('Managed by Super Admin')).not.toBeInTheDocument();
-    expect(within(sam).queryByRole('button')).not.toBeInTheDocument();
+    expect(
+      within(rowOf('Nora')).getByRole('button', { name: 'Edit Nora Test' }),
+    ).toBeInTheDocument();
+    expect(
+      within(rowOf('Nora')).getByRole('button', { name: 'Change status for Nora Test' }),
+    ).toBeInTheDocument();
+    expect(
+      within(rowOf('Nora')).getByRole('button', { name: 'Delete Nora Test permanently' }),
+    ).toBeInTheDocument();
   });
 
-  it('never queries PIN status for non-staff rows', () => {
+  // POS-PERF-P68 — supervisor and branch login accounts are not staff rows.
+  it('asks the server for staff only and never renders a supervisor row as an incomplete staff row', () => {
     render(<EmployeesList basePath="/supervisor" />);
-    expect(mockUsePinStatus).toHaveBeenCalledWith('sup', false);
+    expect(mockUseEmployees).toHaveBeenCalledWith(
+      expect.objectContaining({ branchId: 'branch-1', role: 'staff' }),
+      { enabled: true },
+    );
+    expect(screen.queryByText('Sam Test')).not.toBeInTheDocument();
+  });
+
+  it('keeps two same-name staff as two rows, each with its own controls', () => {
+    mockUseEmployees.mockReturnValue({
+      data: {
+        employees: [employee('a1', 'Twin', 'staff'), employee('a2', 'Twin', 'staff')],
+        total: 2,
+      },
+      isLoading: false,
+      isError: false,
+      isPlaceholderData: false,
+      refetch: vi.fn(),
+    });
+    render(<EmployeesList basePath="/supervisor" />);
+    const rows = screen.getAllByText('Twin Test').map((cell) => cell.closest('tr') as HTMLElement);
+    expect(rows).toHaveLength(2);
+    for (const row of rows)
+      expect(within(row).getAllByRole('button', { name: 'Edit Twin Test' })).toHaveLength(1);
+  });
+
+  it('shows the server total for the selected branch, and none while a branch switch is loading', () => {
+    mockUseEmployees.mockReturnValue({
+      data: { employees: [employee('n1', 'Nora', 'staff')], total: 1 },
+      isLoading: false,
+      isError: false,
+      isPlaceholderData: false,
+      refetch: vi.fn(),
+    });
+    const { unmount } = render(<EmployeesList basePath="/supervisor" />);
+    expect(screen.getByTestId('staff-total')).toHaveTextContent('1 staff member');
+    unmount();
+    mockUseEmployees.mockReturnValue({
+      data: { employees: [employee('other', 'Olga', 'staff', 'branch-2')], total: 7 },
+      isLoading: false,
+      isError: false,
+      isPlaceholderData: true,
+      refetch: vi.fn(),
+    });
+    render(<EmployeesList basePath="/supervisor" />);
+    expect(screen.queryByTestId('staff-total')).not.toBeInTheDocument();
+    expect(screen.queryByText('Olga Test')).not.toBeInTheDocument();
   });
 
   it('scopes the list to the active branch and never shows another branch’s rows', () => {

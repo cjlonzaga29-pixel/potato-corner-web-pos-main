@@ -1,6 +1,7 @@
 'use client';
 
 import { Suspense, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import type { ColumnDef, PaginationState } from '@tanstack/react-table';
 import { Plus } from 'lucide-react';
@@ -164,10 +165,16 @@ function BranchListPageContent() {
           <h1 className="app-title font-bold">Branches</h1>
           <p className="text-sm text-muted-foreground">Branch details, login accounts and supervisor assignments.</p>
         </div>
-        <Button onClick={() => setCreateOpen(true)} className="w-full sm:w-auto">
-          <Plus className="mr-2 h-4 w-4" />
-          Create Branch
-        </Button>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          {/* POS-PERF-P68 — what Force Delete left unresolved, to reconcile. */}
+          <Button asChild variant="outline" className="w-full sm:w-auto">
+            <Link href="/admin/branches/closure-items">Deleted-branch items</Link>
+          </Button>
+          <Button onClick={() => setCreateOpen(true)} className="w-full sm:w-auto">
+            <Plus className="mr-2 h-4 w-4" />
+            Create Branch
+          </Button>
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-2">

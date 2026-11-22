@@ -99,6 +99,8 @@ export const SHIFT_STATUS = {
   ACTIVE: 'active',
   CLOSED: 'closed',
   FLAGGED: 'flagged',
+  /** POS-PERF-P68 — ended administratively by a Force Delete; no cash was counted. */
+  TERMINATED: 'terminated',
 } as const;
 export type ShiftStatus = (typeof SHIFT_STATUS)[keyof typeof SHIFT_STATUS];
 

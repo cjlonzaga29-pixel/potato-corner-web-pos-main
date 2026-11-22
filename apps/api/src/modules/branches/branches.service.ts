@@ -1,4 +1,4 @@
-import { IngredientCategory, type Prisma } from '@prisma/client';
+import { IngredientCategory, Prisma } from '@prisma/client';
 import bcrypt from 'bcrypt';
 import sharp from 'sharp';
 import { timingSafeEqual } from 'node:crypto';
@@ -165,6 +165,66 @@ function tokensMatch(expected: string, received: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+/**
+ * POS-PERF-P68 — a branch login email must not be held by any account. The
+ * error says which kind of holder it is, so the Super Admin can tell a real
+ * conflict (a working account) from a leftover that a deleted branch left
+ * behind. A leftover is never removed here: ownership is not inferred from a
+ * missing branch. The exact account id is returned so the dry-run-first
+ * repair procedure (P68 runbook) can target it.
+ */
+async function assertBranchLoginEmailAvailable(email: string): Promise<void> {
+  const holder = await employeesRepository.findEmailHolder(email);
+  if (!holder) return;
+  if (holder.role === ROLES.BRANCH && (holder.deletedAt !== null || holder.liveAssignments === 0)) {
+    throw new BranchError(
+      'EMAIL_HELD_BY_LEFTOVER_ACCOUNT',
+      `This email still belongs to a leftover branch login (account ${holder.id}) that is not assigned to any branch, usually from a branch deleted before history-keeping deletion. It was not removed automatically. A Super Admin can review and remove it with the leftover-account repair procedure, then create the branch again.`,
+      409,
+      { field: 'account.email', account_id: holder.id, holder: 'leftover_branch_account' },
+    );
+  }
+  if (holder.deletedAt !== null) {
+    throw new BranchError(
+      'EMAIL_HELD_BY_REMOVED_ACCOUNT',
+      `This email still belongs to a removed account (account ${holder.id}) whose login was kept for history. Delete that account permanently from Employees, then try again.`,
+      409,
+      { field: 'account.email', account_id: holder.id, holder: 'removed_account' },
+    );
+  }
+  throw new BranchError(
+    'EMAIL_ALREADY_EXISTS',
+    `An account with this email already exists (a ${holder.role.replace('_', ' ')} account). Use a different email.`,
+    409,
+    {
+      field: 'account.email',
+      holder: holder.role,
+    },
+  );
+}
+
+function isEmailUniqueViolation(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002')
+    return false;
+  const target = (error.meta as { target?: unknown } | undefined)?.target;
+  return Array.isArray(target)
+    ? target.includes('email')
+    : typeof target === 'string'
+      ? target.includes('email')
+      : false;
+}
+
+/** POS-PERF-P68 — a branch a Force Delete has fenced is not edited meanwhile. */
+function assertNotBeingDeleted(branch: { deletionFencedAt: Date | null }): void {
+  if (branch.deletionFencedAt) {
+    throw new BranchError(
+      'BRANCH_DELETION_IN_PROGRESS',
+      'This branch is being deleted. Nothing was changed.',
+      409,
+    );
+  }
+}
+
 /** POS-PERF-P67 — was this branch deleted through the app (only Super Admins delete branches)? */
 async function branchDeletedByThisActor(branchId: string, actor: { id: string; role: string }): Promise<boolean> {
   if (actor.role !== ROLES.SUPER_ADMIN) return false;
@@ -291,10 +351,7 @@ export const branchesService = {
     let accountEmployeeId: string | undefined;
     if (data.account) {
       accountEmail = normalizeEmail(data.account.email);
-      const existingAccount = await employeesRepository.findByEmail(accountEmail);
-      if (existingAccount) {
-        throw new BranchError('EMAIL_ALREADY_EXISTS', 'An account with this email already exists', 409);
-      }
+      await assertBranchLoginEmailAvailable(accountEmail);
       accountPasswordHash = await bcrypt.hash(data.account.password, BCRYPT_COST_FACTOR);
       accountEmployeeId = await employeesRepository.generateEmployeeId();
     }
@@ -305,63 +362,92 @@ export const branchesService = {
     // row with a missing account or an incomplete ingredient set.
     let createdAccountId: string | null = null;
 
-    const branch = await prisma.$transaction(async (tx) => {
-      const created = await branchesRepository.create({ ...data, code }, tx);
+    const branch = await prisma
+      .$transaction(async (tx) => {
+        const created = await branchesRepository.create({ ...data, code }, tx);
 
-      if (data.account && accountEmail && accountPasswordHash && accountEmployeeId) {
-        const account = await employeesRepository.create(
-          {
-            email: accountEmail,
-            firstName: '',
-            lastName: '',
-            role: ROLES.BRANCH,
-            employmentType: EMPLOYMENT_TYPE.REGULAR,
-            branchIds: [created.id],
-            employeeId: accountEmployeeId,
-            passwordHash: accountPasswordHash,
-          },
-          tx,
-        );
-        createdAccountId = account.id;
-      }
+        if (data.account && accountEmail && accountPasswordHash && accountEmployeeId) {
+          const account = await employeesRepository.create(
+            {
+              email: accountEmail,
+              firstName: '',
+              lastName: '',
+              role: ROLES.BRANCH,
+              employmentType: EMPLOYMENT_TYPE.REGULAR,
+              branchIds: [created.id],
+              employeeId: accountEmployeeId,
+              passwordHash: accountPasswordHash,
+            },
+            tx,
+          );
+          createdAccountId = account.id;
+        }
 
-      // CR-004 idempotent branch provisioning — every ingredient identity an
-      // active ProductInventory mapping references gets a zero-stock row
-      // here, so a sale at this branch resolves to its own stock instead of
-      // leaking against whichever branch's Ingredient the mapping was
-      // created against (see recipes.service.ts computeDeduction, which
-      // reads ProductInventory, not the legacy Recipe table).
-      //
-      // CR-005 Sub-phase 3b — unioned with every distinct flavor-derived
-      // identity (CR-005 Sub-phase 3a) so a new branch is provisioned for
-      // both sources in one pass, closing the inverse of the gap 3a opened:
-      // a branch created *after* a flavor existed used to never get that
-      // flavor's Ingredient row. Deduped by (name, unit); FLAVOR wins the
-      // category on a collision since it's the more specific classification.
-      const productInventoryIdentities = await productInventoryRepository.findDistinctIngredientIdentities(tx);
-      const flavorIdentities = await flavorsRepository.findDistinctFlavorIngredientIdentities(tx);
+        // CR-004 idempotent branch provisioning — every ingredient identity an
+        // active ProductInventory mapping references gets a zero-stock row
+        // here, so a sale at this branch resolves to its own stock instead of
+        // leaking against whichever branch's Ingredient the mapping was
+        // created against (see recipes.service.ts computeDeduction, which
+        // reads ProductInventory, not the legacy Recipe table).
+        //
+        // CR-005 Sub-phase 3b — unioned with every distinct flavor-derived
+        // identity (CR-005 Sub-phase 3a) so a new branch is provisioned for
+        // both sources in one pass, closing the inverse of the gap 3a opened:
+        // a branch created *after* a flavor existed used to never get that
+        // flavor's Ingredient row. Deduped by (name, unit); FLAVOR wins the
+        // category on a collision since it's the more specific classification.
+        const productInventoryIdentities =
+          await productInventoryRepository.findDistinctIngredientIdentities(tx);
+        const flavorIdentities = await flavorsRepository.findDistinctFlavorIngredientIdentities(tx);
 
-      const identityMap = new Map<string, { name: string; unit: string; category: IngredientCategory }>();
-      for (const identity of productInventoryIdentities) {
-        identityMap.set(`${identity.name}::${identity.unit}`, { ...identity, category: IngredientCategory.OTHER });
-      }
-      for (const identity of flavorIdentities) {
-        identityMap.set(`${identity.name}::${identity.unit}`, { ...identity, category: IngredientCategory.FLAVOR });
-      }
-      const mergedIdentities = Array.from(identityMap.values());
+        const identityMap = new Map<
+          string,
+          { name: string; unit: string; category: IngredientCategory }
+        >();
+        for (const identity of productInventoryIdentities) {
+          identityMap.set(`${identity.name}::${identity.unit}`, {
+            ...identity,
+            category: IngredientCategory.OTHER,
+          });
+        }
+        for (const identity of flavorIdentities) {
+          identityMap.set(`${identity.name}::${identity.unit}`, {
+            ...identity,
+            category: IngredientCategory.FLAVOR,
+          });
+        }
+        const mergedIdentities = Array.from(identityMap.values());
 
-      if (mergedIdentities.length > 0) {
-        await inventoryService.provisionBranchIngredients(created.id, mergedIdentities, tx);
-      }
+        if (mergedIdentities.length > 0) {
+          await inventoryService.provisionBranchIngredients(created.id, mergedIdentities, tx);
+        }
 
-      // The new-model equivalent of the block above: every active,
-      // tracked InventoryItem gets a zero-stock InventoryStock row in this
-      // branch too, so a Recipe/BOM-ready product is immediately sellable
-      // here without a manual inventory-mapping step.
-      await universalInventoryService.provisionBranchStock(created.id, tx);
+        // The new-model equivalent of the block above: every active,
+        // tracked InventoryItem gets a zero-stock InventoryStock row in this
+        // branch too, so a Recipe/BOM-ready product is immediately sellable
+        // here without a manual inventory-mapping step.
+        await universalInventoryService.provisionBranchStock(created.id, tx);
 
-      return created;
-    });
+        return created;
+      })
+      .catch((error: unknown) => {
+        // POS-PERF-P68 — two creates with the same email both pass the
+        // pre-check; the loser hits the unique index and its whole
+        // transaction (branch included) rolls back. Report it as the
+        // conflict it is, not a 500.
+        if (isEmailUniqueViolation(error)) {
+          throw new BranchError(
+            'EMAIL_ALREADY_EXISTS',
+            'An account with this email was created at the same moment. Nothing was saved. Use a different email.',
+            409,
+            {
+              field: 'account.email',
+              holder: 'concurrent_create',
+            },
+          );
+        }
+        throw error;
+      });
 
     // Post-commit side effects — audit log FK errors are already swallowed
     // by recordAuditLog, and a socket emit is a network side-effect that
@@ -407,6 +493,7 @@ export const branchesService = {
   ) {
     const before = await branchesRepository.findById(branchId);
     if (!before) throw new BranchError('BRANCH_NOT_FOUND', 'Branch not found', 404);
+    assertNotBeingDeleted(before);
 
     const branch = await branchesRepository.update(branchId, data);
 
@@ -440,6 +527,7 @@ export const branchesService = {
   ) {
     const before = await branchesRepository.findById(branchId);
     if (!before) throw new BranchError('BRANCH_NOT_FOUND', 'Branch not found', 404);
+    assertNotBeingDeleted(before);
 
     if (status === 'closed' && before.status !== 'closed') {
       const activeShifts = await branchesRepository.countActiveShifts(branchId);

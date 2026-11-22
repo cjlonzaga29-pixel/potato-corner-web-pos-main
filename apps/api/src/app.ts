@@ -1,5 +1,5 @@
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
-import { isDeletedBranchWrite } from './lib/foreign-key-restriction.js';
+import { isDeletedBranchWrite, isFencedBranchWrite } from './lib/foreign-key-restriction.js';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
@@ -137,6 +137,20 @@ app.use((error: unknown, req: Request, res: Response, _next: NextFunction) => {
     if (res.writableEnded || res.destroyed) return;
     if (error.retryAfterSeconds !== undefined) res.setHeader('Retry-After', String(error.retryAfterSeconds));
     res.status(error.statusCode).json({ data: null, error: { code: error.code, message: error.message }, meta: null });
+    return;
+  }
+
+  // POS-PERF-P68 — the branch is being force-deleted; the operation may still be stopped, so this is retryable.
+  if (isFencedBranchWrite(error)) {
+    if (res.headersSent) return;
+    res.status(409).json({
+      data: null,
+      error: {
+        code: 'BRANCH_DELETION_IN_PROGRESS',
+        message: 'This branch is being deleted. Nothing was saved.',
+      },
+      meta: null,
+    });
     return;
   }
 

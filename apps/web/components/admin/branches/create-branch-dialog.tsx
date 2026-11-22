@@ -10,7 +10,7 @@ import { Form } from '@/components/ui/form';
 import { FormFieldWrapper } from '@/components/shared/forms/form-field-wrapper';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { useCreateBranch } from '@/hooks/queries/use-branches';
+import { BranchRequestError, useCreateBranch } from '@/hooks/queries/use-branches';
 
 /** Empty string -> undefined (skips validation for optional GPS fields) before coercing to a number. */
 function optionalCoercedNumber(min: number, max: number) {
@@ -89,16 +89,29 @@ export function CreateBranchDialog({ open, onOpenChange }: CreateBranchDialogPro
     // working?" state at /branch/terminal — Task 120). Regional oversight
     // (`supervisor`) is a separate role assigned to an existing user via
     // assign-supervisor-dialog.tsx, not created here.
-    await createBranch.mutateAsync({
-      name: parsed.name,
-      city: parsed.city,
-      address: parsed.address,
-      gpsLatitude: parsed.gpsLatitude,
-      gpsLongitude: parsed.gpsLongitude,
-      gpsRadiusMeters: parsed.gpsRadiusMeters,
-      status: 'active',
-      account: { email: parsed.username, password: parsed.password },
-    });
+    try {
+      await createBranch.mutateAsync({
+        name: parsed.name,
+        city: parsed.city,
+        address: parsed.address,
+        gpsLatitude: parsed.gpsLatitude,
+        gpsLongitude: parsed.gpsLongitude,
+        gpsRadiusMeters: parsed.gpsRadiusMeters,
+        status: 'active',
+        account: { email: parsed.username, password: parsed.password },
+      });
+    } catch (error) {
+      // POS-PERF-P68 — keep everything typed and show the server's reason
+      // beside the field it concerns. Other errors are toasted by the hook.
+      if (error instanceof BranchRequestError && error.field === 'account.email') {
+        form.setError(
+          'username',
+          { type: 'server', message: error.message },
+          { shouldFocus: true },
+        );
+      }
+      return;
+    }
 
     toast.success('Branch created, branch account created, login credentials set');
     handleOpenChange(false);

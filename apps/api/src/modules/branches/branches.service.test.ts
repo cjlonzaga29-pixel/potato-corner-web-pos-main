@@ -46,7 +46,7 @@ vi.mock('../../lib/id-counter.js', () => ({
 
 vi.mock('../employees/employees.repository.js', () => ({
   employeesRepository: {
-    findByEmail: vi.fn(),
+    findEmailHolder: vi.fn(),
     generateEmployeeId: vi.fn(),
     create: vi.fn(),
   },
@@ -507,8 +507,10 @@ describe('branchesService.createBranch', () => {
     it('creates exactly one branch and one branch-role account inside the same transaction when account fields are provided', async () => {
       stubProvisioning();
       vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-020');
-      vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-20', code: 'PC-MNL-020' }) as never);
-      vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
+      vi.mocked(branchesRepository.create).mockResolvedValue(
+        buildBranch({ id: 'branch-20', code: 'PC-MNL-020' }) as never,
+      );
+      vi.mocked(employeesRepository.findEmailHolder).mockResolvedValue(null);
       vi.mocked(employeesRepository.generateEmployeeId).mockResolvedValue('PC-EMP-000020');
       vi.mocked(employeesRepository.create).mockResolvedValue({ id: 'user-20' } as never);
 
@@ -559,7 +561,12 @@ describe('branchesService.createBranch', () => {
     });
 
     it('rejects with EMAIL_ALREADY_EXISTS before opening the transaction when the account email is already taken, and creates no branch', async () => {
-      vi.mocked(employeesRepository.findByEmail).mockResolvedValue({ id: 'existing-user' } as never);
+      vi.mocked(employeesRepository.findEmailHolder).mockResolvedValue({
+        id: 'existing-user',
+        role: 'supervisor',
+        deletedAt: null,
+        liveAssignments: 1,
+      } as never);
 
       await expect(
         branchesService.createBranch(
@@ -583,8 +590,10 @@ describe('branchesService.createBranch', () => {
     it('rolls back the branch row when account creation fails inside the transaction (no orphan branch)', async () => {
       stubProvisioning();
       vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-023');
-      vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-23', code: 'PC-MNL-023' }) as never);
-      vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
+      vi.mocked(branchesRepository.create).mockResolvedValue(
+        buildBranch({ id: 'branch-23', code: 'PC-MNL-023' }) as never,
+      );
+      vi.mocked(employeesRepository.findEmailHolder).mockResolvedValue(null);
       vi.mocked(employeesRepository.generateEmployeeId).mockResolvedValue('PC-EMP-000023');
       vi.mocked(employeesRepository.create).mockRejectedValueOnce(new Error('unique constraint violated'));
 
@@ -613,8 +622,10 @@ describe('branchesService.createBranch', () => {
     it('records a BRANCH_ACCOUNT_CREATED audit entry with the email but never the password', async () => {
       stubProvisioning();
       vi.mocked(branchesRepository.generateBranchCode).mockResolvedValue('PC-MNL-024');
-      vi.mocked(branchesRepository.create).mockResolvedValue(buildBranch({ id: 'branch-24', code: 'PC-MNL-024' }) as never);
-      vi.mocked(employeesRepository.findByEmail).mockResolvedValue(null);
+      vi.mocked(branchesRepository.create).mockResolvedValue(
+        buildBranch({ id: 'branch-24', code: 'PC-MNL-024' }) as never,
+      );
+      vi.mocked(employeesRepository.findEmailHolder).mockResolvedValue(null);
       vi.mocked(employeesRepository.generateEmployeeId).mockResolvedValue('PC-EMP-000024');
       vi.mocked(employeesRepository.create).mockResolvedValue({ id: 'user-24' } as never);
 

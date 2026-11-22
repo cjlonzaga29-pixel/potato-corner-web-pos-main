@@ -29,7 +29,32 @@ export interface BranchFilters {
 }
 
 interface ApiErrorShape {
-  error: { code: string; message?: string } | string | null;
+  error: { code: string; message?: string; details?: unknown } | string | null;
+}
+
+/** POS-PERF-P68 — keeps the server's code and details so a form can put the message beside the right field. */
+export class BranchRequestError extends Error {
+  constructor(
+    message: string,
+    readonly code: string | null,
+    readonly details: unknown,
+  ) {
+    super(message);
+    this.name = 'BranchRequestError';
+  }
+
+  /** The form field the server named, e.g. 'account.email'. */
+  get field(): string | null {
+    const details = this.details as { field?: unknown } | null | undefined;
+    return typeof details?.field === 'string' ? details.field : null;
+  }
+}
+
+function requestError(response: ApiErrorShape, fallback: string): BranchRequestError {
+  const error = response.error;
+  if (!error || typeof error === 'string')
+    return new BranchRequestError(errorMessage(response, fallback), null, null);
+  return new BranchRequestError(error.message ?? error.code, error.code, error.details ?? null);
 }
 
 function errorMessage(response: ApiErrorShape, fallback: string): string {
@@ -221,8 +246,11 @@ export function useCreateBranch() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: CreateBranchInput) => {
-      const response = await apiClient<BranchResponse>('/api/branches', { method: 'POST', body: JSON.stringify(input) });
-      if (!response.data) throw new Error(errorMessage(response, 'Failed to create branch'));
+      const response = await apiClient<BranchResponse>('/api/branches', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+      if (!response.data) throw requestError(response, 'Failed to create branch');
       return response.data;
     },
     onSuccess: () => {
@@ -232,7 +260,11 @@ export function useCreateBranch() {
       // in one request (Task 174), and create-branch-dialog.tsx's own
       // success toast already covers both.
     },
-    onError: (error: Error) => toast.error(error.message),
+    // POS-PERF-P68 — a field error is shown beside its field by the dialog.
+    onError: (error: Error) => {
+      if (error instanceof BranchRequestError && error.field) return;
+      toast.error(error.message);
+    },
   });
 }
 

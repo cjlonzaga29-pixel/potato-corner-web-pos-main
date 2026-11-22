@@ -214,7 +214,9 @@ describe('branchesRepository.findAllStatsGrouped', () => {
 
     expect(rows[0]).toMatchObject({ staffTimedInCount: 2 });
     expect(prisma.attendanceRecord.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { clockOutServerTime: null, deletedAt: null } }),
+      expect.objectContaining({
+        where: { clockOutServerTime: null, deletedAt: null, administrativelyTerminatedAt: null },
+      }),
     );
   });
 
@@ -431,7 +433,14 @@ describe('branchesRepository.branchStats', () => {
 
     expect(stats.staffTimedInCount).toBe(2);
     expect(prisma.attendanceRecord.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { branchId: 'branch-1', clockOutServerTime: null, deletedAt: null } }),
+      expect.objectContaining({
+        where: {
+          branchId: 'branch-1',
+          clockOutServerTime: null,
+          deletedAt: null,
+          administrativelyTerminatedAt: null,
+        },
+      }),
     );
   });
 

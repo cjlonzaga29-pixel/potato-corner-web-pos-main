@@ -773,6 +773,15 @@ export const productsRepository = {
     });
   },
 
+  /** POS-PERF-P69 — active custom product types scoped to this branch, for the POS type filter (with or without products here). */
+  findActivePosProductTypesForBranch(branchId: string) {
+    return prisma.productType.findMany({
+      where: { isActive: true, branches: { some: { branchId } } },
+      select: { id: true, name: true, isActive: true },
+      orderBy: [{ name: 'asc' }, { id: 'asc' }],
+    });
+  },
+
   /** Phase 10 POS terminal catalog — active products, available at this branch, with only active variants and available flavors. */
   findCatalogForBranch(branchId: string) {
     return prisma.product.findMany({
@@ -785,6 +794,9 @@ export const productsRepository = {
         // CR-008 canonical category FK — POS catalog category tabs prefer
         // this over the legacy free-text `category` column (see getPosCatalog).
         productCategory: { select: { name: true, isActive: true } },
+        // POS-PERF-P69 — the displayed type. `branches` is narrowed to this
+        // branch, so getPosCatalog can refuse to name a type not scoped here.
+        productType: { select: { id: true, name: true, isActive: true, branches: { where: { branchId }, select: { branchId: true } } } },
         variants: {
           where: { isActive: true },
           orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],

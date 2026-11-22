@@ -47,6 +47,7 @@ vi.mock('./products.repository.js', () => ({
     countVariantFlavorSlots: vi.fn().mockResolvedValue(0),
     // Phase 10 POS catalog
     findCatalogForBranch: vi.fn().mockResolvedValue([]),
+    findActivePosProductTypesForBranch: vi.fn().mockResolvedValue([]),
     findDisabledFlavorIds: vi.fn().mockResolvedValue([]),
     // Task 209.6 — Product Image Management (Admin Only)
     findImagePath: vi.fn(),
@@ -3289,5 +3290,57 @@ describe('productsService.getAllProducts — product images (Task 209.x N+1 fix)
 
     expect(result.products).toHaveLength(1);
     expect(result.products[0]).toMatchObject({ has_image: true, image_url: null });
+  });
+});
+
+// POS-PERF-P69 — the POS catalog carries each product's displayed type and
+// the branch's type list, by the Supervisor Products rule (P58).
+describe('productsService.getPosCatalog — product types (P69)', () => {
+  function product(id: string, overrides: Partial<Record<string, unknown>> = {}) {
+    return { id, name: `Product ${id}`, category: 'Flavored Fries', classification: 'regular', isSeasonal: false, productType: null, variants: [], ...overrides };
+  }
+
+  it('shows the built-in from classification and the custom type when assigned, never both', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([
+      product('p-promo', { classification: 'promotional' }),
+      product('p-seasonal', { classification: null, isSeasonal: true }),
+      product('p-marketing', { classification: 'promotional', productType: { id: '11111111-1111-4111-8111-111111111111', name: 'Marketing', isActive: true, branches: [{ branchId: 'branch-1' }] } }),
+    ] as never);
+    vi.mocked(productsRepository.findActivePosProductTypesForBranch).mockResolvedValue([
+      { id: '11111111-1111-4111-8111-111111111111', name: 'Marketing', isActive: true },
+      { id: '22222222-2222-4222-8222-222222222222', name: 'Empty Type', isActive: true },
+    ] as never);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    expect(productsRepository.findActivePosProductTypesForBranch).toHaveBeenCalledWith('branch-1');
+    expect(result.products.map((p) => p.product_type)).toEqual([
+      { key: 'promotional', id: null, name: 'Promotional', is_builtin: true, is_active: true },
+      { key: 'seasonal', id: null, name: 'Seasonal', is_builtin: true, is_active: true },
+      { key: '11111111-1111-4111-8111-111111111111', id: '11111111-1111-4111-8111-111111111111', name: 'Marketing', is_builtin: false, is_active: true },
+    ]);
+    expect(result.product_types.map((t) => t.key)).toEqual([
+      'regular',
+      'promotional',
+      'seasonal',
+      '11111111-1111-4111-8111-111111111111',
+      '22222222-2222-4222-8222-222222222222',
+    ]);
+  });
+
+  it('keeps an inactive type on its product, and does not name a type not scoped to this branch', async () => {
+    vi.mocked(productsRepository.findCatalogForBranch).mockResolvedValue([
+      product('p-inactive', { productType: { id: '33333333-3333-4333-8333-333333333333', name: 'One-time', isActive: false, branches: [{ branchId: 'branch-1' }] } }),
+      product('p-unscoped', { productType: { id: '44444444-4444-4444-8444-444444444444', name: 'Other Branch Type', isActive: true, branches: [] } }),
+    ] as never);
+    vi.mocked(productsRepository.findActivePosProductTypesForBranch).mockResolvedValue([]);
+
+    const result = await productsService.getPosCatalog('branch-1');
+
+    expect(result.products).toHaveLength(2);
+    expect(result.products[0]?.product_type).toMatchObject({ name: 'One-time', is_active: false, is_builtin: false });
+    expect(result.products[1]?.product_type).toBeNull();
+    expect(JSON.stringify(result)).not.toContain('Other Branch Type');
+    expect(result.product_types.map((t) => t.key)).toEqual(['regular', 'promotional', 'seasonal']);
   });
 });

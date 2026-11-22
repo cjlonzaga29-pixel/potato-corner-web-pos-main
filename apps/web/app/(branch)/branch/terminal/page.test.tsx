@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as React from 'react';
-import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { toast } from 'sonner';
 import TerminalPage from './page';
 import type { PosCatalogProduct, CreateTransactionInput } from '@potato-corner/shared';
@@ -4505,5 +4505,191 @@ describe('TerminalPage — break time (POS-PERF-P51)', () => {
     } finally {
       discountPolicyState.requireChoice = false;
     }
+  });
+});
+
+// POS-PERF-P69 — the product TYPE filter beside category and search, and the
+// card's type badge, kept separate from the size (a variant named Regular).
+describe('TerminalPage — product type filter (POS-PERF-P69)', () => {
+  const MARKETING_ID = '11111111-1111-4111-8111-111111111111';
+  const EMPTY_ID = '22222222-2222-4222-8222-222222222222';
+  const builtIn = (key: 'regular' | 'promotional' | 'seasonal', name: string) => ({ key, id: null, name, is_builtin: true, is_active: true });
+  const marketing = { key: MARKETING_ID, id: MARKETING_ID, name: 'Marketing', is_builtin: false, is_active: true };
+  const typeList = [builtIn('regular', 'Regular'), builtIn('promotional', 'Promotional'), builtIn('seasonal', 'Seasonal'), marketing, { ...marketing, key: EMPTY_ID, id: EMPTY_ID, name: 'Empty Type' }];
+
+  function typedProduct(id: string, name: string, category: string, productType: PosCatalogProduct['product_type']): PosCatalogProduct {
+    return {
+      id,
+      name,
+      category,
+      product_type: productType,
+      has_image: false,
+      image_url: null,
+      variants: [slotVariant({ id: `${id}-v`, name: 'Regular', size_label: 'Regular', flavors: [], flavor_slots: [] })],
+    };
+  }
+
+  const products = [
+    typedProduct('p-cheese', 'Cheese Fries PPO', 'Flavored Fries', builtIn('promotional', 'Promotional')),
+    typedProduct('p-plain', 'Plain Fries', 'Flavored Fries', builtIn('regular', 'Regular')),
+    typedProduct('p-tea', 'Iced Tea', 'Drinks', builtIn('seasonal', 'Seasonal')),
+    // Promotional underneath, Marketing displayed: listed once, under Marketing only.
+    typedProduct('p-mkt', 'Marketing Fries', 'Flavored Fries', marketing),
+  ];
+
+  const names = () => screen.queryAllByRole('button').map((b) => b.getAttribute('aria-label') ?? '').filter((l) => /Fries|Iced Tea/.test(l)).map((l) => l.split(',')[0]);
+  const pickTab = (list: string, name: string) => fireEvent.mouseDown(within(screen.getByRole('tablist', { name: list })).getByRole('tab', { name }));
+
+  beforeEach(() => {
+    mockAddItem.mockClear();
+    mockCartItems.mockReturnValue([]);
+    mockUseCatalog.mockReturnValue({ data: { categories: ['Drinks', 'Flavored Fries'], products, product_types: typeList }, isLoading: false });
+  });
+
+  afterEach(() => cleanup());
+
+  it('shows a labelled Type row (built-ins, then custom types) beside the category row, and a type badge apart from the size', () => {
+    render(<TerminalPage />);
+    const typeTabs = within(screen.getByRole('tablist', { name: 'Filter by product type' })).getAllByRole('tab').map((t) => t.textContent);
+    expect(typeTabs).toEqual(['All Types', 'Regular', 'Promotional', 'Seasonal', 'Marketing', 'Empty Type']);
+    expect(within(screen.getByRole('tablist', { name: 'Filter by category' })).getByRole('tab', { name: 'All Categories' })).toBeInTheDocument();
+    const cheese = screen.getByRole('button', { name: /^Cheese Fries PPO, Regular, .*Type: Promotional$/ });
+    expect(within(cheese).getByTestId('product-card-type')).toHaveTextContent('Promotional');
+    expect(within(cheese).getByText('Regular')).toBeInTheDocument();
+  });
+
+  it('filters by built-in and custom type, never placing a custom-typed product under its classification', () => {
+    render(<TerminalPage />);
+    pickTab('Filter by product type', 'Promotional');
+    expect(names()).toEqual(['Cheese Fries PPO']);
+    pickTab('Filter by product type', 'Seasonal');
+    expect(names()).toEqual(['Iced Tea']);
+    pickTab('Filter by product type', 'Marketing');
+    expect(names()).toEqual(['Marketing Fries']);
+    pickTab('Filter by product type', 'All Types');
+    expect(names()).toHaveLength(4);
+  });
+
+  it('applies type AND category AND search, with Clear filters for an empty result', async () => {
+    render(<TerminalPage />);
+    pickTab('Filter by product type', 'Regular');
+    pickTab('Filter by category', 'Flavored Fries');
+    expect(names()).toEqual(['Plain Fries']);
+    fireEvent.change(screen.getByPlaceholderText('Search products…'), { target: { value: 'cheese' } });
+    // The search box is debounced (SearchInput, 300 ms).
+    expect(await screen.findByText('No products match all of these filters.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+    await waitFor(() => expect(names()).toHaveLength(4));
+    expect(screen.getByPlaceholderText('Search products…')).toHaveValue('');
+    expect(screen.getByRole('tab', { name: 'All Types' })).toHaveAttribute('data-state', 'active');
+    expect(screen.getByRole('tab', { name: 'All Categories' })).toHaveAttribute('data-state', 'active');
+  });
+
+  it('gives an honest empty state for a custom type with no products here', () => {
+    render(<TerminalPage />);
+    pickTab('Filter by product type', 'Empty Type');
+    expect(screen.getByText('No Empty Type products are on this POS yet.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Clear filters' })).toBeInTheDocument();
+  });
+
+  it('keeps the selection across a rename (stable id) and resets to All Types when the type disappears', () => {
+    const { rerender } = render(<TerminalPage />);
+    pickTab('Filter by product type', 'Marketing');
+    const renamed = { ...marketing, name: 'Campaign' };
+    mockUseCatalog.mockReturnValue({
+      data: { categories: [], products: products.map((p) => (p.id === 'p-mkt' ? { ...p, product_type: renamed } : p)), product_types: typeList.map((t) => (t.id === MARKETING_ID ? renamed : t)) },
+      isLoading: false,
+    });
+    rerender(<TerminalPage />);
+    expect(screen.getByRole('tab', { name: 'Campaign' })).toHaveAttribute('data-state', 'active');
+    expect(names()).toEqual(['Marketing Fries']);
+
+    // Deactivated: gone from the list, its product still sellable under All Types with its label.
+    const inactive = { ...renamed, is_active: false };
+    mockUseCatalog.mockReturnValue({
+      data: { categories: [], products: products.map((p) => (p.id === 'p-mkt' ? { ...p, product_type: inactive } : p)), product_types: typeList.filter((t) => t.id !== MARKETING_ID) },
+      isLoading: false,
+    });
+    rerender(<TerminalPage />);
+    expect(screen.getByText('Campaign is no longer available here. Showing All Types.')).toHaveAttribute('role', 'status');
+    expect(screen.getByRole('tab', { name: 'All Types' })).toHaveAttribute('data-state', 'active');
+    expect(screen.getByRole('button', { name: /^Marketing Fries, .*Type: Campaign \(inactive type\)$/ })).toBeInTheDocument();
+    expect(names()).toHaveLength(4);
+  });
+
+  it("a branch change never applies or shows the other branch's types, even while its catalog is still loading", () => {
+    const branchTwoType = { key: EMPTY_ID, id: EMPTY_ID, name: 'Marketing', is_builtin: false, is_active: true };
+    let branchTwoLoaded = false;
+    mockUseCatalog.mockImplementation((branchId: string) =>
+      branchId === 'branch-1'
+        ? { data: { categories: [], products, product_types: typeList }, isLoading: false }
+        : branchTwoLoaded
+          ? { data: { categories: [], products: [typedProduct('p-b2', 'Branch Two Fries', 'Flavored Fries', branchTwoType)], product_types: [builtIn('regular', 'Regular'), branchTwoType] }, isLoading: false }
+          : { data: undefined, isLoading: true },
+    );
+    try {
+      const { rerender } = render(<TerminalPage />);
+      pickTab('Filter by product type', 'Marketing');
+      expect(names()).toEqual(['Marketing Fries']);
+
+      mockUseAuth.mockReturnValue({ user: { ...STAFF_USER, branchIds: ['branch-2'] }, selectEmployee: mockSelectEmployee, refreshEmployeeSession: mockRefreshEmployeeSession });
+      rerender(<TerminalPage />);
+      expect(names()).toEqual([]);
+      expect(screen.queryByRole('tab', { name: 'Marketing' })).not.toBeInTheDocument();
+
+      branchTwoLoaded = true;
+      rerender(<TerminalPage />);
+      // Same name, different type id: not carried over, and not selected.
+      expect(screen.getByRole('tab', { name: 'All Types' })).toHaveAttribute('data-state', 'active');
+      expect(screen.getByRole('tab', { name: 'Marketing' })).toHaveAttribute('data-state', 'inactive');
+      expect(names()).toEqual(['Branch Two Fries']);
+      expect(screen.queryByText(/no longer available/)).not.toBeInTheDocument();
+    } finally {
+      mockUseCatalog.mockReset();
+    }
+  });
+
+  it('changing filters leaves the cart alone', () => {
+    render(<TerminalPage />);
+    pickTab('Filter by product type', 'Promotional');
+    fireEvent.click(screen.getByRole('button', { name: /^Cheese Fries PPO/ }));
+    expect(mockAddItem).toHaveBeenCalledTimes(1);
+    pickTab('Filter by product type', 'Seasonal');
+    pickTab('Filter by category', 'Drinks');
+    expect(mockAddItem).toHaveBeenCalledTimes(1);
+    expect(mockClearCart).not.toHaveBeenCalled();
+    expect(mockUpdateItemQuantity).not.toHaveBeenCalled();
+  });
+
+  it('an older API (no type data) hides the type filter and shows no guessed badge', () => {
+    mockUseCatalog.mockReturnValue({
+      data: { categories: [], products: products.map(({ product_type: _unused, ...rest }) => rest) },
+      isLoading: false,
+    });
+    render(<TerminalPage />);
+    expect(screen.queryByRole('tablist', { name: 'Filter by product type' })).not.toBeInTheDocument();
+    expect(screen.queryAllByTestId('product-card-type')).toHaveLength(0);
+    expect(names()).toHaveLength(4);
+  });
+
+  it('offline: filters from the type list saved with this branch\'s catalog; a pre-P69 cache hides the filter', async () => {
+    const { getCachedProductCatalog } = await import('@/lib/offline/cache');
+    mockUseCatalog.mockReturnValue({ data: undefined, isLoading: false });
+    vi.mocked(getCachedProductCatalog).mockResolvedValueOnce(
+      products.map((p) => ({ id: `branch-1:${p.id}`, branchId: 'branch-1', data: p, cachedAt: 1, productTypes: typeList })) as never,
+    );
+    const { unmount } = render(<TerminalPage />);
+    await screen.findByRole('tablist', { name: 'Filter by product type' });
+    pickTab('Filter by product type', 'Marketing');
+    expect(names()).toEqual(['Marketing Fries']);
+    unmount();
+
+    vi.mocked(getCachedProductCatalog).mockResolvedValueOnce(
+      products.map(({ product_type: _unused, ...p }) => ({ id: `branch-1:${p.id}`, branchId: 'branch-1', data: p, cachedAt: 1 })) as never,
+    );
+    render(<TerminalPage />);
+    await waitFor(() => expect(names()).toHaveLength(4));
+    expect(screen.queryByRole('tablist', { name: 'Filter by product type' })).not.toBeInTheDocument();
+    expect(screen.queryAllByTestId('product-card-type')).toHaveLength(0);
   });
 });

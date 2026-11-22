@@ -236,3 +236,34 @@ describe('ProductCard', () => {
     });
   });
 });
+
+// POS-PERF-P69 — the type badge is the product's type, shown apart from the size.
+describe('ProductCard — product type badge (P69)', () => {
+  it('shows the type separately from a "Regular" size, with the full name in the label and title', () => {
+    const longName = 'Limited Holiday Marketing Campaign Special Edition';
+    render(
+      <ProductCard
+        product={{ ...product, product_type: { key: '11111111-1111-4111-8111-111111111111', id: '11111111-1111-4111-8111-111111111111', name: longName, is_builtin: false, is_active: true } }}
+        variant={firstVariant}
+        message={null}
+        onTap={() => undefined}
+      />,
+    );
+    const badge = screen.getByTestId('product-card-type');
+    expect(badge).toHaveTextContent(longName);
+    expect(badge).toHaveAttribute('title', `Type: ${longName}`);
+    expect(badge.className).toContain('truncate');
+    expect(screen.getByText('Regular')).toBeInTheDocument();
+    expect(screen.getByRole('button')).toHaveAccessibleName(`Regular Fries, Regular, ₱59.00, Type: ${longName}`);
+  });
+
+  it('labels an inactive type and shows nothing when the catalog sent no type', () => {
+    const { rerender } = render(
+      <ProductCard product={{ ...product, product_type: { key: 'x', id: null, name: 'Promotional', is_builtin: true, is_active: false } }} variant={firstVariant} message={null} onTap={() => undefined} />,
+    );
+    expect(screen.getByTestId('product-card-type')).toHaveAttribute('title', 'Type: Promotional (inactive type)');
+    rerender(<ProductCard product={product} variant={firstVariant} message={null} onTap={() => undefined} />);
+    expect(screen.queryByTestId('product-card-type')).not.toBeInTheDocument();
+    expect(screen.getByRole('button')).toHaveAccessibleName('Regular Fries, Regular, ₱59.00');
+  });
+});

@@ -12,13 +12,20 @@ import { db } from './db';
  * never sees this branch's products or prices. Rows from before P39 carry
  * no branch and are dropped on the next refresh, never served.
  */
-export async function cacheProductCatalog(branchId: string, products: Array<{ id: string; data: unknown }>): Promise<void> {
+/** POS-PERF-P69 — `productTypes` is the catalog's type list; omitted (an older API sent none), rows carry none and the offline type filter stays hidden. */
+export async function cacheProductCatalog(branchId: string, products: Array<{ id: string; data: unknown }>, productTypes?: unknown): Promise<void> {
   if (typeof window === 'undefined') return;
   const now = Date.now();
   await db.transaction('rw', db.cachedProducts, async () => {
     await db.cachedProducts.filter((row) => row.branchId === undefined || row.branchId === branchId).delete();
     await db.cachedProducts.bulkPut(
-      products.map((product) => ({ id: `${branchId}:${product.id}`, branchId, data: product.data, cachedAt: now })),
+      products.map((product) => ({
+        id: `${branchId}:${product.id}`,
+        branchId,
+        data: product.data,
+        cachedAt: now,
+        ...(productTypes === undefined ? {} : { productTypes }),
+      })),
     );
   });
 }

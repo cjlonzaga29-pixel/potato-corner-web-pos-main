@@ -98,6 +98,7 @@ export type ProductDetailResponse = z.infer<typeof schemas.productDetailResponse
 export type ProductListResponse = z.infer<typeof schemas.productListResponseSchema>;
 export type PosCatalogResponse = z.infer<typeof schemas.posCatalogResponseSchema>;
 export type PosCatalogProduct = z.infer<typeof schemas.posCatalogProductSchema>;
+export type PosCatalogProductType = z.infer<typeof schemas.posCatalogProductTypeSchema>;
 export type PosCatalogVariant = z.infer<typeof schemas.posCatalogVariantSchema>;
 export type PosCatalogPromotion = NonNullable<PosCatalogVariant['promotion']>;
 export type PosSelectableDiscount = z.infer<typeof schemas.posSelectableDiscountSchema>;

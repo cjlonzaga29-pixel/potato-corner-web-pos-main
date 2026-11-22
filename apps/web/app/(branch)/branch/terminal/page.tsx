@@ -16,7 +16,7 @@ import {
   MANUAL_TOTAL_CALCULATION,
   type SaleDiscountRates,
 } from '@potato-corner/shared';
-import type { CreateTransactionInput, ImageProofType, PosCatalogProduct, TransactionResponse } from '@potato-corner/shared';
+import type { CreateTransactionInput, ImageProofType, PosCatalogProduct, PosCatalogProductType, TransactionResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
@@ -107,6 +107,7 @@ import {
 import { OrderTabContent } from '@/components/pos/order-tabs-content';
 import { OfflineSalesList } from '@/components/pos/offline-sales-list';
 import { isOptionConfigErrorCode, refreshCartLineOptionDetails, reviewCartLineOptions } from '@/lib/pos/option-recovery';
+import { ALL_PRODUCT_TYPES, buildPosTypeTabs, effectiveTypeFilter, productMatchesTypeFilter, readCachedProductTypes } from '@/lib/pos/pos-product-types';
 import { cartLinePromotionAck, cartLinePromotionDiscount, describePromotionChanges, type resolveCartLinePromotion } from '@/lib/pos/cart-promotions';
 import { VoidRefundSaleDialog } from '@/components/pos/void-refund-sale-dialog';
 import { toast } from 'sonner';
@@ -766,8 +767,15 @@ export default function TerminalPage() {
   }
 
   // POS-PERF-P39 — tagged with the branch it was read for, so a branch change never shows the previous branch's cached catalog.
-  const [cachedCatalog, setCachedCatalog] = useState<{ branchId: string; products: PosCatalogProduct[] } | null>(null);
+  const [cachedCatalog, setCachedCatalog] = useState<{ branchId: string; products: PosCatalogProduct[]; productTypes?: PosCatalogProductType[] } | null>(null);
   const [activeCategory, setActiveCategory] = useState<string>('all');
+  // POS-PERF-P69 — the product TYPE filter (lib/pos/pos-product-types.ts),
+  // tagged with the branch it was chosen at so a branch change never applies
+  // another branch's type, and a polite notice when a chosen type disappears.
+  const [activeTypeSelection, setActiveTypeSelection] = useState<{ branchId: string | null; key: string }>({ branchId: null, key: ALL_PRODUCT_TYPES });
+  // The selected type's latest name (a rename keeps the selection), for the notice if it disappears.
+  const selectedTypeNameRef = useRef<string | null>(null);
+  const [typeFilterNotice, setTypeFilterNotice] = useState<string | null>(null);
   // Task 196 (visual redesign) — cashier-facing product search, purely a
   // client-side display filter layered on top of the existing category
   // filter below; never touches catalog fetching, ordering, or category
@@ -1467,7 +1475,7 @@ export default function TerminalPage() {
   // doc §10.1: refreshed on connect and at least every 30 minutes.
   useEffect(() => {
     if (!liveCatalog || !branchId) return;
-    void cacheProductCatalog(branchId, liveCatalog.products.map((p) => ({ id: p.id, data: p })));
+    void cacheProductCatalog(branchId, liveCatalog.products.map((p) => ({ id: p.id, data: p })), liveCatalog.product_types);
   }, [liveCatalog, branchId]);
 
   // Fall back to the Dexie-cached catalog when offline or before the first
@@ -1478,7 +1486,7 @@ export default function TerminalPage() {
     void (async () => {
       const cached = await getCachedProductCatalog(branchId);
       if (cancelled) return;
-      setCachedCatalog({ branchId, products: cached.map((row) => row.data as PosCatalogProduct) });
+      setCachedCatalog({ branchId, products: cached.map((row) => row.data as PosCatalogProduct), productTypes: readCachedProductTypes(cached) });
     })();
     return () => {
       cancelled = true;
@@ -1487,6 +1495,30 @@ export default function TerminalPage() {
 
   const cachedProducts = cachedCatalog && cachedCatalog.branchId === branchId ? cachedCatalog.products : EMPTY_CATALOG;
   const catalog = liveCatalog?.products ?? cachedProducts;
+  // POS-PERF-P69 — the live list, else the one saved with this branch's
+  // offline catalog. Undefined (older API or pre-P69 cache) hides the filter.
+  const catalogProductTypes = liveCatalog ? liveCatalog.product_types : cachedCatalog && cachedCatalog.branchId === branchId ? cachedCatalog.productTypes : undefined;
+  const typeTabs = useMemo(() => buildPosTypeTabs(catalogProductTypes), [catalogProductTypes]);
+  const selectedTypeKey = activeTypeSelection.branchId === branchId ? activeTypeSelection.key : ALL_PRODUCT_TYPES;
+  const activeTypeKey = effectiveTypeFilter(selectedTypeKey, typeTabs);
+  const activeTypeName = typeTabs?.find((tab) => tab.filterKey === activeTypeKey)?.name ?? null;
+  if (activeTypeName !== null) selectedTypeNameRef.current = activeTypeName;
+  // A type deactivated, unscoped or gone from this branch's list resets to
+  // All Types with a notice, instead of a filter that hides everything. Its
+  // products stay reachable in All Types. Only once this branch's list loaded.
+  useEffect(() => {
+    if (activeTypeSelection.branchId !== branchId || activeTypeSelection.key === ALL_PRODUCT_TYPES || !typeTabs) return;
+    if (activeTypeKey !== ALL_PRODUCT_TYPES) return;
+    setActiveTypeSelection({ branchId: branchId ?? null, key: ALL_PRODUCT_TYPES });
+    setTypeFilterNotice(`${selectedTypeNameRef.current ?? 'That product type'} is no longer available here. Showing All Types.`);
+  }, [activeTypeSelection, activeTypeKey, branchId, typeTabs]);
+  const selectProductType = useCallback(
+    (key: string) => {
+      setActiveTypeSelection({ branchId: branchId ?? null, key });
+      setTypeFilterNotice(null);
+    },
+    [branchId],
+  );
   // POS-PERF-P55 — this checkout no longer offers P50R cashier-selected
   // promotions (liveCatalog.selectable_discounts); the manual discount types
   // below replace them. The catalog still carries them for older terminals.
@@ -1498,14 +1530,23 @@ export default function TerminalPage() {
   // (product or variant name, case-insensitive) narrows the same list
   // further. Display-only: never touches `catalog`, ordering, or what's
   // sent anywhere.
+  // POS-PERF-P69 — type AND category AND search, all display-only.
   const visibleProducts = useMemo(() => {
-    const byCategory = activeCategory === 'all' ? catalog : catalog.filter((p) => p.category === activeCategory);
+    const byType = activeTypeKey === ALL_PRODUCT_TYPES ? catalog : catalog.filter((p) => productMatchesTypeFilter(p, activeTypeKey));
+    const byCategory = activeCategory === 'all' ? byType : byType.filter((p) => p.category === activeCategory);
     const term = productSearch.trim().toLowerCase();
     if (!term) return byCategory;
     return byCategory.filter(
       (p) => p.name.toLowerCase().includes(term) || p.variants.some((v) => v.name.toLowerCase().includes(term)),
     );
-  }, [catalog, activeCategory, productSearch]);
+  }, [catalog, activeTypeKey, activeCategory, productSearch]);
+  const activeFilterCount = (productSearch.trim() ? 1 : 0) + (activeCategory !== 'all' ? 1 : 0) + (activeTypeKey !== ALL_PRODUCT_TYPES ? 1 : 0);
+  const clearProductFilters = useCallback(() => {
+    setProductSearch('');
+    setActiveCategory('all');
+    setActiveTypeSelection({ branchId: branchId ?? null, key: ALL_PRODUCT_TYPES });
+    setTypeFilterNotice(null);
+  }, [branchId]);
 
   const variantIndex = useMemo(() => buildVariantIndex(catalog), [catalog]);
   // P46R3 — while an Edit Cart option check is confirmed, the editor and the
@@ -3752,9 +3793,30 @@ export default function TerminalPage() {
           {/* Category pills — only ever built from categories actually present on the catalog (no fabricated categories). TabsList already scrolls horizontally on narrow screens.
               Task 209.8B — height is density-aware via `.app-control` (36-40px on compact/standard laptops, 44px on touch/comfortable, matching --app-control-height) instead of a fixed h-9,
               and triggers stretch to fill it (`h-full`) so the clickable area always matches the visible chip. */}
+          {/* POS-PERF-P69 — product TYPE (Regular, Promotional, Seasonal, supervisor-created), distinct from the category row below and from a card's size. Hidden when the catalog has no type list (older API or pre-P69 cache). */}
+          {typeTabs && (
+            <div className="flex min-w-0 items-center gap-2">
+              <span aria-hidden="true" className="shrink-0 text-xs font-medium text-muted-foreground">Type</span>
+              <Tabs value={activeTypeKey} onValueChange={selectProductType} className="min-w-0">
+                <TabsList aria-label="Filter by product type" className="app-control w-full items-stretch justify-start overflow-x-auto sm:w-auto">
+                  <TabsTrigger value={ALL_PRODUCT_TYPES} className="h-full">All Types</TabsTrigger>
+                  {typeTabs.map((tab) => (
+                    <TabsTrigger key={tab.filterKey} value={tab.filterKey} className="h-full max-w-[12rem]" title={tab.name}>
+                      <span className="truncate">{tab.name}</span>
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </Tabs>
+            </div>
+          )}
+          {typeFilterNotice && (
+            <p role="status" className="text-xs text-muted-foreground">
+              {typeFilterNotice}
+            </p>
+          )}
           <Tabs value={activeCategory} onValueChange={setActiveCategory}>
             <TabsList aria-label="Filter by category" className="app-control w-full items-stretch justify-start overflow-x-auto sm:w-auto">
-              <TabsTrigger value="all" className="h-full">All</TabsTrigger>
+              <TabsTrigger value="all" className="h-full">All Categories</TabsTrigger>
               {categories.map((category) => (
                 <TabsTrigger key={category} value={category} className="h-full">
                   {category}
@@ -3781,16 +3843,24 @@ export default function TerminalPage() {
             <EmptyState
               compact
               icon={ShoppingCart}
-              title={productSearch || activeCategory !== 'all' ? 'No matching products' : 'No products available'}
+              title={activeFilterCount > 0 ? 'No matching products' : 'No products available'}
               description={
-                productSearch
-                  ? `No products match "${productSearch}".`
-                  : activeCategory !== 'all'
-                    ? 'No products in this category yet.'
-                    : 'This branch has no catalog items yet.'
+                activeFilterCount > 1
+                  ? 'No products match all of these filters.'
+                  : productSearch
+                    ? `No products match "${productSearch}".`
+                    : activeCategory !== 'all'
+                      ? 'No products in this category yet.'
+                      : activeTypeKey !== ALL_PRODUCT_TYPES
+                        ? activeTypeName ? `No ${activeTypeName} products are on this POS yet.` : 'No products of this type are on this POS yet.'
+                        : 'This branch has no catalog items yet.'
               }
               action={
-                productSearch ? (
+                activeFilterCount > 1 || (activeFilterCount === 1 && !productSearch) ? (
+                  <Button variant="outline" size="sm" onClick={clearProductFilters}>
+                    Clear filters
+                  </Button>
+                ) : productSearch ? (
                   <Button variant="outline" size="sm" onClick={() => setProductSearch('')}>
                     Clear search
                   </Button>

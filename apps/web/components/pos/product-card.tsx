@@ -69,7 +69,12 @@ export const ProductCard = memo(function ProductCard({ product, variant, message
   const isAvailable = variant.live_ready && !stockOut;
   const stockBadgeLabel = variant.stock_status === 'out_of_stock' ? 'Out of Stock' : variant.stock_status === 'low_stock' ? 'Low Stock' : null;
   const promotionLabel = promotionsAvailable && variant.promotion ? `, promotion ${formatPeso(variant.promotion.unit_discount)} off` : '';
-  const ariaLabel = `${product.name}, ${variant.name}, ${formatPeso(variant.price)}${promotionLabel}${stockBadgeLabel ? `, ${stockBadgeLabel}` : ''}${message ? `, ${message}` : ''}`;
+  // POS-PERF-P69 — the product's TYPE (Regular, Promotional, Seasonal or a
+  // supervisor-created name), separate from the size line below. No badge when
+  // the catalog didn't say (older API or cache): never a guessed Regular.
+  const typeName = product.product_type?.name ?? null;
+  const typeTitle = typeName ? `Type: ${typeName}${product.product_type?.is_active === false ? ' (inactive type)' : ''}` : null;
+  const ariaLabel = `${product.name}, ${variant.name}, ${formatPeso(variant.price)}${promotionLabel}${stockBadgeLabel ? `, ${stockBadgeLabel}` : ''}${message ? `, ${message}` : ''}${typeTitle ? `, ${typeTitle}` : ''}`;
 
   return (
     <Card
@@ -125,6 +130,16 @@ export const ProductCard = memo(function ProductCard({ product, variant, message
             }`}
           >
             {stockBadgeLabel}
+          </span>
+        )}
+        {typeName && (
+          <span
+            className="absolute bottom-1 left-1 max-w-[calc(100%-0.5rem)] truncate rounded-md border border-border bg-background/95 px-1.5 py-0.5 text-[10px] font-semibold leading-4 text-foreground shadow-sm"
+            title={typeTitle ?? undefined}
+            aria-hidden="true"
+            data-testid="product-card-type"
+          >
+            {typeName}
           </span>
         )}
       </div>

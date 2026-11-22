@@ -1,6 +1,7 @@
 import sharp from 'sharp';
 import { Prisma, type ProductFlavorSlot, type VariantLifecycleStatus } from '@prisma/client';
 import {
+  PRODUCT_CLASSIFICATIONS,
   PRODUCT_CLASSIFICATION_LABELS,
   ROLES,
   SOCKET_EVENTS,
@@ -941,6 +942,25 @@ export function resolveClassificationWrite(
  *   it was given keeps the custom type; a different one is an explicit choice
  *   of that built-in.
  */
+/**
+ * POS-PERF-P69 — the type a POS card shows, by the Supervisor Products rule:
+ * a custom assignment is the displayed type, otherwise the built-in named by
+ * classification. A custom type not scoped to this branch (only possible
+ * through an old-API rollback window) is not named: null, never Regular.
+ */
+function toPosProductType(product: {
+  classification?: ProductClassification | null;
+  isSeasonal?: boolean;
+  productType?: { id: string; name: string; isActive: boolean; branches: { branchId: string }[] } | null;
+}) {
+  if (product.productType) {
+    if (product.productType.branches.length === 0) return null;
+    return { key: product.productType.id, id: product.productType.id, name: product.productType.name, is_builtin: false, is_active: product.productType.isActive };
+  }
+  const classification = product.classification ?? (product.isSeasonal ? 'seasonal' : 'regular');
+  return { key: classification, id: null, name: PRODUCT_CLASSIFICATION_LABELS[classification], is_builtin: true, is_active: true };
+}
+
 export function resolveProductTypeWrite(
   input: { product_type?: ProductTypeKey; classification?: ProductClassification; is_seasonal?: boolean },
   current?: { classification: ProductClassification; productTypeId: string | null },
@@ -2489,9 +2509,10 @@ export const productsService = {
    * this function already did for ProductInventory mappings pre-Phase B.
    */
   async getPosCatalog(branchId: string) {
-    const [products, disabledFlavorIds] = await Promise.all([
+    const [products, disabledFlavorIds, customTypes] = await Promise.all([
       productsRepository.findCatalogForBranch(branchId),
       productsRepository.findDisabledFlavorIds(branchId),
+      productsRepository.findActivePosProductTypesForBranch(branchId),
     ]);
     const disabledFlavors = new Set(disabledFlavorIds);
 
@@ -2635,6 +2656,7 @@ export const productsService = {
         // over the legacy free-text `category` column once it's active;
         // falls back to the legacy value for products never migrated to it.
         category: product.productCategory?.isActive ? product.productCategory.name : product.category,
+        product_type: toPosProductType(product),
         has_image: Boolean(product.imagePath),
         image_url: (product.imagePath && signedImageUrlByPath.get(product.imagePath)) || null,
         variants,
@@ -2646,6 +2668,10 @@ export const productsService = {
     return {
       categories,
       products: catalogProducts,
+      product_types: [
+        ...PRODUCT_CLASSIFICATIONS.map((key) => ({ key, id: null, name: PRODUCT_CLASSIFICATION_LABELS[key], is_builtin: true, is_active: true })),
+        ...customTypes.map((type) => ({ key: type.id, id: type.id, name: type.name, is_builtin: false, is_active: type.isActive })),
+      ],
       selectable_discounts: selectableDiscounts
         .filter((entry) => entry.unitDiscounts.size > 0)
         .map(({ promotion, unitDiscounts }) => ({

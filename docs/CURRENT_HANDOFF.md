@@ -33,7 +33,7 @@ Details: [`runbooks/account-deletion-email-reuse.md`](runbooks/account-deletion-
   - Inactive keeps its email.
 - **Fixed:** concurrent Create Employee or branch-account email edit with one email returned a 500. It is now 409 `EMAIL_ALREADY_EXISTS`.
 - **Dialogs** now say the email can be reused by a fresh account.
-- **Tests:** API integration 53/53, web 184/184, browser 11/11, typecheck and lint clean. Local only. Not pushed.
+- **Tests:** API integration 53/53, web 184/184, browser 11/11, typecheck and lint clean. Full web 1,836/1,836; full API 3,903 passed with one load-timeout file (`p60-expense-types`, untouched; 32/32 alone). Released by PR.
 - **Production leftover-account cleanup:** run by the owner with the P68 script (exact ids, dry run first). Account details and evidence are kept outside the repository on purpose.
 - **Local leftovers:** `C:\p70` (integration logs, Postgres data) and `C:\p70s` (browser stack, env with random keys, results `out2`). All of its processes are stopped.
 

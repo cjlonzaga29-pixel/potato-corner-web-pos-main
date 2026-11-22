@@ -1,6 +1,6 @@
 # Account deletion and email reuse
 
-Branch `feat/account-deletion-email-reuse`, from `1c624ca2` (P69R docs). Local only: nothing pushed, merged or deployed.
+Branch `feat/account-deletion-email-reuse`, rebased onto `e79487ae` (PR #50 merge). Released through a PR; see the PR for CI and deploy status.
 
 ## 1. Rule
 
@@ -52,7 +52,15 @@ The account dialog also says Inactive keeps the email.
 | Browser (`tests/e2e/manual/p70/email-reuse.mjs`), local P62 stack, production builds, SW active | Run 1 stopped on my selector bug. **Run 2: 11/11**: dialog copy; delete; recreate in capitals gives a new id with only the granted access, no PIN or sessions; history stays with the original person; duplicate refused; one holder |
 | Leftover-repair wrapper rehearsal on the local stack (disposable data) | Diagnose → dry run → gates → execute: deleted; marker present; `people` stamped; audit entry written |
 
-**Not run:** the full API and web suites, real devices, a hosted environment.
+Pre-push full suites (2026-11-23, disposable local Postgres, run one after the other):
+
+| Suite | Result |
+|---|---|
+| Type-check / lint (all packages) | exit 0 / exit 0 |
+| Full API | 3,903 passed, 13 skipped, **1 failed file, exit 1**: `p60-expense-types` `beforeAll` hook timed out (10 s) under load, so its tests did not run. The file is untouched by this branch; known load-sensitive (P61, P62). Re-run alone: **32/32, exit 0**. Full API not re-run locally; CI runs it |
+| Full web | **1,836/1,836, 194 files, exit 0** |
+
+**Not run:** real devices, a hosted environment.
 
 ## 6. Limitations
 

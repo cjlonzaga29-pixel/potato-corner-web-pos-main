@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDensityMode, type DensityMode } from '@/hooks/use-density-mode';
 import { DENSITY_POS_GRID_COLUMNS } from '@/lib/density-tokens';
 import { shouldShowInlineCart } from '@/lib/pos/cart-layout';
-import { Coffee, KeyRound, Loader2, Lock, LockKeyhole, LogOut, ShoppingCart, WifiOff } from 'lucide-react';
+import { Coffee, KeyRound, Loader2, Lock, LockKeyhole, LogOut, RefreshCw, ShoppingCart, WifiOff } from 'lucide-react';
 import {
   ROLES,
   STAFF_PIN_MAX_LENGTH,
@@ -1477,6 +1477,30 @@ export default function TerminalPage() {
     if (!liveCatalog || !branchId) return;
     void cacheProductCatalog(branchId, liveCatalog.products.map((p) => ({ id: p.id, data: p })), liveCatalog.product_types);
   }, [liveCatalog, branchId]);
+
+  // POS-PERF-P69R — manual recovery: one network-confirmed catalog read
+  // (bypasses the service worker's copy). Replaces only the catalog query's
+  // data, which the effect above saves offline; the cart, any open
+  // customization and queued sales are not touched.
+  const [isRefreshingCatalog, setIsRefreshingCatalog] = useState(false);
+  const refreshingCatalogRef = useRef(false);
+  const handleRefreshProducts = useCallback(async () => {
+    if (!branchId || refreshingCatalogRef.current) return;
+    refreshingCatalogRef.current = true;
+    setIsRefreshingCatalog(true);
+    try {
+      await confirmCatalog(branchId);
+      toast.success('Products refreshed', { id: 'catalog-refresh' });
+    } catch {
+      toast.error("Couldn't refresh products", {
+        id: 'catalog-refresh',
+        description: 'Still showing the last loaded products. Check the connection and try again.',
+      });
+    } finally {
+      refreshingCatalogRef.current = false;
+      setIsRefreshingCatalog(false);
+    }
+  }, [branchId, confirmCatalog]);
 
   // Fall back to the Dexie-cached catalog when offline or before the first
   // live fetch resolves — only ever this branch's own snapshot.
@@ -3783,13 +3807,29 @@ export default function TerminalPage() {
         )}
         <div className="space-y-2 border-b bg-card p-3">
           <h1 className="sr-only">POS Terminal — product catalog</h1>
-          <SearchInput
-            value={productSearch}
-            onChange={setProductSearch}
-            placeholder="Search products…"
-            className="max-w-md"
-            inputClassName="app-control"
-          />
+          <div className="flex min-w-0 items-center gap-2">
+            <SearchInput
+              value={productSearch}
+              onChange={setProductSearch}
+              placeholder="Search products…"
+              className="min-w-0 max-w-md flex-1"
+              inputClassName="app-control"
+            />
+            {/* POS-PERF-P69R — recovery when an update hasn't arrived; disabled offline (nothing to confirm against). */}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="app-control shrink-0 gap-1.5"
+              onClick={() => void handleRefreshProducts()}
+              disabled={!isOnline || isRefreshingCatalog}
+              aria-busy={isRefreshingCatalog}
+              title={isOnline ? 'Refresh products' : 'Reconnect to refresh products'}
+            >
+              <RefreshCw className={isRefreshingCatalog ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} aria-hidden="true" />
+              <span className="sr-only sm:not-sr-only">Refresh products</span>
+            </Button>
+          </div>
           {/* Category pills — only ever built from categories actually present on the catalog (no fabricated categories). TabsList already scrolls horizontally on narrow screens.
               Task 209.8B — height is density-aware via `.app-control` (36-40px on compact/standard laptops, 44px on touch/comfortable, matching --app-control-height) instead of a fixed h-9,
               and triggers stretch to fill it (`h-full`) so the clickable area always matches the visible chip. */}

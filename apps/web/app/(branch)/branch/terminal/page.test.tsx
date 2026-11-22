@@ -4692,4 +4692,55 @@ describe('TerminalPage — product type filter (POS-PERF-P69)', () => {
     expect(screen.queryByRole('tablist', { name: 'Filter by product type' })).not.toBeInTheDocument();
     expect(screen.queryAllByTestId('product-card-type')).toHaveLength(0);
   });
+  // POS-PERF-P69R — Refresh products: a manual, network-confirmed catalog read
+  // that keeps the cart, the open filters and queued sales.
+  it('Refresh products re-reads the catalog from the network, shows a new type and keeps the cart', async () => {
+    mockCartItems.mockReturnValue([{ product_id: 'p-plain', product_variant_id: 'p-plain-v', selected_options: [], quantity: 2 }]);
+    mockClearCart.mockClear();
+    mockRetryOfflineSale.mockClear();
+    mockConfirmCatalog.mockReset();
+    const campaign = { ...marketing, key: '33333333-3333-4333-8333-333333333333', id: '33333333-3333-4333-8333-333333333333', name: 'Campaign' };
+    mockConfirmCatalog.mockImplementation(async () => {
+      const fresh = { categories: ['Drinks', 'Flavored Fries'], products, product_types: [...typeList, campaign] };
+      mockUseCatalog.mockReturnValue({ data: fresh, isLoading: false });
+      return fresh;
+    });
+    render(<TerminalPage />);
+    const refresh = screen.getByRole('button', { name: 'Refresh products' });
+    fireEvent.click(refresh);
+    fireEvent.click(refresh);
+    await waitFor(() => expect(within(screen.getByRole('tablist', { name: 'Filter by product type' })).getByRole('tab', { name: 'Campaign' })).toBeInTheDocument());
+    expect(mockConfirmCatalog).toHaveBeenCalledTimes(1);
+    expect(mockConfirmCatalog).toHaveBeenCalledWith('branch-1');
+    expect(mockClearCart).not.toHaveBeenCalled();
+    expect(mockUpdateItemQuantity).not.toHaveBeenCalled();
+    expect(mockRetryOfflineSale).not.toHaveBeenCalled();
+  });
+
+  it('Refresh products is disabled offline and recovers from a failed read without touching the cart', async () => {
+    mockConfirmCatalog.mockReset();
+    mockClearCart.mockClear();
+    mockUseOffline.mockReturnValueOnce({ ...mockUseOffline(), isOnline: false }).mockReturnValue({ ...mockUseOffline(), isOnline: false });
+    const { unmount } = render(<TerminalPage />);
+    expect(screen.getByRole('button', { name: 'Refresh products' })).toBeDisabled();
+    unmount();
+    mockUseOffline.mockReset();
+    mockUseOffline.mockImplementation(() => ({
+      isOnline: true,
+      offlineSales: [] as unknown[],
+      pendingSyncCount: 0,
+      isSyncing: false,
+      syncNow: vi.fn(),
+      retryOfflineSale: mockRetryOfflineSale,
+      refreshOfflineSales: vi.fn(),
+    }));
+
+    mockConfirmCatalog.mockRejectedValueOnce(new Error('Could not reach the server'));
+    render(<TerminalPage />);
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh products' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh products' })).toBeEnabled());
+    expect(mockConfirmCatalog).toHaveBeenCalledTimes(1);
+    expect(names()).toHaveLength(4);
+    expect(mockClearCart).not.toHaveBeenCalled();
+  });
 });

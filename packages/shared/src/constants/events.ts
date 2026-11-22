@@ -84,6 +84,12 @@ export const SOCKET_EVENTS = {
 
   // CR-005 Sub-phase 3f — recipe flavorSlotIndex write path
   RECIPE_UPDATED: 'recipe:updated',
+
+  // POS-PERF-P69R — "this branch's POS catalog may have changed": sent to the
+  // branch room after a committed product or product-type write. Payload is
+  // only `{ branch_id }`; terminals refetch the authorized catalog, never
+  // read catalog data from the event.
+  CATALOG_CHANGED: 'catalog:changed',
 } as const;
 
 export type SocketEvent = (typeof SOCKET_EVENTS)[keyof typeof SOCKET_EVENTS];

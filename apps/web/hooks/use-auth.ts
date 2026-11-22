@@ -128,6 +128,46 @@ export async function refreshAuthSession(): Promise<boolean> {
   return true;
 }
 
+/** POS-PERF-P69R — the outcome of retrying a session restore that ended `unconfirmed`. */
+export type SessionRetryResult = 'restored' | 'ended' | 'unconfirmed';
+
+/**
+ * POS-PERF-P69R — tries the refresh cookie again after a restore that could
+ * not reach the server (offline, timeout, 5xx). Grants nothing by itself:
+ * only a token the server issues signs the tab in, and a definitive refusal
+ * ends the session exactly as the mount-time restore does. Nothing stored on
+ * the device (cart, drafts, queued sales) is touched.
+ */
+export async function retryUnconfirmedSession(): Promise<SessionRetryResult> {
+  const before = useAuthStore.getState();
+  if (before.accessToken) return 'restored';
+  if (before.sessionStatus === 'unauthenticated') return 'ended';
+
+  const attempt = await attemptRefresh();
+  if (useAuthStore.getState().accessToken) return 'restored';
+  if (attempt.accessToken) {
+    const payload = decodeJwtPayload(attempt.accessToken);
+    if (!payload) return 'unconfirmed';
+    useAuthStore.getState().setAuth(
+      {
+        id: payload.user_id,
+        role: payload.role,
+        email: payload.email,
+        firstName: '',
+        lastName: '',
+        branchIds: 'branch_ids' in payload ? payload.branch_ids : [],
+      },
+      attempt.accessToken,
+    );
+    return 'restored';
+  }
+  if (!attempt.transientError) {
+    useAuthStore.getState().clearAuth();
+    return 'ended';
+  }
+  return 'unconfirmed';
+}
+
 function toAuthUser(user: LoginUserData): AuthUser {
   return {
     id: user.id,

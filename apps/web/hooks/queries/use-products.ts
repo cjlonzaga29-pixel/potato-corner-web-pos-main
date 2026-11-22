@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
@@ -30,6 +30,8 @@ import {
 import { apiClient } from '@/lib/api-client';
 import { PRODUCT_CACHE_REFRESH_MINUTES } from '@/lib/constants';
 import { useRealtimeInvalidate } from '@/hooks/use-realtime-invalidate';
+import { useSocket } from '@/hooks/use-socket';
+import { useSocketStore } from '@/stores/socket.store';
 
 export interface ProductFilters {
   status?: ProductStatus;
@@ -194,6 +196,10 @@ export function useProduct(productId: string | null | undefined) {
 
 /** POS terminal catalog (Phase 10) — branch-filtered, availability-checked, override-priced. Distinct from useProducts (admin/supervisor management view). */
 export function useCatalog(branchId: string | null | undefined) {
+  // POS-PERF-P69R — with the realtime connection up, `catalog:changed` hints
+  // drive refreshes (useCatalogRealtimeSync) and 30 min is only a safety net.
+  // Without it, the bounded fallback below is the update latency.
+  const realtimeConnected = useSocketStore((state) => state.isConnected);
   return useQuery({
     queryKey: ['catalog', branchId],
     queryFn: async () => {
@@ -209,7 +215,7 @@ export function useCatalog(branchId: string | null | undefined) {
     // explicit refetchInterval, a terminal session that stays mounted
     // without a refocus/reconnect event to trigger a refetch would just
     // sit on a stale query indefinitely past the 60s staleTime.
-    refetchInterval: PRODUCT_CACHE_REFRESH_MINUTES * 60 * 1000,
+    refetchInterval: (realtimeConnected ? PRODUCT_CACHE_REFRESH_MINUTES : CATALOG_FALLBACK_REFRESH_MINUTES) * 60 * 1000,
   });
 }
 
@@ -262,12 +268,87 @@ async function forgetCachedResponses(nonce: string): Promise<void> {
   }
 }
 
-/** Keeps the POS terminal's catalog (item availability/pricing) in sync with stock-driven changes at its own branch, without a manual refresh. */
+/** POS-PERF-P69R — a burst of `catalog:changed` hints within this window is one catalog refetch. */
+export const CATALOG_CHANGE_DEBOUNCE_MS = 750;
+/** POS-PERF-P69R — catalog refresh interval while the realtime connection is down (online only; TanStack pauses it offline and in a hidden tab). */
+export const CATALOG_FALLBACK_REFRESH_MINUTES = 2;
+
+function hintedBranchId(payload: unknown): unknown {
+  return typeof payload === 'object' && payload !== null ? (payload as { branch_id?: unknown }).branch_id : undefined;
+}
+
+/**
+ * Keeps the POS terminal's catalog (item availability/pricing) in sync with stock-driven changes at its own branch, without a manual refresh.
+ *
+ * POS-PERF-P69R — also follows supervisor catalog changes (types, products,
+ * publication, reassignment) from any device:
+ * - `catalog:changed` for this branch schedules one refetch of the authorized
+ *   catalog; hints for another branch (a multi-branch supervisor's rooms) are
+ *   ignored, and the payload is never used as catalog data;
+ * - hints arriving while one is scheduled join it, and the refetch never
+ *   cancels one already in flight (no request storm);
+ * - after the socket reconnects, one refetch picks up anything missed while
+ *   disconnected.
+ * The query keeps its previous data while refetching, so the cart, an open
+ * customization dialog and queued sales are untouched.
+ */
 export function useCatalogRealtimeSync(branchId: string | null | undefined): void {
   useRealtimeInvalidate(
     [SOCKET_EVENTS.INVENTORY_OUT_OF_STOCK, SOCKET_EVENTS.INVENTORY_PRODUCT_UNAVAILABLE, SOCKET_EVENTS.INVENTORY_LOW_STOCK],
     [['catalog', branchId]],
   );
+
+  const { on, off, isConnected } = useSocket();
+  const queryClient = useQueryClient();
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const branchRef = useRef(branchId);
+  branchRef.current = branchId;
+
+  const scheduleRefetch = useCallback(() => {
+    if (timerRef.current) return;
+    const fire = () => {
+      timerRef.current = null;
+      const current = branchRef.current;
+      if (!current) return;
+      // A fetch already in flight may have started before the change
+      // committed: wait for it, then fetch once more, rather than cancel it.
+      if (queryClient.isFetching({ queryKey: ['catalog', current] }) > 0) {
+        timerRef.current = setTimeout(fire, CATALOG_CHANGE_DEBOUNCE_MS);
+        return;
+      }
+      void queryClient.invalidateQueries({ queryKey: ['catalog', current] }, { cancelRefetch: false });
+    };
+    timerRef.current = setTimeout(fire, CATALOG_CHANGE_DEBOUNCE_MS);
+  }, [queryClient]);
+
+  // A branch change (or unmount) drops a refetch scheduled for the old branch.
+  useEffect(
+    () => () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = null;
+    },
+    [branchId],
+  );
+
+  // Re-subscribed on every (re)connection so a new socket after sign-in gets
+  // the handler; `off` first, so there is never a second copy.
+  useEffect(() => {
+    if (!branchId) return;
+    function handleCatalogChanged(payload: unknown) {
+      if (hintedBranchId(payload) === branchId) scheduleRefetch();
+    }
+    on(SOCKET_EVENTS.CATALOG_CHANGED, handleCatalogChanged);
+    return () => off(SOCKET_EVENTS.CATALOG_CHANGED, handleCatalogChanged);
+  }, [branchId, isConnected, on, off, scheduleRefetch]);
+
+  const wasConnectedRef = useRef(isConnected);
+  const hasConnectedRef = useRef(isConnected);
+  useEffect(() => {
+    const reconnected = isConnected && !wasConnectedRef.current && hasConnectedRef.current;
+    wasConnectedRef.current = isConnected;
+    if (isConnected) hasConnectedRef.current = true;
+    if (reconnected && branchId) scheduleRefetch();
+  }, [isConnected, branchId, scheduleRefetch]);
 }
 
 /**

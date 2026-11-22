@@ -6,9 +6,11 @@ import { BranchContextSync } from '@/components/branch/branch-context-sync';
 import { DashboardHeader } from '@/components/shared/dashboard-header';
 import { SocketInitializer } from '@/components/shared/socket-initializer';
 import { LoadingSpinner } from '@/components/shared/feedback/loading-spinner';
+import { SessionUnconfirmedNotice } from '@/components/shared/session-unconfirmed-notice';
 import { useAuth } from '@/hooks/use-auth';
 import { useBranch } from '@/hooks/queries/use-branches';
 import { useBranchStore } from '@/stores/branch.store';
+import { useAuthStore } from '@/stores/auth.store';
 
 /**
  * Task 209.54 — every branch-ops page reused from the supervisor tree
@@ -76,6 +78,10 @@ function useBranchContextReady(): boolean {
 export default function BranchLayout({ children }: { children: ReactNode }) {
   const branchContextReady = useBranchContextReady();
   const { user } = useAuth();
+  // POS-PERF-P69R — a reload that couldn't reach the server (offline, timeout,
+  // 5xx) leaves no identity in memory. That is not "No branch assigned": show
+  // what is actually known instead of the pages' missing-branch messages.
+  const sessionUnconfirmed = useAuthStore((state) => state.sessionStatus === 'unconfirmed' && !state.user);
   // P46R — 100dvh where supported: on a phone 100vh (h-screen) is the height with the browser's toolbars retracted, so the bottom of every branch page (the PIN Continue button included) sat under the URL bar.
   return (
     <div className="flex h-screen overflow-hidden bg-background print:hidden supports-[height:100dvh]:h-[100dvh]">
@@ -103,7 +109,9 @@ export default function BranchLayout({ children }: { children: ReactNode }) {
           child changes nothing visually.
         */}
         <main className="app-page relative flex-1 overflow-y-auto overflow-x-hidden">
-          {branchContextReady ? (
+          {sessionUnconfirmed ? (
+            <SessionUnconfirmedNotice />
+          ) : branchContextReady ? (
             children
           ) : (
             <div className="flex h-full items-center justify-center">

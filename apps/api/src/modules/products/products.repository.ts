@@ -783,6 +783,12 @@ export const productsRepository = {
   },
 
   /** Phase 10 POS terminal catalog — active products, available at this branch, with only active variants and available flavors. */
+  /** POS-PERF-P69R — the branches whose POS catalog can list this product (any availability row), for catalog-change hints. */
+  async findAvailabilityBranchIds(productId: string): Promise<string[]> {
+    const rows = await prisma.branchProductAvailability.findMany({ where: { productId }, select: { branchId: true } });
+    return rows.map((row) => row.branchId);
+  },
+
   findCatalogForBranch(branchId: string) {
     return prisma.product.findMany({
       where: {

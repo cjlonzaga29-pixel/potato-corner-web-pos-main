@@ -9,7 +9,7 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
 ## Observed state
 
 - **Observed:** 2026-11-22
-- **Branch:** `feat/pos-perf-p66-delete-dashboard-payroll`, from `origin/main` `f9ce9da7` (PR #47, the last **reported** deployment, not verified here). It holds P66 (`10658134`), the payroll follow-up (`8af206e8`) and P67 on top. See PR_LINE. **Nothing merged or deployed; production not accessed.**
+- **Branch:** `feat/pos-perf-p66-delete-dashboard-payroll`, from `origin/main` `f9ce9da7` (PR #47, the last **reported** deployment, not verified here). It holds P66 (`10658134`), the payroll follow-up (`8af206e8`) and P67 on top. Pushed: PR [#48](https://github.com/cjlonzaga29-pixel/potato-corner-web-pos-main/pull/48), CI `validate` green on `af8fdcc0` ([run 44980870681](https://github.com/cjlonzaga29-pixel/potato-corner-web-pos-main/actions/runs/44980870681)). A later docs-only commit records this. **Nothing merged or deployed; production not accessed.**
 - **Working tree:** only `.vscode/settings.json` is modified (the owner's personal setting). Never stage it.
 - **Local leftovers (task-owned, safe to delete):** `C:\p67` (P67 env, logs, stopped stack, scripts), `C:\p66pay`, `C:\p66`, `%TEMP%\pos-test-pg-*` and the older `C:\p6x` folders. No P67 service is running. The `C:\p66\env.sh` throwaway JWT key pair was partly printed into a session log, so treat `C:\p66` as disposable.
 - **Left running, not proven to be this task's:** the idle `io_worker` orphans and the `dist/server.js` (PID 17220) noted before.

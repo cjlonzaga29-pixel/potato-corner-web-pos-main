@@ -443,4 +443,6 @@ Disposable local embedded Postgres only, on ports 56671–56677, with task-owned
 
 ### 10.8 PR and CI
 
-PR_SECTION
+- Pushed the feature branch only (normal push). PR [#48](https://github.com/cjlonzaga29-pixel/potato-corner-web-pos-main/pull/48) covers P66 and P67 against `main`.
+- Tested code SHA: `af8fdcc0`. CI `validate` passed on that exact head ([run 44980870681](https://github.com/cjlonzaga29-pixel/potato-corner-web-pos-main/actions/runs/44980870681)). The later commit that records this changes docs only.
+- **Not merged, not deployed, no production access.**

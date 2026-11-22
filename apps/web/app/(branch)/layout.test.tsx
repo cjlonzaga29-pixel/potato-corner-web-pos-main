@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 import BranchLayout from './layout';
+import { useAuthStore } from '@/stores/auth.store';
 
 const { mockUseAuth, mockUseBranch, mockUseBranchStore } = vi.hoisted(() => ({
   mockUseAuth: vi.fn(),
@@ -8,7 +9,8 @@ const { mockUseAuth, mockUseBranch, mockUseBranchStore } = vi.hoisted(() => ({
   mockUseBranchStore: vi.fn(),
 }));
 
-vi.mock('@/hooks/use-auth', () => ({ useAuth: mockUseAuth }));
+vi.mock('@/hooks/use-auth', () => ({ useAuth: mockUseAuth, retryUnconfirmedSession: vi.fn() }));
+vi.mock('next/navigation', () => ({ useRouter: () => ({ replace: vi.fn(), push: vi.fn() }) }));
 vi.mock('@/hooks/queries/use-branches', () => ({ useBranch: mockUseBranch }));
 vi.mock('@/stores/branch.store', () => ({ useBranchStore: mockUseBranchStore }));
 
@@ -35,6 +37,7 @@ const BRANCH_ID = '123e4567-e89b-12d3-a456-426614174000';
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  useAuthStore.setState({ user: null, accessToken: null, isLoading: true, sessionStatus: 'restoring' });
 });
 
 /**
@@ -128,5 +131,38 @@ describe('BranchLayout — branch context readiness gate', () => {
     );
 
     expect(screen.getByTestId('page-content')).toBeInTheDocument();
+  });
+});
+
+/**
+ * POS-PERF-P69R — an offline cold reload can't restore the session (no
+ * network to check the refresh cookie), so no identity is in memory. That
+ * must read as "can't confirm your sign-in", never "No branch assigned".
+ */
+describe('BranchLayout — session that could not be confirmed', () => {
+  function renderWith(sessionStatus: 'unconfirmed' | 'authenticated', user: { branchIds: string[] } | null) {
+    useAuthStore.setState({ sessionStatus, user: user as never, isLoading: false });
+    mockUseAuth.mockReturnValue({ user, isLoading: false });
+    mockUseBranch.mockReturnValue({ isLoading: false, isError: false });
+    mockUseBranchStore.mockImplementation((selector: (s: { activeBranchId: string | null }) => unknown) => selector({ activeBranchId: user?.branchIds[0] ?? null }));
+    render(
+      <BranchLayout>
+        <div data-testid="page-content">No branch assigned.</div>
+      </BranchLayout>,
+    );
+  }
+
+  it('shows the unconfirmed-sign-in notice instead of the page (and its missing-branch message)', () => {
+    renderWith('unconfirmed', null);
+    expect(screen.queryByTestId('page-content')).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /confirm your sign-in/i })).toBeInTheDocument();
+    expect(screen.getByText(/saved on this device are kept/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
+  });
+
+  it('a confirmed session with no branch still reaches the page (a real missing assignment)', () => {
+    renderWith('authenticated', { branchIds: [] });
+    expect(screen.getByTestId('page-content')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /confirm your sign-in/i })).not.toBeInTheDocument();
   });
 });

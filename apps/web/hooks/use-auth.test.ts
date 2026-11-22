@@ -21,7 +21,7 @@ vi.mock('@/lib/auth-broadcast', () => ({
 
 const { apiClient } = await import('@/lib/api-client');
 const { useAuthStore } = await import('@/stores/auth.store');
-const { useAuth, refreshAuthSession } = await import('./use-auth.js');
+const { useAuth, refreshAuthSession, retryUnconfirmedSession } = await import('./use-auth.js');
 
 /** Builds a decodable (unsigned) JWT-shaped string — decodeJwtPayload only reads the payload segment. */
 function fakeToken(payload: Record<string, unknown>): string {
@@ -233,5 +233,47 @@ describe('useAuth cross-tab logout sync', () => {
     expect(useAuthStore.getState().isAuthenticated).toBe(false);
     expect(useAuthStore.getState().user).toBeNull();
     expect(mockReplace).toHaveBeenCalledWith('/login');
+  });
+});
+
+/**
+ * POS-PERF-P69R — retrying a restore that ended `unconfirmed` (offline cold
+ * reload). Only a server-issued token signs the tab in; a definitive refusal
+ * ends the session; a transient failure changes nothing.
+ */
+describe('retryUnconfirmedSession', () => {
+  const BRANCH = '123e4567-e89b-12d3-a456-426614174000';
+
+  beforeEach(() => {
+    vi.mocked(apiClient).mockReset();
+    useAuthStore.setState({ user: null, accessToken: null, isAuthenticated: false, isLoading: false, sessionStatus: 'unconfirmed' });
+  });
+
+  it("restores the session from a server-issued token, with the token's branch", async () => {
+    const token = fakeToken({ user_id: 'u-1', role: 'staff', email: null, branch_ids: [BRANCH] });
+    vi.mocked(apiClient).mockResolvedValue({ data: { access_token: token }, error: null, meta: null } as never);
+    await expect(retryUnconfirmedSession()).resolves.toBe('restored');
+    expect(useAuthStore.getState().sessionStatus).toBe('authenticated');
+    expect(useAuthStore.getState().user?.branchIds).toEqual([BRANCH]);
+  });
+
+  it("stays unconfirmed, with no identity, when the server still can't be reached", async () => {
+    vi.mocked(apiClient).mockRejectedValue(new TypeError('Failed to fetch'));
+    await expect(retryUnconfirmedSession()).resolves.toBe('unconfirmed');
+    expect(useAuthStore.getState().user).toBeNull();
+    expect(useAuthStore.getState().accessToken).toBeNull();
+    expect(useAuthStore.getState().sessionStatus).toBe('unconfirmed');
+  });
+
+  it('ends the session on a definitive refusal (e.g. the branch assignment was removed)', async () => {
+    vi.mocked(apiClient).mockResolvedValue({ data: null, error: { code: 'BRANCH_ASSIGNMENT_REMOVED', message: 'x' }, meta: null } as never);
+    await expect(retryUnconfirmedSession()).resolves.toBe('ended');
+    expect(useAuthStore.getState().sessionStatus).toBe('unauthenticated');
+  });
+
+  it('does not ask again once signed out', async () => {
+    useAuthStore.setState({ sessionStatus: 'unauthenticated' });
+    await expect(retryUnconfirmedSession()).resolves.toBe('ended');
+    expect(apiClient).not.toHaveBeenCalled();
   });
 });

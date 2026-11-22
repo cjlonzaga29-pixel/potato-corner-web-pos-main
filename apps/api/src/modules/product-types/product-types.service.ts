@@ -15,6 +15,7 @@ import {
 import { z } from 'zod';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { getAccessibleBranchIds, hasBranchAccess } from '../../lib/branch-access.js';
+import { queueCatalogChanged } from '../../lib/catalog-change-notifier.js';
 import { branchesRepository } from '../branches/branches.repository.js';
 import { productTypesRepository, type ProductTypeRow } from './product-types.repository.js';
 import { ProductTypeError, type ProductTypeListFilters } from './product-types.types.js';
@@ -98,6 +99,16 @@ async function assertBranchesAssignable(branchIds: string[], liveBranchIds: stri
   }
 }
 
+/**
+ * POS-PERF-P69R — a committed type change (create, rename, scope widening,
+ * deactivate, reactivate) can change the POS type tabs and badges at every
+ * branch in its scope. A scope never narrows (PRODUCT_TYPE_SCOPE_NARROWING),
+ * so the scope after the write covers every affected branch.
+ */
+function notifyTypeScope(row: ProductTypeRow): void {
+  queueCatalogChanged(row.branches.map((branch) => branch.branchId));
+}
+
 export const productTypesService = {
   async list(user: JwtPayload, filters: ProductTypeListFilters) {
     if (filters.branch_id && !(await hasBranchAccess(user, filters.branch_id))) {
@@ -133,6 +144,7 @@ export const productTypesService = {
 
     const response = toResponse(row, liveBranchIds, 0, actor.role);
     await recordAuditLog({ action: 'PRODUCT_TYPE_CREATED', entityType: 'product_type', entityId: row.id, actorId: actor.id, actorRole: actor.role, afterState: response, ipAddress });
+    notifyTypeScope(row);
     return response;
   },
 
@@ -180,6 +192,7 @@ export const productTypesService = {
       afterState: response,
       ipAddress,
     });
+    notifyTypeScope(row);
     return response;
   },
 
@@ -211,6 +224,7 @@ export const productTypesService = {
       afterState: { is_active: row.isActive, product_count: productCount },
       ipAddress,
     });
+    notifyTypeScope(row);
     return response;
   },
 };

@@ -34,6 +34,13 @@ interface CachedProduct {
   branchId?: string;
   data: unknown;
   cachedAt: number;
+  /**
+   * POS-PERF-P69 — the branch's product type list from the same catalog read,
+   * repeated on every row of one save so it is replaced with the products.
+   * Not indexed and outside `data`, so no schema version bump and an older
+   * build reading these rows ignores it. Absent on rows saved before P69.
+   */
+  productTypes?: unknown;
 }
 
 interface OfflineSequenceCounter {

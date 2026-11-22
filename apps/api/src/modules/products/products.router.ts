@@ -42,8 +42,12 @@ import { branchGuard, branchGuardOptional } from '../../middleware/branch-guard.
 import { requireActiveEmployee, requireActiveSupervisor } from '../../middleware/require-active-employee.js';
 import { requirePasswordChange } from '../../middleware/require-password-change.js';
 import { validate } from '../../middleware/validate.js';
+import { notifyCatalogChangeOnSuccess } from './products.catalog-events.js';
 
 const router: Router = Router();
+
+// POS-PERF-P69R — hint open POS terminals after a committed product write (see products.catalog-events.ts).
+router.use(notifyCatalogChangeOnSuccess());
 
 // Task 209.6 — Product Image Management. Same limits/shape as
 // expenses.router.ts's receiptUpload: 5MB cap, JPEG/PNG/WebP only.

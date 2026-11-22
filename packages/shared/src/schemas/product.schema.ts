@@ -581,10 +581,28 @@ export const posCatalogVariantSchema = z.object({
     .optional(),
 });
 
+// POS-PERF-P69 — the product TYPE (Regular, Promotional, Seasonal or a
+// supervisor-created type) as the POS shows it. Distinct from the category
+// (Flavored Fries, Drinks) and from a variant's size (Regular, Large, Mega).
+// `key` is the classification for a built-in and the type id for a custom
+// type, the same rule as ProductResponse.product_type.
+export const posCatalogProductTypeSchema = z.object({
+  key: z.string(),
+  id: z.uuid().nullable(),
+  name: z.string(),
+  is_builtin: z.boolean(),
+  is_active: z.boolean(),
+});
+
 export const posCatalogProductSchema = z.object({
   id: z.uuid(),
   name: z.string(),
   category: z.string().nullable(),
+  // POS-PERF-P69 — absent from an older API or an older cached catalog (the
+  // POS then shows no type rather than guessing Regular). Null when the
+  // product's custom type is not scoped to this branch, so its name is
+  // never disclosed here.
+  product_type: posCatalogProductTypeSchema.nullable().optional(),
   // Task 209.7 — image lives on the product (one stored object per product,
   // not per variant). image_url is a short-lived signed Supabase Storage
   // URL, batch-minted per catalog request; null whenever has_image is false
@@ -600,6 +618,10 @@ export const posCatalogResponseSchema = z.object({
   // POS-PERF-P50R — cashier-selected discounts active at this branch now.
   // Optional: an older API (no field) means none.
   selectable_discounts: z.array(posSelectableDiscountSchema).optional(),
+  // POS-PERF-P69 — the type filter: the built-ins, then the active custom
+  // types scoped to this branch, including ones with no products here.
+  // Optional: an older API has no field, and the POS hides the filter.
+  product_types: z.array(posCatalogProductTypeSchema).optional(),
 });
 
 // POS-PERF-P24 — cart-wide stock pre-check, fired at discrete cashier

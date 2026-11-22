@@ -1,9 +1,18 @@
 import { IngredientCategory, type Prisma } from '@prisma/client';
 import bcrypt from 'bcrypt';
 import sharp from 'sharp';
-import { ROLES, EMPLOYMENT_TYPE, SOCKET_EVENTS, type BranchStatus, type JwtPayload } from '@potato-corner/shared';
+import { timingSafeEqual } from 'node:crypto';
+import {
+  ROLES,
+  EMPLOYMENT_TYPE,
+  SOCKET_EVENTS,
+  type BranchDeletionEligibility,
+  type BranchDeletionResult,
+  type BranchStatus,
+  type DeleteBranchInput,
+  type JwtPayload,
+} from '@potato-corner/shared';
 import { branchesRepository } from './branches.repository.js';
-import { isForeignKeyRestriction } from '../../lib/foreign-key-restriction.js';
 import { BranchError, type BranchListFilters, type CreateBranchData, type UpdateBranchData } from './branches.types.js';
 import { productInventoryRepository } from '../product-inventory/product-inventory.repository.js';
 import { flavorsRepository } from '../flavors/flavors.repository.js';
@@ -13,7 +22,10 @@ import { inventoryService } from '../inventory/inventory.service.js';
 import { universalInventoryService } from '../universal-inventory/universal-inventory.service.js';
 import { recordAuditLog } from '../../middleware/audit-log.js';
 import { getIO, joinUserToBranchRoom, leaveUserFromBranchRoom } from '../../socket/socket.server.js';
-import { SUPER_ADMIN_ROOM, userRoom } from '../../socket/rooms.js';
+import { SUPER_ADMIN_ROOM, branchRoom, userRoom } from '../../socket/rooms.js';
+import { hashField } from '../../lib/encryption.js';
+import { forgetAccountStatus } from '../../lib/verify-access-token.js';
+import { forgetActiveStatus } from '../../middleware/require-active-employee.js';
 import { getBranchPresenceSnapshot } from '../../socket/presence.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { getAccessibleBranchIds, assertBranchAccess } from '../../lib/branch-access.js';
@@ -133,6 +145,33 @@ async function uploadGcashQrToStorage(
   return { url: publicUrl, key: path };
 }
 
+/** POS-PERF-P67 — names compare ignoring case and extra spaces (same rule as P66 account deletion). */
+function normalizeName(value: string): string {
+  return value.normalize('NFC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-PH');
+}
+
+/**
+ * POS-PERF-P67 — binds a delete confirmation to the actor who reviewed it,
+ * the branch and the version they saw. Keyed with HASH_KEY, so it can only
+ * come from this server's deletion-eligibility response.
+ */
+function branchDeletionToken(actorId: string, branchId: string, version: string): string {
+  return hashField(`pos-perf-p67:branch-delete:${actorId}:${branchId}:${version}`);
+}
+
+function tokensMatch(expected: string, received: string): boolean {
+  const a = Buffer.from(expected, 'utf8');
+  const b = Buffer.from(received, 'utf8');
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/** POS-PERF-P67 — was this branch deleted through the app (only Super Admins delete branches)? */
+async function branchDeletedByThisActor(branchId: string, actor: { id: string; role: string }): Promise<boolean> {
+  if (actor.role !== ROLES.SUPER_ADMIN) return false;
+  const record = await branchesRepository.findRecordById(branchId);
+  return Boolean(record?.deletedAt);
+}
+
 export const branchesService = {
   /**
    * POS-PERF-P40 — connectivity per branch for the Admin dashboard's Branch
@@ -221,8 +260,17 @@ export const branchesService = {
       if (existing) {
         throw new BranchError('BRANCH_CODE_CONFLICT', `Branch code ${code} is already in use`, 409);
       }
+      // POS-PERF-P67 — a deleted branch's code stays with its history (receipt
+      // numbers and counters carry it), so it is never given to a new branch.
+      if (await branchesRepository.findRecordByCode(code)) {
+        throw new BranchError('BRANCH_CODE_RETIRED', `Branch code ${code} belonged to a deleted branch and can't be reused`, 409);
+      }
     } else {
       code = await branchesRepository.generateBranchCode(data.city);
+      // POS-PERF-P67 — skip a generated code that a deleted branch (or a manual code) already holds.
+      for (let attempt = 0; attempt < 20 && (await branchesRepository.findRecordByCode(code)); attempt += 1) {
+        code = await branchesRepository.generateBranchCode(data.city);
+      }
     }
 
     // Task 174 — branch account creation used to be a second, independent
@@ -490,53 +538,164 @@ export const branchesService = {
     return toBranchResponse(branch);
   },
 
-  async deleteBranch(branchId: string, deletedBy: { id: string; role: string }, ipAddress: string | null) {
-    const before = await branchesRepository.findById(branchId);
-    if (!before) throw new BranchError('BRANCH_NOT_FOUND', 'Branch not found', 404);
+  /**
+   * POS-PERF-P67 — tells the Delete dialog whether the branch can be deleted
+   * now, what stays, what goes, and what to type. The confirmation token is
+   * issued for this actor, this branch and this version. History never
+   * blocks; open work and non-zero stock do.
+   */
+  async getDeletionEligibility(branchId: string, actor: { id: string; role: string }): Promise<BranchDeletionEligibility> {
+    const branch = await branchesRepository.findById(branchId);
+    if (!branch) {
+      if (await branchDeletedByThisActor(branchId, actor)) {
+        return {
+          branch_id: branchId,
+          can_delete: false,
+          blocked_reason: 'already_deleted',
+          blockers: [],
+          history_retained: null,
+          removed: null,
+          confirmation: null,
+        };
+      }
+      throw new BranchError('BRANCH_NOT_FOUND', 'Branch not found', 404);
+    }
+    const [blockers, historyRetained, removed] = await Promise.all([
+      branchesRepository.findDeletionBlockers(branchId),
+      branchesRepository.countRetainedHistory(branchId),
+      branchesRepository.countRemovedWithBranch(branchId),
+    ]);
+    const version = branch.updatedAt.toISOString();
+    return {
+      branch_id: branchId,
+      can_delete: blockers.length === 0,
+      blocked_reason: blockers.length > 0 ? 'open_operations' : null,
+      blockers,
+      history_retained: historyRetained,
+      removed,
+      confirmation: {
+        name: branch.name,
+        code: branch.code,
+        version,
+        confirmation_token: branchDeletionToken(actor.id, branchId, version),
+      },
+    };
+  },
 
-    const activeShifts = await branchesRepository.countActiveShifts(branchId);
-    if (activeShifts > 0) {
+  /**
+   * POS-PERF-P67 — permanent deletion of the operational branch. The branch,
+   * its login accounts, everyone's access to it and its configuration go;
+   * every sale, shift, attendance record, expense, payroll run, stock
+   * movement, proof and audit entry stays, attributed to the branch's
+   * historical record (BranchRecord) by its original name and code. The
+   * confirmation (typed name and code, version and the server-issued token)
+   * is checked here. Open work and non-zero stock block, and nothing changes
+   * until they are resolved. A repeat after success reports 'already_deleted'.
+   */
+  async deleteBranch(
+    branchId: string,
+    deletedBy: { id: string; role: string },
+    ipAddress: string | null,
+    confirmation: DeleteBranchInput,
+  ): Promise<BranchDeletionResult> {
+    const before = await branchesRepository.findById(branchId);
+    if (!before) return branchesService.reportRepeatedDeletion(branchId, deletedBy, ipAddress);
+
+    if (normalizeName(confirmation.confirm_name) !== normalizeName(before.name) || confirmation.confirm_code.trim() !== before.code) {
       throw new BranchError(
-        'BRANCH_HAS_ACTIVE_SHIFTS',
-        'Cannot permanently delete a branch with active shifts — close all shifts first',
+        'DELETE_CONFIRMATION_MISMATCH',
+        `Type the branch name (${before.name}) and code (${before.code}) exactly as shown to confirm.`,
+        400,
+      );
+    }
+    const version = new Date(confirmation.version);
+    const expectedToken = branchDeletionToken(deletedBy.id, branchId, confirmation.version);
+    if (!tokensMatch(expectedToken, confirmation.confirmation_token)) {
+      throw new BranchError('DELETE_CONFIRMATION_INVALID', 'This confirmation was not issued to you for this branch. Open Delete again.', 403);
+    }
+    if (Number.isNaN(version.getTime()) || version.getTime() !== before.updatedAt.getTime()) {
+      throw new BranchError('BRANCH_CHANGED', 'This branch changed after the dialog opened. Review the details and confirm again.', 409);
+    }
+
+    const historyRetained = await branchesRepository.countRetainedHistory(branchId);
+    const result = await branchesRepository.deletePermanently(branchId, deletedBy.id, version);
+    if (result.outcome === 'not_found') return branchesService.reportRepeatedDeletion(branchId, deletedBy, ipAddress);
+    if (result.outcome === 'changed') {
+      throw new BranchError('BRANCH_CHANGED', 'This branch changed after the dialog opened. Review the details and confirm again.', 409);
+    }
+    if (result.outcome === 'activity') {
+      throw new BranchError(
+        'BRANCH_ACTIVITY_DURING_DELETE',
+        'Someone recorded work at this branch while it was being deleted. Nothing was deleted. Check the branch and try again.',
         409,
       );
     }
-
-    try {
-      await branchesRepository.delete(branchId);
-    } catch (error) {
-      // POS-PERF-P66 — records that are deliberately kept (payroll, pay rates,
-      // product-type assignments, discount types and proofs) refuse the
-      // cascade. Say so instead of a bare 500; nothing was deleted.
-      if (isForeignKeyRestriction(error)) {
-        throw new BranchError(
-          'BRANCH_HAS_PROTECTED_RECORDS',
-          'This branch still has records that must be kept, such as payroll, pay rates, product-type assignments or discount proofs, so it can’t be deleted. Close the branch instead. Nothing was deleted.',
-          409,
-        );
-      }
-      throw error;
+    if (result.outcome === 'blocked') {
+      throw new BranchError(
+        'BRANCH_HAS_OPEN_OPERATIONS',
+        `${before.name} can't be deleted yet. ${result.blockers.map((blocker) => blocker.message).join(' ')} Nothing was deleted.`,
+        409,
+        { blockers: result.blockers },
+      );
     }
 
-    // branchId is intentionally omitted (not before.id): the branch row is
-    // already gone by this point, and AuditLog.branchId is a real FK — an
-    // insert referencing a now-deleted branch id would violate that
-    // constraint and be silently swallowed by recordAuditLog's try/catch,
-    // meaning no audit entry would ever be written for a successful delete.
-    // entityId (not a FK, just an indexed string) still identifies the
-    // deleted branch for lookups.
+    // Committed. Sign out the branch's own accounts and drop every socket's
+    // subscription to the branch; none of this can undo the deletion.
+    try {
+      for (const userId of result.branchAccountIds) {
+        forgetAccountStatus(userId);
+        forgetActiveStatus(userId);
+      }
+      const io = getIO();
+      if (io) {
+        for (const userId of result.branchAccountIds) {
+          io.to(userRoom(userId)).emit(SOCKET_EVENTS.EMPLOYEE_SESSION_REVOKED, { employeeId: userId, status: 'deleted' });
+          void io.in(userRoom(userId)).disconnectSockets(true);
+        }
+        io.in(branchRoom(branchId)).socketsLeave(branchRoom(branchId));
+        io.to(SUPER_ADMIN_ROOM).emit(SOCKET_EVENTS.BRANCH_DELETED, { branchId });
+      }
+    } catch (error) {
+      console.error('Post-deletion session cleanup failed (branch already deleted):', error);
+    }
+
+    // The audit entry names the branch: audit_logs references the branch
+    // record, which outlives the branch.
     await recordAuditLog({
       action: 'BRANCH_DELETED',
       entityType: 'branch',
       entityId: before.id,
       actorId: deletedBy.id,
       actorRole: deletedBy.role,
-      beforeState: { name: before.name, code: before.code, city: before.city, status: before.status },
+      branchId: before.id,
+      beforeState: { name: before.name, code: before.code, city: before.city, address: before.address, status: before.status },
+      afterState: { deleted: true, history_retained: historyRetained, removed: result.removed, branch_accounts_deleted: result.branchAccountIds },
       ipAddress,
     });
 
-    getIO()?.to(SUPER_ADMIN_ROOM).emit(SOCKET_EVENTS.BRANCH_DELETED, { branchId });
+    return { deleted: true, outcome: 'deleted' };
+  },
+
+  /**
+   * POS-PERF-P67 — the branch is already gone. If this actor deleted it (or
+   * any Super Admin asks, since only Super Admins delete branches), the
+   * earlier request succeeded and only its response was lost. Otherwise 404.
+   */
+  async reportRepeatedDeletion(branchId: string, actor: { id: string; role: string }, ipAddress: string | null): Promise<BranchDeletionResult> {
+    if (!(await branchDeletedByThisActor(branchId, actor))) {
+      throw new BranchError('BRANCH_NOT_FOUND', 'Branch not found', 404);
+    }
+    await recordAuditLog({
+      action: 'BRANCH_DELETION_REPEATED',
+      entityType: 'branch',
+      entityId: branchId,
+      actorId: actor.id,
+      actorRole: actor.role,
+      branchId,
+      afterState: { deleted: true },
+      ipAddress,
+    });
+    return { deleted: true, outcome: 'already_deleted' };
   },
 
   async assignSupervisor(userId: string, branchId: string, assignedBy: { id: string; role: string }, ipAddress: string | null) {

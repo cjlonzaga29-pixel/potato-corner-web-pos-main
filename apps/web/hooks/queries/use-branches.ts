@@ -6,12 +6,15 @@ import { SOCKET_EVENTS } from '@potato-corner/shared';
 import type {
   AssignSupervisorInput,
   BranchAssignmentResponse,
+  BranchDeletionEligibility,
+  BranchDeletionResult,
   BranchListResponse,
   BranchResponse,
   BranchStatsResponse,
   BranchStatus,
   ChangeBranchStatusInput,
   CreateBranchInput,
+  DeleteBranchInput,
   UpdateBranchInput,
 } from '@potato-corner/shared';
 import { apiClient } from '@/lib/api-client';
@@ -290,19 +293,48 @@ export function useChangeBranchStatus(branchId: string) {
 }
 
 /** DELETE /api/branches/:branchId — permanent, cascading hard delete. */
+/**
+ * POS-PERF-P67 — whether this branch can be deleted now, what history stays,
+ * what goes, and what to type. Fetched fresh each time the dialog opens
+ * (staleTime 0): a shift opened a minute ago changes the answer.
+ */
+export function useBranchDeletionEligibility(branchId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['branch', branchId, 'deletion-eligibility'],
+    queryFn: async () => {
+      const response = await apiClient<BranchDeletionEligibility>(`/api/branches/${branchId}/deletion-eligibility`);
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to check whether this branch can be deleted'));
+      return response.data;
+    },
+    enabled,
+    staleTime: 0,
+    gcTime: 0,
+    retry: false,
+  });
+}
+
+/**
+ * POS-PERF-P67 — permanent delete of the operational branch. The body echoes
+ * the typed name and code with the version and token from the eligibility
+ * check; the server verifies all four. History stays.
+ */
 export function useDeleteBranch(branchId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async () => {
-      const response = await apiClient<null>(`/api/branches/${branchId}`, { method: 'DELETE' });
-      if (response.error) throw new Error(errorMessage(response, 'Failed to delete branch'));
+    mutationFn: async (confirmation: DeleteBranchInput) => {
+      const response = await apiClient<BranchDeletionResult>(`/api/branches/${branchId}`, {
+        method: 'DELETE',
+        body: JSON.stringify(confirmation),
+      });
+      if (!response.data) throw new Error(errorMessage(response, 'Failed to delete branch'));
+      return response.data;
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
       void queryClient.invalidateQueries({ queryKey: ['branches'] });
       queryClient.removeQueries({ queryKey: ['branch', branchId] });
-      toast.success('Branch permanently deleted');
+      toast.success(result.outcome === 'already_deleted' ? 'This branch had already been deleted' : 'Branch deleted. Its history was kept.');
     },
-    onError: (error: Error) => toast.error(error.message),
+    // No toast on error — the dialog shows the message inline next to the action.
   });
 }
 

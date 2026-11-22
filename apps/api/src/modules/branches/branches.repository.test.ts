@@ -591,12 +591,3 @@ describe('branchesRepository.findActiveBranchesForTransfer', () => {
   });
 });
 
-describe('branchesRepository.delete', () => {
-  it('deletes the branch by id', async () => {
-    vi.mocked(prisma.branch.delete).mockResolvedValue({ id: 'branch-1' } as never);
-
-    await branchesRepository.delete('branch-1');
-
-    expect(prisma.branch.delete).toHaveBeenCalledWith({ where: { id: 'branch-1' } });
-  });
-});

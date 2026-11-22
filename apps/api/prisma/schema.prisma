@@ -454,65 +454,90 @@ model Person {
   @@map("people")
 }
 
-model Branch {
-  id                    String                 @id @default(uuid())
-  productTypeBranches   ProductTypeBranch[]
-  expenseTypeBranches   ExpenseTypeBranch[]
-  extraSupplyBranches   ExtraSupplyBranch[]
-  extraSupplyIssues     ExtraSupplyIssue[]
-  extraSupplyLines      ExtraSupplyIssueLine[]
-  extraSupplyOperations ExtraSupplyOperation[]
-  name                  String
-  code                  String                 @unique
-  address               String
-  city                  String
-  gpsLatitude           Decimal?               @map("gps_latitude") @db.Decimal(10, 8)
-  gpsLongitude          Decimal?               @map("gps_longitude") @db.Decimal(11, 8)
-  gpsRadiusMeters       Int                    @default(100) @map("gps_radius_meters")
-  status                BranchStatus           @default(active)
-  gcashQrUrl            String?
-  gcashQrKey            String?
+/// POS-PERF-P67 — the historical identity of a branch: one row per branch
+/// ever created, same id. History (sales, shifts, attendance, expenses,
+/// payroll, stock movements, proofs, audit) references this, never the live
+/// branches row, so deleting a branch keeps every record and its name/code.
+/// Kept in step while the branch is live and frozen once deleted (migration
+/// triggers). Codes are unique across live and deleted branches. Nothing
+/// operates or authenticates against it.
+model BranchRecord {
+  id        String    @id
+  name      String
+  code      String    @unique
+  address   String
+  city      String
+  createdAt DateTime  @default(now()) @map("created_at")
+  deletedAt DateTime? @map("deleted_at")
+  deletedBy String?   @map("deleted_by")
 
-  catalogAssignments  CatalogManagementAssignment[]
+  /// The live branch; null once it has been deleted.
+  branch Branch? @relation("BranchRecordLive")
+
+  extraSupplyIssues        ExtraSupplyIssue[]
+  extraSupplyLines         ExtraSupplyIssueLine[]
+  extraSupplyOperations    ExtraSupplyOperation[]
+  catalogAssignments       CatalogManagementAssignment[]
+  ingredients              Ingredient[]
+  transactions             Transaction[]
+  shifts                   Shift[]
+  inventoryMovements       InventoryMovement[]
+  attendanceRecords        AttendanceRecord[]
+  auditLogs                AuditLog[]
+  fraudAlerts              FraudAlert[]
+  inventoryStockMovements  InventoryStockMovement[]
+  inventoryCostCorrections InventoryCostCorrection[]
+  exclusiveProducts        Product[]                     @relation("ProductExclusiveBranch")
+  manualDiscountTypes      ManualDiscountType[]
+  discountProofUploads     DiscountProofUpload[]
+  expenses                 Expense[]
+  payrollPolicies          PayrollPolicy[]
+  payRates                 EmployeePayRate[]
+  payrollRuns              PayrollRun[]
+
+  @@map("branch_records")
+}
+
+model Branch {
+  id                  String              @id @default(uuid())
+  productTypeBranches ProductTypeBranch[]
+  expenseTypeBranches ExpenseTypeBranch[]
+  extraSupplyBranches ExtraSupplyBranch[]
+  name                String
+  code                String              @unique
+  address             String
+  city                String
+  gpsLatitude         Decimal?            @map("gps_latitude") @db.Decimal(10, 8)
+  gpsLongitude        Decimal?            @map("gps_longitude") @db.Decimal(11, 8)
+  gpsRadiusMeters     Int                 @default(100) @map("gps_radius_meters")
+  status              BranchStatus        @default(active)
+  gcashQrUrl          String?
+  gcashQrKey          String?
+
   userAssignments     UserBranchAssignment[]
   productAvailability BranchProductAvailability[]
   flavorAvailability  BranchFlavorAvailability[]
-  ingredients         Ingredient[]
-  transactions        Transaction[]
-  shifts              Shift[]
   holdOrders          HoldOrder[]
-  inventoryMovements  InventoryMovement[]
-  attendanceRecords   AttendanceRecord[]
-  auditLogs           AuditLog[]
-  fraudAlerts         FraudAlert[]
 
   // CR-006 Phase A
-  inventoryStocks          InventoryStock[]
-  inventoryStockMovements  InventoryStockMovement[]
-  inventoryCostCorrections InventoryCostCorrection[]
-  staffPinBranchLookups    StaffPinBranchLookup[]
+  inventoryStocks       InventoryStock[]
+  staffPinBranchLookups StaffPinBranchLookup[]
 
   // CR-001
-  exclusiveProducts    Product[]             @relation("ProductExclusiveBranch")
-  promotionBranches    PromotionBranch[]
+  promotionBranches PromotionBranch[]
   // POS-PERF-P55
-  manualDiscountTypes  ManualDiscountType[]
-  discountProofUploads DiscountProofUpload[]
-  productInventory     ProductInventory[]
-
-  expenses Expense[]
+  productInventory  ProductInventory[]
 
   // Step 12a (System Settings)
   receiptConfig       BranchReceiptConfig?
   paymentMethodConfig BranchPaymentMethodConfig?
 
   // POS-PERF-P52
-  payrollPolicies PayrollPolicy[]
-  payRates        EmployeePayRate[]
-  payrollRuns     PayrollRun[]
 
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  createdAt DateTime     @default(now()) @map("created_at")
+  updatedAt DateTime     @updatedAt @map("updated_at")
+  /// POS-PERF-P67 — the historical identity this branch's history references; it outlives the branch.
+  record    BranchRecord @relation("BranchRecordLive", fields: [id], references: [id], onDelete: Restrict)
 
   @@map("branches")
 }
@@ -880,7 +905,7 @@ model Product {
   productType                ProductType?                @relation(fields: [productTypeId], references: [id], onDelete: Restrict)
   creator                    Person?                     @relation(fields: [createdBy], references: [id])
   manager                    Person?                     @relation("ProductManagedBy", fields: [managedBy], references: [id])
-  exclusiveBranch            Branch?                     @relation("ProductExclusiveBranch", fields: [exclusiveBranchId], references: [id])
+  exclusiveBranch            BranchRecord?               @relation("ProductExclusiveBranch", fields: [exclusiveBranchId], references: [id], onDelete: Restrict)
   productCategory            ProductCategory?            @relation(fields: [categoryId], references: [id])
   forkedFromProduct          Product?                    @relation("ProductForkedFrom", fields: [forkedFromProductId], references: [id])
   forkedCopies               Product[]                   @relation("ProductForkedFrom")
@@ -941,7 +966,7 @@ model ProductTypeBranch {
   isActive       Boolean @map("is_active")
 
   productType ProductType @relation(fields: [productTypeId, normalizedName, isActive], references: [id, normalizedName, isActive], onDelete: Cascade, onUpdate: Cascade)
-  branch      Branch      @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  branch      Branch      @relation(fields: [branchId], references: [id], onDelete: Cascade)
 
   @@id([productTypeId, branchId])
   @@index([branchId])
@@ -1240,7 +1265,7 @@ model Ingredient {
   // CR-005 Phase 1
   category          IngredientCategory @default(OTHER)
 
-  branch           Branch              @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  branch           BranchRecord        @relation(fields: [branchId], references: [id], onDelete: Restrict)
   movements        InventoryMovement[]
   productInventory ProductInventory[]
 
@@ -1385,8 +1410,8 @@ model InventoryMovement {
   approvedBy     String?         @map("approved_by")
   recordedBy     String?         @map("recorded_by")
 
-  branch     Branch     @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  ingredient Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+  branch     BranchRecord @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  ingredient Ingredient   @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -1633,9 +1658,9 @@ model CatalogManagementAssignment {
   // master data per CR-007 §3).
   branchId          String?             @map("branch_id")
 
-  assignedByUser Person  @relation("CatalogAssignmentAssignedBy", fields: [assignedBy], references: [id])
-  newManager     Person  @relation("CatalogAssignmentNewManager", fields: [newManagedBy], references: [id])
-  branch         Branch? @relation(fields: [branchId], references: [id])
+  assignedByUser Person        @relation("CatalogAssignmentAssignedBy", fields: [assignedBy], references: [id])
+  newManager     Person        @relation("CatalogAssignmentNewManager", fields: [newManagedBy], references: [id])
+  branch         BranchRecord? @relation(fields: [branchId], references: [id], onDelete: Restrict)
 
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -1804,7 +1829,7 @@ model InventoryStockMovement {
   // universal-inventory.service.ts for the write paths.
   staffInvolvedName String? @map("staff_involved_name")
 
-  branch        Branch         @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  branch        BranchRecord   @relation(fields: [branchId], references: [id], onDelete: Restrict)
   inventoryItem InventoryItem  @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
   unit          UnitOfMeasure? @relation("InventoryStockMovementUnit", fields: [unitId], references: [id])
   enteredUnit   UnitOfMeasure? @relation("InventoryStockMovementEnteredUnit", fields: [enteredUnitId], references: [id])
@@ -1842,7 +1867,7 @@ model InventoryCostCorrection {
   proofType           ImageProofType? @map("proof_type")
   correctedByUserId   String          @map("corrected_by_user_id")
 
-  branch        Branch        @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  branch        BranchRecord  @relation(fields: [branchId], references: [id], onDelete: Restrict)
   inventoryItem InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -2256,7 +2281,7 @@ model Transaction {
   // 20261101130000; the Prisma DSL has no CHECK). Written once at insert.
   calculationMode             String?                  @map("calculation_mode")
 
-  branch                 Branch                 @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  branch                 BranchRecord           @relation(fields: [branchId], references: [id], onDelete: Restrict)
   shift                  Shift?                 @relation(fields: [shiftId], references: [id])
   cashier                Person                 @relation(fields: [cashierId], references: [id])
   voidedBy               Person?                @relation("TransactionVoidedBy", fields: [voidedById], references: [id])
@@ -2349,7 +2374,7 @@ model ManualDiscountType {
   // Rows created by one supervisor action for several branches share this; null = a type at one branch.
   groupId         String?   @map("group_id")
 
-  branch        Branch                      @relation(fields: [branchId], references: [id])
+  branch        BranchRecord                @relation(fields: [branchId], references: [id], onDelete: Restrict)
   createdBy     Person                      @relation("ManualDiscountTypeCreatedBy", fields: [createdById], references: [id])
   updatedBy     Person?                     @relation("ManualDiscountTypeUpdatedBy", fields: [updatedById], references: [id])
   deactivatedBy Person?                     @relation("ManualDiscountTypeDeactivatedBy", fields: [deactivatedById], references: [id])
@@ -2383,7 +2408,7 @@ model DiscountProofUpload {
   transactionId String?        @unique @map("transaction_id")
   consumedAt    DateTime?      @map("consumed_at")
 
-  branch      Branch       @relation(fields: [branchId], references: [id])
+  branch      BranchRecord @relation(fields: [branchId], references: [id], onDelete: Restrict)
   uploadedBy  Person       @relation(fields: [uploadedById], references: [id])
   transaction Transaction? @relation(fields: [transactionId], references: [id])
 
@@ -2610,9 +2635,9 @@ model Shift {
   totalDiscountAmount    Decimal     @default(0) @map("total_discount_amount") @db.Decimal(10, 2)
   pwdScTransactionCount  Int         @default(0) @map("pwd_sc_transaction_count")
 
-  branch  Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  cashier Person @relation("ShiftCashier", fields: [cashierId], references: [id])
-  opener  Person @relation("ShiftOpenedBy", fields: [openedBy], references: [id])
+  branch  BranchRecord @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  cashier Person       @relation("ShiftCashier", fields: [cashierId], references: [id])
+  opener  Person       @relation("ShiftOpenedBy", fields: [openedBy], references: [id])
 
   denominations     ShiftCashDenomination[]
   transactions      Transaction[]
@@ -2770,7 +2795,7 @@ model AttendanceRecord {
   deletedAt          DateTime?           @map("deleted_at")
 
   employee       Person                   @relation("AttendanceEmployee", fields: [employeeId], references: [id])
-  branch         Branch                   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  branch         BranchRecord             @relation(fields: [branchId], references: [id], onDelete: Restrict)
   corrector      Person?                  @relation("AttendanceCorrector", fields: [correctedBy], references: [id])
   originalRecord AttendanceRecord?        @relation("AttendanceCorrection", fields: [originalRecordId], references: [id])
   corrections    AttendanceRecord[]       @relation("AttendanceCorrection")
@@ -2843,8 +2868,8 @@ model AuditLog {
   previousHash String  @map("previous_hash")
   currentHash  String  @map("current_hash")
 
-  actor  Person? @relation(fields: [actorId], references: [id])
-  branch Branch? @relation(fields: [branchId], references: [id])
+  actor  Person?       @relation(fields: [actorId], references: [id])
+  branch BranchRecord? @relation(fields: [branchId], references: [id], onDelete: Restrict)
 
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -2912,7 +2937,7 @@ model FraudAlert {
   investigatedBy  String?            @map("investigated_by")
   dismissalReason String?            @map("dismissal_reason")
 
-  branch Branch? @relation(fields: [branchId], references: [id])
+  branch BranchRecord? @relation(fields: [branchId], references: [id], onDelete: Restrict)
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -2992,7 +3017,7 @@ model Expense {
   /// The type's name when it was recorded. A rename or deactivation never rewrites it.
   expenseTypeName String?         @map("expense_type_name")
 
-  branch      Branch       @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  branch      BranchRecord @relation(fields: [branchId], references: [id], onDelete: Restrict)
   creator     Person       @relation(fields: [createdBy], references: [id])
   expenseType ExpenseType? @relation(fields: [expenseTypeId], references: [id], onDelete: Restrict)
 
@@ -3144,7 +3169,7 @@ model ExtraSupplyIssue {
   orderReference   String?              @map("order_reference")
   createdAt        DateTime             @default(now()) @map("created_at")
 
-  branch    Branch                 @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  branch    BranchRecord           @relation(fields: [branchId], references: [id], onDelete: Restrict)
   shift     Shift?                 @relation(fields: [shiftId], references: [id], onDelete: SetNull)
   cashier   Person                 @relation(fields: [cashierId], references: [id])
   lines     ExtraSupplyIssueLine[]
@@ -3189,7 +3214,7 @@ model ExtraSupplyIssueLine {
 
   issue  ExtraSupplyIssue @relation(fields: [issueId], references: [id], onDelete: Cascade)
   supply ExtraSupply      @relation(fields: [extraSupplyId], references: [id], onDelete: Restrict)
-  branch Branch           @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  branch BranchRecord     @relation(fields: [branchId], references: [id], onDelete: Restrict)
 
   @@index([issueId])
   @@index([branchId, createdAt])
@@ -3210,7 +3235,7 @@ model ExtraSupplyOperation {
   issueId     String?  @unique @map("issue_id")
   createdAt   DateTime @default(now()) @map("created_at")
 
-  branch Branch            @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  branch BranchRecord      @relation(fields: [branchId], references: [id], onDelete: Restrict)
   issue  ExtraSupplyIssue? @relation(fields: [issueId], references: [id], onDelete: Cascade)
 
   @@index([branchId])
@@ -3505,7 +3530,7 @@ model PayrollPolicy {
   createdByName          String                @map("created_by_name")
   createdAt              DateTime              @default(now()) @map("created_at")
 
-  branch Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  branch BranchRecord @relation(fields: [branchId], references: [id], onDelete: Restrict)
 
   @@unique([branchId, version])
   @@map("payroll_policies")
@@ -3528,8 +3553,8 @@ model EmployeePayRate {
   voidedBy      String?   @map("voided_by")
   voidReason    String?   @map("void_reason")
 
-  employee Person @relation(fields: [employeeId], references: [id], onDelete: Restrict)
-  branch   Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  employee Person       @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  branch   BranchRecord @relation(fields: [branchId], references: [id], onDelete: Restrict)
 
   @@index([employeeId, branchId, effectiveFrom])
   @@index([branchId])
@@ -3576,7 +3601,7 @@ model PayrollRun {
   paidByName     String?   @map("paid_by_name")
   paidReference  String?   @map("paid_reference")
 
-  branch      Branch                   @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  branch      BranchRecord             @relation(fields: [branchId], references: [id], onDelete: Restrict)
   revisionOf  PayrollRun?              @relation("PayrollRunRevision", fields: [revisionOfId], references: [id], onDelete: Restrict)
   revisions   PayrollRun[]             @relation("PayrollRunRevision")
   lines       PayrollRunLine[]

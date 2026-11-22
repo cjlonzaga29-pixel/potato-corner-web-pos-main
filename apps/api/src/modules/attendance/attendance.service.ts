@@ -656,7 +656,7 @@ export const attendanceService = {
         branch_name: record.branch.name,
         counts_toward_clocked_in:
           record.clockOutServerTime === null
-            ? record.branch.status === 'active' &&
+            ? record.branch.branch?.status === 'active' &&
               record.employee.isActive &&
               record.employee.status === 'active' &&
               record.employee.branchAssignments.some((a) => a.branchId === record.branchId)

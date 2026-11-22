@@ -15,3 +15,13 @@ export function isForeignKeyRestriction(error: unknown): boolean {
   }
   return false;
 }
+
+/**
+ * POS-PERF-P67 — true when a write named a branch that has been deleted
+ * (the live-branch trigger refused it). The work itself is not lost
+ * silently: the caller gets 409 BRANCH_DELETED and nothing was written.
+ */
+export function isDeletedBranchWrite(error: unknown): boolean {
+  if (error instanceof Error) return error.message.includes('POS_PERF_P67_BRANCH_DELETED');
+  return false;
+}

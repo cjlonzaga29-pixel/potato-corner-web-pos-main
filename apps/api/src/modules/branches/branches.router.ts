@@ -6,6 +6,7 @@ import {
   updateBranchSchema,
   changeBranchStatusSchema,
   assignSupervisorSchema,
+  deleteBranchSchema,
   BRANCH_STATUS,
   MAX_LIST_LIMIT,
   type BranchStatus,
@@ -165,19 +166,51 @@ router.patch('/:branchId', authenticate, adminOnly, requirePasswordChange, valid
   }
 });
 
-router.delete('/:branchId', authenticate, adminOnly, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    if (!requireUser(req, res)) return;
-    await branchesService.deleteBranch(
-      req.params.branchId as string,
-      { id: req.user.user_id, role: req.user.role },
-      req.ip ?? null,
-    );
-    res.status(204).send();
-  } catch (error) {
-    handleBranchError(error, res, next);
-  }
-});
+// POS-PERF-P67 — what a permanent delete would keep, remove and require.
+router.get(
+  '/:branchId/deletion-eligibility',
+  authenticate,
+  adminOnly,
+  requirePasswordChange,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const result = await branchesService.getDeletionEligibility(req.params.branchId as string, {
+        id: req.user.user_id,
+        role: req.user.role,
+      });
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleBranchError(error, res, next);
+    }
+  },
+);
+
+// POS-PERF-P67 — permanent delete of the operational branch; history stays
+// on its branch record. The body must echo the typed name and code, the
+// version and the token from deletion-eligibility. An older web sends no
+// body and gets 422 (validation) without any change.
+router.delete(
+  '/:branchId',
+  authenticate,
+  adminOnly,
+  requirePasswordChange,
+  validate(deleteBranchSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const result = await branchesService.deleteBranch(
+        req.params.branchId as string,
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+        req.body,
+      );
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleBranchError(error, res, next);
+    }
+  },
+);
 
 router.post(
   '/:branchId/gcash-qr',

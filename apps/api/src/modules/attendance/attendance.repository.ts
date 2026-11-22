@@ -218,7 +218,8 @@ export const attendanceRepository = {
               },
             },
           },
-          branch: { select: { name: true, status: true } },
+          // POS-PERF-P67 — the name from the historical record; status from the live branch (null once deleted).
+          branch: { select: { name: true, branch: { select: { status: true } } } },
           breaks: breaksInclude,
         },
         orderBy: [{ clockInServerTime: 'desc' }, { id: 'asc' }],

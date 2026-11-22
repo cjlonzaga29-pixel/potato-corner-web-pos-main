@@ -99,7 +99,7 @@ Branches left without a supervisor, held orders and pending inventory approvals 
 | Where (button) | Entity | Server path | Actual behaviour now | Historical dependencies | Status |
 | --- | --- | --- | --- | --- | --- |
 | Admin › Supervisors; Admin employee detail; Supervisor Employees list/detail ("Delete … permanently") | Staff/supervisor account | `DELETE /api/employees/:id` | Physical delete (§2) | All history kept via `people` | **Done** |
-| Admin › Branches › Delete ("Permanently delete this branch?") | Branch | `DELETE /api/branches/:id` → `prisma.branch.delete` | Physical delete that **cascades** the branch's sales, shifts, attendance, expenses and stock movements (pre-existing design, covered by `branches.integration.test.ts` "permanent delete cascade"). The dialog already says so plainly. Records kept by `RESTRICT` (payroll, pay rates, product-type assignments, discount types/proofs) used to make it a bare 500; it is now a 409 `BRANCH_HAS_PROTECTED_RECORDS` ("Close the branch instead"). | Erases financial history by design | **Owner decision needed:** permanent branch delete erases financial evidence. Not changed here (policy, not labelling). Close Branch is the non-destructive alternative. |
+| Admin › Branches › Settings › Permanently Delete Branch | Branch | `GET /api/branches/:id/deletion-eligibility`, then `DELETE /api/branches/:id` with `deleteBranchSchema` | **P67 (§10):** physical delete of the operational branch, its branch login account, everyone's access and its configuration. History stays on `branch_records` with its original name and code. Open work and non-zero stock block. | All history kept | **Done (P67)** |
 | Branch › Remove supervisor | Assignment | `DELETE /api/branches/:id/assignments/:userId` | Ends the assignment (`removedAt`); the account stays | none | Labelled honestly ("Remove … from this branch") |
 | Admin › Expenses › Delete Expense | Expense | `DELETE /api/expenses/:id` (Super Admin) | **Soft delete** (`deleted_at`); the row is kept | Financial evidence | Wording corrected: "Hides this expense from the expense ledger. The record itself is kept for the audit history…" (was "This cannot be undone"). Physical deletion deliberately not implemented. Not proved that every total excludes soft-deleted rows (only the expense repository and report readers were checked). |
 | Expense › Delete receipt | Receipt file | `DELETE /api/expenses/:id/receipt` | Removes the file reference (`updateReceipt`) | none | Unchanged |
@@ -265,10 +265,182 @@ The P64 tool (`scripts/p64-fixture-account-cleanup.ts`, `fixture-account-cleanup
 
 ## 9. Known limits and follow-ups
 
-- Branch permanent delete erases financial history by cascade (pre-existing). Owner decision.
+- ~~Branch permanent delete erases financial history by cascade.~~ Fixed in P67 (§10). Its own limits are in §10.7.
 - Soft-deleted expenses: exclusion from every dashboard and report total was not re-audited.
 - Out-of-process deletion (the cleanup CLI) has the P64 cross-process delays: up to 60 s on authenticate-only routes, and an open socket is not cut.
 - Payroll: Super Admin payroll is not read-only (P52 design). The checklist's pay-period and break rows open the one policy form.
 - Hosted and staging checks were NOT RUN; no isolated environment exists (unchanged).
 - Payroll mutation errors from the server still appear only as a toast (shared P52 `usePayrollMutation`); inputs are kept. Only the cutoff range now has an in-form message.
 - The P62 perf fixture's attendance (no rates, staff not assigned to every P62 branch) blocks payroll finalization on its branches. Browser payroll checks need their own branch, as `payroll-flow.mjs` does.
+
+## 10. P67: branch Delete keeps business history, plus the PDF test fix
+
+Same branch, on top of `8af206e8`. Local only: nothing pushed until §10.8 says so, nothing deployed, production not accessed.
+
+### 10.1 What the old branch Delete actually did
+
+Traced from the migrations (final constraint state), not from `schema.prisma` alone. `DELETE /api/branches/:id` was a bare `prisma.branch.delete`: no transaction, no lock, no body. It ran after a single open-shift count.
+
+| What happened to the row | Tables |
+| --- | --- |
+| **Erased** (CASCADE) | `transactions`, plus their items, deduction jobs and projection outbox; `shifts`, plus cash denominations and reviews; `attendance_records`, plus breaks; `expenses`; `inventory_movements`; `inventory_stock_movements`; `inventory_cost_corrections`; `extra_supply_issues`, lines and operations; `ingredients`, which also erased legacy movements through `ingredient_id` |
+| **Unlinked** (SET NULL) | `audit_logs.branch_id`. This silently changed rows that are hashed into the audit chain. Also `fraud_alerts`, `catalog_management_assignments`, and `products.exclusive_branch_id`, which orphaned "exclusive" products |
+| **Refused** (RESTRICT, now a 409 since P66) | payroll policies, pay rates and runs; manual discount types and proofs; product-type enrolment; attendance with payroll claims |
+| **Left behind** | Role `branch` login accounts (their tokens kept working until expiry); staff tokens kept access to the deleted id (staff and branch access trusted the JWT); socket rooms; `id_counters` keyed by branch code. Re-creating a branch with the same code on the same day **continued the old receipt sequence** |
+
+### 10.2 What Delete does now
+
+- **`branch_records`** (Prisma `BranchRecord`) is the immutable historical identity of a branch:
+  - one row per branch ever created, with the same id, name, code, address and city;
+  - `deleted_at` and `deleted_by`;
+  - no status, settings, stock, access or accounts.
+- **All 20 history references point at it** with `ON DELETE RESTRICT`: sales, shifts, attendance, expenses, payroll policies, pay rates and runs, discount types and proofs, stock and legacy movements, cost corrections, ingredients, Extra Supplies, audit, fraud, catalog provenance, exclusive products. Their second-level children (items, breaks, reviews, deduction jobs, claims) therefore stay too.
+- **Still `CASCADE` with the branches row** (13 references): assignments, staff PIN lookups, product and flavor availability, receipt and payment settings, promotion, expense-type and Extra Supplies enrolment, legacy `product_inventory`, `inventory_stocks` (zero only, see blockers) and finished hold orders. `product_type_branches` changed from RESTRICT to CASCADE, because it is enrolment.
+- **`branches.id` references `branch_records.id`.** Triggers in the migration SQL handle the rest:
+  - **insert:** create the record, generate the id (Prisma stops filling `uuid()` once `id` is a relation field), and refuse a deleted id (`POS_PERF_P67_BRANCH_ID_REUSED`) or any code already on a record, live or deleted (`POS_PERF_P67_BRANCH_CODE_RETIRED`);
+  - **live rename:** follows to the record;
+  - **any delete:** marks the record deleted;
+  - **after deletion:** the record is frozen, and records are never deleted (`POS_PERF_P67_BRANCH_RECORD_IMMUTABLE`).
+- **Live-branch guard.** 18 operational history tables have a trigger on insert, or on a change of `branch_id`. It locks the branches row `FOR KEY SHARE`, exactly like a foreign-key check, and raises `POS_PERF_P67_BRANCH_DELETED` (SQLSTATE P0001) if the row is gone.
+  - Not raised as 23503: Prisma reports a trigger-raised 23503 as a generic P2003 without the message, which was found in testing.
+  - `app.ts` maps the error to 409 `BRANCH_DELETED` ("Nothing was saved").
+  - `audit_logs` and `fraud_alerts` are not guarded: evidence about a deleted branch may still be written, and the deletion's own audit entry names it.
+- **Codes are never reused.** Receipt numbers (`<CODE>-<YYYYMMDD>-<seq>`) and the `id_counters` keys carry the code, so retiring it keeps every receipt number pointing at one branch. A manual code that a record holds is refused with 409 `BRANCH_CODE_RETIRED`. An auto-generated code skips one that is held.
+- **Access ends at once.**
+  - The branch's own role `branch` accounts are deleted in the same transaction, using the P66 lifecycle: the removed-account marker kills their tokens, and attribution stays on `people`.
+  - Staff and branch tokens now keep only branch ids that still exist (`getAccessibleBranchIds` → `findExistingBranchIds`, a primary-key lookup per request, like the supervisor query). Socket rooms come from the same function.
+  - After commit, sockets leave the branch room and the deleted accounts get `EMPLOYEE_SESSION_REVOKED`.
+  - Staff and supervisors keep their own accounts, without this branch.
+- **Also removed:** the branch's notifications and cached `report_snapshots`.
+
+### 10.3 Blockers (nothing changes until resolved; history never blocks)
+
+| Code | Condition | Resolve with |
+| --- | --- | --- |
+| `open_shifts` | `shifts.status = 'active'` | close the shift and count the cash |
+| `open_attendance` | clocked in, not deleted | clock out or correct the record |
+| `pending_checkouts` | `checkout_attempts.status = 'in_progress'` (including expired leases: their result is uncertain) | finish or resolve it on the terminal |
+| `held_orders` | `hold_orders.status = 'held'` and not expired | complete or release them |
+| `pending_inventory_jobs` | deduction jobs `pending`/`processing`/`failed`; projection outbox `pending`/`processing`/`deferred`/`stuck`; approvals `PENDING`/`RETURNED` | let them finish, reconcile failed or stuck ones, review approvals |
+| `nonzero_stock` | `inventory_stocks` on-hand or reserved ≠ 0 | transfer it out, or record a count of zero |
+| `draft_payroll_runs` | `payroll_runs.status = 'draft'` | finalize or discard |
+| `unpaid_payroll_hours` | P66's rule per branch: clocked-out hours from the first policy on that no finalized run covers | finalize payroll for those dates |
+
+There are no transfer, reservation or Extra Supplies blockers. Transfers are immediate movement pairs, reservations exist only as `quantity_reserved` (covered by stock), and Extra Supplies operations persist only `committed` or `abandoned`.
+
+### 10.4 Confirmation, races, repeats
+
+- **Eligibility.** `GET /api/branches/:id/deletion-eligibility` (Super Admin) returns the blockers, the retained-history counts, what is removed, and `confirmation { name, code, version, confirmation_token }`.
+  - `version` is the branch's `updated_at`.
+  - The token is `HMAC(HASH_KEY, actor | branch | version)`, so it binds the actor, the branch and the version.
+- **Delete body.** `DELETE /api/branches/:id` requires `{ confirm_name, confirm_code, version, confirmation_token }` (Zod `deleteBranchSchema`). The server checks:
+  - the name, ignoring case and extra spaces;
+  - the code, exactly;
+  - the token, for this actor (`DELETE_CONFIRMATION_INVALID`, 403);
+  - the version (`BRANCH_CHANGED`, 409).
+- **Older web.** It sends no body and gets 422 with no change.
+- **Cancel** sends nothing.
+- **One transaction:**
+  1. A version-bound `updateMany` takes the row lock.
+  2. Blockers and an activity fingerprint (counts of sales, shifts, attendance, stock and legacy movements, expenses, Extra Supplies, checkouts, approvals, payroll runs) are read.
+  3. The branch accounts are deleted.
+  4. `branch_records.deleted_by` is stamped.
+  5. `branches` is deleted. This waits for any write already holding the row `FOR KEY SHARE`.
+  6. Blockers and the fingerprint are re-read. Any change rolls everything back: `BRANCH_ACTIVITY_DURING_DELETE`, or `BRANCH_HAS_OPEN_OPERATIONS`.
+- **Assumption:** every stock change writes a stock movement (the CR-006 ledger design).
+- **Repeats and races:**
+  - A repeat after success returns `already_deleted` to a Super Admin (audited as `BRANCH_DELETION_REPEATED`). An unknown id gets 404.
+  - Two simultaneous deletes give exactly one `deleted` and one `already_deleted` (tested).
+  - The dialog re-checks eligibility after any failed request, and a double click sends one request.
+- **Audit:** `BRANCH_DELETED` now carries `branch_id` (it references the record), name, code, address, city, status, the retained-history counts, the removed counts and the deleted branch-account ids.
+
+### 10.5 Migration, compatibility, rollout and rollback floor
+
+**Migration** `20261122130000_pos_perf_p67_branch_deletion_records` (new; no applied migration edited):
+- creates and backfills `branch_records`;
+- drops 21 foreign keys and adds 22 (the 21 retargeted or changed plus `branches_id_fkey`), `NOT VALID` then validated;
+- adds 7 functions and 22 triggers;
+- changes no row in any existing table and deletes no branch. **No migration performs branch deletion or account cleanup.**
+
+**Order:** migration, then API, then web.
+
+**Migration → old (P66) API window:**
+- *Reads, writes and branch creation keep working.* The old client fills the id itself, and the trigger creates the record.
+- *Old Delete no longer erases history.* The database no longer cascades it, whichever API calls it.
+- *Old Delete is still unsafe.* It checks only open shifts, cascades non-zero `inventory_stocks` rows, leaves branch accounts behind, and afterwards the old readers 500 on that branch's history: required Prisma relations, "Inconsistent query result" (shown in the rehearsal).
+- **Restriction: no branch may be deleted until every API instance runs P67.** This is **documented, not database-enforced.** Enforcing it would mean refusing any unstamped `DELETE FROM branches`, which would also break the ~39 test teardowns that delete fixture branches.
+- Render runs one API instance, so the window is the time between the migration and the API swap.
+
+**New API with an old web:** the old dialog sends no body, so delete is impossible (422) until a reload. The old dialog's wording ("destroys all…") is wrong until then.
+
+**Rollback floor:**
+- Before the first branch deletion, the API can go back to P66 code.
+- **After any branch has been deleted, P67 is the API floor**: old readers join history to `branches`.
+- Never drop `branch_records`, its triggers or the retargeted FKs. The schema is forward-only once a branch is gone.
+- Old code cannot restore a deleted branch: the id and code are refused.
+
+**Reports after a deletion:** history readers (receipts, transaction export, reports, attendance, expenses, audit) read name and code through the record and keep working. Admin "all branches" summaries keep deleted-branch history, while the live dashboard groups only live branches (P60 test adjusted to state this). Payroll for a deleted branch cannot be created or edited: the guard blocks it, and unpaid hours are a blocker.
+
+### 10.6 PDF test failure (`p62-pdf-isolation`, "deadline-aware admission")
+
+**Cause, proved: (c), a load-sensitive wall-clock bound.**
+- The old 1,090 ms limit was the 1 s job plus 90 ms of slack. It included the worker's own 1 s timer and its message back to the main thread, and both stretch under CPU load.
+- **Alone:** 15 trials took 1,000–1,051 ms.
+- **Under 8 busy processes on 4 cores:** 20/20 trials took 1,092–1,242 ms, every one over the old limit. In all 35 trials the queued job was refused **0 ms** after the long job finished.
+- **Not (a), a pool fault:** the outcome was correct every time and the pool ended idle.
+- **Not (b), a start-up issue:** the warm-up always finished before t0, with exactly one worker.
+- The original test failed 2/2 under load.
+
+**Fix (test-only):**
+- `p62-pdf-isolation.test.ts` now asserts:
+  - exactly one worker before the window;
+  - the long job took at least 950 ms;
+  - the long job resolves;
+  - the queued job gets `PDF_BUSY` with the deadline message (not queue-full or queue-wait);
+  - the refusal comes after the long job and within 50 ms of it (half the 100 ms job, so it still catches "ran it anyway");
+  - the pool is idle at the end.
+- The other 22 tests, including the `<100 ms` refusals and main-thread responsiveness, are unchanged.
+- The timing distribution moved to the opt-in `p62-pdf-admission.bench.test.ts` (`P62_PDF_BENCH=1`, which fails on a wrong outcome, median gap ≥ 20 ms or median long job ≥ 1,250 ms), with helper `p62-pdf-admission.test-helpers.ts`.
+
+**Results:**
+- Alone: 5/5 runs, 23/23 each.
+- Under load: 5/5 runs, long job 1,070–1,195 ms, refusal gap 0 ms.
+- In full API run 1: 23/23 (overrun 1,017 ms, gap 0).
+- Logs are in `C:\p67\pdf\`.
+
+### 10.7 Verification
+
+Disposable local embedded Postgres only, on ports 56671–56677, with task-owned files in `C:\p67` (throwaway secrets, never printed in full). Never production, `pos_verify` or another session's services.
+
+| Check | Result |
+| --- | --- |
+| Dependency audit (Agent 1, read-only, every FK parsed from the final migration state) | §10.1. 33 FKs to `branches`; 20 history references, 13 configuration/access; second-level cascades, non-FK references, token and counter behaviour |
+| Focused API, run 1 (branches, branch-access) | **8 failed**: 7 mocks missing the new repository method, 1 real finding (a trigger-raised 23503 reaches Prisma as P2003 without its message, so the API could not recognise it). Fixed: guard raises P0001; mocks updated; the 422 (not 400) for a missing body corrected in the test |
+| Focused API, run 2 (+ P60, P66) | **1 failed**: P60's Admin-vs-dashboard expense total. Cause: deleted-branch expenses now stay in the Admin summary (₱246.90 = 2 × P67 fixture). Intended; test now sets deleted-branch expenses aside. Then 248 others passed |
+| P67 integration (`p67-branch-deletion.integration.test.ts`) | 14/14 in the full run: eligibility, cancel/mismatch/other admin's token/stale version change nothing; physical delete, branch account gone, staff kept; history counts, amounts, names, codes, receipt lookup; branch-account token refused, staff token loses the branch; writes refused in the DB, audit still allowed; record frozen; repeat `already_deleted`; same-name replacement new id/no access/no history, old code retired; blockers (shift, clock-in, stock, unpaid hours); two simultaneous deletes; delete racing a shift insert and an expense insert |
+| Migration rehearsal (`scripts/test-p67-migration-on-populated-data.ts`, 302 branches, 20,001 sales) | Run 1: stopped on the script's own error-text match (the trigger did refuse; Prisma's raw error omits trigger text for 23505). **Run 2: passed**: 93 pre-existing tables byte-identical; 302/302 records, none deleted; all FKs validated; exactly the 20 history tables reference `branch_records` (RESTRICT); only config tables reference `branches` (CASCADE); id generation, rename, delete mark, id/code reuse refused, record frozen and undeletable, deleted-branch write refused, history re-pointing refused, audit allowed; an old-style plain `DELETE` keeps all history; old-reader hazard shown; **no drift**. Migration ~3 s with the CLI start |
+| **Full API, run 1** | **75 failed, 3,785 passed, 6 skipped; exit 1.** All 75 were one cause in 9 unit-test files: their `branchesRepository` mock lacked `findExistingBranchIds` (staff/branch access). Mocks fixed; those 9 files 386/386 |
+| **Full API, run 2** | **0 failed, 3,860 passed, 6 skipped (229 files); runner exit 0** (recorded in `C:\p67\api-full2.exit`) |
+| Shared | 83 passed |
+| Typecheck | API, web, shared clean |
+| Lint | API 0 errors (26 warnings, none in changed files); web 0 errors (warnings in untouched files) |
+| Web, affected | Dialog 7/7; the 13 files touching branches or mocking `use-branches`: 309/309. Full web suite not rerun (no shared UI/navigation change); last full run 1,780/1,780 (§7a) |
+| Production builds (`stack.sh build`: API `tsc`, `next build`, service worker generated) | Pass |
+| **Browser, final builds, service worker active** (`tests/e2e/manual/p67/branch-delete.mjs`; stack `C:\p67\stack`, ports 56681–56683, db `p62_p67browser`; Chromium 1366 and 390 emulation) | **Run 1: 27/27**: Settings wording; blocked branch shows the open-shift instruction and no delete; dialog names branch and code, irreversible, lists kept history with counts and the removed login account, no horizontal scroll at 390; gating (wrong-case code refused, case-insensitive name + exact code accepted); cancel changes nothing; a double click sends one DELETE; branch row absent, record kept and marked; history counts and sale amount unchanged; branch account deleted, staff kept; list no longer shows it; the branch's open terminal lands on /login and re-login is refused; Admin expenses and Attendance Records still name it. API log: no 5xx |
+| Payroll browser and account deletion | Not rerun: no payroll or account-deletion code changed (P66 44/44 and 57/57 evidence stands); P66 integration 15/15 in the full run |
+| PDF test | §10.6 |
+| Not run | Hosted/staging (none exists); real devices; an actual old API process against the new schema (the rehearsal reproduces its SQL) |
+
+**Disposable data and processes.** `C:\p67` (env with throwaway secrets, logs, stopped stack data, screenshots, scripts) is task-owned and safe to delete. The stack's API, web and Postgres processes were stopped and their PIDs checked. `%TEMP%\pos-test-pg-*` directories left by EBUSY remain. During setup the lead printed part of `C:\p66\env.sh` into its own tool output: a throwaway local JWT key pair generated for that disposable stack, used nowhere else. Treat `C:\p66` as disposable and delete it.
+
+**Not done / limits:**
+- The rollout restriction in §10.5 is procedural.
+- Offline sales still queued on a device for a deleted branch are refused at sync (`BRANCH_DELETED`) with no recording screen. Sync every terminal before deleting a branch.
+- Storage objects (proofs, GCash QR) stay in storage and are still referenced by the retained rows.
+- An expired, still-`held` hold order cascades without blocking.
+- Real devices and hosted/staging were not tested (none exists).
+- The production branch inventory and any production deletion were NOT done.
+
+### 10.8 PR and CI
+
+PR_SECTION

@@ -64,6 +64,57 @@ export const changeBranchStatusSchema = z.object({
   status: z.enum(branchStatusValues),
 });
 
+/**
+ * POS-PERF-P67 — DELETE /api/branches/:id body. confirm_name and
+ * confirm_code are what the Super Admin typed (the name ignoring case and
+ * extra spaces, the code exactly). version and confirmation_token come from
+ * GET /api/branches/:id/deletion-eligibility: the token is issued by the
+ * server for this actor, this branch and this version, so a confirmation
+ * reviewed by someone else, for another branch or before an edit is refused.
+ */
+export const deleteBranchSchema = z.object({
+  confirm_name: z.string().trim().min(1).max(200),
+  confirm_code: z.string().trim().min(1).max(20),
+  version: z.iso.datetime({ offset: true }),
+  confirmation_token: z.string().regex(/^[0-9a-f]{64}$/),
+});
+
+export const branchDeletionBlockerCodeValues = [
+  'open_shifts',
+  'open_attendance',
+  'pending_checkouts',
+  'held_orders',
+  'pending_inventory_jobs',
+  'nonzero_stock',
+  'draft_payroll_runs',
+  'unpaid_payroll_hours',
+] as const;
+
+export const branchDeletionBlockerSchema = z.object({
+  code: z.enum(branchDeletionBlockerCodeValues),
+  count: z.number().int(),
+  message: z.string(),
+});
+
+export const branchDeletionEligibilitySchema = z.object({
+  branch_id: z.uuid(),
+  can_delete: z.boolean(),
+  blocked_reason: z.enum(['open_operations', 'already_deleted']).nullable(),
+  blockers: z.array(branchDeletionBlockerSchema),
+  /** Counts of history that stays (attributed to the branch's historical record). */
+  history_retained: z.record(z.string(), z.number().int()).nullable(),
+  /** What goes with the branch: accounts, access, configuration. */
+  removed: z.record(z.string(), z.number().int()).nullable(),
+  confirmation: z
+    .object({ name: z.string(), code: z.string(), version: z.iso.datetime(), confirmation_token: z.string() })
+    .nullable(),
+});
+
+export const branchDeletionResultSchema = z.object({
+  deleted: z.literal(true),
+  outcome: z.enum(['deleted', 'already_deleted']),
+});
+
 export const branchResponseSchema = z.object({
   id: z.uuid(),
   name: z.string(),

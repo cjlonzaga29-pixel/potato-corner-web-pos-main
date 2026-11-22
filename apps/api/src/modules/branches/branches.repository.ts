@@ -3,10 +3,18 @@ import { MANUAL_TOTAL_CALCULATION, PAYMENT_METHOD, type PaymentMethod } from '@p
 import { prisma } from '../../lib/prisma.js';
 import { lockNonRemovedUser } from '../employees/employees.repository.js';
 import { nextCounterValue } from '../../lib/id-counter.js';
-import { dayBounds } from '../../lib/manila-time.js';
+import { dayBounds, manilaDateKey } from '../../lib/manila-time.js';
+import { REMOVED_ACCOUNT_MARKER_TTL_MS, removedAccountRevocationHash } from '../../lib/verify-access-token.js';
 import { computeFinancialMetrics } from '../../lib/financial-metrics.js';
 import { availableStock, classifyStockStatus } from '../universal-inventory/stock-classification.js';
-import type { BranchListFilters, CreateBranchData, UpdateBranchData } from './branches.types.js';
+import type {
+  BranchActivityFingerprint,
+  BranchDeletionBlocker,
+  BranchDeletionOutcome,
+  BranchListFilters,
+  CreateBranchData,
+  UpdateBranchData,
+} from './branches.types.js';
 
 function emptyPaymentBreakdown(): Record<PaymentMethod, { total: number; count: number }> {
   return Object.fromEntries(
@@ -344,9 +352,6 @@ export const branchesRepository = {
     });
   },
 
-  delete(branchId: string) {
-    return prisma.branch.delete({ where: { id: branchId } });
-  },
 
   async branchStats(branchId: string) {
     const { dayStart, dayEnd } = dayBounds(new Date());
@@ -594,4 +599,263 @@ export const branchesRepository = {
     const next = await nextCounterValue(key);
     return `PC-${citySlug}-${String(next).padStart(3, '0')}`;
   },
+
+  // ---------------------------------------------------------------------
+  // POS-PERF-P67 — permanent branch deletion that keeps history.
+  // ---------------------------------------------------------------------
+
+  /** The historical record, live or deleted (codes are never reused). */
+  findRecordById(branchId: string) {
+    return prisma.branchRecord.findUnique({ where: { id: branchId } });
+  },
+
+  findRecordByCode(code: string) {
+    return prisma.branchRecord.findUnique({ where: { code } });
+  },
+
+  /** Ids among `branchIds` whose branch still exists (deleted ones drop out). */
+  async findExistingBranchIds(branchIds: string[], client: Prisma.TransactionClient | typeof prisma = prisma): Promise<string[]> {
+    if (branchIds.length === 0) return [];
+    const rows = await client.branch.findMany({ where: { id: { in: branchIds } }, select: { id: true } });
+    return rows.map((row) => row.id);
+  },
+
+  /** History that stays with the branch record after deletion. */
+  async countRetainedHistory(branchId: string, client: Prisma.TransactionClient | typeof prisma = prisma): Promise<Record<string, number>> {
+    const where = { branchId };
+    const [
+      sales,
+      shifts,
+      attendance,
+      expenses,
+      payrollRuns,
+      payRates,
+      stockMovements,
+      legacyMovements,
+      costCorrections,
+      extraSupplyIssues,
+      discountProofs,
+      discountTypes,
+      auditEntries,
+      fraudAlerts,
+    ] = await Promise.all([
+      client.transaction.count({ where }),
+      client.shift.count({ where }),
+      client.attendanceRecord.count({ where }),
+      client.expense.count({ where }),
+      client.payrollRun.count({ where }),
+      client.employeePayRate.count({ where }),
+      client.inventoryStockMovement.count({ where }),
+      client.inventoryMovement.count({ where }),
+      client.inventoryCostCorrection.count({ where }),
+      client.extraSupplyIssue.count({ where }),
+      client.discountProofUpload.count({ where }),
+      client.manualDiscountType.count({ where }),
+      client.auditLog.count({ where }),
+      client.fraudAlert.count({ where }),
+    ]);
+    return {
+      sales,
+      shifts,
+      attendance,
+      expenses,
+      payroll_runs: payrollRuns,
+      pay_rates: payRates,
+      stock_movements: stockMovements,
+      legacy_inventory_movements: legacyMovements,
+      cost_corrections: costCorrections,
+      extra_supply_issues: extraSupplyIssues,
+      discount_proofs: discountProofs,
+      discount_types: discountTypes,
+      audit_entries: auditEntries,
+      fraud_alerts: fraudAlerts,
+    };
+  },
+
+  /** What goes with the branch: its login accounts, everyone's access to it, and its configuration. */
+  async countRemovedWithBranch(branchId: string, client: Prisma.TransactionClient | typeof prisma = prisma): Promise<Record<string, number>> {
+    const [branchAccountIds, activeAssignments, stockRows, availability, promotions, notifications] = await Promise.all([
+      branchesRepository.findBranchAccountIds(branchId, client),
+      client.userBranchAssignment.count({ where: { branchId, removedAt: null, user: { role: { not: 'branch' } } } }),
+      client.inventoryStock.count({ where: { branchId } }),
+      client.branchProductAvailability.count({ where: { branchId } }),
+      client.promotionBranch.count({ where: { branchId } }),
+      client.notification.count({ where: { branchId } }),
+    ]);
+    return {
+      branch_accounts: branchAccountIds.length,
+      staff_and_supervisor_access: activeAssignments,
+      zero_stock_rows: stockRows,
+      product_availability_settings: availability,
+      promotion_enrolments: promotions,
+      notifications,
+    };
+  },
+
+  /** role='branch' login accounts that belong to this branch and to no other live branch. */
+  async findBranchAccountIds(branchId: string, client: Prisma.TransactionClient | typeof prisma = prisma): Promise<string[]> {
+    const rows = await client.user.findMany({
+      where: {
+        role: 'branch',
+        branchAssignments: { some: { branchId } },
+        NOT: { branchAssignments: { some: { branchId: { not: branchId }, removedAt: null } } },
+      },
+      select: { id: true },
+    });
+    return rows.map((row) => row.id);
+  },
+
+  /**
+   * Open work that deleting the branch would lose or leave uncertain. History
+   * never appears here. Each blocker has an existing way to finish it: close
+   * the shift, clock out, complete or release the order, let the deduction
+   * finish or reconcile it, review the approval, transfer or count stock to
+   * zero, finalize or discard payroll.
+   */
+  async findDeletionBlockers(branchId: string, client: Prisma.TransactionClient | typeof prisma = prisma): Promise<BranchDeletionBlocker[]> {
+    const now = new Date();
+    const [openShifts, openAttendance, pendingCheckouts, heldOrders, deductionJobs, projectionRows, approvals, nonzeroStock, draftRuns, unpaidHours] =
+      await Promise.all([
+        client.shift.count({ where: { branchId, status: 'active' } }),
+        client.attendanceRecord.count({ where: { branchId, clockOutServerTime: null, deletedAt: null } }),
+        client.checkoutAttempt.count({ where: { branchId, status: 'in_progress' } }),
+        client.holdOrder.count({ where: { branchId, status: 'held', expiresAt: { gt: now } } }),
+        client.inventoryDeductionJob.count({ where: { branchId, status: { in: ['pending', 'processing', 'failed'] } } }),
+        client.inventoryProjectionOutbox.count({
+          where: { status: { in: ['pending', 'processing', 'deferred', 'stuck'] }, movement: { branchId } },
+        }),
+        client.inventoryApprovalRequest.count({ where: { branchId, status: { in: ['PENDING', 'RETURNED'] } } }),
+        client.inventoryStock.count({ where: { branchId, OR: [{ quantityOnHand: { not: 0 } }, { quantityReserved: { not: 0 } }] } }),
+        client.payrollRun.count({ where: { branchId, status: 'draft' } }),
+        branchesRepository.countUnpaidPayrollAttendance(branchId, client),
+      ]);
+    const blockers: BranchDeletionBlocker[] = [];
+    const add = (code: BranchDeletionBlocker['code'], count: number, message: string) => {
+      if (count > 0) blockers.push({ code, count, message });
+    };
+    add('open_shifts', openShifts, 'Close every open shift and count its cash.');
+    add('open_attendance', openAttendance, 'Clock out everyone still clocked in, or correct their attendance.');
+    add('pending_checkouts', pendingCheckouts, 'A sale is still being recorded or its result is uncertain. Finish or resolve it on the terminal.');
+    add('held_orders', heldOrders, 'Complete or release every held order.');
+    add(
+      'pending_inventory_jobs',
+      deductionJobs + projectionRows + approvals,
+      'Stock updates are still pending, failed or awaiting approval. Let them finish, reconcile failed ones and review pending approvals.',
+    );
+    add('nonzero_stock', nonzeroStock, 'Some items still have stock on hand or reserved. Transfer it to another branch or record a count of zero.');
+    add('draft_payroll_runs', draftRuns, 'Finalize or discard the draft payroll runs.');
+    add('unpaid_payroll_hours', unpaidHours, 'Some worked hours are in no finalized payroll run. Finalize payroll for those dates first.');
+    return blockers;
+  },
+
+  /**
+   * Clocked-out attendance at this branch, from its first payroll policy on,
+   * whose Manila date no finalized run covers (P66's rule, per branch).
+   */
+  async countUnpaidPayrollAttendance(branchId: string, client: Prisma.TransactionClient | typeof prisma = prisma): Promise<number> {
+    const firstPolicy = await client.payrollPolicy.findFirst({ where: { branchId }, orderBy: { createdAt: 'asc' }, select: { createdAt: true } });
+    if (!firstPolicy) return 0;
+    const [records, runs] = await Promise.all([
+      client.attendanceRecord.findMany({
+        where: { branchId, deletedAt: null, clockOutServerTime: { not: null }, clockInServerTime: { gte: firstPolicy.createdAt } },
+        select: { clockInServerTime: true },
+      }),
+      client.payrollRun.findMany({ where: { branchId, status: 'finalized' }, select: { periodStart: true, periodEnd: true } }),
+    ]);
+    const isoDate = (value: Date) => value.toISOString().slice(0, 10);
+    return records.filter((record) => {
+      const day = manilaDateKey(record.clockInServerTime);
+      return !runs.some((run) => isoDate(run.periodStart) <= day && day <= isoDate(run.periodEnd));
+    }).length;
+  },
+
+  /**
+   * Committed operational writes. Every stock change writes a stock
+   * movement and every sale a transaction, so an unchanged fingerprint
+   * across the delete shows no work committed between the checks and it.
+   */
+  async activityFingerprint(branchId: string, client: Prisma.TransactionClient): Promise<BranchActivityFingerprint> {
+    const where = { branchId };
+    const [sales, shifts, attendance, stockMovements, legacyMovements, expenses, extraSupplies, checkouts, approvals, payrollRuns] = await Promise.all([
+      client.transaction.count({ where }),
+      client.shift.count({ where }),
+      client.attendanceRecord.count({ where }),
+      client.inventoryStockMovement.count({ where }),
+      client.inventoryMovement.count({ where }),
+      client.expense.count({ where }),
+      client.extraSupplyIssue.count({ where }),
+      client.checkoutAttempt.count({ where }),
+      client.inventoryApprovalRequest.count({ where }),
+      client.payrollRun.count({ where }),
+    ]);
+    return { sales, shifts, attendance, stockMovements, legacyMovements, expenses, extraSupplies, checkouts, approvals, payrollRuns };
+  },
+
+  /**
+   * POS-PERF-P67 — permanent deletion of the operational branch, in one transaction:
+   * 1. A version-bound write takes the branch row lock (a concurrent edit or
+   *    delete gives 'changed' / 'not_found').
+   * 2. Blockers (open work, non-zero stock) are checked; any rolls back.
+   * 3. The branch's own login accounts are deleted (P66 lifecycle: a marker
+   *    ends their tokens, attribution stays on people). Its notifications and
+   *    cached report snapshots go.
+   * 4. The branches row is deleted. Configuration and access cascade; history
+   *    references branch_records and is untouched. The delete waits for any
+   *    write already holding the branch row (the live-branch trigger locks it
+   *    FOR KEY SHARE); later writes fail.
+   * 5. Blockers and the activity fingerprint are re-read; work that committed
+   *    in between rolls everything back.
+   */
+  async deletePermanently(branchId: string, deletedBy: string, expectedVersion: Date): Promise<BranchDeletionOutcome> {
+    try {
+      return await prisma.$transaction(
+        async (tx) => {
+          const locked = await tx.branch.updateMany({ where: { id: branchId, updatedAt: expectedVersion }, data: { updatedAt: expectedVersion } });
+          if (locked.count === 0) {
+            const exists = await tx.branch.findUnique({ where: { id: branchId }, select: { id: true } });
+            return exists ? { outcome: 'changed' as const } : { outcome: 'not_found' as const };
+          }
+          const blockers = await branchesRepository.findDeletionBlockers(branchId, tx);
+          if (blockers.length > 0) throw new BranchDeletionAbort({ outcome: 'blocked', blockers });
+          const before = await branchesRepository.activityFingerprint(branchId, tx);
+          const removed = await branchesRepository.countRemovedWithBranch(branchId, tx);
+
+          const branchAccountIds = await branchesRepository.findBranchAccountIds(branchId, tx);
+          if (branchAccountIds.length > 0) {
+            const markerExpiry = new Date(Date.now() + REMOVED_ACCOUNT_MARKER_TTL_MS);
+            for (const userId of branchAccountIds) {
+              const tokenHash = removedAccountRevocationHash(userId);
+              await tx.revokedToken.upsert({ where: { tokenHash }, create: { tokenHash, expiresAt: markerExpiry }, update: { expiresAt: markerExpiry } });
+            }
+            await tx.notification.deleteMany({ where: { recipientUserId: { in: branchAccountIds } } });
+            await tx.expenseIdempotencyKey.deleteMany({ where: { userId: { in: branchAccountIds } } });
+            await tx.person.updateMany({ where: { id: { in: branchAccountIds } }, data: { accountDeletedAt: new Date(), accountDeletedBy: deletedBy } });
+            await tx.user.deleteMany({ where: { id: { in: branchAccountIds } } });
+          }
+          await tx.notification.deleteMany({ where: { branchId } });
+          await tx.reportSnapshot.deleteMany({ where: { branchId } });
+          await tx.branchRecord.update({ where: { id: branchId }, data: { deletedBy } });
+          await tx.branch.delete({ where: { id: branchId } });
+
+          const after = await branchesRepository.activityFingerprint(branchId, tx);
+          if (Object.keys(before).some((key) => before[key] !== after[key])) throw new BranchDeletionAbort({ outcome: 'activity' });
+          const lateBlockers = await branchesRepository.findDeletionBlockers(branchId, tx);
+          if (lateBlockers.length > 0) throw new BranchDeletionAbort({ outcome: 'blocked', blockers: lateBlockers });
+          return { outcome: 'deleted' as const, branchAccountIds, removed };
+        },
+        // Many counts share one pooled connection; leave room on a remote pooler.
+        { maxWait: 10_000, timeout: 30_000 },
+      );
+    } catch (error) {
+      if (error instanceof BranchDeletionAbort) return error.result;
+      throw error;
+    }
+  },
 };
+
+/** Rolls the deletion transaction back with a reportable outcome. */
+class BranchDeletionAbort extends Error {
+  constructor(readonly result: BranchDeletionOutcome) {
+    super('branch deletion rolled back');
+  }
+}

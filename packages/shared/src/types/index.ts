@@ -38,6 +38,10 @@ export type BranchResponse = z.infer<typeof schemas.branchResponseSchema>;
 export type BranchListResponse = z.infer<typeof schemas.branchListResponseSchema>;
 export type BranchAssignmentResponse = z.infer<typeof schemas.branchAssignmentResponseSchema>;
 export type BranchStatsResponse = z.infer<typeof schemas.branchStatsResponseSchema>;
+export type DeleteBranchInput = z.infer<typeof schemas.deleteBranchSchema>;
+export type BranchDeletionBlocker = z.infer<typeof schemas.branchDeletionBlockerSchema>;
+export type BranchDeletionEligibility = z.infer<typeof schemas.branchDeletionEligibilitySchema>;
+export type BranchDeletionResult = z.infer<typeof schemas.branchDeletionResultSchema>;
 
 export type CreateProductInput = z.infer<typeof schemas.createProductSchema>;
 export type UpdateProductInput = z.infer<typeof schemas.updateProductSchema>;

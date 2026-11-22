@@ -9,12 +9,46 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
 ## Observed state
 
 - **Observed:** 2026-11-22
-- **Branch:** `feat/pos-perf-p66-delete-dashboard-payroll`, from `origin/main` `f9ce9da7` (merge of PR #47, P64+P65; the last **reported** deployment, not verified here). It holds the P66 commit `10658134` and a follow-up commit on top (payroll browser verification and three payroll UI fixes), **local only: not pushed, no PR, nothing merged or deployed, production not accessed.**
+- **Branch:** `feat/pos-perf-p66-delete-dashboard-payroll`, from `origin/main` `f9ce9da7` (PR #47, the last **reported** deployment, not verified here). It holds P66 (`10658134`), the payroll follow-up (`8af206e8`) and P67 on top. See PR_LINE. **Nothing merged or deployed; production not accessed.**
 - **Working tree:** only `.vscode/settings.json` is modified (the owner's personal setting). Never stage it.
-- **Local leftovers (task-owned, safe to delete):** `C:\p66pay` (follow-up stack: throwaway env, logs, stopped data, screenshots; all its services stopped), `C:p66` (throwaway env, logs, stopped stack data), `%TEMP%pos-test-pg-*` dirs. Older: `C:p65`, `C:p64a`, `C:p64b`, `C:p64`, `C:p63`, `C:p62`, `C:p59r`, `C:p59c`. No P66 service is running.
-- **Left running, not proven to be this task's:** four idle embedded-Postgres `io_worker` orphans (started 4:01, 4:36, 4:38 and 4:56 AM, no ports), plus the older ones and the `dist/server.js` (PID 17220, 2026-11-21 1:04 PM) noted before. That server keeps the shared Prisma engine DLL locked, so `prisma generate` reports EPERM. Types and `index.js` still regenerate, and the DLL is identical.
+- **Local leftovers (task-owned, safe to delete):** `C:\p67` (P67 env, logs, stopped stack, scripts), `C:\p66pay`, `C:\p66`, `%TEMP%\pos-test-pg-*` and the older `C:\p6x` folders. No P67 service is running. The `C:\p66\env.sh` throwaway JWT key pair was partly printed into a session log, so treat `C:\p66` as disposable.
+- **Left running, not proven to be this task's:** the idle `io_worker` orphans and the `dist/server.js` (PID 17220) noted before.
 
-## Latest: P66 — permanent Delete, dashboard panels removed, simpler Supervisor payroll (local)
+## Latest: P67 — branch Delete keeps business history; PDF test fixed
+
+Details: [`runbooks/pos-perf-p66-delete-dashboard-payroll.md`](runbooks/pos-perf-p66-delete-dashboard-payroll.md) §10.
+
+- **Before:** branch Delete cascaded sales, shifts, attendance, expenses, stock and Extra Supplies history, and through `ingredients` the legacy movements too. It nulled audit, fraud and catalog links (breaking the audit hash chain), left branch login accounts and staff tokens working, and let a same-code branch continue the old receipt sequence.
+- **Now:**
+  - The operational branch row, its branch login account(s), everyone's access and its configuration are physically deleted.
+  - All history references the new immutable `branch_records` (original name and code).
+  - Codes are never reused.
+  - Database triggers refuse new operational writes for a deleted branch (409 `BRANCH_DELETED`).
+  - Staff and branch tokens lose a deleted branch at once.
+- **Blocks** on open shifts, clock-ins, in-progress checkouts, held orders, pending, failed or stuck stock jobs, pending approvals, non-zero stock, draft payroll and unpaid payroll hours. History never blocks.
+- **Confirmation** binds the typed name and code, the version and an actor-bound server token. Cancel writes nothing; repeats and lost responses report `already_deleted`.
+- **Migration** `20261122130000_pos_perf_p67_branch_deletion_records`: additive, no row changed.
+  - **Rollout:** migration, API, web. **No branch delete until every API instance runs P67** (documented, not DB-enforced).
+  - **Rollback floor:** after the first branch delete, the API cannot go below P67.
+- **PDF test (`p62-pdf-isolation`):** proved to be a load-sensitive wall-clock bound, not a pool or start-up fault (20/20 loaded trials over 1,090 ms, refusal always 0 ms after the long job). Fixed in the test, with an opt-in benchmark.
+
+| Check | Result |
+| --- | --- |
+| Full API | Run 1: **75 failed** (one cause: 9 unit-test mocks lacked the new access method), 3,785 passed. **Run 2: 0 failed, 3,860 passed, 6 skipped, exit 0** |
+| P67 integration | 14/14 (in the full run) |
+| Migration rehearsal (302 branches, 20,001 sales) | Run 1: script error-match bug. **Run 2: passed**, 93 tables byte-identical, no drift |
+| Shared / typecheck / lint | 83 / clean / 0 errors |
+| Web | Dialog 7/7, affected 309/309; full suite not rerun (last 1,780/1,780) |
+| Builds + browser (SW active) | Pass; **27/27** (`tests/e2e/manual/p67/branch-delete.mjs`) |
+| Not run | Hosted/staging (none exists); real devices; a live old-API process |
+
+**Next (owner):**
+- Review the PR. Merge and deploy are separate decisions.
+- Do not delete any branch during the rollout window.
+- Sync every terminal before deleting a branch, because queued offline sales for it are refused at sync.
+- The production fixture inventory (P64 §4 / P66 §8) is still NOT done.
+
+## Earlier: P66 — permanent Delete, dashboard panels removed, simpler Supervisor payroll (local)
 
 Details: [`runbooks/pos-perf-p66-delete-dashboard-payroll.md`](runbooks/pos-perf-p66-delete-dashboard-payroll.md).
 

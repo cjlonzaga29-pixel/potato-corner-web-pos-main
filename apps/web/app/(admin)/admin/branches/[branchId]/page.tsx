@@ -392,8 +392,9 @@ function SettingsTab({
 
           <div className="border-t pt-3">
             <p className="mb-2 text-sm text-muted-foreground">
-              Permanently delete this branch and all of its data — transactions, shifts, inventory, expenses,
-              and attendance records. This cannot be undone.
+              Permanently delete this branch, its login account, everyone&apos;s access to it and its settings. Past
+              sales, shifts, attendance, expenses, payroll and stock history are kept under its name. This cannot be
+              undone.
             </p>
             <Button variant="danger" onClick={onDelete}>
               Permanently Delete Branch

@@ -116,7 +116,9 @@ Table `branch_deletion_operations`. The id is the client's operation id. Status 
 
 1. **Fence** (transaction 1):
    - Set `branches.deletion_fenced_at` and `deletion_operation_id`, bound to the version, and create the operation.
-   - The live-branch trigger (P67 function, replaced in the P68 migration) now locks the branch row **FOR SHARE**. The fence UPDATE therefore waits for every guarded write already in flight, and every later write is refused. The guarded writes are sales, stock movements, shifts, clock-ins, expenses, Extra Supplies, payroll, and now **hold_orders** and **checkout_attempts**.
+   - The live-branch trigger (P67 function, replaced in the P68 migration) now locks the branch row **FOR SHARE**. The fence UPDATE therefore waits for every guarded write already in flight, and every later write is refused. The guarded writes are sales, stock movements, shifts, clock-ins, expenses, Extra Supplies, payroll, and now **hold_orders**, **checkout_attempts** and (follow-up migration, §5) **inventory_approval_requests**.
+   - **Status-only writes** (follow-up migration): an UPDATE of `transactions.status` or of `inventory_stocks.quantity_on_hand`/`quantity_reserved` is refused while the branch row exists and is fenced (`pos_perf_p68_refuse_fenced_branch_update`, same message, same FOR SHARE). This closes a gap the race run found: a void of a sale whose deduction is still pending only UPDATEs rows, and it committed after the fence. A deleted branch's history is not affected (no branch row, no refusal). Finalize never updates these columns.
+   - Not fenced, by design: closing a shift, clocking out, failing a checkout attempt, and reviewing (return/cancel) an approval. Each resolves an item that is already in the plan; finalize then finds it changed, stays fenced for one retry, and completes without it (tested, §6.2). The resolved record is the real one (a counted cash close, a real clock-out).
    - The refusal is SQLSTATE P0001 `POS_PERF_P68_BRANCH_DELETION_IN_PROGRESS`, mapped to 409 `BRANCH_DELETION_IN_PROGRESS`. It is retryable, because the operation can still be aborted.
    - Branch edits and status changes are refused with `BRANCH_DELETION_IN_PROGRESS`, and normal Delete with `BRANCH_CHANGED`.
 2. **Finalize** (transaction 2, nothing external inside, 60 s budget):
@@ -159,7 +161,11 @@ Table `branch_deletion_operations`. The id is the client's operation id. Status 
 - A claimed worker can't commit afterwards:
   - its stock write is refused by the fence (tested);
   - its compare-and-swap on the job fails because the claim token is cleared.
-- **Not covered by a fixture:** pending inventory approvals. The path is code-reviewed only and has no integration test.
+- **Pending inventory approvals** are now tested through the real workflow (§6.2 A1–A3): a supervisor's physical count, then approve by another reviewer.
+  - Approve re-checks the request status inside its transaction (conditional update from PENDING). The branch state is enforced by the database: its stock write is refused once the branch is fenced, so the whole approval rolls back and stays PENDING; finalize then cancels it unreviewed.
+  - Approve after deletion is refused (409 `ALREADY_PROCESSED`); it cannot recreate the branch or its stock row.
+  - The approval row (with its proof key and history) is kept and stays readable by a Super Admin at `GET /api/inventory-approvals/:id`. The closure snapshot now carries the target, operation, item, entered/counted quantities, delta, on-hand at submission, reason, proof key and revision.
+  - Known edge (not fixed, harmless): a zero-variance count writes no stock, so its approve is not stopped by the fence. It ends APPROVED with no stock change; finalize retries once and completes.
 
 ### 3.4 Unresolved items stay visible and reconcilable
 
@@ -178,6 +184,8 @@ None are bypassed. The following stop a Force Delete and leave it fenced with a 
 - a deduction job whose sale already has stock movements.
 
 Both indicate inconsistent state that needs a person.
+
+**Transient failures are retried, not reported done.** A finalize that loses a Postgres deadlock (40P01; observed only with the follow-up triggers disabled, §6.2) or meets an item changed under it stays `fenced` with step `retry_pending`. The next repeat, status poll or 30 s sweep finishes it.
 
 ### 3.6 Offline terminals
 
@@ -215,6 +223,13 @@ Both indicate inconsistent state that needs a person.
 - Guard triggers on `hold_orders` and `checkout_attempts`.
 - No row changed, nothing deleted, no cleanup.
 
+**Follow-up migration** `20261123130000_pos_perf_p68_fence_updates_and_approvals` (new, additive, triggers only):
+- the live-branch guard on `inventory_approval_requests` (INSERT or `branch_id` change);
+- `pos_perf_p68_refuse_fenced_branch_update` on `transactions` (UPDATE OF `status`) and `inventory_stocks` (UPDATE OF the two quantities). It refuses only while the branch row exists and is fenced.
+- Cost: those updates now take FOR SHARE on the branch row (a sale already did in the same transaction). A branch edit waits for in-flight stock updates of that branch.
+
+**Migration inventory (P68):** `20261123120000_pos_perf_p68_branch_force_deletion`, `20261123130000_pos_perf_p68_fence_updates_and_approvals`. Both are additive; neither changes a row. `prisma migrate diff` from the migrated local DB to the pre-P68 schema (`365758c4`) lists only the P68 tables, nullable columns and the `terminated` enum value: no existing column, type or default changes.
+
 **Rehearsal** (`scripts/test-p68-migration-on-populated-data.ts`): 302 branches, 20,000 sales, an open shift and clock-in, a P67-deleted branch and a leftover login.
 - Run 1: a seed SQL bug in the script (`shifts` has no `updated_at`).
 - **Run 2 passed:**
@@ -233,7 +248,12 @@ Both indicate inconsistent state that needs a person.
 **Mixed versions:**
 - *Migration with an old (P67) API:* reads and writes work. No old code sets the fence. Old writes for hold orders and checkouts at a deleted branch now get a trigger refusal instead of an FK error (still refused).
 - *New API with an old web:* there is no Force Delete UI. The old supervisor list still shows supervisor rows. The old Create Branch shows the new messages as a toast.
-- **No Force Delete until every API instance runs P68.** An old API doesn't know the fence (normal Delete or edits of a fenced branch) or `ShiftStatus.terminated`. This is documented, not database-enforced.
+- **No Force Delete until every API instance runs P68.** An old API doesn't know the fence (normal Delete or edits of a fenced branch) or `ShiftStatus.terminated`. This is documented, not database-enforced. Code trace of `365758c4` against the migrated schema:
+  - with no fence set, the new triggers only read the branch row. Old checkouts, holds, voids, stock writes and approvals on live branches behave as before;
+  - a fenced write on an old instance is still refused, but answers 500 (the old code doesn't map `POS_PERF_P68_...`);
+  - an old P67 Delete of a fenced branch would remove it under the operation, which then stays fenced ("branch is missing") until a person intervenes. Hence the rule.
+  - Not run: a live pre-P68 API process. It needs a separate full install of `365758c4`, and no new clone or worktree was authorized.
+- **Email reuse** (re-verified by code trace and the existing tests): a reused email always gets a new `users` id (the P66 trigger refuses reusing a deleted id). Old refresh tokens are deleted with the old user, old access tokens die through the removed-account marker keyed by the old id, and history stays on the old `people` record. Create Branch only reports who holds an email; nothing deletes a valid account because a branch is absent. The leftover repair runs only from its script, on exact ids, dry run first, and refuses a live, shared or open-work account.
 
 **Rollback floor:**
 - Before the first Force Delete, the API can go back to P67.
@@ -266,12 +286,65 @@ Run on fresh disposable embedded Postgres (ports 46871/46872), sequentially, wit
 | Browser, P67 regression driver on the same build | **27/27** |
 | Not run | Hosted or staging (none exists); real devices; a live old-API process against the new schema; multi-process HTTP race between a terminal checkout and Force Delete |
 
+### 6.2 Multi-process races (follow-up)
+
+`apps/api/scripts/p68-process-races.ts` runs three real built API processes (`node dist/server.js`, ports 56482/56484/56485, each with its own pool, deduction worker and sweeper) against one fresh disposable embedded Postgres (`p62_p68race`, port 56481, root `C:\p68r`, P62 seed with small sales counts). Races are ordered by database barriers: the script holds a row or advisory lock in its own transaction, and waits until the API statement is actually blocked (`pg_stat_activity`, `pg_blocking_pids`). No sleeps order a race, and no debug or bypass route exists. Every call is a normal route with a normal signed token.
+
+| # | Scenario (process) | Barrier | Result |
+| --- | --- | --- | --- |
+| S0 | Live branch: checkout on A and B, paid supply issue, the same idempotency key on A and B at once, void | none | All succeed; one sale for the shared key |
+| S1 | Checkout commits first (A), Force Delete (B) | stock row: the sale INSERT is done, its reservation waits | The fence waits for the sale; sale 201; operation **aborted** on the changed plan, fence lifted. A fresh confirmation completes; the sale stays on the branch record; the same-key retry is refused (403) and the lookup returns the original sale; one sale |
+| S2 | Fence first (A), checkout (B) | shift row: finalize waits | 409 `BRANCH_DELETION_IN_PROGRESS`, no sale, no attempt; same-key retry still 409 (retryable); completes; shift `terminated` with no cash count |
+| S3 | Checkout claimed before the fence, sale INSERT after (A vs B) | the branch's receipt-counter row | The plan lists the in-progress attempt; the late sale gets 409; completes; attempt abandoned, with a closure item; no sale for the key |
+| S4 | Claimed deduction worker vs Force Delete | the worker's stock advisory lock (the sale's reservation doesn't take it) | Job claimed (`processing`); finalize waits on the job row; the worker's stock write is refused; job `cancelled`, claim cleared, no movement; stock snapshot equals the exact pre-deletion balance |
+| S5a | Paid supply issue in flight (first stock item deducted) vs fence | the second stock row | The fence waits; issue 201; operation aborted; a fresh confirmation completes; the paid issue (₱20) is kept |
+| S5b | Paid issue started before the fence, writes after | the first stock row | 409; no issue, line, payment, operation or movement |
+| S6 | Void of a sale whose deduction is pending, after the fence | worker advisory lock + shift row | **Defect before the fix** (the status-only write passed the fence). Now 409; sale not voided; completes |
+| S7 | Lost response and crash: process C killed mid-finalize, its backend terminated | shift row | Operation durably `fenced`, branch not half-deleted; concurrent repeats of the same id on A and B both return that operation, and it completes; closure items once; a new id reports `already_deleted`; another admin's reuse of the id is refused |
+| S7b | Crash, then restart of C | shift row | The start-up sweep completes the fenced operation |
+| A1 | Approve commits first, then Force Delete with the confirmation made before it | none | Approve 200 (stock 999,000); the stale confirmation gets `FORCE_DELETION_PLAN_CHANGED`, nothing changed; a fresh one completes; snapshot 999,000, no write-off; approval still readable |
+| A2 | Fence first, approve in flight writes after | stock row | Approve 409, rolled back; request `CANCELLED` unreviewed, with the full snapshot (quantities, proof key); no movement; approve after deletion refused; branch not recreated |
+| A3 | New count, and reject (cancel), while fenced | shift row | **Defect before the fix** (a new count was accepted and made Force Delete abort, leaving a pending request). Now the new count gets 409; the cancel is recorded once; finalize retries once and completes; one request |
+| Z | Other branches | none | Every pre-existing stock row of every other branch unchanged |
+
+Runs (all kept in `C:\p68r\out`):
+- **Run 1, repro mode** (`P68R_WITHOUT_FIX=1` disables the follow-up triggers on the disposable DB; the D2 and snapshot fixes were already in the build): 88/101.
+  - It reproduced the approval defect (A3).
+  - S4 and S6 stopped on a harness bug (the advisory lock was read as `void`), and S3 on a harness ordering bug (the warm-up sale's deduction changed the plan).
+  - S5a stayed fenced: finalize lost a **deadlock** to the unfenced issue, which held a stock row lock without the branch share lock. The sweeper finished it later, so it recovered.
+- **Run 2, repro mode, S5 only:** the same deadlock, logged as `40P01`, operation `retry_pending`, then completed.
+- **Run 3, fixed:** 132/133. The failure was the other-branches check. Attributed to branches left live by run 1's stopped scenarios (their held jobs completed later), **not proven**; the check now names the changed rows.
+- **Run 4, S0 only:** 5/5. **Run 5, fixed, full:** **133/133**.
+- **Run 6, final code, full:** 132/133. The other-branches check failed on one stock row of branch `P68R s0 mwrt355k` (run 4): 1,000,000 on hand / 200 reserved became 999,800. Run 4 stopped its processes right after its sales, and run 6's workers completed those deductions. That is a harness baseline bug, not a Force Delete effect (and the likely cause of run 3's failure too). The harness now lets the workers drain pending jobs before taking the baseline.
+- **Run 7, final code, full:** **133/133**.
+
+Also fixed in this review, found by code trace and then tested:
+- **D2:** two concurrent requests with one operation id. The second got 409 `FORCE_DELETION_IN_PROGRESS` (or `BRANCH_CHANGED`, since the fence bumps `updated_at`). It now re-reads its own operation and returns its status (in-process test, plus S7).
+
+### 6.3 Follow-up verification
+
+On fresh disposable embedded Postgres, sequentially, on the tested code, committed as `2441628c` (the race runs used the same build).
+
+| Check | Result |
+| --- | --- |
+| Focused API (branches, inventory-approval, extra-supplies, inventory-deduction, universal-inventory), run 1 | 477/478. My new test created a stock row that `blockedBranch` already makes (test bug). Fixed; P68 + P67 integration **36/36** |
+| Full API, run 1 | **8 failed**, 3,874 passed, 6 skipped: `p62-pdf-isolation` admission timing (415 vs 100 ms), a `p58-product-types` count (57 vs 56), and 6 in `p59-report-coverage` cascading from one Daily Sales PDF 503 under load (later tests found 99 of 101 sales). None touches the changed code. **The three files alone: 66/66** |
+| Full API, run 2 | **1 failed**, 3,881 passed, 6 skipped: `transactions.integration.test.ts` "two concurrent sales ... exactly one". The sale assertions passed (one sale, one `INSUFFICIENT_STOCK`); the stock was still 200 after `runCycle(10)`. The worker claims the 10 oldest due jobs globally, so parallel files' jobs can crowd this one out. It passed in run 1 and **alone 3 × 16/16**. Attributed to that cross-file batch, not proven; test and worker are unchanged. **No fully green full API run on the final code**: across the two runs, no failure repeated, and each passes alone |
+| Migration rehearsal (both P68 migrations) | Run 1: my new stock-update check had no stock row in this seed (removed; covered by the integration test and S4, S5b and A2). **Run 2: passed**, 94 tables byte-identical, no drift |
+| API typecheck / lint (changed files) | Clean / 0 errors (after removing `any` and non-null assertions from the harness) |
+| Web | Not rerun: no web code changed (last full web 1,797/1,797 at `8f882aaa`) |
+| Browser | Not rerun: no UI or route change (last P68 driver 26/26 and P67 27/27, at `8f882aaa`) |
+
 **Formatting note:** running repository prettier on whole files reformatted thousands of untouched lines, because the existing code does not match `.prettierrc`. This was undone with a three-way merge (original + my changes), so only edited regions carry new formatting.
 
 ## 7. Limitations and follow-ups
 
-- **Pending inventory approvals** in Force Delete: code path only, no fixture.
-- **Concurrent checkout versus deletion** is covered at the database level: a write after the fence is refused, and the fence waits for in-flight writes by lock semantics. There is no multi-process HTTP race test.
+- **Multi-process races** are now tested over HTTP with real processes (§6.2). Still not tested: real devices, a hosted environment, a live pre-P68 API process, and load. Under load, the FOR SHARE fence can wait behind a busy branch's writes up to its 30 s timeout, which answers 500 with nothing changed.
+- **Deadlock window:** a stock write that locks its row in the instant before finalize's cascade can still deadlock with it. Postgres aborts one side; finalize retries (§3.5), and a refused write is not committed. Observed only with the follow-up triggers off.
+- **Other processes' caches:** only the process that completes a Force Delete kicks sockets and clears its auth caches. Another instance accepts a deleted account's token for up to 60 s and its active status for 10 s. Its writes are still refused by the database.
+- `BRANCH_FORCE_DELETION_STARTED` is audited after the fence commits, so a crash in between loses that one audit row. The operation row itself is durable.
+- **Zero-variance count approval** on a fenced branch is not refused (§3.3).
+- **Production leftover-account diagnosis and repair: NOT run.** It stays a separate, owner-approved step (exact ids, dry run first).
 - Production holder of the screenshot email: unknown until the diagnosis is run.
 - `lower(email)` unique index: not added; needs a production duplicate check first.
 - The Demo same-name supervisor/staff pair: owner decision; nothing changed.

@@ -9,7 +9,10 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
 ## Observed state
 
 - **Observed:** 2026-11-22
-- **Branch:** `feat/pos-perf-p68-branch-lifecycle-and-staff`, created from `origin/main` `365758c4` (the PR #48 merge, the last **reported** deployment, not verified here). Starting SHA `365758c4`. Tested code committed as `8f882aaa` (all results below were run on that code before commit); a docs commit follows. **Not pushed; no PR, merge or deploy; production not accessed; no production cleanup run.**
+- **Branch:** `feat/pos-perf-p68-branch-lifecycle-and-staff`, created from `origin/main` `365758c4` (the PR #48 merge, the last **reported** deployment, not verified here).
+  - P68 code `8f882aaa`, docs `07048d66`.
+  - **Follow-up (race verification):** started at `07048d66`; tested code committed as `2441628c` (every follow-up result was run on that code before commit); a docs commit follows.
+  - Push and PR: see the follow-up section below. **No merge or deploy; production not accessed; no production cleanup run.**
 - **Previous branch** `feat/pos-perf-p66-delete-dashboard-payroll` (`723d2b6c`) is fully contained in `origin/main`.
 - **Working tree:** only `.vscode/settings.json` is modified (the owner's personal setting). Never stage it.
 - **Local leftovers (task-owned, safe to delete):**
@@ -19,9 +22,42 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
   - **`C:\p67\env.sh`'s throwaway JWT key pair was printed into the P68 session log** by a redaction command that missed multi-line values. Treat `C:\p67` as disposable.
   - `C:\p66\env.sh` was already in that state.
   - Neither is a production credential.
+- **Follow-up leftovers (task-owned, safe to delete):** `C:\p68r` (race stack: env, embedded Postgres data, logs, results in `C:\p68r\out`). Its Postgres and API processes were stopped at the end.
 - **Left running, not proven to be this task's:** the idle `io_worker` orphans and the `dist/server.js` (PID 17220) noted before.
 
-## Latest: P68 — branch email reuse, Force Delete Branch, branch-scoped staff (local)
+## Latest: P68 follow-up — multi-process Force Delete races, pending approvals, rolling deploy
+
+Details: P68 runbook §6.2 (scenarios and runs) and §6.3 (suites).
+
+- **Two real built API processes (three for the crash case)** against one fresh disposable local Postgres, ordered by database lock barriers, with no sleeps and no debug routes (`apps/api/scripts/p68-process-races.ts`). Both orders of checkout and Force Delete were covered, plus: a checkout claimed before the fence, a claimed deduction worker, paid supply issues, a void after the fence, a lost response with a crash and restart, concurrent repeats, and pending approvals (approve or reject on either side of the fence). Other branches' balances stayed unchanged.
+- **Defects found and fixed:**
+  - The fence only guarded inserts. A void of a sale with a pending deduction committed after the fence.
+  - Approval requests had no live-branch guard: a new count during the fence aborted Force Delete and left a pending request.
+  - Concurrent repeats of one operation id got 409 instead of the operation.
+  - The approval closure snapshot had no quantities.
+- **Fixes:** additive migration `20261123130000_pos_perf_p68_fence_updates_and_approvals` (triggers only), plus a narrow service change and a repository select. Nothing was weakened: no audit, stock or permission check removed.
+- **Rolling deploy:**
+  - the P68 migrations are additive (diff to the pre-P68 schema shows only P68 additions);
+  - no Force Delete until every instance runs P68;
+  - after the first Force Delete, the rollback floor is P68.
+  - Email reuse gives a new id with no old tokens or history; no account is deleted because a branch is absent (runbook §5).
+
+| Check | Result |
+| --- | --- |
+| Race harness | Run 1 (repro, fix triggers off): 88/101, reproduced the approval defect, plus harness bugs. Run 2 (repro, S5): finalize lost a deadlock, then recovered. Run 3: 132/133 (baseline, not proven). Run 4: 5/5. Run 5: 133/133. Run 6: 132/133, baseline bug proven (earlier run's leftover jobs) and fixed. **Run 7, final code: 133/133** |
+| Focused API | 477/478 (my test bug), then P68 + P67 integration **36/36** |
+| Full API | Run 1: **8 failed** (PDF timing, a P58 count, a P59 cascade from one PDF 503 under load); those files alone 66/66. Run 2: **1 failed** (`transactions.integration` concurrent-sales worker batch, cross-file); alone 3 × 16/16. **No fully green full run on the final code**; no failure repeated |
+| Migration rehearsal | Run 1: my check had no stock in the seed. **Run 2: passed**, 94 tables byte-identical, no drift |
+| Typecheck / lint | Clean / 0 errors |
+| Web, browser | Not rerun: no web or UI change (last 1,797/1,797; 26/26 and 27/27 at `8f882aaa`) |
+| Not run | A live pre-P68 API process; hosted/staging; real devices; load |
+
+**Next (owner):**
+- Review the PR. Merge and deploy are separate decisions. Order: migrations, then API, then web.
+- No Force Delete until every API instance runs P68.
+- The production leftover-account diagnosis, dry run and repair are **NOT done**. They remain a separate step.
+
+## Earlier: P68 — branch email reuse, Force Delete Branch, branch-scoped staff (local)
 
 Details: [`runbooks/pos-perf-p68-branch-lifecycle-and-staff.md`](runbooks/pos-perf-p68-branch-lifecycle-and-staff.md).
 
@@ -63,7 +99,7 @@ Details: [`runbooks/pos-perf-p68-branch-lifecycle-and-staff.md`](runbooks/pos-pe
 | Migration rehearsal (302 branches, 20,000 sales) | Run 1: seed SQL bug. **Run 2: passed**, 94 tables byte-identical in existing columns, no drift |
 | Typecheck / lint | Clean / 0 errors (after fixing 3 non-null assertions in the new test) |
 | Builds + browser (SW active, emulated desktop/phone) | Builds pass. P68 driver: run 1 driver bug, run 2 25/26 (driver timing), **run 3 26/26**. P67 regression **27/27** |
-| Not run | Hosted/staging (none exists); real devices; live old API on the new schema; multi-process checkout-vs-Force-Delete HTTP race; a pending-approval fixture |
+| Not run (at that time) | Hosted/staging (none exists); real devices; live old API on the new schema; multi-process checkout-vs-Force-Delete HTTP race and a pending-approval fixture (both since done, see the follow-up above) |
 
 **Next (owner):**
 - Review and decide on push/PR. Merge and deploy are separate decisions.

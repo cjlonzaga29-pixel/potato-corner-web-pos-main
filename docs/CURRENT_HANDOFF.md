@@ -8,19 +8,50 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
 
 ## Observed state
 
-- **Observed:** 2026-11-22
+- **Observed:** 2026-11-23
 - **Branch:** `feat/pos-perf-p69-pos-product-type-filter`, created from `origin/main` `a5ffefbb` (the PR #49 merge, the last **reported** deployment, not verified here).
-  - P69 code `3e21fc8f` (tested), docs commit after it.
-  - **Local only: not pushed, no PR, merge or deploy. Production not accessed.**
+  - P69 code `3e21fc8f` (tested), docs `c2db620c`.
+  - P69R code `c147ec4f` (tested), docs commit after it.
+  - **Pushed (feature branch only) with one PR to `main`. Not merged or deployed. Production not accessed.**
 - **Previous branch** `feat/pos-perf-p68-branch-lifecycle-and-staff` (`c988c639`) is fully contained in `origin/main`.
 - **Working tree:** only `.vscode/settings.json` is modified (the owner's personal setting). Never stage it.
 - **Local leftovers (task-owned, safe to delete):**
+  - `C:\p69r` (logs, integration Postgres data `pg-int1`) and `C:\p69rs` (P69R browser stack: env with fresh random keys, never printed; DB `p62_p69r`; profiles; results in `out1`). Its Postgres, API and web (ports 56721–56723) were stopped.
   - `C:\p69` (throwaway test env with fresh random keys, never printed; logs; embedded Postgres data dirs).
   - `C:\p69s` (browser stack: env, Postgres data `p62_p69`, logs, browser profiles, results in `out1`–`out11`). Its Postgres, API and web processes (ports 56691–56693) were stopped.
   - The older `C:\p68`, `C:\p68r`, `C:\p68s`, `C:\p67`, `C:\p66*` folders noted before.
 - **Left running, not proven to be this task's:** the idle `io_worker` orphans and the `dist/server.js` (PID 17220) noted before.
 
-## Latest: P69 — product type filter and type badges on the POS
+## Latest: P69R — prompt catalog updates and the offline cold reload
+
+Details: P69 runbook §8.
+
+- **Refresh:**
+  - After a committed product or product-type write, the API sends a branch-scoped `catalog:changed` (`{ branch_id }` only) to the affected branch rooms, coalesced over 300 ms.
+  - The open terminal refetches its authorized catalog (debounced 750 ms, never cancelling a fetch in flight), and once after a socket reconnect.
+  - Fallback: every 2 min while realtime is down, otherwise 30 min.
+  - **Refresh products** button: one network-confirmed read; keeps the cart.
+- **Measured:** about 1.0–1.6 s from commit (1.3–2.2 s from click) for type create, product reassignment and rename, with no reload. A change missed while offline appeared 1.2 s after reconnect. 6 catalog GETs for 3 changes; branch B made 0.
+- **Offline cold reload:**
+  - The identity is memory-only, so an offline reload leaves the session `unconfirmed`, and pages read that as "No branch assigned".
+  - P69 did not touch this path (static diff). No pre-P69 browser build was run.
+  - Now the branch shell shows "Can't confirm your sign-in while offline" with Try again and automatic retry, and storage is kept. It continued 1.2 s after reconnect.
+  - No branch is assumed from cached data. Selling after an offline *cold* reload still needs an offline-auth design (out of scope).
+- **Compatibility:** additive event, **no migration**, any deploy order. Single API instance only for hints (in-memory adapter, as before).
+
+| Check | Result |
+| --- | --- |
+| API unit (new) | 12/12 |
+| API integration on fresh local Postgres (P69R, P69, P58, P58R) | **58/58**, first run |
+| Web, new and affected | All pass after 3 test bugs of mine (runbook §8.5) |
+| Full web | Run 1: 1,831/1,835 (1 test bug, 3 load timeouts). **Run 2: 1,835/1,835, exit 0** |
+| Shared / typecheck / lint / builds | 83/83 / clean / 0 errors / pass |
+| Browser (`tests/e2e/manual/p69/realtime.mjs`, SW active) | **22/22**, run 1, incl. sale ₱89.00, stock −1/−2 |
+| Not run | Full API suite, real devices, staging, multi-instance API |
+
+**Next (owner):** review the PR. Merge and deploy are separate decisions.
+
+## Earlier: P69 — product type filter and type badges on the POS
 
 Details: [`runbooks/pos-perf-p69-pos-product-type-filter.md`](runbooks/pos-perf-p69-pos-product-type-filter.md).
 
@@ -36,7 +67,7 @@ Details: [`runbooks/pos-perf-p69-pos-product-type-filter.md`](runbooks/pos-perf-
   - A deactivated type loses its tab. Its products stay sellable and labelled in All Types, and a stale selection resets with a notice.
   - Classification, promotions and product data are unchanged.
 - **API:** additive `products[].product_type` and `product_types` on `GET /api/products/catalog`. A type is named only when scoped to that branch. No migration, no checkout change.
-- **Refresh:** the existing catalog query (on mount after 60 s, on reconnect, every 30 min); focus refetch is off app-wide. No new realtime path.
+- **Refresh:** the existing catalog query at the time (on mount after 60 s, on reconnect, every 30 min). Superseded by P69R above.
 - **Offline:** the type list is saved beside each cached catalog row (no Dexie version bump). With an older API or a pre-P69 cache, the filter is hidden and nothing is guessed.
 
 | Check | Result |
@@ -51,8 +82,7 @@ Details: [`runbooks/pos-perf-p69-pos-product-type-filter.md`](runbooks/pos-perf-
 
 **Next (owner):**
 - Review the branch. Push, PR, merge and deploy are separate decisions. Any deploy order works (additive, no migration).
-- Optional: decide whether a terminal should refetch the catalog on focus so supervisor type changes appear sooner. Today it takes up to 30 min on an untouched terminal.
-- Optional: check whether the offline cold-reload "No branch assigned." also happens before P69.
+- Both optional items (prompt refresh, offline cold reload) were handled in P69R.
 
 ## Earlier: P68 follow-up — multi-process Force Delete races, pending approvals, rolling deploy
 

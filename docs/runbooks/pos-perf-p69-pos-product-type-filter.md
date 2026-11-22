@@ -5,7 +5,7 @@ Cashiers could only see a product's **size** on a POS card. "Cheese Fries PPO" i
 | | |
 |---|---|
 | Starting SHA | `a5ffefbb` (origin/main, PR #49 merge, the last **reported** deployment, not verified here) |
-| Branch | `feat/pos-perf-p69-pos-product-type-filter` (local only: not pushed, merged or deployed) |
+| Branch | `feat/pos-perf-p69-pos-product-type-filter` (pushed with a PR to `main` after P69R; not merged or deployed) |
 | Tested / final SHAs | See §7 |
 | Schema / migration | **None.** Additive response fields only |
 
@@ -69,7 +69,9 @@ New, renamed, deactivated or reactivated types and reassignments reach the branc
 - every `PRODUCT_CACHE_REFRESH_MINUTES` (30);
 - on the existing stock-event invalidations.
 
-Window-focus refetch is off app-wide (`providers.tsx`) and was left off. Type edits emit no socket event, as before, so a terminal left open and untouched shows the change within 30 minutes at most. P69 adds no new realtime path.
+Window-focus refetch is off app-wide (`providers.tsx`) and was left off.
+
+**Superseded by P69R (§8):** committed product and type writes now send a branch-scoped `catalog:changed` hint, and an open terminal refetches within about 1–2 s. The 30-minute interval remains as a safety net; without realtime it drops to 2 minutes.
 
 ### Offline
 
@@ -155,17 +157,111 @@ Types from earlier runs remain as extra empty tabs in that disposable database. 
 
 ### 6.2 Limitations
 
-- **Offline cold reload is not covered.** Reloading the terminal while offline showed "No branch assigned." before any catalog code ran: the session/branch did not resolve without the network. P69 doesn't touch auth or session restore. This was **not** compared with the pre-P69 build, so whether it is pre-existing is unproven. The cache-to-UI path (`readCachedProductTypes` → tabs) is covered by the terminal unit test, and the saved IndexedDB rows were checked in the real browser.
+- **Offline cold reload:** investigated and fixed in P69R (§8.3). The cause predates P69.
 - Branch B's authorization check ran with service workers blocked (above).
 - Not run: real devices, hosted/staging (none exists), a live old-API process with the new web (covered by the "no `product_types`" unit test only), and the full API suite.
-- Refresh after a supervisor change takes up to 30 minutes on a terminal left open and untouched (§4).
+- ~~Refresh takes up to 30 minutes on an untouched terminal~~: fixed in P69R (§8).
 
 ## 7. SHAs
 
 | | |
 |---|---|
 | Starting | `a5ffefbb` (origin/main) |
-| Tested code | `3e21fc8f` (all results above ran on this code before it was committed) |
-| Final | The docs commit after it (see `git log`) |
+| Tested code, P69 | `3e21fc8f` (§6 results) |
+| P69R start | `c2db620c` (the P69 docs commit) |
+| Tested code, P69R | `c147ec4f` (§8 results; the browser run used the same production code, before a test-only mock fix) |
+| Final | The P69R docs commit after it (see `git log`) |
 
-Local only. **Not pushed, merged or deployed. Production not accessed.**
+**Not merged or deployed. Production not accessed.**
+
+## 8. P69R — prompt catalog updates and the offline cold reload
+
+The owner expects an open POS to show supervisor type and product changes without waiting up to 30 minutes, and an offline cold reload said "No branch assigned." P69R fixes both. Same branch, additive API, **no migration**, no checkout, pricing, discount or stock change.
+
+### 8.1 Refresh mechanism
+
+The existing Socket.io branch rooms are reused. A socket joins only its own branch rooms, from its token (`joinRoomsForUser`).
+
+- **API, after a committed write** (`apps/api/src/lib/catalog-change-notifier.ts`):
+  - It sends `catalog:changed` to each affected `branch:<id>` room. The payload is only `{ branch_id }`.
+  - Branches queued within 300 ms are coalesced into one event per branch.
+- **Product writes** (`products.catalog-events.ts`, mounted on the products router):
+  - After any 2xx non-read request, it hints the branches with an availability row for that product. That set is exactly the branches whose POS can list it.
+  - A product `DELETE` also uses the rows read before the delete.
+  - A create reads the new id from its response.
+  - Refused writes, reads and `/catalog/*` checks send nothing. A failed lookup only means no hint.
+  - Coverage: create, publish, unpublish, availability, type reassignment, variants, flavors and options.
+- **Type writes** (`notifyTypeScope` in `product-types.service.ts`):
+  - Create, rename, scope widening, deactivate and reactivate hint the type's scope branches.
+  - A scope never narrows (`PRODUCT_TYPE_SCOPE_NARROWING`), so the scope after the write covers every affected branch.
+- **Terminal** (`useCatalogRealtimeSync` in `use-products.ts`):
+  - A hint for its own branch schedules one refetch of the authorized catalog (`GET /api/products/catalog`, `authenticate` and `branchGuard`) after 750 ms. Hints for other branches and malformed payloads are ignored, and the payload is never used as data.
+  - Hints that arrive in the meantime join the scheduled refetch. A fetch already in flight is never cancelled; the refetch waits for it to finish, then fetches once more.
+  - It keeps one handler across reconnects and refetches once after a socket reconnect, which picks up hints missed while disconnected.
+  - TanStack keeps the previous data during a refetch. Cart, customization, cashier state and queued sales are untouched, and the P69 stale-selection notice still applies.
+- **Fallback:** while the socket is disconnected, `useCatalog` refetches every **2 min** instead of 30 (online and visible only; TanStack pauses it offline and in a hidden tab). That 2 minutes is the worst-case latency without realtime. It is a bounded poll, not "instant".
+- **Refresh products** (terminal, beside search, accessible name "Refresh products"):
+  - One network-confirmed read (`fetchConfirmedCatalog`, bypasses the service worker's copy), saved offline as usual.
+  - Keeps the cart. Disabled offline. On failure it keeps the last catalog and shows an error toast.
+- **Not changed:** no service-worker API caching was added and no per-card requests. Query keys stay `['catalog', branchId]`, and the identity-epoch cache clearing still applies on logout or user switch.
+
+### 8.2 Measured update latency
+
+Measured with `tests/e2e/manual/p69/realtime.mjs`, run 1: **22/22, exit 0**.
+
+- **Setup:** fresh local stack `C:\p69rs`, DB `p62_p69r`, ports 56721–56723. Production builds with the service worker controlling the terminal.
+- **Sessions:** the supervisor worked in a separate browser profile through the real screens. The terminal was neither reloaded nor navigated.
+
+| Change (Supervisor screens) | Commit → open terminal shows it | Click → shows it |
+| --- | --- | --- |
+| Create type (branch A scope) | 1.4 s | 2.2 s |
+| Assign product to the type (builder) | 1.0 s | 1.3 s |
+| Rename type (selected tab kept) | 1.6 s | 1.9 s |
+| Rename made while the terminal was offline | 1.2 s after reconnect | — |
+
+- Terminal A made **6** catalog GETs for 3 changes (about 2 per change; no storm).
+- Terminal B (another branch, open) made **0** and showed no branch-A type.
+- Offline, the open terminal kept filtering from its saved catalog, and Refresh products was disabled.
+- Refresh products returned 200 and kept the cart line.
+- Sale: **one sale, ₱89.00**, stock **−1 / −2** exactly.
+- Single run on emulated desktop only. Each latency is one sample, not a distribution.
+
+### 8.3 Offline cold reload
+
+- **Cause:** the access token and identity are memory-only by design (Architecture §5.1). An offline reload can't reach `/api/auth/refresh`, so P62 marks the session `unconfirmed` with `user = null`. The terminal (and other branch pages) then read `!branchId` as "No branch assigned".
+- **Not P69:** `git diff a5ffefbb 3e21fc8f` touches none of `use-auth.ts`, `auth.store.ts`, `api-client.ts`, `branch.store.ts` or the branch layout. No pre-P69 browser build was run (no clone or new worktree), so this rests on that static evidence.
+- **No offline auth mode exists.** The only persisted branch value is a sessionStorage hint, applied once a server-issued token grants it. Nothing was borrowed from caches, and no `branchGuard` or storage was bypassed or cleared.
+- **The four states now:**
+  - session still restoring → spinner (unchanged);
+  - server unreachable or offline (`unconfirmed`) → the branch shell shows "Can't confirm your sign-in while offline" (or "Can't reach the server…"), says device data is kept, and offers **Try again**;
+  - definitive refusal → sign-in;
+  - a confirmed session with no branch → "No branch assigned" (a real missing assignment).
+- **Recovery:** `retryUnconfirmedSession` runs on `online`, when the tab becomes visible, and on Try again (one at a time). Only a server-issued token signs the tab in.
+- **Browser result:**
+  - IndexedDB store counts were unchanged across the offline reload (33 catalog rows, queued sales and counters).
+  - On reconnect the terminal continued by itself in **1.2 s**, without a reload.
+- **Remaining limits:**
+  - Selling after an offline *cold* reload is still not possible. It needs an established offline-auth design, which is a larger change and out of scope.
+  - The supervisor and admin shells keep their own messages.
+
+### 8.4 Compatibility
+
+| Combination | Result |
+| --- | --- |
+| New web → old API | No hints. The terminal uses the 2-min fallback while its socket is down; while connected, only the 30-min interval, reconnect and Refresh products apply |
+| Old web → new API | Ignores `catalog:changed` |
+| Several API instances | Not supported for hints (in-memory Socket.io adapter, as before). Missed hints are covered by reconnect, the interval and Refresh products |
+
+### 8.5 Tests
+
+| Check | Result |
+| --- | --- |
+| API unit: notifier, product middleware, `notify` | 12/12, first run |
+| API integration on a fresh embedded Postgres (port 56711): P69R hints 4/4, P69 6/6, P58 + P58R 48/48 | **58/58, first run.** Covers: type create/rename/deactivate/reactivate/widen hint only scope rooms with `{ branch_id }`; refused writes (other supervisor, staff) hint nothing; reassignment hints only the listing branch; 5 concurrent writes → one hint; reads hint nothing |
+| Web: realtime sync + fallback | Run 1: 7/8, **test bug** (an unmounted hook from the previous test kept polling a shared mock). Run 2: 8/8 |
+| Web: unconfirmed notice, layout, `retryUnconfirmedSession`, terminal Refresh | Notice 4/4 and layout pass. `use-auth` run 1 failed to load (my quoting error), then 19/19. Terminal P69 block 11/11 |
+| Full web, run 1 | 1,831/1,835, exit 1. **1 test bug:** a shared `mockRetryOfflineSale` call leaked from P46R3; fixed. **3 timeouts** under load (658 s vs 450 s), one in an untouched file. Those files alone: terminal 182/182, manual discount types pass |
+| Full web, run 2 (final code) | **1,835/1,835, 194 files, exit 0** (425 s) |
+| Shared / typecheck API + web / lint (touched files) | 83/83 / clean / 0 errors |
+| Production builds | API `tsc` and `next build` pass (web compile 5.9 min under load) |
+| Not run | The full API suite (additive emission, affected modules run), real devices, staging, multi-instance API |

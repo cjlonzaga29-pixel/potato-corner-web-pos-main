@@ -22,7 +22,22 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
   - The older `C:\p68`, `C:\p68r`, `C:\p68s`, `C:\p67`, `C:\p66*` folders noted before.
 - **Left running, not proven to be this task's:** the idle `io_worker` orphans and the `dist/server.js` (PID 17220) noted before.
 
-## Latest: P69R — prompt catalog updates and the offline cold reload
+## Latest: account deletion and email reuse (branch `feat/account-deletion-email-reuse`)
+
+Details: [`runbooks/account-deletion-email-reuse.md`](runbooks/account-deletion-email-reuse.md).
+
+- **Already correct (traced, now regression-tested):**
+  - Every permanent delete path releases the email: supervisor or staff Delete, normal branch Delete and Force Delete.
+  - A same-email account (any case) gets a new id and nothing of the old one.
+  - Reports keep the original person.
+  - Inactive keeps its email.
+- **Fixed:** concurrent Create Employee or branch-account email edit with one email returned a 500. It is now 409 `EMAIL_ALREADY_EXISTS`.
+- **Dialogs** now say the email can be reused by a fresh account.
+- **Tests:** API integration 53/53, web 184/184, browser 11/11, typecheck and lint clean. Local only. Not pushed.
+- **Production leftover-account cleanup:** run by the owner with the P68 script (exact ids, dry run first). Account details and evidence are kept outside the repository on purpose.
+- **Local leftovers:** `C:\p70` (integration logs, Postgres data) and `C:\p70s` (browser stack, env with random keys, results `out2`). All of its processes are stopped.
+
+## Earlier: P69R — prompt catalog updates and the offline cold reload
 
 Details: P69 runbook §8.
 

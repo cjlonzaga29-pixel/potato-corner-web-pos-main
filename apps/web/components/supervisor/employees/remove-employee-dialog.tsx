@@ -229,6 +229,12 @@ export function RemoveEmployeeDialog({ open, onOpenChange, employee, onDeleted }
             Sales totals, expenses, attendance, payroll and stock records are not changed.
           </p>
         </div>
+        {employee.email && (
+          <p className="text-muted-foreground">
+            The email {employee.email} is released and can be used for a new account. A new account starts fresh: it gets a new ID and none of
+            this account’s past records, PIN, sessions or access.
+          </p>
+        )}
         {uncovered.length > 0 && (
           <div className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 p-3" role="status">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -247,7 +253,7 @@ export function RemoveEmployeeDialog({ open, onOpenChange, employee, onDeleted }
           </p>
         )}
         <p className="text-muted-foreground">
-          To stop access for now without deleting, change their status to Inactive instead. That can be undone.
+          To stop access for now without deleting, change their status to Inactive instead. That can be undone, and the account keeps its email.
         </p>
         <div className="space-y-1.5">
           <Label htmlFor="delete-employee-confirm-name">

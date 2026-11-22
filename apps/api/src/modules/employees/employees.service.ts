@@ -58,6 +58,22 @@ function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
+/**
+ * Email conflicts are pre-checked case-insensitively, but two requests can
+ * both pass that check. Emails are stored normalized, so `users_email_key`
+ * refuses the second one; report it as the conflict it is, not a 500.
+ */
+async function withEmailConflict<T>(write: Promise<T>, message: string): Promise<T> {
+  try {
+    return await write;
+  } catch (error) {
+    const target = error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002' ? error.meta?.target : undefined;
+    const onEmail = Array.isArray(target) ? target.includes('email') : typeof target === 'string' && target.includes('email');
+    if (onEmail) throw new EmployeeError('EMAIL_ALREADY_EXISTS', message, 409);
+    throw error;
+  }
+}
+
 export interface EmployeeListQuery {
   role?: Role;
   employmentType?: EmploymentType;
@@ -369,7 +385,7 @@ export const employeesService = {
     const employeeId = await employeesRepository.generateEmployeeId();
     const passwordHash = isStaff ? undefined : await bcrypt.hash(data.initial_password as string, BCRYPT_COST_FACTOR);
 
-    const employee = await employeesRepository.create({
+    const employee = await withEmailConflict(employeesRepository.create({
       email: normalizedEmail,
       // Branch accounts (Task 168) no longer collect a name — firstName/lastName
       // are NOT NULL columns with no migration planned, so store '' rather than null.
@@ -387,7 +403,7 @@ export const employeesService = {
       philhealthNumberEncrypted: data.philhealth_number ? encryptField(data.philhealth_number) : undefined,
       tinNumberEncrypted: data.tin_number ? encryptField(data.tin_number) : undefined,
       pagibigNumberEncrypted: data.pagibig_number ? encryptField(data.pagibig_number) : undefined,
-    });
+    }), 'An account with this email already exists');
 
     await recordAuditLog({
       action: 'EMPLOYEE_CREATED',
@@ -873,7 +889,7 @@ export const employeesService = {
     const passwordChanged = Boolean(data.new_password);
 
     if (emailChanged && normalizedEmail) {
-      await employeesRepository.updateEmail(employeeId, normalizedEmail);
+      await withEmailConflict(employeesRepository.updateEmail(employeeId, normalizedEmail), 'This email is already in use');
     }
     if (passwordChanged) {
       const passwordHash = await bcrypt.hash(data.new_password as string, BCRYPT_COST_FACTOR);

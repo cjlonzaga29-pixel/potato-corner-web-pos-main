@@ -296,6 +296,8 @@ export function ForceDeleteBranchDialog({
           <p className="text-muted-foreground mt-1">
             The branch, its settings and its own branch login ({data.removed.branch_accounts ?? 0}),
             signed out at once. Staff and supervisors keep their accounts without this branch.
+            {(data.removed.branch_accounts ?? 0) > 0 &&
+              ' The branch login’s email can be used again for a new account, which starts fresh with a new ID and none of the old login’s records, sessions or access.'}
           </p>
         </div>
         <p className="border-warning/40 bg-warning/10 text-muted-foreground rounded-md border p-2">

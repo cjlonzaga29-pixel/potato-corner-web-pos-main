@@ -1,5 +1,6 @@
 // POS-PERF-P68 — populated upgrade rehearsal for
-//   20261123120000_pos_perf_p68_branch_force_deletion
+//   20261123120000_pos_perf_p68_branch_force_deletion and
+//   20261123130000_pos_perf_p68_fence_updates_and_approvals
 // on a throwaway local Postgres. Applies every earlier migration, seeds a
 // populated pre-P68 state with raw SQL (open shift, open clock-in, stock,
 // 20,000 sales, a P67-deleted branch, a leftover branch login), applies the
@@ -24,7 +25,10 @@ import { PrismaClient } from '@prisma/client';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const prismaDir = path.join(__dirname, '..', 'prisma');
-const PENDING = ['20261123120000_pos_perf_p68_branch_force_deletion'];
+const PENDING = [
+  '20261123120000_pos_perf_p68_branch_force_deletion',
+  '20261123130000_pos_perf_p68_fence_updates_and_approvals',
+];
 const EXTRA_SALES = Number(process.env.P68_REHEARSAL_SALES || 20000);
 const EXTRA_BRANCHES = Number(process.env.P68_REHEARSAL_BRANCHES || 300);
 
@@ -95,8 +99,8 @@ async function main() {
     .filter((entry) => /^\d{14}_/.test(entry))
     .sort();
   assert(
-    migrations.slice(-1).join() === PENDING.join(),
-    `the P68 migration is the last: ${PENDING.join(', ')}`,
+    migrations.slice(-PENDING.length).join() === PENDING.join(),
+    `the P68 migrations are the last: ${PENDING.join(', ')}`,
   );
 
   const oldPrisma = path.join(workDir, 'prisma-pre');
@@ -257,6 +261,20 @@ async function main() {
       ),
       'checkout_attempts for a fenced branch are refused',
     );
+    // 20261123130000: status-only writes are fenced too (no-op updates; refused, so nothing changes).
+    assert(
+      await refused(
+        () =>
+          db.$executeRawUnsafe(
+            `UPDATE transactions SET status = status WHERE id = (SELECT id FROM transactions WHERE branch_id = $1 LIMIT 1)`,
+            live,
+          ),
+        /POS_PERF_P68_BRANCH_DELETION_IN_PROGRESS/,
+      ),
+      'a sale status update for a fenced branch is refused',
+    );
+    // The stock-quantity guard is not rehearsed here (this seed has no stock rows); it is
+    // covered by p68-branch-lifecycle.integration.test.ts and scripts/p68-process-races.ts.
     await db.$executeRawUnsafe(
       `UPDATE shifts SET status = 'terminated', terminated_at = now() WHERE id = $1`,
       shift,

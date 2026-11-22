@@ -762,6 +762,73 @@ describe.skipIf(!isLocalDatabase)(
         );
       });
 
+      // Follow-up migration 20261123130000: the fence also covers status-only
+      // writes and approval requests, found by the two-process race run
+      // (scripts/p68-process-races.ts, runbook §6.2).
+      it('after the fence, sale status, stock quantity and new approval requests are refused; history stays writable after deletion', async () => {
+        const f = await blockedBranch('statusonly'); // has a stock row with a balance
+        const { input } = await confirm(f.branch.id);
+        const { branchForceDeletionRepository, planHash } =
+          await import('./branch-force-deletion.repository.js');
+        await branchForceDeletionRepository.fence({
+          operationId: input.operation_id,
+          branchId: f.branch.id,
+          actorId: adminId,
+          expectedVersion: new Date(input.version),
+          planKeys: input.plan_keys,
+          planHashValue: planHash(input.plan_keys),
+        });
+        const voided = await errorOf(
+          prisma.transaction.update({ where: { id: f.sale.id }, data: { status: 'voided' } }),
+        );
+        expect(isFencedBranchWrite(voided)).toBe(true);
+        const stock = await errorOf(
+          prisma.inventoryStock.updateMany({
+            where: { branchId: f.branch.id },
+            data: { quantityReserved: 1 },
+          }),
+        );
+        expect(isFencedBranchWrite(stock)).toBe(true);
+        const request = await errorOf(
+          prisma.inventoryApprovalRequest.create({
+            data: {
+              rootRequestId: randomUUID(),
+              target: 'UNIVERSAL_ITEM',
+              branchId: f.branch.id,
+              inventoryItemId: itemId,
+              operation: 'PHYSICAL_COUNT',
+              countedQuantity: 1,
+              submittedByUserId: adminId,
+            },
+          }),
+        );
+        expect(isFencedBranchWrite(request)).toBe(true);
+        expect((await branchForceDeletionService.advance(input.operation_id, null)).status).toBe(
+          'completed',
+        );
+        // A deleted branch's history is not fenced: the update guard only acts on a live, fenced row.
+        await expect(
+          prisma.transaction.update({ where: { id: f.sale.id }, data: { status: 'completed' } }),
+        ).resolves.toMatchObject({ status: 'completed' });
+        expect(
+          await prisma.inventoryApprovalRequest.count({ where: { branchId: f.branch.id } }),
+        ).toBe(0);
+      });
+
+      it('two concurrent requests with one operation id both report that operation', async () => {
+        const f = await blockedBranch('samerepeat');
+        const { input } = await confirm(f.branch.id);
+        const results = await Promise.all([
+          branchForceDeletionService.forceDelete(f.branch.id, actor(), null, input),
+          branchForceDeletionService.forceDelete(f.branch.id, actor(), null, input),
+        ]);
+        for (const result of results) expect(result.operation_id).toBe(input.operation_id);
+        expect(results.some((result) => result.status === 'completed')).toBe(true);
+        expect(
+          await prisma.branchDeletionOperation.count({ where: { branchId: f.branch.id } }),
+        ).toBe(1);
+      });
+
       it('normal Delete still works for a branch with no open work', async () => {
         const branch = await makeBranch('normal');
         const eligibility = await branchesService.getDeletionEligibility(branch.id, actor());

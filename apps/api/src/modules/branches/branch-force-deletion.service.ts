@@ -188,8 +188,13 @@ export const branchForceDeletionService = {
 
     // Idempotency: a repeat with the same operation id reports (and, if
     // needed, finishes) that operation. It can never act on another branch.
-    const existing = await branchForceDeletionRepository.findOperation(input.operation_id);
-    if (existing) {
+    // `sameOperation` is checked again before any "changed" or "in progress"
+    // refusal: a concurrent repeat of this same id (a lost response retried
+    // from another tab or API instance) may have fenced in between, and it
+    // must get that operation's status, not a 409.
+    const sameOperation = async (): Promise<ForceDeletionStatus | null> => {
+      const existing = await branchForceDeletionRepository.findOperation(input.operation_id);
+      if (!existing) return null;
       if (existing.branchId !== branchId || existing.actorId !== actor.id) {
         throw new BranchError(
           'FORCE_DELETION_OPERATION_CONFLICT',
@@ -198,7 +203,9 @@ export const branchForceDeletionService = {
         );
       }
       return branchForceDeletionService.advance(existing.id, ipAddress);
-    }
+    };
+    const repeat = await sameOperation();
+    if (repeat) return repeat;
 
     const branch = await branchesRepository.findById(branchId);
     if (!branch) {
@@ -245,6 +252,10 @@ export const branchForceDeletionService = {
       );
     }
     const version = new Date(input.version);
+    if (version.getTime() !== branch.updatedAt.getTime() || branch.deletionFencedAt) {
+      const raced = await sameOperation();
+      if (raced) return raced;
+    }
     if (version.getTime() !== branch.updatedAt.getTime()) {
       throw new BranchError(
         'BRANCH_CHANGED',
@@ -282,6 +293,10 @@ export const branchForceDeletionService = {
       planKeys: keys,
       planHashValue: hash,
     });
+    if (fenced === 'changed' || fenced === 'in_progress') {
+      const raced = await sameOperation();
+      if (raced) return raced;
+    }
     if (fenced === 'changed')
       throw new BranchError(
         'BRANCH_CHANGED',

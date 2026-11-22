@@ -178,7 +178,27 @@ export const branchForceDeletionRepository = {
         }),
         client.inventoryApprovalRequest.findMany({
           where: { branchId, status: { in: ['PENDING', 'RETURNED'] } },
-          select: { id: true, status: true, submittedByUserId: true, createdAt: true },
+          // Everything needed to settle the request by hand once its stock
+          // row is gone: what, how much, against which balance, and its proof.
+          select: {
+            id: true,
+            status: true,
+            submittedByUserId: true,
+            createdAt: true,
+            target: true,
+            operation: true,
+            inventoryItemId: true,
+            legacyIngredientId: true,
+            enteredQuantity: true,
+            enteredUnitId: true,
+            quantityDelta: true,
+            countedQuantity: true,
+            quantityOnHandAtSubmission: true,
+            reasonCode: true,
+            proofKey: true,
+            revisionNumber: true,
+            rootRequestId: true,
+          },
         }),
         client.inventoryStock.findMany({
           where: {

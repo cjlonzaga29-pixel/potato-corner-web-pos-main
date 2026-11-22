@@ -9,12 +9,68 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
 ## Observed state
 
 - **Observed:** 2026-11-22
-- **Branch:** `feat/pos-perf-p66-delete-dashboard-payroll`, from `origin/main` `f9ce9da7` (PR #47, the last **reported** deployment, not verified here). It holds P66 (`10658134`), the payroll follow-up (`8af206e8`) and P67 on top. Pushed: PR [#48](https://github.com/cjlonzaga29-pixel/potato-corner-web-pos-main/pull/48), CI `validate` green on `af8fdcc0` ([run 44980870681](https://github.com/cjlonzaga29-pixel/potato-corner-web-pos-main/actions/runs/44980870681)). A later docs-only commit records this. **Nothing merged or deployed; production not accessed.**
+- **Branch:** `feat/pos-perf-p68-branch-lifecycle-and-staff`, created from `origin/main` `365758c4` (the PR #48 merge, the last **reported** deployment, not verified here). Starting SHA `365758c4`. Tested code committed as `8f882aaa` (all results below were run on that code before commit); a docs commit follows. **Not pushed; no PR, merge or deploy; production not accessed; no production cleanup run.**
+- **Previous branch** `feat/pos-perf-p66-delete-dashboard-payroll` (`723d2b6c`) is fully contained in `origin/main`.
 - **Working tree:** only `.vscode/settings.json` is modified (the owner's personal setting). Never stage it.
-- **Local leftovers (task-owned, safe to delete):** `C:\p67` (P67 env, logs, stopped stack, scripts), `C:\p66pay`, `C:\p66`, `%TEMP%\pos-test-pg-*` and the older `C:\p6x` folders. No P67 service is running. The `C:\p66\env.sh` throwaway JWT key pair was partly printed into a session log, so treat `C:\p66` as disposable.
+- **Local leftovers (task-owned, safe to delete):**
+  - `C:\p68` (throwaway test env and logs) and `C:\p68s` (browser stack data, builds, screenshots, results). All P68 services were stopped.
+  - `C:\p67`, `C:\p66pay`, `C:\p66`, `%TEMP%\pos-test-pg-*` and the older `C:\p6x` folders.
+- **Disposable keys:**
+  - **`C:\p67\env.sh`'s throwaway JWT key pair was printed into the P68 session log** by a redaction command that missed multi-line values. Treat `C:\p67` as disposable.
+  - `C:\p66\env.sh` was already in that state.
+  - Neither is a production credential.
 - **Left running, not proven to be this task's:** the idle `io_worker` orphans and the `dist/server.js` (PID 17220) noted before.
 
-## Latest: P67 — branch Delete keeps business history; PDF test fixed
+## Latest: P68 — branch email reuse, Force Delete Branch, branch-scoped staff (local)
+
+Details: [`runbooks/pos-perf-p68-branch-lifecycle-and-staff.md`](runbooks/pos-perf-p68-branch-lifecycle-and-staff.md).
+
+- **A. Email "already exists":**
+  - The likely cause is a **leftover branch login from a branch deleted before P67**: the assignment was cascaded, but the `users` row and its email stayed. No screen lists or deletes it.
+  - The conflict is now classified and shown beside Username, with values kept: leftover (with its exact id), removed account, or working account.
+  - The check is case-insensitive.
+  - A same-email race now gets a 409, not a 500, with no partial rows.
+  - Reuse after deletion gets a new account id and no old access or history.
+  - **Leftover repair:** `apps/api/scripts/p68-leftover-branch-account-repair.ts`. Diagnose, dry run, then execute, exact ids only. **NOT run on production.**
+- **B. Force Delete Branch (Super Admin):**
+  - Offered from the blocked Delete dialog.
+  - One confirmation, bound to the actor, branch, version and exact plan.
+  - Fence, then finalize, with a durable, idempotent operation, an abort, and a restart sweeper.
+  - Each open item gets an explicit outcome and a read-only closure record:
+    - shift `terminated` with no cash count;
+    - clock-in administratively terminated with no clock-out;
+    - checkouts abandoned and deductions cancelled, only after proving they were not committed or applied;
+    - approvals cancelled;
+    - stock, holds, draft payroll and unpaid hours recorded, not changed.
+  - Reconcile later at **Admin → Branches → Deleted-branch items**.
+  - Offline terminal queues are not reachable by the server. Late syncs are refused (`BRANCH_DELETED` is a definitive local refusal) and kept on the device.
+- **C. Rows without controls were supervisor accounts.**
+  - The supervisor Employees list now shows only the selected branch's staff, with a total, and no flash on a branch switch.
+  - Create offers only the supervisor's branches.
+  - New staff appear with **No PIN** and **Set PIN**.
+  - Server checks are re-verified by tests.
+- **Migration** `20261123120000_pos_perf_p68_branch_force_deletion`: additive, no row changed.
+  - **No Force Delete until every API instance runs P68.**
+  - **Rollback floor: after the first Force Delete, P68** (`ShiftStatus 'terminated'`).
+  - Order: migration, API, web.
+
+| Check | Result |
+| --- | --- |
+| P68 integration | 20/20 (first run) |
+| Focused API, run 1 | 2 failed (query-shape assertions changed on purpose), then fixed |
+| Full API | Run 1: **1 failed** (same kind, `attendance.repository.test.ts`), 3,879 passed. **Run 2: 0 failed, 3,880 passed, 6 skipped, exit 0** |
+| Full web | **1,797/1,797** |
+| Migration rehearsal (302 branches, 20,000 sales) | Run 1: seed SQL bug. **Run 2: passed**, 94 tables byte-identical in existing columns, no drift |
+| Typecheck / lint | Clean / 0 errors (after fixing 3 non-null assertions in the new test) |
+| Builds + browser (SW active, emulated desktop/phone) | Builds pass. P68 driver: run 1 driver bug, run 2 25/26 (driver timing), **run 3 26/26**. P67 regression **27/27** |
+| Not run | Hosted/staging (none exists); real devices; live old API on the new schema; multi-process checkout-vs-Force-Delete HTTP race; a pending-approval fixture |
+
+**Next (owner):**
+- Review and decide on push/PR. Merge and deploy are separate decisions.
+- In production, run the leftover **diagnosis** (read-only) to see who holds the screenshot email. A dry run and execution need your review.
+- Decide the Demo same-name supervisor/staff pair. Nothing was changed.
+
+## Earlier: P67 — branch Delete keeps business history; PDF test fixed
 
 Details: [`runbooks/pos-perf-p66-delete-dashboard-payroll.md`](runbooks/pos-perf-p66-delete-dashboard-payroll.md) §10.
 

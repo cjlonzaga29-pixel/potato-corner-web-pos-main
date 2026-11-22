@@ -343,7 +343,8 @@ export const employeesService = {
     const normalizedEmail = isStaff ? undefined : normalizeEmail(data.email as string);
 
     if (!isStaff && normalizedEmail) {
-      const existing = await employeesRepository.findByEmail(normalizedEmail);
+      // POS-PERF-P68 — case-insensitive: older rows may predate normalization.
+      const existing = await employeesRepository.findEmailHolder(normalizedEmail);
       if (existing) {
         throw new EmployeeError('EMAIL_ALREADY_EXISTS', 'An account with this email already exists', 409);
       }
@@ -861,7 +862,7 @@ export const employeesService = {
     if (data.email) {
       normalizedEmail = normalizeEmail(data.email);
       if (normalizedEmail !== normalizeEmail(employee.email as string)) {
-        const existing = await employeesRepository.findByEmail(normalizedEmail);
+        const existing = await employeesRepository.findEmailHolder(normalizedEmail);
         if (existing && existing.id !== employeeId) {
           throw new EmployeeError('EMAIL_ALREADY_EXISTS', 'This email is already in use', 409);
         }

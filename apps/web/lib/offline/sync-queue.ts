@@ -82,6 +82,13 @@ const DEFINITIVE_QUEUE_REJECTION_CODES = new Set([
   // with VAT (or the old PWD/Senior formula). It is never recalculated, so it
   // stays in the queue, visibly, for a supervisor to record.
   'VAT_CALCULATION_RETIRED',
+  // POS-PERF-P67/P68 — BRANCH_DELETED: the branch this sale was queued at
+  // has been deleted (normally or by Force Delete). The server can't record
+  // it, so it stays on this device, visibly refused, for manual
+  // reconciliation. It is never resent to another branch, even one with the
+  // same name (rows are keyed by the original branch id). A fenced branch
+  // (BRANCH_DELETION_IN_PROGRESS) stays retryable: that may still be stopped.
+  'BRANCH_DELETED',
 ]);
 
 export function isDefinitiveQueueRejection(code: string | null | undefined): boolean {

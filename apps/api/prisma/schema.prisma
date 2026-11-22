@@ -123,6 +123,10 @@ enum ShiftStatus {
   active
   closed
   flagged
+  /// POS-PERF-P68 — ended administratively by a Force Delete of its branch.
+  /// Not a closure: no cash was counted, closedAt/closedBy and the closing
+  /// amounts stay null, and a branch closure item records it as unresolved.
+  terminated
 }
 
 enum DenominationCountType {
@@ -396,6 +400,11 @@ model Person {
   /// The live account; null once it has been deleted.
   account User? @relation("PersonAccount")
 
+  // POS-PERF-P68 — Force Delete operations and branch closure items.
+  branchDeletionOperations BranchDeletionOperation[] @relation("BranchDeletionActor")
+  closureItemsRecorded     BranchClosureItem[]       @relation("ClosureItemRecordedBy")
+  closureItemsReconciled   BranchClosureItem[]       @relation("ClosureItemReconciledBy")
+
   shiftsAsCashier                   Shift[]                       @relation("ShiftCashier")
   shiftsOpenedBy                    Shift[]                       @relation("ShiftOpenedBy")
   shiftReviewsReviewed              ShiftReview[]                 @relation("ShiftReviewReviewer")
@@ -494,8 +503,73 @@ model BranchRecord {
   payrollPolicies          PayrollPolicy[]
   payRates                 EmployeePayRate[]
   payrollRuns              PayrollRun[]
+  // POS-PERF-P68
+  deletionOperations       BranchDeletionOperation[]
+  closureItems             BranchClosureItem[]
 
   @@map("branch_records")
+}
+
+/// POS-PERF-P68 — one Force Delete of a branch: a durable, idempotent
+/// lifecycle (fenced -> completed | aborted | failed). `id` is the client's
+/// operation id, so a repeat after a timeout or reload finds the same row.
+/// `plan` is the exact set of open items the Super Admin confirmed; the
+/// execution may only resolve items in it. At most one fenced operation per
+/// branch (partial unique index in the migration).
+model BranchDeletionOperation {
+  id          String    @id
+  branchId    String    @map("branch_id")
+  mode        String
+  status      String
+  actorId     String    @map("actor_id")
+  plan        Json
+  planHash    String    @map("plan_hash")
+  step        String?
+  lastError   String?   @map("last_error")
+  abortReason String?   @map("abort_reason")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  completedAt DateTime? @map("completed_at")
+
+  branch BranchRecord @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  actor  Person       @relation("BranchDeletionActor", fields: [actorId], references: [id], onDelete: Restrict)
+
+  closureItems         BranchClosureItem[]
+  terminatedShifts     Shift[]             @relation("ShiftTermination")
+  terminatedAttendance AttendanceRecord[]  @relation("AttendanceTermination")
+
+  @@index([branchId])
+  @@map("branch_deletion_operations")
+}
+
+/// POS-PERF-P68 — durable, read-only record of something a Force Delete
+/// left unresolved (an uncounted shift, a clock-in without a clock-out,
+/// stock on hand, a draft payroll run, a cancelled deduction...). Only the
+/// reconciliation fields can be set, once (migration trigger). Never deleted.
+model BranchClosureItem {
+  id                 String    @id @default(uuid())
+  operationId        String    @map("operation_id")
+  branchId           String    @map("branch_id")
+  kind               String
+  sourceTable        String    @map("source_table")
+  sourceId           String    @map("source_id")
+  outcome            String
+  reason             String
+  snapshot           Json
+  recordedBy         String    @map("recorded_by")
+  recordedAt         DateTime  @default(now()) @map("recorded_at")
+  reconciledAt       DateTime? @map("reconciled_at")
+  reconciledBy       String?   @map("reconciled_by")
+  reconciliationNote String?   @map("reconciliation_note")
+
+  operation  BranchDeletionOperation @relation(fields: [operationId], references: [id], onDelete: Restrict)
+  branch     BranchRecord            @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  recorder   Person                  @relation("ClosureItemRecordedBy", fields: [recordedBy], references: [id], onDelete: Restrict)
+  reconciler Person?                 @relation("ClosureItemReconciledBy", fields: [reconciledBy], references: [id], onDelete: Restrict)
+
+  @@unique([operationId, kind, sourceId])
+  @@index([branchId, reconciledAt])
+  @@map("branch_closure_items")
 }
 
 model Branch {
@@ -511,6 +585,9 @@ model Branch {
   gpsLongitude        Decimal?            @map("gps_longitude") @db.Decimal(11, 8)
   gpsRadiusMeters     Int                 @default(100) @map("gps_radius_meters")
   status              BranchStatus        @default(active)
+  /// POS-PERF-P68 — set by a Force Delete: new operational writes are refused (trigger).
+  deletionFencedAt    DateTime?           @map("deletion_fenced_at")
+  deletionOperationId String?             @map("deletion_operation_id")
   gcashQrUrl          String?
   gcashQrKey          String?
 
@@ -2635,6 +2712,11 @@ model Shift {
   totalDiscountAmount    Decimal     @default(0) @map("total_discount_amount") @db.Decimal(10, 2)
   pwdScTransactionCount  Int         @default(0) @map("pwd_sc_transaction_count")
 
+  // POS-PERF-P68 — administrative termination by a Force Delete (status 'terminated').
+  terminatedAt           DateTime?                @map("terminated_at")
+  terminationOperationId String?                  @map("termination_operation_id")
+  terminationOperation   BranchDeletionOperation? @relation("ShiftTermination", fields: [terminationOperationId], references: [id], onDelete: Restrict)
+
   branch  BranchRecord @relation(fields: [branchId], references: [id], onDelete: Restrict)
   cashier Person       @relation("ShiftCashier", fields: [cashierId], references: [id])
   opener  Person       @relation("ShiftOpenedBy", fields: [openedBy], references: [id])
@@ -2768,31 +2850,36 @@ model ShiftCashDenomination {
 // ---------------------------------------------------------------------------
 
 model AttendanceRecord {
-  id                 String              @id @default(uuid())
-  employeeId         String              @map("employee_id")
-  branchId           String              @map("branch_id")
-  clockInServerTime  DateTime            @map("clock_in_server_time")
-  clockInDeviceTime  DateTime?           @map("clock_in_device_time")
-  clockInGpsLat      Decimal?            @map("clock_in_gps_lat") @db.Decimal(10, 8)
-  clockInGpsLng      Decimal?            @map("clock_in_gps_lng") @db.Decimal(11, 8)
-  clockInGpsStatus   AttendanceGpsStatus @map("clock_in_gps_status")
-  clockInTimeFlag    Boolean             @default(false) @map("clock_in_time_flag")
-  clockOutServerTime DateTime?           @map("clock_out_server_time")
-  clockOutDeviceTime DateTime?           @map("clock_out_device_time")
-  clockOutGpsLat     Decimal?            @map("clock_out_gps_lat") @db.Decimal(10, 8)
-  clockOutGpsLng     Decimal?            @map("clock_out_gps_lng") @db.Decimal(11, 8)
-  breakMinutes       Int                 @default(0) @map("break_minutes")
-  actualWorkMinutes  Int?                @map("actual_work_minutes")
-  overtimeMinutes    Int                 @default(0) @map("overtime_minutes")
-  status             AttendanceStatus    @default(present)
-  correctionReason   String?             @map("correction_reason")
-  correctedBy        String?             @map("corrected_by")
+  id                           String                   @id @default(uuid())
+  employeeId                   String                   @map("employee_id")
+  branchId                     String                   @map("branch_id")
+  clockInServerTime            DateTime                 @map("clock_in_server_time")
+  clockInDeviceTime            DateTime?                @map("clock_in_device_time")
+  clockInGpsLat                Decimal?                 @map("clock_in_gps_lat") @db.Decimal(10, 8)
+  clockInGpsLng                Decimal?                 @map("clock_in_gps_lng") @db.Decimal(11, 8)
+  clockInGpsStatus             AttendanceGpsStatus      @map("clock_in_gps_status")
+  clockInTimeFlag              Boolean                  @default(false) @map("clock_in_time_flag")
+  clockOutServerTime           DateTime?                @map("clock_out_server_time")
+  clockOutDeviceTime           DateTime?                @map("clock_out_device_time")
+  clockOutGpsLat               Decimal?                 @map("clock_out_gps_lat") @db.Decimal(10, 8)
+  clockOutGpsLng               Decimal?                 @map("clock_out_gps_lng") @db.Decimal(11, 8)
+  breakMinutes                 Int                      @default(0) @map("break_minutes")
+  actualWorkMinutes            Int?                     @map("actual_work_minutes")
+  overtimeMinutes              Int                      @default(0) @map("overtime_minutes")
+  status                       AttendanceStatus         @default(present)
+  correctionReason             String?                  @map("correction_reason")
+  correctedBy                  String?                  @map("corrected_by")
   // Phase 12: links a correction row back to the record it replaces. Set
   // only on the correction row; the original row it points to is the one
   // that gets soft-deleted (see deletedAt) — never hard-deleted, so the
   // full correction history stays queryable.
-  originalRecordId   String?             @map("original_record_id")
-  deletedAt          DateTime?           @map("deleted_at")
+  originalRecordId             String?                  @map("original_record_id")
+  deletedAt                    DateTime?                @map("deleted_at")
+  // POS-PERF-P68 — ended administratively by a Force Delete. Not a clock-out:
+  // clockOutServerTime stays null and no work or pay time is invented.
+  administrativelyTerminatedAt DateTime?                @map("administratively_terminated_at")
+  terminationOperationId       String?                  @map("termination_operation_id")
+  terminationOperation         BranchDeletionOperation? @relation("AttendanceTermination", fields: [terminationOperationId], references: [id], onDelete: Restrict)
 
   employee       Person                   @relation("AttendanceEmployee", fields: [employeeId], references: [id])
   branch         BranchRecord             @relation(fields: [branchId], references: [id], onDelete: Restrict)

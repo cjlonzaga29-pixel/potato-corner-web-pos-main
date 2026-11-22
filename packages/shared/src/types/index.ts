@@ -42,6 +42,13 @@ export type DeleteBranchInput = z.infer<typeof schemas.deleteBranchSchema>;
 export type BranchDeletionBlocker = z.infer<typeof schemas.branchDeletionBlockerSchema>;
 export type BranchDeletionEligibility = z.infer<typeof schemas.branchDeletionEligibilitySchema>;
 export type BranchDeletionResult = z.infer<typeof schemas.branchDeletionResultSchema>;
+export type ForceDeletionPlan = z.infer<typeof schemas.forceDeletionPlanSchema>;
+export type ForceDeletionPlanGroup = z.infer<typeof schemas.forceDeletionPlanGroupSchema>;
+export type ForceDeleteBranchInput = z.infer<typeof schemas.forceDeleteBranchSchema>;
+export type ForceDeletionStatus = z.infer<typeof schemas.forceDeletionStatusSchema>;
+export type BranchClosureItem = z.infer<typeof schemas.branchClosureItemSchema>;
+export type BranchClosureItemList = z.infer<typeof schemas.branchClosureItemListSchema>;
+export type ReconcileClosureItemInput = z.infer<typeof schemas.reconcileClosureItemSchema>;
 
 export type CreateProductInput = z.infer<typeof schemas.createProductSchema>;
 export type UpdateProductInput = z.infer<typeof schemas.updateProductSchema>;

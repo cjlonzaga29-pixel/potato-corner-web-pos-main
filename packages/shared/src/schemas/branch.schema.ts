@@ -181,3 +181,110 @@ export const branchStatsResponseSchema = z.object({
   staffTimedInCount: z.number().int(),
   lowStockIngredientCount: z.number().int(),
 });
+
+// ---------------------------------------------------------------------------
+// POS-PERF-P68 — Force Delete Branch (Super Admin only)
+// ---------------------------------------------------------------------------
+
+export const forceDeletionItemKindValues = [
+  'open_shift',
+  'open_attendance',
+  'pending_checkout',
+  'held_order',
+  'deduction_job',
+  'projection_outbox',
+  'inventory_approval',
+  'stock_balance',
+  'draft_payroll_run',
+  'unpaid_payroll_hours',
+] as const;
+
+export const forceDeletionPlanGroupSchema = z.object({
+  kind: z.enum(forceDeletionItemKindValues),
+  count: z.number().int(),
+  outcome: z.string(),
+  /** What happens to these items, in plain words. */
+  explanation: z.string(),
+  /** Up to 20 short descriptions (ids, names, quantities) for the dialog. */
+  examples: z.array(z.string()),
+});
+
+export const forceDeletionPlanSchema = z.object({
+  branch_id: z.uuid(),
+  in_progress_operation_id: z.string().nullable(),
+  groups: z.array(forceDeletionPlanGroupSchema),
+  history_retained: z.record(z.string(), z.number()),
+  removed: z.record(z.string(), z.number()),
+  /** Stated plainly in the dialog: the server cannot reach offline terminals. */
+  offline_notice: z.string(),
+  confirmation: z.object({
+    name: z.string(),
+    code: z.string(),
+    version: z.string(),
+    plan_keys: z.array(z.string()),
+    plan_hash: z.string(),
+    confirmation_token: z.string(),
+  }),
+});
+
+export const forceDeleteBranchSchema = z.object({
+  /** Client-generated once per confirmation; a repeat with it returns the same operation. */
+  operation_id: z.uuid(),
+  confirm_name: z.string().trim().min(1).max(200),
+  confirm_code: z.string().trim().min(1).max(20),
+  version: z.iso.datetime({ offset: true }),
+  plan_keys: z.array(z.string().max(300)).max(20_000),
+  plan_hash: z.string().regex(/^[0-9a-f]{64}$/),
+  confirmation_token: z.string().regex(/^[0-9a-f]{64}$/),
+  acknowledge: z.literal(true),
+});
+
+export const forceDeletionStatusValues = [
+  'fenced',
+  'completed',
+  'aborted',
+  'failed',
+  'already_deleted',
+] as const;
+
+export const forceDeletionStatusSchema = z.object({
+  operation_id: z.string().nullable(),
+  branch_id: z.string(),
+  status: z.enum(forceDeletionStatusValues),
+  step: z.string().nullable(),
+  abort_reason: z.string().nullable(),
+  last_error: z.string().nullable(),
+  closure_item_count: z.number().int(),
+  created_at: z.string().nullable(),
+  completed_at: z.string().nullable(),
+});
+
+export const branchClosureItemSchema = z.object({
+  id: z.string(),
+  operation_id: z.string(),
+  branch_id: z.string(),
+  branch_name: z.string(),
+  branch_code: z.string(),
+  kind: z.string(),
+  source_table: z.string(),
+  source_id: z.string(),
+  outcome: z.string(),
+  reason: z.string(),
+  snapshot: z.record(z.string(), z.unknown()),
+  recorded_by_name: z.string(),
+  recorded_at: z.string(),
+  reconciled_at: z.string().nullable(),
+  reconciled_by_name: z.string().nullable(),
+  reconciliation_note: z.string().nullable(),
+});
+
+export const branchClosureItemListSchema = z.object({
+  items: z.array(branchClosureItemSchema),
+  total: z.number().int(),
+  page: z.number().int(),
+  limit: z.number().int(),
+});
+
+export const reconcileClosureItemSchema = z.object({
+  note: z.string().trim().min(5, 'Say how it was settled (at least 5 characters)').max(1000),
+});

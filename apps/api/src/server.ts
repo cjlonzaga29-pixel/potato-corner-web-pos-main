@@ -10,6 +10,7 @@ import { scheduleEvery } from './lib/daily-scheduler.js';
 import { sweepExpiredInventoryEvidence } from './modules/universal-inventory/universal-inventory.service.js';
 import { createInventoryDeductionWorker } from './modules/inventory-deduction/inventory-deduction.worker.js';
 import { createAuditOutboxWorker } from './modules/audit-outbox/audit-outbox.worker.js';
+import { startForceDeletionSweeper } from './modules/branches/branch-force-deletion.service.js';
 import { authRepository } from './modules/auth/auth.repository.js';
 import { disconnectPrisma, prisma } from './lib/prisma.js';
 import { pdfRenderPool } from './lib/reports/pdf-render-pool.js';
@@ -94,6 +95,8 @@ async function start(): Promise<void> {
   const auditOutboxWorker = createAuditOutboxWorker();
   auditOutboxWorker.start();
   console.log('Audit outbox worker started (polling every 5s).');
+  // POS-PERF-P68 — resumes any Force Delete a crash or restart left fenced.
+  const forceDeletionSweeper = startForceDeletionSweeper();
 
   const httpServer = createServer(app);
   createSocketServer(httpServer);
@@ -110,6 +113,7 @@ async function start(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`${signal} received — shutting down gracefully.`);
+    forceDeletionSweeper.stop();
     await Promise.all([inventoryDeductionWorker.stop(), auditOutboxWorker.stop()]);
     await new Promise<void>((resolve) => httpServer.close(() => resolve()));
     await pdfRenderPool.shutdown();

@@ -765,10 +765,25 @@ export const reportsRepository = {
     const attendanceWhere = { deletedAt: null, ...branchWhere, ...(range && { clockInServerTime: range }) };
 
     const [sales, movements, attendance, openCount, products] = await Promise.all([
-      prisma.transaction.groupBy({ by: ['status'], where: createdWhere, _count: { _all: true }, _sum: { totalAmount: true, discountAmount: true } }),
-      prisma.inventoryStockMovement.groupBy({ by: ['movementType', 'referenceType'], where: createdWhere, _count: { _all: true } }),
-      prisma.attendanceRecord.aggregate({ where: attendanceWhere, _count: { _all: true }, _sum: { actualWorkMinutes: true, overtimeMinutes: true } }),
-      prisma.attendanceRecord.count({ where: { ...attendanceWhere, clockOutServerTime: null } }),
+      prisma.transaction.groupBy({
+        by: ['status'],
+        where: createdWhere,
+        _count: { _all: true },
+        _sum: { totalAmount: true, discountAmount: true },
+      }),
+      prisma.inventoryStockMovement.groupBy({
+        by: ['movementType', 'referenceType'],
+        where: createdWhere,
+        _count: { _all: true },
+      }),
+      prisma.attendanceRecord.aggregate({
+        where: attendanceWhere,
+        _count: { _all: true },
+        _sum: { actualWorkMinutes: true, overtimeMinutes: true },
+      }),
+      prisma.attendanceRecord.count({
+        where: { ...attendanceWhere, clockOutServerTime: null, administrativelyTerminatedAt: null },
+      }),
       prisma.transactionItem.findMany({
         where: { transaction: createdWhere },
         distinct: ['productNameSnapshot'],

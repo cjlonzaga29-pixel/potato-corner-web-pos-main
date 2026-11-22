@@ -101,7 +101,12 @@ async function countLowStockByBranch(branchIds: string[]): Promise<Map<string, n
  */
 async function countStaffTimedIn(branchId: string): Promise<number> {
   const rows = await prisma.attendanceRecord.findMany({
-    where: { branchId, clockOutServerTime: null, deletedAt: null },
+    where: {
+      branchId,
+      clockOutServerTime: null,
+      deletedAt: null,
+      administrativelyTerminatedAt: null,
+    },
     select: {
       // POS-PERF-P66 — live account fields through Person.account (null once deleted, which counts as not working).
       employee: {
@@ -119,7 +124,7 @@ async function countStaffTimedIn(branchId: string): Promise<number> {
 /** Same rule as countStaffTimedIn, grouped across every branch in one query — used by findAllStatsGrouped. */
 async function countStaffTimedInByBranch(): Promise<Map<string, number>> {
   const rows = await prisma.attendanceRecord.findMany({
-    where: { clockOutServerTime: null, deletedAt: null },
+    where: { clockOutServerTime: null, deletedAt: null, administrativelyTerminatedAt: null },
     select: {
       branchId: true,
       employee: {
@@ -714,21 +719,47 @@ export const branchesRepository = {
    */
   async findDeletionBlockers(branchId: string, client: Prisma.TransactionClient | typeof prisma = prisma): Promise<BranchDeletionBlocker[]> {
     const now = new Date();
-    const [openShifts, openAttendance, pendingCheckouts, heldOrders, deductionJobs, projectionRows, approvals, nonzeroStock, draftRuns, unpaidHours] =
-      await Promise.all([
-        client.shift.count({ where: { branchId, status: 'active' } }),
-        client.attendanceRecord.count({ where: { branchId, clockOutServerTime: null, deletedAt: null } }),
-        client.checkoutAttempt.count({ where: { branchId, status: 'in_progress' } }),
-        client.holdOrder.count({ where: { branchId, status: 'held', expiresAt: { gt: now } } }),
-        client.inventoryDeductionJob.count({ where: { branchId, status: { in: ['pending', 'processing', 'failed'] } } }),
-        client.inventoryProjectionOutbox.count({
-          where: { status: { in: ['pending', 'processing', 'deferred', 'stuck'] }, movement: { branchId } },
-        }),
-        client.inventoryApprovalRequest.count({ where: { branchId, status: { in: ['PENDING', 'RETURNED'] } } }),
-        client.inventoryStock.count({ where: { branchId, OR: [{ quantityOnHand: { not: 0 } }, { quantityReserved: { not: 0 } }] } }),
-        client.payrollRun.count({ where: { branchId, status: 'draft' } }),
-        branchesRepository.countUnpaidPayrollAttendance(branchId, client),
-      ]);
+    const [
+      openShifts,
+      openAttendance,
+      pendingCheckouts,
+      heldOrders,
+      deductionJobs,
+      projectionRows,
+      approvals,
+      nonzeroStock,
+      draftRuns,
+      unpaidHours,
+    ] = await Promise.all([
+      client.shift.count({ where: { branchId, status: 'active' } }),
+      client.attendanceRecord.count({
+        where: {
+          branchId,
+          clockOutServerTime: null,
+          deletedAt: null,
+          administrativelyTerminatedAt: null,
+        },
+      }),
+      client.checkoutAttempt.count({ where: { branchId, status: 'in_progress' } }),
+      client.holdOrder.count({ where: { branchId, status: 'held', expiresAt: { gt: now } } }),
+      client.inventoryDeductionJob.count({
+        where: { branchId, status: { in: ['pending', 'processing', 'failed'] } },
+      }),
+      client.inventoryProjectionOutbox.count({
+        where: {
+          status: { in: ['pending', 'processing', 'deferred', 'stuck'] },
+          movement: { branchId },
+        },
+      }),
+      client.inventoryApprovalRequest.count({
+        where: { branchId, status: { in: ['PENDING', 'RETURNED'] } },
+      }),
+      client.inventoryStock.count({
+        where: { branchId, OR: [{ quantityOnHand: { not: 0 } }, { quantityReserved: { not: 0 } }] },
+      }),
+      client.payrollRun.count({ where: { branchId, status: 'draft' } }),
+      branchesRepository.countUnpaidPayrollAttendance(branchId, client),
+    ]);
     const blockers: BranchDeletionBlocker[] = [];
     const add = (code: BranchDeletionBlocker['code'], count: number, message: string) => {
       if (count > 0) blockers.push({ code, count, message });
@@ -792,6 +823,47 @@ export const branchesRepository = {
   },
 
   /**
+   * POS-PERF-P67 (shared with the P68 Force Delete) — inside the caller's
+   * transaction, removes the operational branch: its exclusive login
+   * accounts (P66 lifecycle: the removed-account marker ends their tokens,
+   * attribution stays on people; an account also assigned to another live
+   * branch is kept), its notifications and cached report snapshots, then
+   * the branches row. Configuration and access cascade; history references
+   * branch_records and is untouched.
+   */
+  async removeOperationalBranch(
+    branchId: string,
+    deletedBy: string,
+    tx: Prisma.TransactionClient,
+  ): Promise<{ branchAccountIds: string[]; removed: Record<string, number> }> {
+    const removed = await branchesRepository.countRemovedWithBranch(branchId, tx);
+    const branchAccountIds = await branchesRepository.findBranchAccountIds(branchId, tx);
+    if (branchAccountIds.length > 0) {
+      const markerExpiry = new Date(Date.now() + REMOVED_ACCOUNT_MARKER_TTL_MS);
+      for (const userId of branchAccountIds) {
+        const tokenHash = removedAccountRevocationHash(userId);
+        await tx.revokedToken.upsert({
+          where: { tokenHash },
+          create: { tokenHash, expiresAt: markerExpiry },
+          update: { expiresAt: markerExpiry },
+        });
+      }
+      await tx.notification.deleteMany({ where: { recipientUserId: { in: branchAccountIds } } });
+      await tx.expenseIdempotencyKey.deleteMany({ where: { userId: { in: branchAccountIds } } });
+      await tx.person.updateMany({
+        where: { id: { in: branchAccountIds } },
+        data: { accountDeletedAt: new Date(), accountDeletedBy: deletedBy },
+      });
+      await tx.user.deleteMany({ where: { id: { in: branchAccountIds } } });
+    }
+    await tx.notification.deleteMany({ where: { branchId } });
+    await tx.reportSnapshot.deleteMany({ where: { branchId } });
+    await tx.branchRecord.update({ where: { id: branchId }, data: { deletedBy } });
+    await tx.branch.delete({ where: { id: branchId } });
+    return { branchAccountIds, removed };
+  },
+
+  /**
    * POS-PERF-P67 — permanent deletion of the operational branch, in one transaction:
    * 1. A version-bound write takes the branch row lock (a concurrent edit or
    *    delete gives 'changed' / 'not_found').
@@ -818,24 +890,17 @@ export const branchesRepository = {
           const blockers = await branchesRepository.findDeletionBlockers(branchId, tx);
           if (blockers.length > 0) throw new BranchDeletionAbort({ outcome: 'blocked', blockers });
           const before = await branchesRepository.activityFingerprint(branchId, tx);
-          const removed = await branchesRepository.countRemovedWithBranch(branchId, tx);
-
-          const branchAccountIds = await branchesRepository.findBranchAccountIds(branchId, tx);
-          if (branchAccountIds.length > 0) {
-            const markerExpiry = new Date(Date.now() + REMOVED_ACCOUNT_MARKER_TTL_MS);
-            for (const userId of branchAccountIds) {
-              const tokenHash = removedAccountRevocationHash(userId);
-              await tx.revokedToken.upsert({ where: { tokenHash }, create: { tokenHash, expiresAt: markerExpiry }, update: { expiresAt: markerExpiry } });
-            }
-            await tx.notification.deleteMany({ where: { recipientUserId: { in: branchAccountIds } } });
-            await tx.expenseIdempotencyKey.deleteMany({ where: { userId: { in: branchAccountIds } } });
-            await tx.person.updateMany({ where: { id: { in: branchAccountIds } }, data: { accountDeletedAt: new Date(), accountDeletedBy: deletedBy } });
-            await tx.user.deleteMany({ where: { id: { in: branchAccountIds } } });
-          }
-          await tx.notification.deleteMany({ where: { branchId } });
-          await tx.reportSnapshot.deleteMany({ where: { branchId } });
-          await tx.branchRecord.update({ where: { id: branchId }, data: { deletedBy } });
-          await tx.branch.delete({ where: { id: branchId } });
+          // POS-PERF-P68 — normal delete never touches a branch a Force Delete has fenced.
+          const fence = await tx.branch.findUnique({
+            where: { id: branchId },
+            select: { deletionFencedAt: true },
+          });
+          if (fence?.deletionFencedAt) return { outcome: 'changed' as const };
+          const { branchAccountIds, removed } = await branchesRepository.removeOperationalBranch(
+            branchId,
+            deletedBy,
+            tx,
+          );
 
           const after = await branchesRepository.activityFingerprint(branchId, tx);
           if (Object.keys(before).some((key) => before[key] !== after[key])) throw new BranchDeletionAbort({ outcome: 'activity' });

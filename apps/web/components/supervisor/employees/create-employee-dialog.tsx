@@ -64,7 +64,14 @@ export function SupervisorCreateEmployeeDialog({ open, onOpenChange }: Superviso
 
   const { data: branchData, isLoading: branchesLoading } = useBranches({ status: 'active', limit: 100 });
   const allBranches = branchData?.branches ?? [];
-  const branches = isBranchAccount ? allBranches.filter((branch) => callerBranchIds.includes(branch.id)) : allBranches;
+  // POS-PERF-P68 — only a Super Admin may pick any branch. A supervisor or
+  // branch account sees only the branches its token grants (the server
+  // refuses any other); the default is the selected branch, and exactly one
+  // branch is assigned.
+  const branches =
+    user?.role === ROLES.SUPER_ADMIN
+      ? allBranches
+      : allBranches.filter((branch) => callerBranchIds.includes(branch.id));
 
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),

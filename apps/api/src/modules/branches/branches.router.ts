@@ -7,11 +7,15 @@ import {
   changeBranchStatusSchema,
   assignSupervisorSchema,
   deleteBranchSchema,
+  forceDeleteBranchSchema,
+  reconcileClosureItemSchema,
+  type ForceDeleteBranchInput,
   BRANCH_STATUS,
   MAX_LIST_LIMIT,
   type BranchStatus,
 } from '@potato-corner/shared';
 import { branchesService } from './branches.service.js';
+import { branchForceDeletionService } from './branch-force-deletion.service.js';
 import { BranchError } from './branches.types.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { adminOnly, adminOrSupervisor, adminSupervisorOrBranch, allRoles } from '../../middleware/authorize.js';
@@ -131,15 +135,173 @@ router.get('/stats', authenticate, adminSupervisorOrBranch, requirePasswordChang
 // receipt). branchGuard + getBranchById's own assertBranchAccess both still
 // restrict branch/staff to exactly their JWT branch_ids — this only adds
 // STAFF to the role check, no branch-scoping is relaxed.
-router.get('/:branchId', authenticate, allRoles, requirePasswordChange, branchGuard, async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    if (!requireUser(req, res)) return;
-    const branch = await branchesService.getBranchById(req.params.branchId as string, req.user);
-    res.status(200).json({ data: branch, error: null, meta: null });
-  } catch (error) {
-    handleBranchError(error, res, next);
-  }
+// POS-PERF-P68 — Force Delete Branch and the reconciliation of what it left
+// unresolved. Super Admin only, here and again in the service.
+const closureItemsQuerySchema = z.object({
+  branch_id: z.uuid().optional(),
+  reconciled: z.enum(['true', 'false']).optional(),
+  page: z.coerce.number().int().positive().default(1),
+  limit: z.coerce.number().int().positive().max(MAX_LIST_LIMIT).default(25),
 });
+
+router.get(
+  '/closure-items',
+  authenticate,
+  adminOnly,
+  requirePasswordChange,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const parsed = closureItemsQuerySchema.safeParse(req.query);
+      if (!parsed.success) {
+        res
+          .status(422)
+          .json({
+            data: null,
+            error: { code: 'VALIDATION_ERROR', message: 'Invalid query' },
+            meta: null,
+          });
+        return;
+      }
+      const result = await branchForceDeletionService.listClosureItems(
+        { id: req.user.user_id, role: req.user.role },
+        {
+          branchId: parsed.data.branch_id,
+          reconciled:
+            parsed.data.reconciled === undefined ? undefined : parsed.data.reconciled === 'true',
+          page: parsed.data.page,
+          limit: parsed.data.limit,
+        },
+      );
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleBranchError(error, res, next);
+    }
+  },
+);
+
+router.post(
+  '/closure-items/:itemId/reconcile',
+  authenticate,
+  adminOnly,
+  requirePasswordChange,
+  validate(reconcileClosureItemSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const result = await branchForceDeletionService.reconcileClosureItem(
+        req.params.itemId as string,
+        { id: req.user.user_id, role: req.user.role },
+        (req.body as { note: string }).note,
+        req.ip ?? null,
+      );
+      res.status(200).json({ data: result, error: null, meta: null });
+    } catch (error) {
+      handleBranchError(error, res, next);
+    }
+  },
+);
+
+router.get(
+  '/force-deletions/:operationId',
+  authenticate,
+  adminOnly,
+  requirePasswordChange,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const status = await branchForceDeletionService.getStatus(
+        req.params.operationId as string,
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(200).json({ data: status, error: null, meta: null });
+    } catch (error) {
+      handleBranchError(error, res, next);
+    }
+  },
+);
+
+router.post(
+  '/force-deletions/:operationId/abort',
+  authenticate,
+  adminOnly,
+  requirePasswordChange,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const status = await branchForceDeletionService.abort(
+        req.params.operationId as string,
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+      );
+      res.status(200).json({ data: status, error: null, meta: null });
+    } catch (error) {
+      handleBranchError(error, res, next);
+    }
+  },
+);
+
+router.get(
+  '/:branchId/force-deletion-plan',
+  authenticate,
+  adminOnly,
+  requirePasswordChange,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const plan = await branchForceDeletionService.getPlan(req.params.branchId as string, {
+        id: req.user.user_id,
+        role: req.user.role,
+      });
+      res.status(200).json({ data: plan, error: null, meta: null });
+    } catch (error) {
+      handleBranchError(error, res, next);
+    }
+  },
+);
+
+router.post(
+  '/:branchId/force-delete',
+  authenticate,
+  adminOnly,
+  requirePasswordChange,
+  validate(forceDeleteBranchSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const status = await branchForceDeletionService.forceDelete(
+        req.params.branchId as string,
+        { id: req.user.user_id, role: req.user.role },
+        req.ip ?? null,
+        req.body as ForceDeleteBranchInput,
+      );
+      // 202 while it is still finishing (poll GET /force-deletions/:id).
+      res
+        .status(status.status === 'fenced' ? 202 : 200)
+        .json({ data: status, error: null, meta: null });
+    } catch (error) {
+      handleBranchError(error, res, next);
+    }
+  },
+);
+
+router.get(
+  '/:branchId',
+  authenticate,
+  allRoles,
+  requirePasswordChange,
+  branchGuard,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const branch = await branchesService.getBranchById(req.params.branchId as string, req.user);
+      res.status(200).json({ data: branch, error: null, meta: null });
+    } catch (error) {
+      handleBranchError(error, res, next);
+    }
+  },
+);
 
 router.post('/', authenticate, adminOnly, requirePasswordChange, validate(createBranchSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {

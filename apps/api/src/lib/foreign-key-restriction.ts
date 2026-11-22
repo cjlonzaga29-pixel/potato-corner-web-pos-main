@@ -25,3 +25,10 @@ export function isDeletedBranchWrite(error: unknown): boolean {
   if (error instanceof Error) return error.message.includes('POS_PERF_P67_BRANCH_DELETED');
   return false;
 }
+
+/** POS-PERF-P68 — the database refused a write because a Force Delete has fenced the branch. */
+export function isFencedBranchWrite(error: unknown): boolean {
+  return (
+    error instanceof Error && error.message.includes('POS_PERF_P68_BRANCH_DELETION_IN_PROGRESS')
+  );
+}

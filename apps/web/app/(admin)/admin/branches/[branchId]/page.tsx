@@ -28,6 +28,7 @@ import { EditBranchDialog } from '@/components/admin/branches/edit-branch-dialog
 import { ChangeStatusDialog } from '@/components/admin/branches/change-status-dialog';
 import { AssignSupervisorDialog } from '@/components/admin/branches/assign-supervisor-dialog';
 import { DeleteBranchDialog } from '@/components/admin/branches/delete-branch-dialog';
+import { ForceDeleteBranchDialog } from '@/components/admin/branches/force-delete-branch-dialog';
 
 interface BranchDetailPageProps {
   params: Promise<{ branchId: string }>;
@@ -41,6 +42,7 @@ export default function BranchDetailPage({ params }: BranchDetailPageProps) {
   const [statusOpen, setStatusOpen] = useState(false);
   const [assignOpen, setAssignOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [forceDeleteOpen, setForceDeleteOpen] = useState(false);
 
   if (isLoading) {
     return (
@@ -111,7 +113,17 @@ export default function BranchDetailPage({ params }: BranchDetailPageProps) {
       <EditBranchDialog open={editOpen} onOpenChange={setEditOpen} branch={branch} />
       <ChangeStatusDialog open={statusOpen} onOpenChange={setStatusOpen} branch={branch} />
       <AssignSupervisorDialog open={assignOpen} onOpenChange={setAssignOpen} branchId={branchId} />
-      <DeleteBranchDialog open={deleteOpen} onOpenChange={setDeleteOpen} branch={branch} />
+      <DeleteBranchDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        branch={branch}
+        onForceDelete={() => setForceDeleteOpen(true)}
+      />
+      <ForceDeleteBranchDialog
+        open={forceDeleteOpen}
+        onOpenChange={setForceDeleteOpen}
+        branch={branch}
+      />
     </div>
   );
 }

@@ -13,6 +13,7 @@ import {
   type PdfRenderKind,
 } from './pdf-render-pool.js';
 import { generateTransactionsPdf, type TransactionExportRow } from './transactions-export.js';
+import { round, runOverrunScenario } from './p62-pdf-admission.test-helpers.js';
 
 /**
  * POS-PERF-P62 — PDF rendering runs in a bounded worker pool, never on the
@@ -95,18 +96,27 @@ describe('PDF deadline-aware admission (P62)', () => {
 
   it('does not start a queued job whose deadline can no longer be met when its turn comes', async () => {
     const p = pool();
-    await p.render(asKind('slow'), [100]); // learns ~100ms
-    const t0 = Date.now();
-    const overrun = p.render(asKind('slow'), [1000]); // the same size, but 1s: the estimate is wrong
-    // Admitted: predicted to start at ~100ms. The overrun also teaches the pool a
-    // higher estimate (~550ms), still inside this job's own 800ms window.
-    const queued = outcome(p.render(asKind('slow'), [100], undefined, Date.now() + 800));
-    const [first, second] = await Promise.all([codeOf(overrun), queued]);
-    expect(first).toBe('resolved');
-    expect(second.code).toBe('PDF_BUSY');
-    // Refused when its turn came (~1s), not started and run for another ~100ms.
-    expect(Date.now() - t0).toBeLessThan(1_090);
-    expect(p.stats()).toMatchObject({ running: 0, queued: 0 });
+    // Learns ~100ms, then a same-size job takes 1s (the estimate is wrong). A 100ms
+    // job with an 800ms deadline is admitted behind it (predicted start ~100ms); the
+    // overrun then teaches ~550ms, still inside its own window, but its turn only
+    // comes at ~1s, past the deadline.
+    const s = await runOverrunScenario(p, asKind('slow'));
+    console.info(`P62 overrun admission: ${JSON.stringify(round(s))}`);
+    // The worker had started and learned before the window, so no start-up is in it.
+    expect(s.workersBeforeWindow).toBe(1);
+    expect(s.overrunMs).toBeGreaterThanOrEqual(950);
+    expect(s.first.code).toBe('resolved');
+    // The deadline refusal (busyUntil), not a queue-wait or queue-full PDF_BUSY.
+    expect(s.second.code).toBe('PDF_BUSY');
+    expect(s.second.error?.message).toMatch(/could not be finished in time, so it was not started/);
+    // Refused the moment its turn came, not started and run for another ~100ms.
+    // Measured relative to the overrun's own finish: that 1s worker timer and its
+    // message back stretch to ~1.25s on a loaded machine (P67: 20/20 loaded trials
+    // missed the old absolute 1,090ms bound, every refusal 0ms after the overrun).
+    // Wall-clock distribution: p62-pdf-admission.bench.test.ts (opt-in).
+    expect(s.gapMs).toBeGreaterThanOrEqual(0);
+    expect(s.gapMs).toBeLessThan(50);
+    expect(s.stats).toMatchObject({ running: 0, queued: 0 });
   });
 
   it('leaves requests without a deadline (the background report queue) alone', async () => {

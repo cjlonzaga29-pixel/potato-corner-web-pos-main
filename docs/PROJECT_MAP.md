@@ -2,7 +2,7 @@
 
 Navigation only, not proof of what the code does today. Rules live in [`.claude/CLAUDE.md`](../.claude/CLAUDE.md), architecture in [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md), and
 the current state of work in [`CURRENT_HANDOFF.md`](CURRENT_HANDOFF.md). Paths were checked against the working tree on
-2026-11-03 (P64/P65/P66/P67 entries 2026-11-22). Update the affected entries when files move. Keep this file under 180 lines and link runbooks, not details.
+2026-11-03 (P64/P65/P66/P67/P69 entries 2026-11-22). Update the affected entries when files move. Keep this file under 180 lines and link runbooks, not details.
 
 Shorthand: `API/` = `apps/api/src/modules/`, `WEB/` = `apps/web/`, `SHARED/` = `packages/shared/src/schemas/`,
 `RUN/` = `docs/runbooks/`.
@@ -23,14 +23,14 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 
 ## POS terminal, cart, checkout
 
-- **UI:** `WEB/app/(branch)/branch/terminal/page.tsx`, `WEB/components/pos/checkout-workspace.tsx`, `WEB/components/pos/payment-footer.tsx`
+- **UI:** `WEB/app/(branch)/branch/terminal/page.tsx`, `WEB/components/pos/checkout-workspace.tsx`, `WEB/components/pos/payment-footer.tsx`; P69 type filter and card badge: `WEB/lib/pos/pos-product-types.ts`, `WEB/components/pos/product-card.tsx`, offline list in `WEB/lib/offline/cache.ts`
 - **Client state:** `WEB/stores/cart.store.ts`, `WEB/lib/pos/`, `WEB/lib/checkout-recovery.ts`, `WEB/lib/detached-sales.ts`
 - **API (authoritative totals):** `API/transactions/transactions.router.ts`, `API/transactions/transactions.service.ts`
 - **VAT retired (P63, CR-010):** every new sale is the manual total; `assertVatCalculationRetired` refuses VAT-calculated sales after the replay paths. History fixture: `apps/api/src/test-utils/historical-vat-sale.ts`; browser driver `tests/e2e/manual/p62/vat-retired.mjs`
 - **Schema:** `SHARED/transaction.schema.ts`; model `Transaction`
 - **Tests:** `WEB/components/pos/checkout-workspace.test.tsx`, `WEB/stores/cart.store.test.ts`,
   `API/transactions/transactions.service.test.ts`, `API/transactions/checkout-worker.integration.test.ts`, `tests/e2e/pos-workflow.spec.ts`
-- **Runbooks:** `RUN/pos-perf-p15-fast-checkout.md`, `RUN/pos-perf-p41-cart-responsiveness-and-product-editor.md`,
+- **Runbooks:** `RUN/pos-perf-p69-pos-product-type-filter.md` (type vs category vs size, POS filter), `RUN/pos-perf-p15-fast-checkout.md`, `RUN/pos-perf-p41-cart-responsiveness-and-product-editor.md`,
   `RUN/pos-perf-p46-pos-keypad-and-customization-usability.md`, `RUN/pos-perf-p63-vat-retired.md` (supersedes `RUN/pos-perf-p50-vat-settings-and-calculation-review.md`)
 
 ## Inventory: availability, reservations, deduction
@@ -65,7 +65,7 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 - **Runbooks:** `RUN/pos-perf-p34r-supervisor-product-configuration.md`, `RUN/pos-perf-p37-multi-branch-product-selection.md`,
   `RUN/pos-perf-p38-automatic-branch-setup.md`, `RUN/pos-perf-p39-product-ui-consistency.md`
 
-**Custom product types (P58, P58R): committed on `feat/pos-perf-p58-custom-product-types`, not merged or deployed. See the handoff.**
+**Custom product types (P58, P58R): in `origin/main`. POS type filter and badges: P69, `RUN/pos-perf-p69-pos-product-type-filter.md` (catalog `product_type`/`product_types` in `API/products/products.service.ts` `getPosCatalog`).**
 
 - **UI:** `WEB/components/supervisor/products/product-type-nav.tsx`, `product-type-select.tsx`,
   `product-type-form-dialog.tsx`, `product-type-active-dialog.tsx` (same folder); `WEB/hooks/queries/use-product-types.ts`,

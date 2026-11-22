@@ -9,23 +9,52 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
 ## Observed state
 
 - **Observed:** 2026-11-22
-- **Branch:** `feat/pos-perf-p68-branch-lifecycle-and-staff`, created from `origin/main` `365758c4` (the PR #48 merge, the last **reported** deployment, not verified here).
-  - P68 code `8f882aaa`, docs `07048d66`.
-  - **Follow-up (race verification):** started at `07048d66`; tested code committed as `2441628c` (every follow-up result was run on that code before commit); a docs commit follows.
-  - Push and PR: see the follow-up section below. **No merge or deploy; production not accessed; no production cleanup run.**
-- **Previous branch** `feat/pos-perf-p66-delete-dashboard-payroll` (`723d2b6c`) is fully contained in `origin/main`.
+- **Branch:** `feat/pos-perf-p69-pos-product-type-filter`, created from `origin/main` `a5ffefbb` (the PR #49 merge, the last **reported** deployment, not verified here).
+  - P69 code `3e21fc8f` (tested), docs commit after it.
+  - **Local only: not pushed, no PR, merge or deploy. Production not accessed.**
+- **Previous branch** `feat/pos-perf-p68-branch-lifecycle-and-staff` (`c988c639`) is fully contained in `origin/main`.
 - **Working tree:** only `.vscode/settings.json` is modified (the owner's personal setting). Never stage it.
 - **Local leftovers (task-owned, safe to delete):**
-  - `C:\p68` (throwaway test env and logs) and `C:\p68s` (browser stack data, builds, screenshots, results). All P68 services were stopped.
-  - `C:\p67`, `C:\p66pay`, `C:\p66`, `%TEMP%\pos-test-pg-*` and the older `C:\p6x` folders.
-- **Disposable keys:**
-  - **`C:\p67\env.sh`'s throwaway JWT key pair was printed into the P68 session log** by a redaction command that missed multi-line values. Treat `C:\p67` as disposable.
-  - `C:\p66\env.sh` was already in that state.
-  - Neither is a production credential.
-- **Follow-up leftovers (task-owned, safe to delete):** `C:\p68r` (race stack: env, embedded Postgres data, logs, results in `C:\p68r\out`). Its Postgres and API processes were stopped at the end.
+  - `C:\p69` (throwaway test env with fresh random keys, never printed; logs; embedded Postgres data dirs).
+  - `C:\p69s` (browser stack: env, Postgres data `p62_p69`, logs, browser profiles, results in `out1`–`out11`). Its Postgres, API and web processes (ports 56691–56693) were stopped.
+  - The older `C:\p68`, `C:\p68r`, `C:\p68s`, `C:\p67`, `C:\p66*` folders noted before.
 - **Left running, not proven to be this task's:** the idle `io_worker` orphans and the `dist/server.js` (PID 17220) noted before.
 
-## Latest: P68 follow-up — multi-process Force Delete races, pending approvals, rolling deploy
+## Latest: P69 — product type filter and type badges on the POS
+
+Details: [`runbooks/pos-perf-p69-pos-product-type-filter.md`](runbooks/pos-perf-p69-pos-product-type-filter.md).
+
+- **Problem:** Cheese Fries PPO is Promotional in Supervisor Products, but its POS card showed only the size "Regular".
+- **Now:**
+  - A labelled **Type** row: All Types, Regular, Promotional, Seasonal, then the branch's active custom types, including empty ones with an honest empty state.
+  - Kept apart from the **category** row (now "All Categories") and from the **size** line.
+  - Each card has a type badge.
+  - Type, category and search combine with AND; **Clear filters** resets all three.
+- **Rules:**
+  - Same as Supervisor Products: a custom assignment is the displayed type, otherwise the classification's built-in. A product appears once.
+  - Keys are `builtin:<classification>` and `custom:<id>`.
+  - A deactivated type loses its tab. Its products stay sellable and labelled in All Types, and a stale selection resets with a notice.
+  - Classification, promotions and product data are unchanged.
+- **API:** additive `products[].product_type` and `product_types` on `GET /api/products/catalog`. A type is named only when scoped to that branch. No migration, no checkout change.
+- **Refresh:** the existing catalog query (on mount after 60 s, on reconnect, every 30 min); focus refetch is off app-wide. No new realtime path.
+- **Offline:** the type list is saved beside each cached catalog row (no Dexie version bump). With an older API or a pre-P69 cache, the filter is hidden and nothing is guessed.
+
+| Check | Result |
+| --- | --- |
+| API unit / P69 integration | 167/167; **6/6** first run (isolation, same-name types, 403s, rename, reassignment, deactivation, drafts) |
+| Affected API (products + product-types) | 387 passed, 2 gated files; `products.integration` with the legacy gate set **22/22**. Full API not run (additive) |
+| Web P69 tests | Run 1: 6/8 (2 test bugs). Run 2: 7/8, **real defect** (stale name in the notice after a rename), fixed. Then 8/8, plus a branch-switch test |
+| Full web | **1,815/1,815**, exit 0 |
+| Shared / typecheck / lint / builds | 83/83 / clean / 0 errors / pass |
+| Browser (SW active, emulated desktop/tablet/phone) | 11 runs, every one reported in runbook §6.1. Runs 1–9: driver bugs, one keyboard timing failure, and an emulation limit (SW blocks route rewriting). Run 10: 21/22, offline cold reload. **Run 11: 24/24**, including a local sale (₱89.00, stock −1/−2 exactly) and branch B 403 |
+| Not covered | Offline **cold reload** showed "No branch assigned." (session, not P69; not compared with pre-P69). Real devices, staging, a live old API |
+
+**Next (owner):**
+- Review the branch. Push, PR, merge and deploy are separate decisions. Any deploy order works (additive, no migration).
+- Optional: decide whether a terminal should refetch the catalog on focus so supervisor type changes appear sooner. Today it takes up to 30 min on an untouched terminal.
+- Optional: check whether the offline cold-reload "No branch assigned." also happens before P69.
+
+## Earlier: P68 follow-up — multi-process Force Delete races, pending approvals, rolling deploy
 
 Details: P68 runbook §6.2 (scenarios and runs) and §6.3 (suites).
 

@@ -22,6 +22,9 @@ interface Props {
 export function PayrollReviewTable({ detail, selectedId, onToggle, filtered }: Props) {
   const missingRateKeys = new Set(detail.issues.filter((i) => i.code === 'RATE_MISSING').map((i) => i.key));
   const rows = detail.employees.map((e) => ({ employee: e, missingRate: e.issue_keys.some((k) => missingRateKeys.has(k)) }));
+  // Totals leave out time that has no rate: say so instead of presenting them as complete, and never as ₱0 pay.
+  const anyMissing = rows.some((r) => r.missingRate);
+  const nonePriced = anyMissing && rows.every((r) => r.missingRate && r.employee.rate_lines.length === 0);
 
   if (rows.length === 0) return <p className="text-sm text-muted-foreground">No staff attendance in this period.</p>;
 
@@ -60,7 +63,9 @@ export function PayrollReviewTable({ detail, selectedId, onToggle, filtered }: P
                 <TableCell className="text-right align-top text-xs tabular-nums">
                   <Adjustments employee={e} />
                 </TableCell>
-                <TableCell className="text-right align-top font-semibold tabular-nums">{formatPeso(e.calculated_total)}</TableCell>
+                <TableCell className="text-right align-top font-semibold tabular-nums">
+                  <Pay employee={e} missingRate={missingRate} amount={e.calculated_total} />
+                </TableCell>
                 <TableCell className="align-top">
                   <DetailsButton employee={e} open={selectedId === e.employee_id} onToggle={onToggle} />
                 </TableCell>
@@ -72,11 +77,15 @@ export function PayrollReviewTable({ detail, selectedId, onToggle, filtered }: P
               <TableCell className="font-semibold">Total{filtered ? ' (filtered)' : ''}</TableCell>
               <TableCell className="tabular-nums">{formatPayrollDuration(detail.totals.payable_ms)}</TableCell>
               <TableCell />
-              <TableCell className="text-right tabular-nums">{formatPeso(detail.totals.basic_pay)}</TableCell>
+              <TableCell className="text-right tabular-nums">
+                <IncompleteAmount amount={detail.totals.basic_pay} incomplete={anyMissing} nonePriced={nonePriced} />
+              </TableCell>
               <TableCell className="text-right text-xs tabular-nums">
                 +{formatPeso(detail.totals.earnings_adjustments)} / −{formatPeso(detail.totals.deductions)}
               </TableCell>
-              <TableCell className="text-right font-semibold tabular-nums">{formatPeso(detail.totals.calculated_total)}</TableCell>
+              <TableCell className="text-right font-semibold tabular-nums">
+                <IncompleteAmount amount={detail.totals.calculated_total} incomplete={anyMissing} nonePriced={nonePriced} />
+              </TableCell>
               <TableCell />
             </TableRow>
           </TableFooter>
@@ -94,7 +103,9 @@ export function PayrollReviewTable({ detail, selectedId, onToggle, filtered }: P
               </div>
               <div className="text-right">
                 <div className="text-xs text-muted-foreground">{detail.total_label}</div>
-                <div className="font-semibold tabular-nums">{formatPeso(e.calculated_total)}</div>
+                <div className="font-semibold tabular-nums">
+                  <Pay employee={e} missingRate={missingRate} amount={e.calculated_total} />
+                </div>
               </div>
             </div>
             <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-2">
@@ -128,7 +139,9 @@ export function PayrollReviewTable({ detail, selectedId, onToggle, filtered }: P
         ))}
         <li className="flex justify-between rounded-lg bg-muted/40 p-3 text-sm font-semibold">
           <span>Total{filtered ? ' (filtered)' : ''}</span>
-          <span className="tabular-nums">{formatPeso(detail.totals.calculated_total)}</span>
+          <span className="text-right tabular-nums">
+            <IncompleteAmount amount={detail.totals.calculated_total} incomplete={anyMissing} nonePriced={nonePriced} />
+          </span>
         </li>
       </ul>
     </>
@@ -155,13 +168,18 @@ function RateLines({ lines, missingRate }: { lines: PayrollRateLine[]; missingRa
   );
 }
 
-/** Basic pay; time without a rate is never presented as ₱0 pay. */
-function Pay({ employee, missingRate }: { employee: PayrollEmployeeResult; missingRate: boolean }) {
-  if (missingRate && employee.rate_lines.length === 0) return <span className="text-amber-700 dark:text-amber-400">Needs a rate</span>;
+/** Basic pay or total; time without a rate is never presented as ₱0 pay. */
+function Pay({ employee, missingRate, amount = employee.basic_pay }: { employee: PayrollEmployeeResult; missingRate: boolean; amount?: string }) {
+  return <IncompleteAmount amount={amount} incomplete={missingRate} nonePriced={missingRate && employee.rate_lines.length === 0} />;
+}
+
+/** An amount that leaves out time without a rate is marked incomplete; with no priced time at all, no amount is shown. */
+function IncompleteAmount({ amount, incomplete, nonePriced }: { amount: string; incomplete: boolean; nonePriced: boolean }) {
+  if (nonePriced) return <span className="text-amber-700 dark:text-amber-400">Needs a rate</span>;
   return (
     <>
-      {formatPeso(employee.basic_pay)}
-      {missingRate && <span className="block text-xs text-amber-700 dark:text-amber-400">Incomplete — needs a rate</span>}
+      {formatPeso(amount)}
+      {incomplete && <span className="block text-xs font-normal text-amber-700 dark:text-amber-400">Incomplete — needs a rate</span>}
     </>
   );
 }

@@ -9,9 +9,9 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
 ## Observed state
 
 - **Observed:** 2026-11-22
-- **Branch:** `feat/pos-perf-p66-delete-dashboard-payroll`, from `origin/main` `f9ce9da7` (merge of PR #47, P64+P65; the last **reported** deployment, not verified here). It holds the P66 commit, **local only: not pushed, no PR, nothing merged or deployed, production not accessed.**
+- **Branch:** `feat/pos-perf-p66-delete-dashboard-payroll`, from `origin/main` `f9ce9da7` (merge of PR #47, P64+P65; the last **reported** deployment, not verified here). It holds the P66 commit `10658134` and a follow-up commit on top (payroll browser verification and three payroll UI fixes), **local only: not pushed, no PR, nothing merged or deployed, production not accessed.**
 - **Working tree:** only `.vscode/settings.json` is modified (the owner's personal setting). Never stage it.
-- **Local leftovers (task-owned, safe to delete):** `C:p66` (throwaway env, logs, stopped stack data), `%TEMP%pos-test-pg-*` dirs. Older: `C:p65`, `C:p64a`, `C:p64b`, `C:p64`, `C:p63`, `C:p62`, `C:p59r`, `C:p59c`. No P66 service is running.
+- **Local leftovers (task-owned, safe to delete):** `C:\p66pay` (follow-up stack: throwaway env, logs, stopped data, screenshots; all its services stopped), `C:p66` (throwaway env, logs, stopped stack data), `%TEMP%pos-test-pg-*` dirs. Older: `C:p65`, `C:p64a`, `C:p64b`, `C:p64`, `C:p63`, `C:p62`, `C:p59r`, `C:p59c`. No P66 service is running.
 - **Left running, not proven to be this task's:** four idle embedded-Postgres `io_worker` orphans (started 4:01, 4:36, 4:38 and 4:56 AM, no ports), plus the older ones and the `dist/server.js` (PID 17220, 2026-11-21 1:04 PM) noted before. That server keeps the shared Prisma engine DLL locked, so `prisma generate` reports EPERM. Types and `index.js` still regenerate, and the DLL is identical.
 
 ## Latest: P66 — permanent Delete, dashboard panels removed, simpler Supervisor payroll (local)
@@ -30,6 +30,10 @@ Details: [`runbooks/pos-perf-p66-delete-dashboard-payroll.md`](runbooks/pos-perf
   - **Branch delete cascades sales, shifts, attendance, expenses and stock history (pre-existing design). Owner decision needed.** Its `RESTRICT` refusals are now a 409, not a 500.
 - **Dashboards:** both panels gone from all three roles; the Today's Expenses KPI stays; their requests no longer fire.
 - **Payroll:** one Payroll Settings entry, readiness checklist, then pay period, review and finalize. No calculation change.
+- **Follow-up (runbook §7a):** payroll draft → review → finalize is now browser-verified on final builds, **44/44**. That run found and fixed three web-only payroll defects:
+  - the rate dialog stayed open after the last missing rate was saved;
+  - unpriced time still read ₱0.00 in totals and details, and is now "Needs a rate" or "Incomplete — needs a rate";
+  - a cutoff day outside 1–27 had no in-form message.
 - **Fixture cleanup** follows the new lifecycle (exact IDs, dry run first). **The production inventory, dry run and execution were NOT done.**
 
 | Check | Result |
@@ -37,10 +41,11 @@ Details: [`runbooks/pos-perf-p66-delete-dashboard-payroll.md`](runbooks/pos-perf
 | P66 integration | 14 tests, all pass (run 3; runs 1–2 found a trigger gap and two test bugs) |
 | Migration rehearsal | Passed (run 2; run 1 seed SQL bug) |
 | Full API, one run | **1 failed, 3,835 passed, 5 skipped**: `p62-pdf-isolation` timing bound (1,124 vs 1,090 ms) in an untouched file; passes 23/23 alone |
-| Full web | **1,777/1,777** |
+| Full web | **1,777/1,777**; after the follow-up **1,780/1,780** |
 | Shared / typecheck / lint | 83 passed / clean / 0 errors |
 | Builds + browser (SW active, emulated desktop/tablet/phone) | Run 1 stopped on a driver bug; **run 2: 57/57** |
-| Not run | Payroll draft/finalize in the browser; hosted/staging (none exists) |
+| Payroll browser (follow-up, `tests/e2e/manual/p66/payroll-flow.mjs`) | Runs 1–7 found driver/fixture issues and the three defects; **run 8 on the final build: 44/44** |
+| Not run | Hosted/staging (none exists); real devices; full API suite not rerun after the follow-up (API unchanged) |
 
 **Next (owner):**
 - Review and push. A push, PR, merge or deploy needs your separate approval.

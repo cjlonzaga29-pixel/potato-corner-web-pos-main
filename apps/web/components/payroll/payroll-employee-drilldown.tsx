@@ -28,15 +28,18 @@ export function PayrollEmployeeDrilldown({ branchId, runId, employee, issues, ti
   const [voidingId, setVoidingId] = useState<string | null>(null);
   const voidAdjustment = useVoidPayrollAdjustment(branchId, runId);
   const employeeIssues = issues.filter((i) => i.employee_id === employee.employee_id);
+  // Time without a rate is not priced: never show it as ₱0 pay (POS-PERF-P66).
+  const missingRate = employeeIssues.some((i) => i.code === 'RATE_MISSING');
+  const priced = (amount: string) => (!missingRate ? formatPeso(amount) : employee.rate_lines.length === 0 ? 'Needs a rate' : `${formatPeso(amount)} (incomplete — needs a rate)`);
 
   return (
     <div className="grid gap-4">
       <dl className="grid grid-cols-2 gap-3 text-sm md:grid-cols-5">
         <Stat label="Payable time" value={formatPayrollDuration(employee.payable_ms)} />
-        <Stat label="Basic pay" value={formatPeso(employee.basic_pay)} />
+        <Stat label="Basic pay" value={priced(employee.basic_pay)} />
         <Stat label="Earnings adjustments" value={formatPeso(employee.earnings_adjustments)} />
         <Stat label="Deductions" value={formatPeso(employee.deductions)} />
-        <Stat label="Calculated total" value={formatPeso(employee.calculated_total)} strong />
+        <Stat label="Calculated total" value={priced(employee.calculated_total)} strong />
       </dl>
       {employee.previous_total !== null && (
         <p className="text-sm text-muted-foreground">Previously finalized total for this period: {formatPeso(employee.previous_total)}</p>

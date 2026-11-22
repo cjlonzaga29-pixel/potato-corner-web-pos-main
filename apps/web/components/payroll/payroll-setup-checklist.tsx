@@ -137,27 +137,32 @@ export function PayrollSetupChecklist({ branchId, settings, rates, onOpenSetting
   );
 
   // Ready: one collapsed line, so setup does not crowd the payroll steps.
-  if (missing === 0) {
-    return (
+  const body =
+    missing === 0 ? (
       <details className="rounded-lg border px-3 py-2 text-sm sm:px-4" data-testid="payroll-setup-checklist" data-ready="true">
         <summary className="flex cursor-pointer items-center gap-2 rounded font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
           <CheckCircle2 className="h-4 w-4 text-emerald-600" aria-hidden="true" />
           Payroll setup is ready
         </summary>
         {list}
-        {dialog}
       </details>
+    ) : (
+      <section aria-labelledby="payroll-setup-heading" className="rounded-lg border p-3 sm:p-4" data-testid="payroll-setup-checklist" data-ready="false">
+        <h2 id="payroll-setup-heading" className="flex items-center gap-2 text-sm font-semibold">
+          <CircleAlert className="h-4 w-4 text-amber-600" aria-hidden="true" />
+          Payroll setup: {missing} item{missing === 1 ? '' : 's'} to finish
+        </h2>
+        {list}
+      </section>
     );
-  }
 
+  // The dialog keeps one position outside the switch above. Setting the last
+  // missing rate flips the checklist to "ready"; a dialog inside either branch
+  // would remount then, lose the save's onSuccess and stay open.
   return (
-    <section aria-labelledby="payroll-setup-heading" className="rounded-lg border p-3 sm:p-4" data-testid="payroll-setup-checklist" data-ready="false">
-      <h2 id="payroll-setup-heading" className="flex items-center gap-2 text-sm font-semibold">
-        <CircleAlert className="h-4 w-4 text-amber-600" aria-hidden="true" />
-        Payroll setup: {missing} item{missing === 1 ? '' : 's'} to finish
-      </h2>
-      {list}
+    <>
+      {body}
       {dialog}
-    </section>
+    </>
   );
 }

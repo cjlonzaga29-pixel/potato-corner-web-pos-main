@@ -51,7 +51,7 @@ export function PayrollPolicyForm({ branchId, settings, onSaved }: Props) {
     setError(null);
     if (!timezone.trim()) return setError('Choose the business timezone.');
     if (!periodType) return setError('Choose the pay period.');
-    if (periodType === 'semi_monthly' && !/^\d+$/.test(cutoff)) return setError('Enter the first cutoff day (1–27).');
+    if (periodType === 'semi_monthly' && (!/^\d+$/.test(cutoff) || Number(cutoff) < 1 || Number(cutoff) > 27)) return setError('Enter the first cutoff day (1–27).');
     if (!treatment) return setError('Choose how breaks are treated.');
     if (treatment === 'paid_up_to_limit' && !/^\d+$/.test(limit)) return setError('Enter the paid break minutes per shift.');
     save.mutate({

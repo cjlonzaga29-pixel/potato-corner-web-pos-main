@@ -163,6 +163,24 @@ describe('Payroll page — setup when needed', () => {
     expect(within(screen.getByRole('dialog')).getByText('Add hourly rate')).toBeTruthy();
   });
 
+  it('closes the rate dialog after the last missing rate is saved, although the checklist turns "ready"', () => {
+    setBranch('b1', { configured: true, periods: [NOV_1, OCT_2], rates: ratesFor([employeeRate()]) });
+    const view = render(<PayrollPage scope="supervisor" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Set rate for Ana Reyes' }));
+    fireEvent.change(screen.getByLabelText('Hourly rate (₱)'), { target: { value: '80' } });
+    fireEvent.change(screen.getByLabelText('Reason'), { target: { value: 'Starting rate' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add rate' }));
+    const call = h.createRate.mutate.mock.calls[0] as [unknown, { onSuccess: () => void }];
+    // The rates refetch lands first: the checklist switches to its collapsed "ready" form.
+    h.rates.b1 = ok(ratesFor([employeeRate({ current_rate: rate('80.00', '2026-11-01') })]));
+    view.rerender(<PayrollPage scope="supervisor" />);
+    expect(screen.getByTestId('payroll-setup-checklist').tagName).toBe('DETAILS');
+    // Same dialog instance: what was typed is still there, and the save's onSuccess closes it.
+    expect((screen.getByLabelText('Hourly rate (₱)') as HTMLInputElement).value).toBe('80');
+    act(() => call[1].onSuccess());
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
   it('collapses the checklist to one line when setup is ready', () => {
     setBranch('b1', { configured: true, periods: [NOV_1, OCT_2] });
     render(<PayrollPage scope="supervisor" />);
@@ -270,9 +288,32 @@ describe('Payroll page — choose period, review, finalize', () => {
     setBranch('b1', { configured: true, periods: [NOV_1, period('2026-10-16', '2026-10-31', [runSummary()])], runs: { 'run-1': detail } });
     render(<PayrollPage scope="supervisor" />);
     const table = screen.getByTestId('payroll-review-table');
-    expect(within(table).getByText('Needs a rate')).toBeTruthy();
+    // Basic pay, the row total and the footer totals: none of them reads as ₱0 pay.
+    expect(within(table).getAllByText('Needs a rate').length).toBe(4);
     expect(within(table).getByText('No rate for this period')).toBeTruthy();
+    // A standalone ₱0.00 amount; the footer's "+₱0.00 / −₱0.00" adjustments are real zeros, not pay.
+    expect(within(table).queryByText('₱0.00')).toBeNull();
+    expect(within(screen.getByTestId('payroll-review-cards')).queryByText('₱0.00')).toBeNull();
+    fireEvent.click(within(table).getByRole('button', { name: /Details/ }));
+    const details = screen.getByRole('region', { name: /Payroll details for/ });
+    expect(within(details).getAllByText('Needs a rate').length).toBe(2);
     expect((screen.getByRole('button', { name: 'Finalize payroll…' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('marks pay that leaves out days without a rate as incomplete, including the totals', () => {
+    const detail = runDetail({
+      can_finalize: false,
+      blocking_count: 1,
+      issues: [{ key: 'k1', code: 'RATE_MISSING', severity: 'blocking', message: 'No hourly rate', employee_id: 'e1', attendance_record_id: null, business_date: '2026-10-16', resolution: null }],
+      employees: [{ ...baseEmployee(), issue_keys: ['k1'] }],
+    });
+    setBranch('b1', { configured: true, periods: [NOV_1, period('2026-10-16', '2026-10-31', [runSummary()])], runs: { 'run-1': detail } });
+    render(<PayrollPage scope="supervisor" />);
+    const table = screen.getByTestId('payroll-review-table');
+    expect(within(table).queryByText('Needs a rate')).toBeNull();
+    // Row basic pay, row total, footer basic pay and footer total.
+    expect(within(table).getAllByText('Incomplete — needs a rate').length).toBe(4);
+    expect(within(screen.getByTestId('payroll-review-cards')).getAllByText('Incomplete — needs a rate').length).toBe(3);
   });
 
   it('opens a finalized run read-only: no finalize, discard or adjustment controls', () => {

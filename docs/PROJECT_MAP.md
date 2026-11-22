@@ -119,7 +119,7 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 - **Tests:** `API/payroll/payroll-calc.test.ts`, `API/payroll/payroll.integration.test.ts`,
   `API/payroll/p54-payroll-breaks.integration.test.ts`, `WEB/components/payroll/payroll-components.test.tsx`
 - **Runbooks:** `RUN/pos-perf-p52-payroll-settings-and-reports.md`, `RUN/pos-perf-p54-payroll-discounts-breaks-integration.md`,
-  `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§3), `RUN/pos-perf-p66-delete-dashboard-payroll.md` (§5: setup checklist `payroll-setup-checklist.tsx`, review `payroll-review-table.tsx`, tests `payroll-flow.test.tsx`)
+  `RUN/pos-perf-p57-shortages-and-workflow-simplification.md` (§3), `RUN/pos-perf-p66-delete-dashboard-payroll.md` (§5: setup checklist `payroll-setup-checklist.tsx`, review `payroll-review-table.tsx`, tests `payroll-flow.test.tsx`; browser driver `tests/e2e/manual/p66/payroll-flow.mjs`, §7a)
 
 ## Dashboards, reports and stock alerts
 

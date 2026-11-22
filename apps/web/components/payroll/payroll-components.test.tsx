@@ -116,6 +116,18 @@ describe('PayrollPolicyForm', () => {
     expect(hooks.savePolicy.mutate).not.toHaveBeenCalled();
   });
 
+  it('refuses a cutoff day outside 1–27 in the form, keeping what was typed', () => {
+    render(<PayrollPolicyForm branchId="b1" settings={settings(null)} />);
+    fireEvent.change(screen.getByLabelText('Business timezone'), { target: { value: 'Asia/Manila' } });
+    fireEvent.click(screen.getByRole('radio', { name: /Semi-monthly/ }));
+    fireEvent.change(screen.getByLabelText('First cutoff day'), { target: { value: '30' } });
+    fireEvent.click(screen.getByRole('radio', { name: 'Breaks are unpaid' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save policy' }));
+    expect(screen.getByRole('alert').textContent).toBe('Enter the first cutoff day (1–27).');
+    expect((screen.getByLabelText('First cutoff day') as HTMLInputElement).value).toBe('30');
+    expect(hooks.savePolicy.mutate).not.toHaveBeenCalled();
+  });
+
   it('saves the explicit choices with the loaded version (stale-write guard)', () => {
     render(
       <PayrollPolicyForm

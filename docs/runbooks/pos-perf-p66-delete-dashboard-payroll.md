@@ -145,7 +145,7 @@ UX only: no API, calculation, rounding, effective-date or policy change.
   1. Choose pay period: readable dates and a Not started / Draft / Finalized badge, with one main action, "Prepare draft payroll".
   2. Review (`payroll-review-table.tsx`): one employee list (table on desktop, cards on phones) with recorded hours, the rates stored on the run (never today's), basic pay, adjustments and totals.
      - Multiple rates are explained.
-     - Time with no rate shows "Needs a rate", not ₱0.00.
+     - Time with no rate shows "Needs a rate", not ₱0.00, in basic pay, the row total, the footer totals, the phone cards and the calculation details. Pay that leaves out some unpriced days, and totals over such rows, are marked "Incomplete — needs a rate" (follow-up §7a).
      - Details and "How payroll is worked out" expand.
   3. Finalize: a separate card that opens the existing finalize dialog.
 - **Preserved:**
@@ -189,20 +189,69 @@ Local disposable embedded Postgres only, with task-owned data under `C:\p66` and
 | Migration rehearsal (2,005 users incl. a P64-removed row, sales, shifts, attendance, expenses, audit) | Run 1: seed SQL bug (`shifts.updated_at` doesn't exist). **Run 2: passed.** 92 pre-existing tables byte-identical; 2,005/2,005 matching attribution records; none marked deleted; all new FKs validated; only account-owned tables reference `users` (all CASCADE); triggers (id generation, rename, delete mark, id-reuse refusal) work; physical delete keeps actor ids (including the former SET NULL `voided_by`), names and amounts; older-API deactivate, P64 removal and P47 delete still work; old-reader hazard shown; **no drift** |
 | **Full API, one run** | **1 failed, 3,835 passed, 5 skipped.** The failure is `p62-pdf-isolation` "deadline-aware admission" (1,124 ms against a 1,090 ms wall-clock bound) in a file P66 does not touch (no diff under `lib/reports`). It failed again with 9 other files in parallel, and **passed 23/23 alone**. Load-sensitive timing, pre-existing, not P66. Not re-run until green |
 | Edited after the full run started (branch delete mapping, `foreign-key-restriction` + its test) | Branches, employees and helper files re-run: 293 passed (the only failure in that set was the PDF file above) |
-| Full web, one run | **1,777 passed, 0 failed** (187 files) |
+| Full web, one run | **1,777 passed, 0 failed** (187 files). Follow-up §7a: **1,780 passed, 0 failed** (187 files) |
 | Focused web during work | Dashboards 56/56 (Agent 1); payroll 29/29 (Agent 2); delete dialog 9/9 |
 | Shared | 83 passed |
 | Typecheck | API, web, shared clean |
 | Lint | API 0 errors (409 warnings, existing); web 0 errors (5 warnings, existing) |
 | Production builds (`stack.sh build`: API `tsc`, `next build`, service worker generated) | Pass |
 | Browser, final builds, service worker active (`tests/e2e/manual/p66/delete-dashboard-payroll.mjs`; stack `C:\p66\stack`, ports 56641–56643, db `p62_p66browser`; Chromium emulation 1366/820/390, not real devices) | Run 1: stopped on a **driver** bug (two "Back to payroll" buttons, strict locator) after 40 passes. **Run 2: 57/57 passed**: Delete dialog wording, typed-name gating (partial name refused, case-insensitive match accepted), account row, sessions and branch access gone, attribution record kept with no credentials, history rows kept; the deleted supervisor's open browser lands on /login and re-login is refused; Admin expense ledger and Attendance Records still name them; all three dashboards without both panels, with the Today's Expenses KPI and without their requests (checked from the network log), at three branch viewports; Admin Reports Extra Supplies; Supervisor Extra Supplies; payroll one Settings entry, basic-pay statement, no horizontal scroll at three viewports, Settings ↔ back; terminal offline warning |
-| Not exercised in the browser | Payroll draft generation and finalization (no local payroll policy, rates or runs in the stack seed; covered by the 29 component tests and the unchanged API payroll suites); lost response and concurrency (API integration and dialog tests only); real devices; hosted/staging (none exists) |
+| Not exercised in the browser | Payroll draft generation and finalization at first (no local payroll policy, rates or runs in the stack seed). **Closed by follow-up §7a: 44/44.** Still browser-untested: lost response and concurrency (API integration and dialog tests only); real devices; hosted/staging (none exists) |
 
 **Disposable data and processes.**
 - Leftovers, task-owned and safe to delete: `C:\p66` (env with throwaway secrets, logs, stopped stack data) and `C:\Users\kaile\AppData\Local\Temp\pos-test-pg-*` dirs (EBUSY on cleanup).
 - The stack services were stopped, plus two orphaned `io_worker` processes proven to be this task's by parent PID.
 - **Four more idle `io_worker` orphans** (started 4:01, 4:36, 4:38 and 4:56 AM, no ports) match this task's run times but could not be tied to it with certainty, so they were left running.
 - `prisma generate` could not replace the shared query-engine DLL because another session's `dist/server.js` (PID 17220, 2026-11-21 1:04 PM) has it loaded. The DLL is byte-identical (same Prisma 5.22.0); types and `index.js` regenerated normally. Stray `query_engine-windows.dll.node.tmp*` files from failed renames remain in that folder.
+
+### 7a. Follow-up: payroll draft and finalization in the browser
+
+Same branch, after the P66 commit `10658134`. Web-only fixes; no API, schema, migration or calculation change.
+
+**Driver.** `tests/e2e/manual/p66/payroll-flow.mjs`.
+- Uses the P62 stack's local-only guards: a fresh stack in `C:\p66pay` (ports 56651–56653, db `p62_p66pay`, throwaway secrets never printed), with production builds and an active service worker.
+- Creates its own branch (supervisor assigned), one staff member and two shifts (one with a 30-minute break) in the previous cutoff, all in that local database only.
+- Steps:
+  1. Missing setup, then Set up (keyboard), then a refused save that keeps the inputs, then save and return.
+  2. Draft before any rate, then a failed Prepare (request aborted) that keeps the period.
+  3. Rates: ₱80 from the period start (checklist "Set rate"), ₱90 from day 8 and ₱95 today (Settings).
+  4. Review: ₱80 and ₱90 lines, never ₱95, total ₱960.00. Details expand.
+  5. Cancel writes nothing, then keyboard finalize. The database holds one finalized run, 960.00, with snapshots.
+  6. Read-only state. Voiding the ₱90 rate leaves the finalized figures unchanged after a reload.
+  7. Switching to another branch shows no stale run, then switching back.
+  8. Desktop and tablet show the table, the phone shows cards, with no horizontal scroll.
+  9. Admin Reports → Payroll shows the run. No 5xx responses.
+
+**Defects found and fixed.**
+1. **The rate dialog stayed open after the last missing rate was saved.**
+   - The checklist switches from "items to finish" to the collapsed "ready" view when the rates refetch lands. The dialog was rendered inside each branch, so it remounted.
+   - The save's per-call `onSuccess` belonged to the unmounted copy, so the dialog never closed. It showed again empty, although the rate was saved (201).
+   - Fix: `payroll-setup-checklist.tsx` renders the dialog once, outside that switch.
+   - Regression test in `payroll-flow.test.tsx`. It fails on the committed code ("expected '' to be '80'") and passes with the fix.
+2. **Unpriced time could still read as ₱0.00.**
+   - P66 showed "Needs a rate" only in the basic-pay cell. The row total, phone card total, footer totals and calculation details still showed ₱0.00.
+   - Totals over rows with unpriced days were shown as if complete.
+   - Fix: `payroll-review-table.tsx` and `payroll-employee-drilldown.tsx`. With no priced time they show "Needs a rate"; with some priced time they show the amount marked "Incomplete — needs a rate". Footer adjustments (+₱0.00 / −₱0.00) are real zeros and stay.
+   - Tests in `payroll-flow.test.tsx`.
+3. **A cutoff day outside 1–27 left the form.** The message already promised "(1–27)", but only digits were checked. The server refused it (422), and the only message was the shared payroll error toast.
+   - Fix: `payroll-policy-form.tsx` checks the range and shows the message in the form, with the inputs kept.
+   - Test in `payroll-components.test.tsx`.
+
+**Runs (none retried blindly; each failure was diagnosed first).**
+
+| Run | Result |
+| --- | --- |
+| 1 | Driver fixture bug: `attendance_breaks_end_consistent` needs `end_reason`. Its partial staff row and shift were removed from the disposable database |
+| 2 (Main Branch) | 23 passed, 3 failed, then stopped. Found defect 2. Finalize was correctly blocked: the P62 perf fixture's cashiers have 120 h with no rate there. One wait-timing driver bug. The process did not exit (contexts left open); the driver now closes them |
+| 3 (P62 Branch 2) | 19/20, then stopped. Found defect 1 |
+| 4–5 (P62 Branches 3–4) | 27/29 and 27/30. Finalize correctly blocked by the P62 perf fixture's attendance on every P62 branch (another employee, 92 shifts, "30 to check"). The driver now creates its own empty branch |
+| 6 | 44/44. The "refused with a message" check had matched Next's empty route announcer, so it was not trusted |
+| 7 | Stopped: no in-form message for cutoff 30. Found defect 3 |
+| **8, final build** | **44/44** |
+
+**Other checks.** Payroll component tests 28/28. Full web suite 1,780/1,780. Web typecheck clean; web lint 0 errors. API and shared code unchanged since `10658134`, so the full API suite was not rerun.
+
+**Processes.** The stack's web, API and Postgres were stopped, plus one `io_worker` whose parent was this stack's Postgres. Earlier `next start` children on port 56653 were stopped after each rebuild. `C:\p66pay` (env, logs, stopped data, screenshots) is task-owned and safe to delete.
 
 ## 8. Test-account cleanup (exact IDs, dry run first). NOT executed
 
@@ -221,3 +270,5 @@ The P64 tool (`scripts/p64-fixture-account-cleanup.ts`, `fixture-account-cleanup
 - Out-of-process deletion (the cleanup CLI) has the P64 cross-process delays: up to 60 s on authenticate-only routes, and an open socket is not cut.
 - Payroll: Super Admin payroll is not read-only (P52 design). The checklist's pay-period and break rows open the one policy form.
 - Hosted and staging checks were NOT RUN; no isolated environment exists (unchanged).
+- Payroll mutation errors from the server still appear only as a toast (shared P52 `usePayrollMutation`); inputs are kept. Only the cutoff range now has an in-form message.
+- The P62 perf fixture's attendance (no rates, staff not assigned to every P62 branch) blocks payroll finalization on its branches. Browser payroll checks need their own branch, as `payroll-flow.mjs` does.

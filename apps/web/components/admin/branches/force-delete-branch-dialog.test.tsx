@@ -96,6 +96,7 @@ describe('ForceDeleteBranchDialog (POS-PERF-P68)', () => {
     expect(screen.getByText(/2 × stock balance/)).toBeInTheDocument();
     expect(screen.getByText(/Stock is NOT zeroed/)).toBeInTheDocument();
     expect(screen.getByText(/cannot see or delete sales queued/)).toBeInTheDocument();
+    expect(screen.getByText(/branch login’s email can be used again for a new account/)).toBeInTheDocument();
   });
 
   it('needs the typed name, code and acknowledgment; Cancel sends nothing', () => {

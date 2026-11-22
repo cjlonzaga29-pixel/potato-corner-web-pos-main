@@ -100,6 +100,18 @@ describe('RemoveEmployeeDialog (POS-PERF-P66 permanent delete)', () => {
     expect(screen.getByText(/Branch access \(SM North\)/)).toBeInTheDocument();
     expect(screen.getByText(/12 sales or checkouts, 3 attendance records/)).toBeInTheDocument();
     expect(screen.queryByText(/backup/i)).toBeNull();
+    // A staff Employee has no login email, so there is nothing to release.
+    expect(screen.queryByText(/is released and can be used for a new account/)).toBeNull();
+    expect(screen.getByText(/the account keeps its email/)).toBeInTheDocument();
+  });
+
+  it('says a login email is released for a new account that starts fresh', () => {
+    eligibilityReturns(deletable());
+    renderDialog(
+      <RemoveEmployeeDialog open onOpenChange={vi.fn()} employee={{ ...EMPLOYEE, role: 'supervisor', email: 'ana@example.com' }} />,
+    );
+    expect(screen.getByText(/The email ana@example\.com is released and can be used for a new account\./)).toBeInTheDocument();
+    expect(screen.getByText(/gets a new ID and none of this account’s past records, PIN, sessions or access/)).toBeInTheDocument();
   });
 
   it('enables Delete only after the exact name is typed and the acknowledgment is ticked, then sends both', async () => {

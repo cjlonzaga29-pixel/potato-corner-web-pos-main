@@ -533,6 +533,26 @@ describe.skipIf(!isLocalDatabase)(
           expect(await prisma.user.findUnique({ where: { id: f.staff.id } })).not.toBeNull();
         });
 
+        it('releases the branch login email: a new branch reuses it (any case) with a new account', async () => {
+          const email = f.account.email as string;
+          expect(await prisma.user.count({ where: { email: { equals: email, mode: 'insensitive' } } })).toBe(0);
+          const next = await branchesService.createBranch(
+            branchInput('afterForce', email.toUpperCase()),
+            actor(),
+            null,
+          );
+          const fresh = await prisma.user.findUniqueOrThrow({
+            where: { email },
+            include: { branchAssignments: true },
+          });
+          expect(fresh.id).not.toBe(f.account.id);
+          expect(fresh.branchAssignments.map((a) => a.branchId)).toEqual([next.id]);
+          expect(await errorOf(verifyAccessToken(accountToken))).toBeDefined();
+          expect(
+            (await prisma.person.findUniqueOrThrow({ where: { id: f.account.id } })).accountDeletedAt,
+          ).not.toBeNull();
+        });
+
         it('fabricates nothing: no cash count, no clock-out, no finalized payroll, no stock write', async () => {
           const shift = await prisma.shift.findUniqueOrThrow({ where: { id: f.shift.id } });
           expect(shift.status).toBe('terminated');

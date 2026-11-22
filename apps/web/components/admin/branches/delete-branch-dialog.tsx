@@ -234,6 +234,12 @@ export function DeleteBranchDialog({
             {kept.length > 0 ? `${kept.join(', ')}.` : 'All past business records.'} Reports, receipts and payroll history keep showing them.
           </p>
         </div>
+        {(removed?.branch_accounts ?? 0) > 0 && (
+          <p className="text-muted-foreground">
+            The branch login’s email can be used again for a new account. A new account starts fresh: it gets a new ID and none of the old
+            login’s past records, sessions or access.
+          </p>
+        )}
         <div className="space-y-2">
           <Label htmlFor="delete-branch-name">
             Type the branch name <span className="font-semibold">{name}</span>

@@ -73,6 +73,7 @@ describe('DeleteBranchDialog (POS-PERF-P67)', () => {
     expect(screen.getByText(/12 sales, 1 shift\./)).toBeInTheDocument();
     expect(screen.getByText(/Everyone’s access to this branch \(3\)/)).toBeInTheDocument();
     expect(screen.queryByText(/destroys/i)).toBeNull();
+    expect(screen.getByText(/branch login’s email can be used again for a new account/)).toBeInTheDocument();
   });
 
   it('enables Delete only with the name, the exact code and the acknowledgment', () => {

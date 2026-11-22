@@ -1,6 +1,6 @@
 import type { EmploymentType, Role } from '@potato-corner/shared';
 
-/** POS-PERF-P47 — history categories that block a permanent delete (see employeesRepository.countHistoryReferences). */
+/** POS-PERF-P47/P66 — history categories attributed to a person (see employeesRepository.countHistoryReferences). Since P66 they never block a delete; they tell the person deciding what stays. */
 export type EmployeeHistoryCategory =
   | 'sales'
   | 'shifts'
@@ -10,7 +10,8 @@ export type EmployeeHistoryCategory =
   | 'expenses'
   | 'catalog'
   | 'settings'
-  | 'pin_use';
+  | 'pin_use'
+  | 'payroll';
 
 export interface EmployeeListFilters {
   role?: Role;
@@ -79,4 +80,31 @@ export class EmployeeError extends Error {
     super(message);
     this.name = 'EmployeeError';
   }
+}
+
+/** POS-PERF-P64/P66 — what stands in the way of deleting an account (see employeesRepository.getRemovalPrerequisites). */
+export interface RemovalPrerequisites {
+  /** Blocking: close the shift (count the cash) first. */
+  open_shifts: { id: string; branch_name: string }[];
+  /** Blocking: clock out (or correct the record) first. */
+  open_attendance: { id: string; branch_name: string }[];
+  /** Informational: held carts expire on their own and stay on their branch. */
+  held_orders: number;
+  /** Informational: reviewers can still decide them; the requester name is kept. */
+  pending_inventory_approvals: number;
+  /** Branches whose access is removed. */
+  branches: { id: string; name: string }[];
+  /** Informational: no other active supervisor is assigned; a Super Admin can assign one. */
+  branches_left_without_supervisor: { id: string; name: string }[];
+  /**
+   * POS-PERF-P66 — blocking, staff only: recorded hours at a branch that uses
+   * payroll which no finalized payroll covers yet. Payroll drafts read live
+   * accounts, so deleting first would drop those hours from the next draft.
+   */
+  unpaid_payroll: { branch_id: string; branch_name: string; first_date: string; last_date: string; records: number }[];
+}
+
+/** POS-PERF-P66 — what must be resolved before an account can be deleted. */
+export function hasBlockingPrerequisites(prerequisites: RemovalPrerequisites): boolean {
+  return prerequisites.open_shifts.length > 0 || prerequisites.open_attendance.length > 0 || prerequisites.unpaid_payroll.length > 0;
 }

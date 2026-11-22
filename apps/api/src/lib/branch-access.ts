@@ -26,7 +26,9 @@ type BranchErrorCtor = new (code: string, message: string, statusCode?: number, 
 export async function getAccessibleBranchIds(actor: JwtPayload, client?: Prisma.TransactionClient): Promise<string[] | 'all'> {
   if (actor.role === ROLES.SUPER_ADMIN) return 'all';
   if (actor.role === ROLES.SUPERVISOR) return branchesRepository.findAllActiveBranchIds(actor.user_id, client);
-  return actor.branch_ids;
+  // POS-PERF-P67 — the token's branch may since have been deleted; a deleted
+  // branch drops out at once (a primary-key lookup), not when the token expires.
+  return branchesRepository.findExistingBranchIds(actor.branch_ids ?? [], client);
 }
 
 export async function hasBranchAccess(actor: JwtPayload, branchId: string): Promise<boolean> {

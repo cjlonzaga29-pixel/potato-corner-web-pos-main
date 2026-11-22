@@ -47,6 +47,32 @@ interface CreateOverrideRow {
 }
 
 /** POS-PERF-P51 — every break interval of a record, oldest first. Small (a handful per shift), so list reads include it directly. */
+/**
+ * POS-PERF-P66 — attendance names the person through Person (the attribution
+ * record), which outlives a deleted account. Live account fields come from
+ * its `account`; a deleted account has none, so its status reads null.
+ */
+const personWithAccountStatus = {
+  firstName: true,
+  lastName: true,
+  employeeCode: true,
+  account: { select: { status: true } },
+} satisfies Prisma.PersonSelect;
+
+function withLiveAccount(person: {
+  firstName: string;
+  lastName: string;
+  employeeCode: string | null;
+  account: { status: string } | null;
+}) {
+  return {
+    firstName: person.firstName,
+    lastName: person.lastName,
+    employeeId: person.employeeCode,
+    status: person.account?.status ?? null,
+  };
+}
+
 const breaksInclude = {
   select: { id: true, startedAt: true, endedAt: true, endReason: true },
   orderBy: { startedAt: 'asc' },
@@ -186,13 +212,14 @@ export const attendanceRepository = {
             select: {
               firstName: true,
               lastName: true,
-              employeeId: true,
-              status: true,
-              isActive: true,
-              branchAssignments: { where: { removedAt: null }, select: { branchId: true } },
+              employeeCode: true,
+              account: {
+                select: { status: true, isActive: true, branchAssignments: { where: { removedAt: null }, select: { branchId: true } } },
+              },
             },
           },
-          branch: { select: { name: true, status: true } },
+          // POS-PERF-P67 — the name from the historical record; status from the live branch (null once deleted).
+          branch: { select: { name: true, branch: { select: { status: true } } } },
           breaks: breaksInclude,
         },
         orderBy: [{ clockInServerTime: 'desc' }, { id: 'asc' }],
@@ -202,7 +229,17 @@ export const attendanceRepository = {
       prisma.attendanceRecord.count({ where }),
     ]);
 
-    return { records, total };
+    return {
+      records: records.map(({ employee, ...record }) => ({
+        ...record,
+        employee: {
+          ...withLiveAccount(employee),
+          isActive: employee.account?.isActive ?? false,
+          branchAssignments: employee.account?.branchAssignments ?? [],
+        },
+      })),
+      total,
+    };
   },
 
   /**
@@ -217,10 +254,8 @@ export const attendanceRepository = {
     const employeeSelect = {
       firstName: true,
       lastName: true,
-      isActive: true,
-      status: true,
-      branchAssignments: { where: { branchId, removedAt: null }, select: { id: true } },
-    } satisfies Prisma.UserSelect;
+      account: { select: { isActive: true, status: true, branchAssignments: { where: { branchId, removedAt: null }, select: { id: true } } } },
+    } satisfies Prisma.PersonSelect;
     const [open, closedToday] = await Promise.all([
       prisma.attendanceRecord.findMany({
         where: { branchId, clockOutServerTime: null, deletedAt: null },
@@ -247,7 +282,20 @@ export const attendanceRepository = {
         orderBy: { clockOutServerTime: 'desc' },
       }),
     ]);
-    return { open, closedToday };
+    return {
+      // An open row always has a live account (deletion is refused while clocked in); a missing one counts as not working.
+      open: open.map(({ employee, ...row }) => ({
+        ...row,
+        employee: {
+          firstName: employee.firstName,
+          lastName: employee.lastName,
+          isActive: employee.account?.isActive ?? false,
+          status: employee.account?.status ?? null,
+          branchAssignments: employee.account?.branchAssignments ?? [],
+        },
+      })),
+      closedToday,
+    };
   },
 
   async findByBranch(branchId: string, filters: AttendanceListFilters) {
@@ -267,7 +315,7 @@ export const attendanceRepository = {
         // separate, filtered/capped roster query) so a reassigned,
         // deactivated, or terminated employee still shows a name instead of
         // a raw UUID — see Cross-Dashboard Correctness audit.
-        include: { employee: { select: { firstName: true, lastName: true, employeeId: true, status: true } }, breaks: breaksInclude },
+        include: { employee: { select: personWithAccountStatus }, breaks: breaksInclude },
         orderBy: [{ clockInServerTime: 'desc' }, { id: 'desc' }],
         skip: (filters.page - 1) * filters.limit,
         take: filters.limit,
@@ -275,7 +323,7 @@ export const attendanceRepository = {
       prisma.attendanceRecord.count({ where }),
     ]);
 
-    return { records, total };
+    return { records: records.map(({ employee, ...record }) => ({ ...record, employee: withLiveAccount(employee) })), total };
   },
 
   async findByEmployee(employeeId: string, filters: AttendanceListFilters) {

@@ -6,7 +6,7 @@ import type { PayrollEmployeeResult, PayrollIssue, PayrollShiftDetail } from '@p
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { useVoidPayrollAdjustment } from '@/hooks/queries/use-payroll';
-import { ADJUSTMENT_CATEGORY_LABELS, formatPayrollDuration, formatPayrollTime, formatPeso } from '@/lib/payroll-format';
+import { ADJUSTMENT_CATEGORY_LABELS, formatPayrollClock, formatPayrollDate, formatPayrollDuration, formatPayrollTime, formatPeso } from '@/lib/payroll-format';
 import { cn } from '@/lib/utils';
 import { PayrollAdjustmentDialog } from './payroll-adjustment-dialog';
 import { PayrollReasonDialog } from './payroll-reason-dialog';
@@ -28,15 +28,18 @@ export function PayrollEmployeeDrilldown({ branchId, runId, employee, issues, ti
   const [voidingId, setVoidingId] = useState<string | null>(null);
   const voidAdjustment = useVoidPayrollAdjustment(branchId, runId);
   const employeeIssues = issues.filter((i) => i.employee_id === employee.employee_id);
+  // Time without a rate is not priced: never show it as ₱0 pay (POS-PERF-P66).
+  const missingRate = employeeIssues.some((i) => i.code === 'RATE_MISSING');
+  const priced = (amount: string) => (!missingRate ? formatPeso(amount) : employee.rate_lines.length === 0 ? 'Needs a rate' : `${formatPeso(amount)} (incomplete — needs a rate)`);
 
   return (
     <div className="grid gap-4">
       <dl className="grid grid-cols-2 gap-3 text-sm md:grid-cols-5">
         <Stat label="Payable time" value={formatPayrollDuration(employee.payable_ms)} />
-        <Stat label="Basic pay" value={formatPeso(employee.basic_pay)} />
+        <Stat label="Basic pay" value={priced(employee.basic_pay)} />
         <Stat label="Earnings adjustments" value={formatPeso(employee.earnings_adjustments)} />
         <Stat label="Deductions" value={formatPeso(employee.deductions)} />
-        <Stat label="Calculated total" value={formatPeso(employee.calculated_total)} strong />
+        <Stat label="Calculated total" value={priced(employee.calculated_total)} strong />
       </dl>
       {employee.previous_total !== null && (
         <p className="text-sm text-muted-foreground">Previously finalized total for this period: {formatPeso(employee.previous_total)}</p>
@@ -51,7 +54,7 @@ export function PayrollEmployeeDrilldown({ branchId, runId, employee, issues, ti
             {employee.rate_lines.map((line) => (
               <li key={line.rate_id} className="flex flex-wrap justify-between gap-2 rounded-md bg-muted/40 px-3 py-2">
                 <span>
-                  {formatPayrollDuration(line.payable_ms)} × {formatPeso(line.hourly_rate)}/h <span className="text-muted-foreground">(rate from {line.effective_from})</span>
+                  {formatPayrollDuration(line.payable_ms)} × {formatPeso(line.hourly_rate)}/h <span className="text-muted-foreground">(rate from {formatPayrollDate(line.effective_from)})</span>
                 </span>
                 <span className="font-medium">{formatPeso(line.amount)}</span>
               </li>
@@ -163,7 +166,7 @@ function ShiftCard({ shift, timeZone }: { shift: PayrollShiftDetail; timeZone: s
   return (
     <article className="rounded-md border p-3 text-sm">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h5 className="font-medium">{shift.business_date}</h5>
+        <h5 className="font-medium">{formatPayrollDate(shift.business_date)}</h5>
         <span className="tabular-nums">
           Payable <span className="font-semibold">{formatPayrollDuration(shift.payable_ms)}</span>
         </span>
@@ -186,7 +189,7 @@ function ShiftCard({ shift, timeZone }: { shift: PayrollShiftDetail; timeZone: s
               ? '—'
               : shift.breaks.map((b, i) => (
                   <span key={i} className="block">
-                    {b.source === 'legacy_total' ? `${b.minutes} min total` : `${formatPayrollTime(b.started_at, timeZone)}–${b.ended_at ? formatPayrollTime(b.ended_at, timeZone).slice(-5) : 'open'}`}
+                    {b.source === 'legacy_total' ? `${b.minutes} min total` : `${formatPayrollTime(b.started_at, timeZone)}–${b.ended_at ? formatPayrollClock(b.ended_at, timeZone) : 'open'}`}
                     <span className="text-muted-foreground">
                       {' '}
                       · paid {b.paid_minutes} / unpaid {b.unpaid_minutes} min
@@ -202,7 +205,7 @@ function ShiftCard({ shift, timeZone }: { shift: PayrollShiftDetail; timeZone: s
               ? '—'
               : shift.segments.map((s, i) => (
                   <span key={i} className="block">
-                    {s.business_date}: {formatPayrollDuration(s.payable_ms)} @ {s.hourly_rate ? `${formatPeso(s.hourly_rate)}/h` : <Badge variant="critical">No rate</Badge>}
+                    {formatPayrollDate(s.business_date)}: {formatPayrollDuration(s.payable_ms)} @ {s.hourly_rate ? `${formatPeso(s.hourly_rate)}/h` : <Badge variant="critical">No rate</Badge>}
                   </span>
                 ))}
           </dd>

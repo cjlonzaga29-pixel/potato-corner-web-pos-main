@@ -593,7 +593,15 @@ describe.skipIf(!canRunIntegrationTests)('P60 expense types', () => {
       const grouped = await branchesRepository.findAllStatsGrouped();
       const adminSummary = await expensesService.getSummary(adminJwt(), { date_from: today, date_to: today });
       const groupedTotal = grouped.reduce((sum, row) => sum + row.todayExpenses, 0);
-      expect(groupedTotal).toBeCloseTo(adminSummary.total_amount, 2);
+      // POS-PERF-P67 — the Admin summary keeps a deleted branch's expenses
+      // (history); the dashboard groups live branches only. They agree once
+      // expenses of deleted branches are set aside.
+      const { start, end } = { start: new Date(`${today}T00:00:00+08:00`), end: new Date(`${today}T23:59:59.999+08:00`) };
+      const deletedToday = await prisma.expense.aggregate({
+        _sum: { amount: true },
+        where: { deletedAt: null, incurredAt: { gte: start, lte: end }, branch: { deletedAt: { not: null } } },
+      });
+      expect(groupedTotal).toBeCloseTo(adminSummary.total_amount - Number(deletedToday._sum.amount ?? 0), 2);
     });
 
     it('a supervisor\'s breakdown across branches holds only their branches', async () => {
@@ -604,7 +612,7 @@ describe.skipIf(!canRunIntegrationTests)('P60 expense types', () => {
     });
   });
 
-  it('permanently deleting a branch still works once it has types and expenses', async () => {
+  it('permanently deleting a branch still works once it has types and expenses, and keeps the expenses', async () => {
     const branch = await freshBranch('Delete');
     await prisma.userBranchAssignment.create({ data: { userId: ids.supAB, branchId: branch } });
     const type = await createType(unique('Delete'), [branch]);
@@ -616,7 +624,8 @@ describe.skipIf(!canRunIntegrationTests)('P60 expense types', () => {
         await tx.userBranchAssignment.deleteMany({ where: { branchId: branch } });
         await tx.branch.delete({ where: { id: branch } });
         expect(await tx.expenseTypeBranch.count({ where: { expenseTypeId: type.id } })).toBe(0);
-        expect(await tx.expense.count({ where: { expenseTypeId: type.id } })).toBe(0);
+        // POS-PERF-P67 — the enrolment goes with the branch; the expense itself is history and stays.
+        expect(await tx.expense.count({ where: { expenseTypeId: type.id } })).toBe(1);
         throw finished;
       }),
     ).rejects.toBe(finished);

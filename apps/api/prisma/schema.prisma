@@ -296,7 +296,6 @@ enum InitializationApplyStatus {
 
 model User {
   id           String  @id @default(uuid())
-  // Branch Employee Authorization (CR-003 follow-up): nullable — `staff`
   // rows are Employees, authorized only inside an already-authenticated
   // `branch` session, and never have their own login credentials.
   // branch/supervisor/super_admin rows always have both.
@@ -350,89 +349,24 @@ model User {
   // non-login historical record (names on sales, attendance, audit…); a
   // CHECK constraint in the migration keeps it inactive forever. Distinct
   // from deactivatedAt, which an ordinary reactivation clears.
+  // POS-PERF-P66: legacy. Rows removed under P64 before P66 shipped still
+  // carry these; a P66 Delete removes the row itself (see Person).
   deletedAt          DateTime? @map("deleted_at")
   deletedBy          String?   @map("deleted_by")
 
-  branchAssignments                UserBranchAssignment[]
-  shiftsAsCashier                  Shift[]                @relation("ShiftCashier")
-  shiftsOpenedBy                   Shift[]                @relation("ShiftOpenedBy")
-  shiftReviewsReviewed             ShiftReview[]          @relation("ShiftReviewReviewer")
-  attendanceRecords                AttendanceRecord[]     @relation("AttendanceEmployee")
-  correctedAttendanceRecords       AttendanceRecord[]     @relation("AttendanceCorrector")
-  auditLogs                        AuditLog[]
-  createdProducts                  Product[]
-  createdProductTypes              ProductType[]          @relation("ProductTypeCreatedBy")
-  updatedProductTypes              ProductType[]          @relation("ProductTypeUpdatedBy")
-  createdExpenseTypes              ExpenseType[]          @relation("ExpenseTypeCreatedBy")
-  updatedExpenseTypes              ExpenseType[]          @relation("ExpenseTypeUpdatedBy")
-  createdExtraSupplies             ExtraSupply[]          @relation("ExtraSupplyCreatedBy")
-  updatedExtraSupplies             ExtraSupply[]          @relation("ExtraSupplyUpdatedBy")
-  extraSupplyIssues                ExtraSupplyIssue[]
-  cashierTransactions              Transaction[]
-  voidedTransactions               Transaction[]          @relation("TransactionVoidedBy")
-  refundedTransactions             Transaction[]          @relation("TransactionRefundedBy")
-  paymentProofVerifiedTransactions Transaction[]          @relation("TransactionPaymentProofVerifiedBy")
-  refreshTokens                    RefreshToken[]
-  pinCredentials                   PinCredential[]
-  staffPin                         StaffPin?
-  holdOrders                       HoldOrder[]
-  passwordResetTokens              PasswordResetToken[]
+  // POS-PERF-P66 — every account has an attribution record with the same
+  // id. History references Person, never User, so deleting this row (and,
+  // by cascade, everything below that belongs to the account itself:
+  // sessions, reset tokens, device PINs, the staff PIN, branch access and
+  // notification preferences) never touches a past record.
+  person Person @relation("PersonAccount", fields: [id], references: [id], onDelete: Restrict)
 
-  expenses Expense[]
-
-  // Step 12a (System Settings)
-  systemSettingsUpdated             SystemSetting[]             @relation("SystemSettingUpdater")
-  notificationPreference            NotificationPreference?
-  branchReceiptConfigsUpdated       BranchReceiptConfig[]       @relation("BranchReceiptConfigUpdater")
-  branchPaymentMethodConfigsUpdated BranchPaymentMethodConfig[] @relation("BranchPaymentMethodConfigUpdater")
-
-  // CR-005
-  createdProductVariants  ProductVariant[]   @relation("ProductVariantCreatedBy")
-  approvedProductVariants ProductVariant[]   @relation("ProductVariantApprovedBy")
-  productChangeLogs       ProductChangeLog[] @relation("ProductChangeLogChangedBy")
-
-  // CR-009
-  initiatedInitializationRuns InitializationRun[]
-
-  // CR-008
-  createdProductCategories          ProductCategory[]
-  createdProductOptionGroups        ProductOptionGroup[]
-  createdProductOptions             ProductOption[]
-  createdProductVariantOptionGroups ProductVariantOptionGroup[]
-
-  // POS-PERF-P35 — catalog/inventory-definition ownership, mirroring the
-  // CR-008 createdBy columns above onto the previously-ownerless universal
-  // inventory master data.
-  createdInventoryCategories InventoryCategory[]
-  createdUnitsOfMeasure      UnitOfMeasure[]
-  createdUnitConversions     UnitConversion[]
-  createdInventoryItems      InventoryItem[]
-
-  // POS-PERF-P35R — explicit catalog-management assignment, separate from
-  // the createdBy provenance relations above. A user can be the recorded
-  // manager of records they did not create.
-  managedProducts                Product[]                     @relation("ProductManagedBy")
-  managedProductCategories       ProductCategory[]             @relation("ProductCategoryManagedBy")
-  managedProductOptionGroups     ProductOptionGroup[]          @relation("ProductOptionGroupManagedBy")
-  managedProductOptions          ProductOption[]               @relation("ProductOptionManagedBy")
-  managedInventoryCategories     InventoryCategory[]           @relation("InventoryCategoryManagedBy")
-  managedUnitsOfMeasure          UnitOfMeasure[]               @relation("UnitOfMeasureManagedBy")
-  managedUnitConversions         UnitConversion[]              @relation("UnitConversionManagedBy")
-  managedInventoryItems          InventoryItem[]               @relation("InventoryItemManagedBy")
-  catalogAssignmentsMade         CatalogManagementAssignment[] @relation("CatalogAssignmentAssignedBy")
-  catalogAssignmentsReceived     CatalogManagementAssignment[] @relation("CatalogAssignmentNewManager")
-  promotionsCreated              Promotion[]                   @relation("PromotionCreatedBy")
-  promotionsUpdated              Promotion[]                   @relation("PromotionUpdatedBy")
-  // POS-PERF-P55
-  manualDiscountTypesCreated     ManualDiscountType[]          @relation("ManualDiscountTypeCreatedBy")
-  manualDiscountTypesUpdated     ManualDiscountType[]          @relation("ManualDiscountTypeUpdatedBy")
-  manualDiscountTypesDeactivated ManualDiscountType[]          @relation("ManualDiscountTypeDeactivatedBy")
-  discountProofUploads           DiscountProofUpload[]
-
-  // POS-PERF-P52 — payroll (employee side only; actor columns are plain ids)
-  payRates           EmployeePayRate[]
-  payrollRunLines    PayrollRunLine[]
-  payrollAdjustments PayrollAdjustment[]
+  branchAssignments      UserBranchAssignment[]
+  refreshTokens          RefreshToken[]
+  pinCredentials         PinCredential[]
+  staffPin               StaffPin?
+  passwordResetTokens    PasswordResetToken[]
+  notificationPreference NotificationPreference?
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -441,14 +375,134 @@ model User {
   @@map("users")
 }
 
+/// POS-PERF-P66 — historical attribution record. One row per account ever
+/// created (same id as users.id, kept in sync by the users triggers in the
+/// P66 migration). It has no email, password, PIN, session or branch access
+/// and nothing authenticates against it. History (sales, shifts, attendance,
+/// expenses, payroll, audit, catalog provenance…) references this table, so
+/// physically deleting a users row keeps every past record attributed to the
+/// real name. accountDeletedAt marks an account deleted through the app; its
+/// id can never be reused for a new account (enforced by the insert trigger).
+model Person {
+  id               String    @id
+  firstName        String    @map("first_name")
+  lastName         String    @map("last_name")
+  role             Role
+  employeeCode     String?   @map("employee_code")
+  accountDeletedAt DateTime? @map("account_deleted_at")
+  accountDeletedBy String?   @map("account_deleted_by")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  /// The live account; null once it has been deleted.
+  account User? @relation("PersonAccount")
+
+  shiftsAsCashier                   Shift[]                       @relation("ShiftCashier")
+  shiftsOpenedBy                    Shift[]                       @relation("ShiftOpenedBy")
+  shiftReviewsReviewed              ShiftReview[]                 @relation("ShiftReviewReviewer")
+  attendanceRecords                 AttendanceRecord[]            @relation("AttendanceEmployee")
+  correctedAttendanceRecords        AttendanceRecord[]            @relation("AttendanceCorrector")
+  auditLogs                         AuditLog[]
+  createdProducts                   Product[]
+  createdProductTypes               ProductType[]                 @relation("ProductTypeCreatedBy")
+  updatedProductTypes               ProductType[]                 @relation("ProductTypeUpdatedBy")
+  createdExpenseTypes               ExpenseType[]                 @relation("ExpenseTypeCreatedBy")
+  updatedExpenseTypes               ExpenseType[]                 @relation("ExpenseTypeUpdatedBy")
+  createdExtraSupplies              ExtraSupply[]                 @relation("ExtraSupplyCreatedBy")
+  updatedExtraSupplies              ExtraSupply[]                 @relation("ExtraSupplyUpdatedBy")
+  extraSupplyIssues                 ExtraSupplyIssue[]
+  cashierTransactions               Transaction[]
+  voidedTransactions                Transaction[]                 @relation("TransactionVoidedBy")
+  refundedTransactions              Transaction[]                 @relation("TransactionRefundedBy")
+  paymentProofVerifiedTransactions  Transaction[]                 @relation("TransactionPaymentProofVerifiedBy")
+  holdOrders                        HoldOrder[]
+  expenses                          Expense[]
+  systemSettingsUpdated             SystemSetting[]               @relation("SystemSettingUpdater")
+  branchReceiptConfigsUpdated       BranchReceiptConfig[]         @relation("BranchReceiptConfigUpdater")
+  branchPaymentMethodConfigsUpdated BranchPaymentMethodConfig[]   @relation("BranchPaymentMethodConfigUpdater")
+  createdProductVariants            ProductVariant[]              @relation("ProductVariantCreatedBy")
+  approvedProductVariants           ProductVariant[]              @relation("ProductVariantApprovedBy")
+  productChangeLogs                 ProductChangeLog[]            @relation("ProductChangeLogChangedBy")
+  initiatedInitializationRuns       InitializationRun[]
+  createdProductCategories          ProductCategory[]
+  createdProductOptionGroups        ProductOptionGroup[]
+  createdProductOptions             ProductOption[]
+  createdProductVariantOptionGroups ProductVariantOptionGroup[]
+  createdInventoryCategories        InventoryCategory[]
+  createdUnitsOfMeasure             UnitOfMeasure[]
+  createdUnitConversions            UnitConversion[]
+  createdInventoryItems             InventoryItem[]
+  managedProducts                   Product[]                     @relation("ProductManagedBy")
+  managedProductCategories          ProductCategory[]             @relation("ProductCategoryManagedBy")
+  managedProductOptionGroups        ProductOptionGroup[]          @relation("ProductOptionGroupManagedBy")
+  managedProductOptions             ProductOption[]               @relation("ProductOptionManagedBy")
+  managedInventoryCategories        InventoryCategory[]           @relation("InventoryCategoryManagedBy")
+  managedUnitsOfMeasure             UnitOfMeasure[]               @relation("UnitOfMeasureManagedBy")
+  managedUnitConversions            UnitConversion[]              @relation("UnitConversionManagedBy")
+  managedInventoryItems             InventoryItem[]               @relation("InventoryItemManagedBy")
+  catalogAssignmentsMade            CatalogManagementAssignment[] @relation("CatalogAssignmentAssignedBy")
+  catalogAssignmentsReceived        CatalogManagementAssignment[] @relation("CatalogAssignmentNewManager")
+  promotionsCreated                 Promotion[]                   @relation("PromotionCreatedBy")
+  promotionsUpdated                 Promotion[]                   @relation("PromotionUpdatedBy")
+  manualDiscountTypesCreated        ManualDiscountType[]          @relation("ManualDiscountTypeCreatedBy")
+  manualDiscountTypesUpdated        ManualDiscountType[]          @relation("ManualDiscountTypeUpdatedBy")
+  manualDiscountTypesDeactivated    ManualDiscountType[]          @relation("ManualDiscountTypeDeactivatedBy")
+  discountProofUploads              DiscountProofUpload[]
+  payRates                          EmployeePayRate[]
+  payrollRunLines                   PayrollRunLine[]
+  payrollAdjustments                PayrollAdjustment[]
+
+  @@map("people")
+}
+
+/// POS-PERF-P67 — the historical identity of a branch: one row per branch
+/// ever created, same id. History (sales, shifts, attendance, expenses,
+/// payroll, stock movements, proofs, audit) references this, never the live
+/// branches row, so deleting a branch keeps every record and its name/code.
+/// Kept in step while the branch is live and frozen once deleted (migration
+/// triggers). Codes are unique across live and deleted branches. Nothing
+/// operates or authenticates against it.
+model BranchRecord {
+  id        String    @id
+  name      String
+  code      String    @unique
+  address   String
+  city      String
+  createdAt DateTime  @default(now()) @map("created_at")
+  deletedAt DateTime? @map("deleted_at")
+  deletedBy String?   @map("deleted_by")
+
+  /// The live branch; null once it has been deleted.
+  branch Branch? @relation("BranchRecordLive")
+
+  extraSupplyIssues        ExtraSupplyIssue[]
+  extraSupplyLines         ExtraSupplyIssueLine[]
+  extraSupplyOperations    ExtraSupplyOperation[]
+  catalogAssignments       CatalogManagementAssignment[]
+  ingredients              Ingredient[]
+  transactions             Transaction[]
+  shifts                   Shift[]
+  inventoryMovements       InventoryMovement[]
+  attendanceRecords        AttendanceRecord[]
+  auditLogs                AuditLog[]
+  fraudAlerts              FraudAlert[]
+  inventoryStockMovements  InventoryStockMovement[]
+  inventoryCostCorrections InventoryCostCorrection[]
+  exclusiveProducts        Product[]                     @relation("ProductExclusiveBranch")
+  manualDiscountTypes      ManualDiscountType[]
+  discountProofUploads     DiscountProofUpload[]
+  expenses                 Expense[]
+  payrollPolicies          PayrollPolicy[]
+  payRates                 EmployeePayRate[]
+  payrollRuns              PayrollRun[]
+
+  @@map("branch_records")
+}
+
 model Branch {
   id                  String              @id @default(uuid())
   productTypeBranches ProductTypeBranch[]
   expenseTypeBranches ExpenseTypeBranch[]
   extraSupplyBranches ExtraSupplyBranch[]
-  extraSupplyIssues   ExtraSupplyIssue[]
-  extraSupplyLines    ExtraSupplyIssueLine[]
-  extraSupplyOperations ExtraSupplyOperation[]
   name                String
   code                String              @unique
   address             String
@@ -460,46 +514,30 @@ model Branch {
   gcashQrUrl          String?
   gcashQrKey          String?
 
-  catalogAssignments  CatalogManagementAssignment[]
   userAssignments     UserBranchAssignment[]
   productAvailability BranchProductAvailability[]
   flavorAvailability  BranchFlavorAvailability[]
-  ingredients         Ingredient[]
-  transactions        Transaction[]
-  shifts              Shift[]
   holdOrders          HoldOrder[]
-  inventoryMovements  InventoryMovement[]
-  attendanceRecords   AttendanceRecord[]
-  auditLogs           AuditLog[]
-  fraudAlerts         FraudAlert[]
 
   // CR-006 Phase A
-  inventoryStocks          InventoryStock[]
-  inventoryStockMovements  InventoryStockMovement[]
-  inventoryCostCorrections InventoryCostCorrection[]
-  staffPinBranchLookups    StaffPinBranchLookup[]
+  inventoryStocks       InventoryStock[]
+  staffPinBranchLookups StaffPinBranchLookup[]
 
   // CR-001
-  exclusiveProducts    Product[]             @relation("ProductExclusiveBranch")
-  promotionBranches    PromotionBranch[]
+  promotionBranches PromotionBranch[]
   // POS-PERF-P55
-  manualDiscountTypes  ManualDiscountType[]
-  discountProofUploads DiscountProofUpload[]
-  productInventory     ProductInventory[]
-
-  expenses Expense[]
+  productInventory  ProductInventory[]
 
   // Step 12a (System Settings)
   receiptConfig       BranchReceiptConfig?
   paymentMethodConfig BranchPaymentMethodConfig?
 
   // POS-PERF-P52
-  payrollPolicies PayrollPolicy[]
-  payRates        EmployeePayRate[]
-  payrollRuns     PayrollRun[]
 
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  createdAt DateTime     @default(now()) @map("created_at")
+  updatedAt DateTime     @updatedAt @map("updated_at")
+  /// POS-PERF-P67 — the historical identity this branch's history references; it outlives the branch.
+  record    BranchRecord @relation("BranchRecordLive", fields: [id], references: [id], onDelete: Restrict)
 
   @@map("branches")
 }
@@ -511,7 +549,7 @@ model UserBranchAssignment {
   assignedAt DateTime  @default(now()) @map("assigned_at")
   removedAt  DateTime? @map("removed_at")
 
-  user   User   @relation(fields: [userId], references: [id])
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
 
   @@index([userId])
@@ -536,7 +574,7 @@ model RefreshToken {
   revokedAt  DateTime? @map("revoked_at")
   replacedBy String?   @map("replaced_by")
 
-  user User @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -573,7 +611,7 @@ model PasswordResetToken {
   expiresAt DateTime @map("expires_at")
   createdAt DateTime @default(now()) @map("created_at")
 
-  user User @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@map("password_reset_tokens")
@@ -619,7 +657,7 @@ model PinCredential {
   deviceId String @map("device_id")
   pinHash  String @map("pin_hash")
 
-  user User @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -649,7 +687,7 @@ model StaffPin {
   setAt       DateTime  @default(now()) @map("set_at")
   revokedAt   DateTime? @map("revoked_at")
 
-  user User @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   branchLookups StaffPinBranchLookup[]
   verifications StaffPinVerification[]
@@ -865,9 +903,9 @@ model Product {
   productTypeId String? @map("product_type_id")
 
   productType                ProductType?                @relation(fields: [productTypeId], references: [id], onDelete: Restrict)
-  creator                    User?                       @relation(fields: [createdBy], references: [id])
-  manager                    User?                       @relation("ProductManagedBy", fields: [managedBy], references: [id])
-  exclusiveBranch            Branch?                     @relation("ProductExclusiveBranch", fields: [exclusiveBranchId], references: [id])
+  creator                    Person?                     @relation(fields: [createdBy], references: [id])
+  manager                    Person?                     @relation("ProductManagedBy", fields: [managedBy], references: [id])
+  exclusiveBranch            BranchRecord?               @relation("ProductExclusiveBranch", fields: [exclusiveBranchId], references: [id], onDelete: Restrict)
   productCategory            ProductCategory?            @relation(fields: [categoryId], references: [id])
   forkedFromProduct          Product?                    @relation("ProductForkedFrom", fields: [forkedFromProductId], references: [id])
   forkedCopies               Product[]                   @relation("ProductForkedFrom")
@@ -908,8 +946,8 @@ model ProductType {
   /// Not @updatedAt: lockActive's no-op update takes the row lock without counting as an edit.
   updatedAt      DateTime  @default(now()) @map("updated_at")
 
-  creator  User                @relation("ProductTypeCreatedBy", fields: [createdById], references: [id])
-  updater  User?               @relation("ProductTypeUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  creator  Person              @relation("ProductTypeCreatedBy", fields: [createdById], references: [id])
+  updater  Person?             @relation("ProductTypeUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
   branches ProductTypeBranch[]
   products Product[]
 
@@ -928,7 +966,7 @@ model ProductTypeBranch {
   isActive       Boolean @map("is_active")
 
   productType ProductType @relation(fields: [productTypeId, normalizedName, isActive], references: [id, normalizedName, isActive], onDelete: Cascade, onUpdate: Cascade)
-  branch      Branch      @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  branch      Branch      @relation(fields: [branchId], references: [id], onDelete: Cascade)
 
   @@id([productTypeId, branchId])
   @@index([branchId])
@@ -964,8 +1002,8 @@ model ProductVariant {
   approvedAt       DateTime?              @map("approved_at")
 
   product          Product                @relation(fields: [productId], references: [id])
-  createdBy        User?                  @relation("ProductVariantCreatedBy", fields: [createdById], references: [id])
-  approvedBy       User?                  @relation("ProductVariantApprovedBy", fields: [approvedById], references: [id])
+  createdBy        Person?                @relation("ProductVariantCreatedBy", fields: [createdById], references: [id])
+  approvedBy       Person?                @relation("ProductVariantApprovedBy", fields: [approvedById], references: [id])
   variantFlavors   ProductVariantFlavor[]
   transactionItems TransactionItem[]
   holdOrderItems   HoldOrderItem[]
@@ -1094,8 +1132,8 @@ model ProductCategory {
   // POS-PERF-P35R — see Product.managedBy.
   managedBy   String? @map("managed_by")
 
-  creator  User?     @relation(fields: [createdBy], references: [id])
-  manager  User?     @relation("ProductCategoryManagedBy", fields: [managedBy], references: [id])
+  creator  Person?   @relation(fields: [createdBy], references: [id])
+  manager  Person?   @relation("ProductCategoryManagedBy", fields: [managedBy], references: [id])
   products Product[]
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -1121,8 +1159,8 @@ model ProductOptionGroup {
   // POS-PERF-P35R — see Product.managedBy.
   managedBy      String?                    @map("managed_by")
 
-  creator            User?                       @relation(fields: [createdBy], references: [id])
-  manager            User?                       @relation("ProductOptionGroupManagedBy", fields: [managedBy], references: [id])
+  creator            Person?                     @relation(fields: [createdBy], references: [id])
+  manager            Person?                     @relation("ProductOptionGroupManagedBy", fields: [managedBy], references: [id])
   options            ProductOption[]
   variantAssignments ProductVariantOptionGroup[]
 
@@ -1147,8 +1185,8 @@ model ProductOption {
   managedBy       String? @map("managed_by")
 
   optionGroup           ProductOptionGroup                @relation(fields: [optionGroupId], references: [id])
-  creator               User?                             @relation(fields: [createdBy], references: [id])
-  manager               User?                             @relation("ProductOptionManagedBy", fields: [managedBy], references: [id])
+  creator               Person?                           @relation(fields: [createdBy], references: [id])
+  manager               Person?                           @relation("ProductOptionManagedBy", fields: [managedBy], references: [id])
   variantAllowedOptions ProductVariantOptionGroupOption[]
   components            ProductComponent[]
   inventoryMapping      ProductOptionInventoryMapping?
@@ -1173,7 +1211,7 @@ model ProductVariantOptionGroup {
 
   productVariant ProductVariant                    @relation(fields: [productVariantId], references: [id])
   optionGroup    ProductOptionGroup                @relation(fields: [optionGroupId], references: [id])
-  creator        User?                             @relation(fields: [createdBy], references: [id])
+  creator        Person?                           @relation(fields: [createdBy], references: [id])
   allowedOptions ProductVariantOptionGroupOption[]
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -1227,7 +1265,7 @@ model Ingredient {
   // CR-005 Phase 1
   category          IngredientCategory @default(OTHER)
 
-  branch           Branch              @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  branch           BranchRecord        @relation(fields: [branchId], references: [id], onDelete: Restrict)
   movements        InventoryMovement[]
   productInventory ProductInventory[]
 
@@ -1348,7 +1386,7 @@ model ProductChangeLog {
   createdAt        DateTime @default(now()) @map("created_at")
 
   productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
-  changedBy      User           @relation("ProductChangeLogChangedBy", fields: [changedById], references: [id])
+  changedBy      Person         @relation("ProductChangeLogChangedBy", fields: [changedById], references: [id])
 
   @@index([productVariantId, version])
   @@index([createdAt])
@@ -1372,8 +1410,8 @@ model InventoryMovement {
   approvedBy     String?         @map("approved_by")
   recordedBy     String?         @map("recorded_by")
 
-  branch     Branch     @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  ingredient Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+  branch     BranchRecord @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  ingredient Ingredient   @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -1441,8 +1479,8 @@ model InventoryCategory {
   managedBy   String? @map("managed_by")
 
   items   InventoryItem[]
-  creator User?           @relation(fields: [createdBy], references: [id])
-  manager User?           @relation("InventoryCategoryManagedBy", fields: [managedBy], references: [id])
+  creator Person?         @relation(fields: [createdBy], references: [id])
+  manager Person?         @relation("InventoryCategoryManagedBy", fields: [managedBy], references: [id])
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1468,8 +1506,8 @@ model UnitOfMeasure {
   // POS-PERF-P35R — see Product.managedBy.
   managedBy  String?       @map("managed_by")
 
-  creator                   User?                           @relation(fields: [createdBy], references: [id])
-  manager                   User?                           @relation("UnitOfMeasureManagedBy", fields: [managedBy], references: [id])
+  creator                   Person?                         @relation(fields: [createdBy], references: [id])
+  manager                   Person?                         @relation("UnitOfMeasureManagedBy", fields: [managedBy], references: [id])
   items                     InventoryItem[]
   conversionsFrom           UnitConversion[]                @relation("UnitConversionFrom")
   conversionsTo             UnitConversion[]                @relation("UnitConversionTo")
@@ -1504,8 +1542,8 @@ model UnitConversion {
 
   fromUnit UnitOfMeasure @relation("UnitConversionFrom", fields: [fromUnitId], references: [id])
   toUnit   UnitOfMeasure @relation("UnitConversionTo", fields: [toUnitId], references: [id])
-  creator  User?         @relation(fields: [createdBy], references: [id])
-  manager  User?         @relation("UnitConversionManagedBy", fields: [managedBy], references: [id])
+  creator  Person?       @relation(fields: [createdBy], references: [id])
+  manager  Person?       @relation("UnitConversionManagedBy", fields: [managedBy], references: [id])
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -1568,8 +1606,8 @@ model InventoryItem {
 
   category          InventoryCategory?              @relation(fields: [categoryId], references: [id])
   baseUnit          UnitOfMeasure                   @relation(fields: [baseUnitId], references: [id])
-  creator           User?                           @relation(fields: [createdBy], references: [id])
-  manager           User?                           @relation("InventoryItemManagedBy", fields: [managedBy], references: [id])
+  creator           Person?                         @relation(fields: [createdBy], references: [id])
+  manager           Person?                         @relation("InventoryItemManagedBy", fields: [managedBy], references: [id])
   stocks            InventoryStock[]
   stockMovements    InventoryStockMovement[]
   costCorrections   InventoryCostCorrection[]
@@ -1620,9 +1658,9 @@ model CatalogManagementAssignment {
   // master data per CR-007 §3).
   branchId          String?             @map("branch_id")
 
-  assignedByUser User    @relation("CatalogAssignmentAssignedBy", fields: [assignedBy], references: [id])
-  newManager     User    @relation("CatalogAssignmentNewManager", fields: [newManagedBy], references: [id])
-  branch         Branch? @relation(fields: [branchId], references: [id])
+  assignedByUser Person        @relation("CatalogAssignmentAssignedBy", fields: [assignedBy], references: [id])
+  newManager     Person        @relation("CatalogAssignmentNewManager", fields: [newManagedBy], references: [id])
+  branch         BranchRecord? @relation(fields: [branchId], references: [id], onDelete: Restrict)
 
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -1791,7 +1829,7 @@ model InventoryStockMovement {
   // universal-inventory.service.ts for the write paths.
   staffInvolvedName String? @map("staff_involved_name")
 
-  branch        Branch         @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  branch        BranchRecord   @relation(fields: [branchId], references: [id], onDelete: Restrict)
   inventoryItem InventoryItem  @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
   unit          UnitOfMeasure? @relation("InventoryStockMovementUnit", fields: [unitId], references: [id])
   enteredUnit   UnitOfMeasure? @relation("InventoryStockMovementEnteredUnit", fields: [enteredUnitId], references: [id])
@@ -1829,7 +1867,7 @@ model InventoryCostCorrection {
   proofType           ImageProofType? @map("proof_type")
   correctedByUserId   String          @map("corrected_by_user_id")
 
-  branch        Branch        @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  branch        BranchRecord  @relation(fields: [branchId], references: [id], onDelete: Restrict)
   inventoryItem InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -2243,12 +2281,12 @@ model Transaction {
   // 20261101130000; the Prisma DSL has no CHECK). Written once at insert.
   calculationMode             String?                  @map("calculation_mode")
 
-  branch                 Branch                 @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  branch                 BranchRecord           @relation(fields: [branchId], references: [id], onDelete: Restrict)
   shift                  Shift?                 @relation(fields: [shiftId], references: [id])
-  cashier                User                   @relation(fields: [cashierId], references: [id])
-  voidedBy               User?                  @relation("TransactionVoidedBy", fields: [voidedById], references: [id])
-  refundedBy             User?                  @relation("TransactionRefundedBy", fields: [refundedById], references: [id])
-  paymentProofVerifiedBy User?                  @relation("TransactionPaymentProofVerifiedBy", fields: [paymentProofVerifiedById], references: [id])
+  cashier                Person                 @relation(fields: [cashierId], references: [id])
+  voidedBy               Person?                @relation("TransactionVoidedBy", fields: [voidedById], references: [id])
+  refundedBy             Person?                @relation("TransactionRefundedBy", fields: [refundedById], references: [id])
+  paymentProofVerifiedBy Person?                @relation("TransactionPaymentProofVerifiedBy", fields: [paymentProofVerifiedById], references: [id])
   items                  TransactionItem[]
   deductionJob           InventoryDeductionJob?
   checkoutAttempt        CheckoutAttempt?
@@ -2296,8 +2334,8 @@ model Promotion {
   createdById     String                   @map("created_by_id")
   updatedById     String?                  @map("updated_by_id")
 
-  createdBy        User               @relation("PromotionCreatedBy", fields: [createdById], references: [id])
-  updatedBy        User?              @relation("PromotionUpdatedBy", fields: [updatedById], references: [id])
+  createdBy        Person             @relation("PromotionCreatedBy", fields: [createdById], references: [id])
+  updatedBy        Person?            @relation("PromotionUpdatedBy", fields: [updatedById], references: [id])
   products         PromotionProduct[]
   branches         PromotionBranch[]
   transactionItems TransactionItem[]
@@ -2336,10 +2374,10 @@ model ManualDiscountType {
   // Rows created by one supervisor action for several branches share this; null = a type at one branch.
   groupId         String?   @map("group_id")
 
-  branch        Branch                      @relation(fields: [branchId], references: [id])
-  createdBy     User                        @relation("ManualDiscountTypeCreatedBy", fields: [createdById], references: [id])
-  updatedBy     User?                       @relation("ManualDiscountTypeUpdatedBy", fields: [updatedById], references: [id])
-  deactivatedBy User?                       @relation("ManualDiscountTypeDeactivatedBy", fields: [deactivatedById], references: [id])
+  branch        BranchRecord                @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  createdBy     Person                      @relation("ManualDiscountTypeCreatedBy", fields: [createdById], references: [id])
+  updatedBy     Person?                     @relation("ManualDiscountTypeUpdatedBy", fields: [updatedById], references: [id])
+  deactivatedBy Person?                     @relation("ManualDiscountTypeDeactivatedBy", fields: [deactivatedById], references: [id])
   transactions  Transaction[]
   products      ManualDiscountTypeProduct[]
 
@@ -2370,8 +2408,8 @@ model DiscountProofUpload {
   transactionId String?        @unique @map("transaction_id")
   consumedAt    DateTime?      @map("consumed_at")
 
-  branch      Branch       @relation(fields: [branchId], references: [id])
-  uploadedBy  User         @relation(fields: [uploadedById], references: [id])
+  branch      BranchRecord @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  uploadedBy  Person       @relation(fields: [uploadedById], references: [id])
   transaction Transaction? @relation(fields: [transactionId], references: [id])
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -2597,14 +2635,14 @@ model Shift {
   totalDiscountAmount    Decimal     @default(0) @map("total_discount_amount") @db.Decimal(10, 2)
   pwdScTransactionCount  Int         @default(0) @map("pwd_sc_transaction_count")
 
-  branch  Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  cashier User   @relation("ShiftCashier", fields: [cashierId], references: [id])
-  opener  User   @relation("ShiftOpenedBy", fields: [openedBy], references: [id])
+  branch  BranchRecord @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  cashier Person       @relation("ShiftCashier", fields: [cashierId], references: [id])
+  opener  Person       @relation("ShiftOpenedBy", fields: [openedBy], references: [id])
 
-  denominations ShiftCashDenomination[]
-  transactions  Transaction[]
-  holdOrders    HoldOrder[]
-  reviews       ShiftReview[]
+  denominations     ShiftCashDenomination[]
+  transactions      Transaction[]
+  holdOrders        HoldOrder[]
+  reviews           ShiftReview[]
   extraSupplyIssues ExtraSupplyIssue[]
 
   startedAt DateTime  @map("started_at")
@@ -2644,8 +2682,8 @@ model ShiftReview {
   reviewedAt DateTime?         @map("reviewed_at")
   notes      String?
 
-  shift    Shift @relation(fields: [shiftId], references: [id], onDelete: Cascade)
-  reviewer User? @relation("ShiftReviewReviewer", fields: [reviewedBy], references: [id], onDelete: SetNull)
+  shift    Shift   @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  reviewer Person? @relation("ShiftReviewReviewer", fields: [reviewedBy], references: [id], onDelete: SetNull)
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -2676,7 +2714,7 @@ model HoldOrder {
 
   branch  Branch          @relation(fields: [branchId], references: [id], onDelete: Cascade)
   shift   Shift           @relation(fields: [shiftId], references: [id], onDelete: Cascade)
-  cashier User            @relation(fields: [cashierId], references: [id])
+  cashier Person          @relation(fields: [cashierId], references: [id])
   items   HoldOrderItem[]
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -2756,9 +2794,9 @@ model AttendanceRecord {
   originalRecordId   String?             @map("original_record_id")
   deletedAt          DateTime?           @map("deleted_at")
 
-  employee       User                     @relation("AttendanceEmployee", fields: [employeeId], references: [id])
-  branch         Branch                   @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  corrector      User?                    @relation("AttendanceCorrector", fields: [correctedBy], references: [id])
+  employee       Person                   @relation("AttendanceEmployee", fields: [employeeId], references: [id])
+  branch         BranchRecord             @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  corrector      Person?                  @relation("AttendanceCorrector", fields: [correctedBy], references: [id])
   originalRecord AttendanceRecord?        @relation("AttendanceCorrection", fields: [originalRecordId], references: [id])
   corrections    AttendanceRecord[]       @relation("AttendanceCorrection")
   breaks         AttendanceBreak[]
@@ -2830,8 +2868,8 @@ model AuditLog {
   previousHash String  @map("previous_hash")
   currentHash  String  @map("current_hash")
 
-  actor  User?   @relation(fields: [actorId], references: [id])
-  branch Branch? @relation(fields: [branchId], references: [id])
+  actor  Person?       @relation(fields: [actorId], references: [id])
+  branch BranchRecord? @relation(fields: [branchId], references: [id], onDelete: Restrict)
 
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -2899,7 +2937,7 @@ model FraudAlert {
   investigatedBy  String?            @map("investigated_by")
   dismissalReason String?            @map("dismissal_reason")
 
-  branch Branch? @relation(fields: [branchId], references: [id])
+  branch BranchRecord? @relation(fields: [branchId], references: [id], onDelete: Restrict)
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -2960,27 +2998,27 @@ model Notification {
 }
 
 model Expense {
-  id          String          @id @default(uuid())
-  branchId    String          @map("branch_id")
-  category    ExpenseCategory
-  amount      Decimal         @db.Decimal(12, 2)
-  vendorName  String?         @map("vendor_name")
-  description String?
-  receiptUrl  String?         @map("receipt_url")
-  receiptKey  String?         @map("receipt_key")
-  incurredAt  DateTime        @map("incurred_at")
-  createdBy   String          @map("created_by")
-  createdAt   DateTime        @default(now()) @map("created_at")
-  updatedAt   DateTime        @updatedAt @map("updated_at")
-  deletedAt   DateTime?       @map("deleted_at")
+  id              String          @id @default(uuid())
+  branchId        String          @map("branch_id")
+  category        ExpenseCategory
+  amount          Decimal         @db.Decimal(12, 2)
+  vendorName      String?         @map("vendor_name")
+  description     String?
+  receiptUrl      String?         @map("receipt_url")
+  receiptKey      String?         @map("receipt_key")
+  incurredAt      DateTime        @map("incurred_at")
+  createdBy       String          @map("created_by")
+  createdAt       DateTime        @default(now()) @map("created_at")
+  updatedAt       DateTime        @updatedAt @map("updated_at")
+  deletedAt       DateTime?       @map("deleted_at")
   /// POS-PERF-P60 — null marks a legacy expense, read through `category`. When set,
   /// `category` is only a compatibility value for an older API: see EXPENSE_TYPED_CATEGORY.
-  expenseTypeId   String? @map("expense_type_id")
+  expenseTypeId   String?         @map("expense_type_id")
   /// The type's name when it was recorded. A rename or deactivation never rewrites it.
-  expenseTypeName String? @map("expense_type_name")
+  expenseTypeName String?         @map("expense_type_name")
 
-  branch      Branch       @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  creator     User         @relation(fields: [createdBy], references: [id])
+  branch      BranchRecord @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  creator     Person       @relation(fields: [createdBy], references: [id])
   expenseType ExpenseType? @relation(fields: [expenseTypeId], references: [id], onDelete: Restrict)
 
   @@index([branchId, incurredAt])
@@ -3008,8 +3046,8 @@ model ExpenseType {
   /// Not @updatedAt: lockUsable's no-op update takes the row lock without counting as an edit.
   updatedAt      DateTime  @default(now()) @map("updated_at")
 
-  creator  User                @relation("ExpenseTypeCreatedBy", fields: [createdById], references: [id])
-  updater  User?               @relation("ExpenseTypeUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  creator  Person              @relation("ExpenseTypeCreatedBy", fields: [createdById], references: [id])
+  updater  Person?             @relation("ExpenseTypeUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
   branches ExpenseTypeBranch[]
   expenses Expense[]
 
@@ -3073,8 +3111,8 @@ model ExtraSupply {
   inventoryItem InventoryItem          @relation(fields: [inventoryItemId], references: [id], onDelete: Restrict)
   enteredUnit   UnitOfMeasure          @relation("ExtraSupplyEnteredUnit", fields: [enteredUnitId], references: [id], onDelete: Restrict)
   baseUnit      UnitOfMeasure          @relation("ExtraSupplyBaseUnit", fields: [baseUnitId], references: [id], onDelete: Restrict)
-  creator       User                   @relation("ExtraSupplyCreatedBy", fields: [createdById], references: [id])
-  updater       User?                  @relation("ExtraSupplyUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  creator       Person                 @relation("ExtraSupplyCreatedBy", fields: [createdById], references: [id])
+  updater       Person?                @relation("ExtraSupplyUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
   branches      ExtraSupplyBranch[]
   lines         ExtraSupplyIssueLine[]
 
@@ -3131,9 +3169,9 @@ model ExtraSupplyIssue {
   orderReference   String?              @map("order_reference")
   createdAt        DateTime             @default(now()) @map("created_at")
 
-  branch    Branch                 @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  branch    BranchRecord           @relation(fields: [branchId], references: [id], onDelete: Restrict)
   shift     Shift?                 @relation(fields: [shiftId], references: [id], onDelete: SetNull)
-  cashier   User                   @relation(fields: [cashierId], references: [id])
+  cashier   Person                 @relation(fields: [cashierId], references: [id])
   lines     ExtraSupplyIssueLine[]
   operation ExtraSupplyOperation?
 
@@ -3176,7 +3214,7 @@ model ExtraSupplyIssueLine {
 
   issue  ExtraSupplyIssue @relation(fields: [issueId], references: [id], onDelete: Cascade)
   supply ExtraSupply      @relation(fields: [extraSupplyId], references: [id], onDelete: Restrict)
-  branch Branch           @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  branch BranchRecord     @relation(fields: [branchId], references: [id], onDelete: Restrict)
 
   @@index([issueId])
   @@index([branchId, createdAt])
@@ -3197,7 +3235,7 @@ model ExtraSupplyOperation {
   issueId     String?  @unique @map("issue_id")
   createdAt   DateTime @default(now()) @map("created_at")
 
-  branch Branch            @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  branch BranchRecord      @relation(fields: [branchId], references: [id], onDelete: Restrict)
   issue  ExtraSupplyIssue? @relation(fields: [issueId], references: [id], onDelete: Cascade)
 
   @@index([branchId])
@@ -3205,13 +3243,13 @@ model ExtraSupplyOperation {
 }
 
 model ExpenseIdempotencyKey {
-  id        String   @id @default(uuid())
-  key       String   @unique
-  userId    String   @map("user_id")
-  expenseId String?  @map("expense_id")
+  id          String   @id @default(uuid())
+  key         String   @unique
+  userId      String   @map("user_id")
+  expenseId   String?  @map("expense_id")
   /// POS-PERF-P60 — what was submitted, so a reused key with different details is refused. Null on rows an older API wrote.
-  requestHash String? @map("request_hash")
-  createdAt DateTime @default(now()) @map("created_at")
+  requestHash String?  @map("request_hash")
+  createdAt   DateTime @default(now()) @map("created_at")
 
   @@index([userId, createdAt])
   @@map("expense_idempotency_keys")
@@ -3231,7 +3269,7 @@ model SystemSetting {
   updatedAt   DateTime @updatedAt @map("updated_at")
   createdAt   DateTime @default(now()) @map("created_at")
 
-  updater User @relation("SystemSettingUpdater", fields: [updatedBy], references: [id])
+  updater Person @relation("SystemSettingUpdater", fields: [updatedBy], references: [id])
 
   @@index([key])
   @@map("system_settings")
@@ -3268,7 +3306,7 @@ model BranchReceiptConfig {
   createdAt      DateTime @default(now()) @map("created_at")
 
   branch  Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  updater User   @relation("BranchReceiptConfigUpdater", fields: [updatedBy], references: [id])
+  updater Person @relation("BranchReceiptConfigUpdater", fields: [updatedBy], references: [id])
 
   @@index([branchId])
   @@map("branch_receipt_configs")
@@ -3284,7 +3322,7 @@ model BranchPaymentMethodConfig {
   createdAt    DateTime @default(now()) @map("created_at")
 
   branch  Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  updater User   @relation("BranchPaymentMethodConfigUpdater", fields: [updatedBy], references: [id])
+  updater Person @relation("BranchPaymentMethodConfigUpdater", fields: [updatedBy], references: [id])
 
   @@index([branchId])
   @@map("branch_payment_method_configs")
@@ -3336,7 +3374,7 @@ model InitializationRun {
 
   // Restrict, never cascade: deleting a User must not silently delete the
   // audit trail of initialization runs they triggered.
-  initiatedByUser User                   @relation(fields: [initiatedBy], references: [id], onDelete: Restrict)
+  initiatedByUser Person                 @relation(fields: [initiatedBy], references: [id], onDelete: Restrict)
   records         InitializationRecord[]
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -3492,7 +3530,7 @@ model PayrollPolicy {
   createdByName          String                @map("created_by_name")
   createdAt              DateTime              @default(now()) @map("created_at")
 
-  branch Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  branch BranchRecord @relation(fields: [branchId], references: [id], onDelete: Restrict)
 
   @@unique([branchId, version])
   @@map("payroll_policies")
@@ -3515,8 +3553,8 @@ model EmployeePayRate {
   voidedBy      String?   @map("voided_by")
   voidReason    String?   @map("void_reason")
 
-  employee User   @relation(fields: [employeeId], references: [id], onDelete: Restrict)
-  branch   Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  employee Person       @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  branch   BranchRecord @relation(fields: [branchId], references: [id], onDelete: Restrict)
 
   @@index([employeeId, branchId, effectiveFrom])
   @@index([branchId])
@@ -3563,7 +3601,7 @@ model PayrollRun {
   paidByName     String?   @map("paid_by_name")
   paidReference  String?   @map("paid_reference")
 
-  branch      Branch                   @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  branch      BranchRecord             @relation(fields: [branchId], references: [id], onDelete: Restrict)
   revisionOf  PayrollRun?              @relation("PayrollRunRevision", fields: [revisionOfId], references: [id], onDelete: Restrict)
   revisions   PayrollRun[]             @relation("PayrollRunRevision")
   lines       PayrollRunLine[]
@@ -3592,7 +3630,7 @@ model PayrollRunLine {
   createdAt           DateTime @default(now()) @map("created_at")
 
   run      PayrollRun @relation(fields: [runId], references: [id], onDelete: Restrict)
-  employee User       @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  employee Person     @relation(fields: [employeeId], references: [id], onDelete: Restrict)
 
   @@unique([runId, employeeId])
   @@index([employeeId])
@@ -3619,7 +3657,7 @@ model PayrollAdjustment {
   voidReason       String?               @map("void_reason")
 
   run      PayrollRun @relation(fields: [runId], references: [id], onDelete: Restrict)
-  employee User       @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  employee Person     @relation(fields: [employeeId], references: [id], onDelete: Restrict)
 
   @@index([runId, employeeId])
   @@map("payroll_adjustments")

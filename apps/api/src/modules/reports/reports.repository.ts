@@ -704,7 +704,7 @@ export const reportsRepository = {
     const responsibleIds = [...new Set(movements.map((m) => m.responsibleUserId).filter((id): id is string => id != null))];
     const userIdsToLoad = [...new Set([...recorderIds, ...responsibleIds])];
     const users = userIdsToLoad.length
-      ? await prisma.user.findMany({ where: { id: { in: userIdsToLoad } }, select: { id: true, firstName: true, lastName: true } })
+      ? await prisma.person.findMany({ where: { id: { in: userIdsToLoad } }, select: { id: true, firstName: true, lastName: true } })
       : [];
     const userNameById = new Map(users.map((u) => [u.id, `${u.firstName} ${u.lastName}`]));
 
@@ -1215,7 +1215,7 @@ export const reportsRepository = {
 
     const employeeIds = [...new Set(salesGrouped.map((g) => g.cashierId))];
     const [employees, attendanceRecords, branches] = await Promise.all([
-      prisma.user.findMany({ where: { id: { in: employeeIds } }, select: { id: true, firstName: true, lastName: true } }),
+      prisma.person.findMany({ where: { id: { in: employeeIds } }, select: { id: true, firstName: true, lastName: true } }),
       prisma.attendanceRecord.findMany({
         where: { employeeId: { in: employeeIds }, deletedAt: null, ...(range && { clockInServerTime: range }) },
         select: { employeeId: true, actualWorkMinutes: true },

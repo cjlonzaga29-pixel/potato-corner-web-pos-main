@@ -1,6 +1,5 @@
 'use client';
 
-import { ExtraSupplySummaryCard } from '@/components/extra-supplies/extra-supply-summary-card';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -225,9 +224,6 @@ export default function BranchDashboardPage() {
           onRowClick={() => router.push('/branch/receipts')}
         />
       </div>
-
-      {/* POS-PERF-P64 — secondary to every main section (sales, collections, actions, trend, inventory, transactions), so it comes last in reading order. */}
-      <ExtraSupplySummaryCard title="Today's Extra Supplies" branchId={branchId} dateFrom={manilaToday()} dateTo={manilaToday()} historyPath="/branch/extra-supplies" />
     </div>
   );
 }

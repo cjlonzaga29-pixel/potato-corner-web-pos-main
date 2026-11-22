@@ -30,7 +30,10 @@ export const auditLogResponseSchema = z.object({
       id: z.uuid(),
       first_name: z.string(),
       last_name: z.string(),
-      email: z.string(),
+      // POS-PERF-P66 — null once the actor's account has been permanently
+      // deleted; the name stays (historical attribution record).
+      email: z.string().nullable(),
+      account_deleted: z.boolean().optional(),
     })
     .nullable(),
   branch_id: z.uuid().nullable(),

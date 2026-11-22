@@ -12,7 +12,7 @@ import type {
 } from './products.types.js';
 
 const creatorInclude = {
-  creator: { select: { id: true, firstName: true, lastName: true, email: true } },
+  creator: { select: { id: true, firstName: true, lastName: true, account: { select: { email: true } } } },
   exclusiveBranch: { select: { id: true, name: true } },
   productCategory: { select: { id: true, name: true } },
   productType: { select: { id: true, name: true, isActive: true, branches: { select: { branchId: true } } } },

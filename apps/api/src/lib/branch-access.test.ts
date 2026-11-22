@@ -14,6 +14,7 @@ import { ROLES } from '@potato-corner/shared';
 vi.mock('../modules/branches/branches.repository.js', () => ({
   branchesRepository: {
     findAllActiveBranchIds: vi.fn(),
+    findExistingBranchIds: vi.fn(),
   },
 }));
 
@@ -50,6 +51,8 @@ function superAdmin() {
 
 beforeEach(() => {
   vi.mocked(branchesRepository.findAllActiveBranchIds).mockReset();
+  // POS-PERF-P67 — by default every token branch still exists.
+  vi.mocked(branchesRepository.findExistingBranchIds).mockReset().mockImplementation(async (ids: string[]) => ids);
 });
 
 describe('getAccessibleBranchIds', () => {
@@ -102,20 +105,30 @@ describe('getAccessibleBranchIds', () => {
     expect(after).toEqual([existingBranch, newBranch]);
   });
 
-  it('branch role remains scoped to its own JWT branch_ids — unaffected by the database', async () => {
+  it('branch role is scoped to its own JWT branch_ids, never to supervisor assignments', async () => {
     const branchId = randomUUID();
     const result = await getAccessibleBranchIds(branchActor(branchId));
 
     expect(result).toEqual([branchId]);
     expect(branchesRepository.findAllActiveBranchIds).not.toHaveBeenCalled();
+    expect(branchesRepository.findExistingBranchIds).toHaveBeenCalledWith([branchId], undefined);
   });
 
-  it('staff role remains scoped to its own JWT branch_ids — unaffected by the database', async () => {
+  it('staff role is scoped to its own JWT branch_ids, never to supervisor assignments', async () => {
     const branchId = randomUUID();
     const result = await getAccessibleBranchIds(staffActor(branchId));
 
     expect(result).toEqual([branchId]);
     expect(branchesRepository.findAllActiveBranchIds).not.toHaveBeenCalled();
+  });
+
+  it('POS-PERF-P67: a deleted branch drops out of a staff or branch token at once', async () => {
+    const branchId = randomUUID();
+    vi.mocked(branchesRepository.findExistingBranchIds).mockResolvedValue([]);
+
+    await expect(getAccessibleBranchIds(staffActor(branchId))).resolves.toEqual([]);
+    await expect(getAccessibleBranchIds(branchActor(branchId))).resolves.toEqual([]);
+    await expect(hasBranchAccess(staffActor(branchId), branchId)).resolves.toBe(false);
   });
 });
 

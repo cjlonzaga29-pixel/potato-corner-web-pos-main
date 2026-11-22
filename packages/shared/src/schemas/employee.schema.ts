@@ -106,6 +106,18 @@ export const updateEmployeeSchema = z.object({
   pagibig_number: z.string().optional(),
 });
 
+/**
+ * POS-PERF-P66 — DELETE /api/employees/:id body. The server checks that
+ * confirm_name matches the account's full name (ignoring case and extra
+ * spaces) and that version is the account version the dialog showed
+ * (deletion-eligibility `confirmation.version`), so the confirmation is
+ * bound to that record as it was when reviewed.
+ */
+export const deleteEmployeeSchema = z.object({
+  confirm_name: z.string().trim().min(1).max(200),
+  version: z.iso.datetime({ offset: true }),
+});
+
 export const deactivateEmployeeSchema = z.object({
   reason: z.string().min(10),
   acknowledge_active_shift: z.boolean(),

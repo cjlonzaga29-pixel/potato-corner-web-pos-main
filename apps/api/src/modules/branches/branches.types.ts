@@ -55,3 +55,30 @@ export class BranchError extends Error {
     this.name = 'BranchError';
   }
 }
+
+/** POS-PERF-P67 — open work that must be finished before a branch can be deleted. */
+export type BranchDeletionBlockerCode =
+  | 'open_shifts'
+  | 'open_attendance'
+  | 'pending_checkouts'
+  | 'held_orders'
+  | 'pending_inventory_jobs'
+  | 'nonzero_stock'
+  | 'draft_payroll_runs'
+  | 'unpaid_payroll_hours';
+
+export interface BranchDeletionBlocker {
+  code: BranchDeletionBlockerCode;
+  count: number;
+  message: string;
+}
+
+/** Counts of committed operational writes; any change during a delete means someone was still working. */
+export type BranchActivityFingerprint = Record<string, number>;
+
+export type BranchDeletionOutcome =
+  | { outcome: 'deleted'; branchAccountIds: string[]; removed: Record<string, number> }
+  | { outcome: 'not_found' }
+  | { outcome: 'changed' }
+  | { outcome: 'activity' }
+  | { outcome: 'blocked'; blockers: BranchDeletionBlocker[] };

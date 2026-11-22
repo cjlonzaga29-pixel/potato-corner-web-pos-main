@@ -56,7 +56,7 @@ interface AttendanceRow {
   deletedAt: Date | null;
   createdAt: Date;
   /** Present only when the query included the relation (branch-scoped list reads) — see attendance.repository.ts findByBranch. */
-  employee?: { firstName: string; lastName: string; employeeId: string | null; status: string } | null;
+  employee?: { firstName: string; lastName: string; employeeId: string | null; status: string | null } | null;
   /** POS-PERF-P51 — present when the query included the breaks relation; a write that returns the bare row has none to show. */
   breaks?: BreakIntervalRow[];
 }
@@ -656,7 +656,7 @@ export const attendanceService = {
         branch_name: record.branch.name,
         counts_toward_clocked_in:
           record.clockOutServerTime === null
-            ? record.branch.status === 'active' &&
+            ? record.branch.branch?.status === 'active' &&
               record.employee.isActive &&
               record.employee.status === 'active' &&
               record.employee.branchAssignments.some((a) => a.branchId === record.branchId)

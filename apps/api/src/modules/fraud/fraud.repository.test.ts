@@ -19,6 +19,9 @@ vi.mock('../../lib/prisma.js', () => {
     user: {
       findMany: vi.fn(),
     },
+    person: {
+      findMany: vi.fn(),
+    },
     branch: {
       findMany: vi.fn(),
     },
@@ -188,15 +191,15 @@ describe('fraudRepository.findEmployeeNamesByIds', () => {
     const result = await fraudRepository.findEmployeeNamesByIds([]);
 
     expect(result).toEqual([]);
-    expect(prisma.user.findMany).not.toHaveBeenCalled();
+    expect(prisma.person.findMany).not.toHaveBeenCalled();
   });
 
-  it('queries users by id with firstName/lastName selected', async () => {
-    vi.mocked(prisma.user.findMany).mockResolvedValue([{ id: 'user-1', firstName: 'Juan', lastName: 'Dela Cruz' }] as never);
+  it('queries attribution records (people) by id with firstName/lastName selected', async () => {
+    vi.mocked(prisma.person.findMany).mockResolvedValue([{ id: 'user-1', firstName: 'Juan', lastName: 'Dela Cruz' }] as never);
 
     const result = await fraudRepository.findEmployeeNamesByIds(['user-1']);
 
-    expect(prisma.user.findMany).toHaveBeenCalledWith({
+    expect(prisma.person.findMany).toHaveBeenCalledWith({
       where: { id: { in: ['user-1'] } },
       select: { id: true, firstName: true, lastName: true },
     });

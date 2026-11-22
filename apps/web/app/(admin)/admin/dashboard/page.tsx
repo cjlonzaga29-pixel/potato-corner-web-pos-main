@@ -8,8 +8,6 @@ import { useSelectedBranch } from '@/hooks/use-selected-branch';
 import { useDashboardSalesTrendReport } from '@/hooks/queries/use-reports';
 import { useAttendanceRealtimeSync } from '@/hooks/queries/use-attendance';
 import { useExpensesRealtimeSync } from '@/hooks/queries/use-expenses';
-import { ExpenseBreakdownCard } from '@/components/reports/expense-breakdown-card';
-import { ExtraSupplySummaryCard } from '@/components/extra-supplies/extra-supply-summary-card';
 import { manilaToday, manilaMonthStart } from '@/lib/manila-date';
 import { BranchSelector } from '@/components/admin/branch-selector';
 import { DashboardKpiRow } from '@/components/admin/dashboard-kpi-row';
@@ -32,6 +30,10 @@ import { MAX_LIST_LIMIT } from '@potato-corner/shared';
 // from this page too (Admin dashboard only). Branch-level stock alerts stay
 // on the Supervisor dashboard and inventory pages; the org-wide rollup is
 // still on /admin/inventory. Sales/branch figures are unchanged.
+//
+// POS-PERF-P66 — the Today's Expenses by Type and Today's Extra Supplies
+// panels were removed (the Today's Expenses KPI stays). The breakdowns live
+// on /admin/expenses and /admin/reports (?tab=EXTRA_SUPPLIES).
 function AdminDashboardPageContent() {
   const { selectedBranchId } = useSelectedBranch();
   const branchFilter = selectedBranchId === 'all' ? undefined : selectedBranchId;
@@ -121,16 +123,6 @@ function AdminDashboardPageContent() {
           isLoading={activeTotal.isLoading || inactiveTotal.isLoading || closedTotal.isLoading}
         />
       </div>
-
-      <ExpenseBreakdownCard
-        title="Today's Expenses by Type"
-        branchId={branchFilter}
-        dateFrom={manilaToday()}
-        dateTo={manilaToday()}
-        ledgerPath="/admin/expenses"
-      />
-
-      <ExtraSupplySummaryCard title="Today's Extra Supplies" branchId={branchFilter} dateFrom={manilaToday()} dateTo={manilaToday()} historyPath="/admin/reports?tab=EXTRA_SUPPLIES" />
 
       <WidgetErrorBoundary label="Sales Trend">
         <SalesAnalyticsSection branchId={branchFilter} />

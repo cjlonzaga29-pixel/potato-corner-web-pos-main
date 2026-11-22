@@ -865,7 +865,7 @@ function toProductListItem(product: ListRow, imageUrl: string | null) {
 type DetailRow = Parameters<typeof toProductBase>[0] & {
   variants: Parameters<typeof toVariantResponse>[0][];
   branchAvailability: Parameters<typeof toBranchAvailabilityRow>[0][];
-  creator: { id: string; firstName: string; lastName: string; email: string } | null;
+  creator: { id: string; firstName: string; lastName: string; account: { email: string | null } | null } | null;
 };
 
 function toProductDetailResponse(product: DetailRow) {
@@ -881,7 +881,7 @@ function toProductDetailResponse(product: DetailRow) {
           id: product.creator.id,
           first_name: product.creator.firstName,
           last_name: product.creator.lastName,
-          email: product.creator.email,
+          email: product.creator.account?.email ?? null,
         }
       : null,
   };

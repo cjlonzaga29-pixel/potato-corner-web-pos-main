@@ -9,7 +9,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { PayrollApiError, useFinalizePayroll } from '@/hooks/queries/use-payroll';
-import { formatPayrollDuration, formatPeso } from '@/lib/payroll-format';
+import { formatPayrollDuration, formatPayrollPeriod, formatPeso } from '@/lib/payroll-format';
 
 interface Props {
   branchId: string;
@@ -44,7 +44,7 @@ export function PayrollFinalizeDialog({ branchId, detail, open, onOpenChange }: 
         <DialogHeader>
           <DialogTitle>Finalize payroll</DialogTitle>
           <DialogDescription>
-            {detail.branch_name}, {detail.period_start} to {detail.period_end}. Finalizing stores these exact figures, the rates and policy used, and your name. Later attendance or rate changes will not alter it; corrections need a revision.
+            {detail.branch_name}, {formatPayrollPeriod(detail.period_start, detail.period_end)}. Finalizing stores these exact figures, the rates and policy used, and your name. Later attendance or rate changes will not alter it; corrections need a revision.
           </DialogDescription>
         </DialogHeader>
         <dl className="grid grid-cols-2 gap-2 rounded-md border p-3 text-sm">

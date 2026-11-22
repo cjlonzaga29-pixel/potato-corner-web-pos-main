@@ -247,19 +247,36 @@ export function useSetEmployeeStatus(employeeId: string) {
   });
 }
 
-export type EmployeeHistoryCategory = 'sales' | 'shifts' | 'attendance' | 'audit' | 'inventory' | 'expenses' | 'catalog' | 'settings' | 'pin_use';
+export type EmployeeHistoryCategory =
+  | 'sales'
+  | 'shifts'
+  | 'attendance'
+  | 'audit'
+  | 'inventory'
+  | 'expenses'
+  | 'catalog'
+  | 'settings'
+  | 'pin_use'
+  | 'payroll';
 
 export interface EmployeeDeletionEligibility {
   employee_id: string;
   can_delete: boolean;
-  blocked_reason: 'has_history' | 'branch_account' | 'open_operations' | 'already_removed' | null;
-  references: Record<EmployeeHistoryCategory, number>;
-  /** POS-PERF-P64 — absent from older APIs (treated as 'permanent' when can_delete). */
+  /**
+   * POS-PERF-P66 — history is never a reason. 'open_operations' covers an open
+   * shift, an open clock-in and unpaid payroll hours. 'has_history' and
+   * 'already_removed' only come from a pre-P66 API.
+   */
+  blocked_reason: 'branch_account' | 'open_operations' | 'already_deleted' | 'has_history' | 'already_removed' | null;
+  /** The records that stay attributed to the person; null once deleted. */
+  references: Partial<Record<EmployeeHistoryCategory, number>> | null;
   mode?: 'permanent' | 'remove_keep_history' | null;
   prerequisites?: EmployeeRemovalPrerequisites | null;
+  /** POS-PERF-P66 — what the delete must echo back. Absent from a pre-P66 API, which this dialog will not delete through. */
+  confirmation?: { name: string; version: string } | null;
 }
 
-/** POS-PERF-P64 — what removing a supervisor with history affects (see employeesRepository.getRemovalPrerequisites). */
+/** POS-PERF-P64/P66 — what deleting an account affects (see employeesRepository.getRemovalPrerequisites). */
 export interface EmployeeRemovalPrerequisites {
   open_shifts: { id: string; branch_name: string }[];
   open_attendance: { id: string; branch_name: string }[];
@@ -267,19 +284,24 @@ export interface EmployeeRemovalPrerequisites {
   pending_inventory_approvals: number;
   branches: { id: string; name: string }[];
   branches_left_without_supervisor: { id: string; name: string }[];
+  /** POS-PERF-P66 — blocking: staff hours that no finalized payroll covers yet. */
+  unpaid_payroll?: { branch_id: string; branch_name: string; first_date: string; last_date: string; records: number }[];
 }
 
 export interface EmployeeDeletionResult {
   deleted: true;
-  /** Absent from older APIs, which only ever deleted permanently. */
-  outcome?: 'permanent' | 'removed' | 'already_removed';
+  outcome?: 'deleted' | 'already_deleted';
+}
+
+export interface DeleteEmployeeConfirmation {
+  confirm_name: string;
+  version: string;
 }
 
 /**
- * POS-PERF-P47 — whether this person can be permanently deleted (no
- * history at all) or must be deactivated instead. Fetched fresh each time
- * the Remove dialog opens (staleTime 0) since a sale or clock-in a minute
- * ago changes the answer.
+ * POS-PERF-P47/P66 — whether this account can be deleted now, what stays,
+ * and what must be confirmed. Fetched fresh each time the dialog opens
+ * (staleTime 0) since a sale or clock-in a minute ago changes the answer.
  */
 export function useEmployeeDeletionEligibility(employeeId: string, enabled: boolean) {
   return useQuery({
@@ -296,26 +318,33 @@ export function useEmployeeDeletionEligibility(employeeId: string, enabled: bool
   });
 }
 
+/** Drops every cached view of a deleted account and refreshes the lists it appeared in. */
+export function forgetDeletedEmployee(queryClient: ReturnType<typeof useQueryClient>, employeeId: string) {
+  queryClient.removeQueries({ queryKey: ['employee', employeeId] });
+  queryClient.removeQueries({ queryKey: ['staff-pin-status', employeeId] });
+  void queryClient.invalidateQueries({ queryKey: ['employees'] });
+  void queryClient.invalidateQueries({ queryKey: ['supervisors'] });
+  void queryClient.invalidateQueries({ queryKey: ['branches'] });
+}
+
 /**
- * POS-PERF-P47 — permanent delete of an unused account. POS-PERF-P64 — for a
- * supervisor with history (Super Admin only) the server removes access and
- * keeps the record for history instead; staff with history are still refused.
+ * POS-PERF-P66 — permanent delete. The body echoes the typed name and the
+ * account version from the eligibility check; the server verifies both.
  */
 export function useDeleteEmployee(employeeId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async () => {
-      const response = await apiClient<EmployeeDeletionResult>(`/api/employees/${employeeId}`, { method: 'DELETE' });
+    mutationFn: async (confirmation: DeleteEmployeeConfirmation) => {
+      const response = await apiClient<EmployeeDeletionResult>(`/api/employees/${employeeId}`, {
+        method: 'DELETE',
+        body: JSON.stringify(confirmation),
+      });
       if (!response.data) throwEmployeeApiError(response, 'Failed to delete');
       return response.data;
     },
     onSuccess: (result) => {
-      queryClient.removeQueries({ queryKey: ['employee', employeeId] });
-      queryClient.removeQueries({ queryKey: ['staff-pin-status', employeeId] });
-      void queryClient.invalidateQueries({ queryKey: ['employees'] });
-      void queryClient.invalidateQueries({ queryKey: ['supervisors'] });
-      void queryClient.invalidateQueries({ queryKey: ['branches'] });
-      toast.success(result.outcome === 'removed' || result.outcome === 'already_removed' ? 'Account removed — history kept' : 'Deleted permanently');
+      forgetDeletedEmployee(queryClient, employeeId);
+      toast.success(result.outcome === 'already_deleted' ? 'This account had already been deleted' : 'Account permanently deleted');
     },
     // No toast on error — the dialog shows the message inline next to the action.
   });

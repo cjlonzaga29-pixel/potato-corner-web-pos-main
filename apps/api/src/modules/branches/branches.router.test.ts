@@ -17,6 +17,7 @@ vi.mock('./branches.service.js', () => ({
     getBranchById: vi.fn(),
     updateBranch: vi.fn(),
     deleteBranch: vi.fn(),
+    getDeletionEligibility: vi.fn(),
     uploadGcashQr: vi.fn(),
     changeBranchStatus: vi.fn(),
     getAssignments: vi.fn(),
@@ -39,6 +40,7 @@ vi.mock('../../lib/prisma.js', () => ({
 vi.mock('./branches.repository.js', () => ({
   branchesRepository: {
     findAllActiveBranchIds: vi.fn(),
+    findExistingBranchIds: vi.fn(async (ids: string[]) => ids),
   },
 }));
 
@@ -394,57 +396,89 @@ describe('DELETE /api/branches/:branchId — role guard', () => {
   });
 });
 
-describe('DELETE /api/branches/:branchId — success', () => {
+describe('DELETE /api/branches/:branchId — confirmation and outcomes (POS-PERF-P67)', () => {
   const ROUTE = '/:branchId';
+  const BODY = {
+    confirm_name: 'Old Branch',
+    confirm_code: 'PC-MNL-009',
+    version: '2026-11-01T00:00:00.000Z',
+    confirmation_token: 'a'.repeat(64),
+  };
 
-  it('returns 204 and calls the service with branchId, actor, and ip', async () => {
+  it('refuses a request without the confirmation body (an older web) with 422 and never calls the service', async () => {
     const handlers = getRouteHandlers(branchesRouter, 'delete', ROUTE);
-    const branchId = randomUUID();
-    const token = generateSuperAdminToken();
     const res = mockRes();
-    vi.mocked(branchesService.deleteBranch).mockResolvedValue(undefined);
-
-    await runHandlers(handlers, mockReq({ ...authHeader(token), params: { branchId } }), res);
-
-    expect(branchesService.deleteBranch).toHaveBeenCalledWith(
-      branchId,
-      expect.objectContaining({ role: 'super_admin' }),
-      null,
-    );
-    expect(res.status).toHaveBeenCalledWith(204);
-    expect(res.send).toHaveBeenCalled();
+    await runHandlers(handlers, mockReq({ ...authHeader(generateSuperAdminToken()), params: { branchId: randomUUID() } }), res);
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(branchesService.deleteBranch).not.toHaveBeenCalled();
   });
 
-  it('returns 409 when the branch has active shifts', async () => {
+  it('returns 200 with the outcome and passes the confirmation to the service', async () => {
     const handlers = getRouteHandlers(branchesRouter, 'delete', ROUTE);
     const branchId = randomUUID();
-    const token = generateSuperAdminToken();
     const res = mockRes();
-    vi.mocked(branchesService.deleteBranch).mockRejectedValue(
-      new BranchError(
-        'BRANCH_HAS_ACTIVE_SHIFTS',
-        'Cannot permanently delete a branch with active shifts — close all shifts first',
-        409,
-      ),
-    );
+    vi.mocked(branchesService.deleteBranch).mockResolvedValue({ deleted: true, outcome: 'deleted' });
 
-    await runHandlers(handlers, mockReq({ ...authHeader(token), params: { branchId } }), res);
+    await runHandlers(handlers, mockReq({ ...authHeader(generateSuperAdminToken()), params: { branchId }, body: BODY }), res);
+
+    expect(branchesService.deleteBranch).toHaveBeenCalledWith(branchId, expect.objectContaining({ role: 'super_admin' }), null, BODY);
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ data: { deleted: true, outcome: 'deleted' } }));
+  });
+
+  it('returns 409 with the blockers when open work remains', async () => {
+    const handlers = getRouteHandlers(branchesRouter, 'delete', ROUTE);
+    const res = mockRes();
+    const blockers = [{ code: 'open_shifts', count: 1, message: 'Close every open shift and count its cash.' }];
+    vi.mocked(branchesService.deleteBranch).mockRejectedValue(new BranchError('BRANCH_HAS_OPEN_OPERATIONS', 'blocked', 409, { blockers }));
+
+    await runHandlers(handlers, mockReq({ ...authHeader(generateSuperAdminToken()), params: { branchId: randomUUID() }, body: BODY }), res);
 
     expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ error: expect.objectContaining({ code: 'BRANCH_HAS_OPEN_OPERATIONS', details: { blockers } }) }),
+    );
   });
 
   it('returns 404 when the branch does not exist', async () => {
     const handlers = getRouteHandlers(branchesRouter, 'delete', ROUTE);
-    const branchId = randomUUID();
-    const token = generateSuperAdminToken();
     const res = mockRes();
-    vi.mocked(branchesService.deleteBranch).mockRejectedValue(
-      new BranchError('BRANCH_NOT_FOUND', 'Branch not found', 404),
-    );
+    vi.mocked(branchesService.deleteBranch).mockRejectedValue(new BranchError('BRANCH_NOT_FOUND', 'Branch not found', 404));
 
-    await runHandlers(handlers, mockReq({ ...authHeader(token), params: { branchId } }), res);
+    await runHandlers(handlers, mockReq({ ...authHeader(generateSuperAdminToken()), params: { branchId: randomUUID() }, body: BODY }), res);
 
     expect(res.status).toHaveBeenCalledWith(404);
+  });
+});
+
+describe('GET /api/branches/:branchId/deletion-eligibility (POS-PERF-P67)', () => {
+  const ROUTE = '/:branchId/deletion-eligibility';
+
+  it('is Super Admin only', async () => {
+    const handlers = getRouteHandlers(branchesRouter, 'get', ROUTE);
+    const branchId = randomUUID();
+    const res = mockRes();
+    await runHandlers(handlers, mockReq({ ...authHeader(generateSupervisorToken([branchId])), params: { branchId } }), res);
+    expect(res.status).toHaveBeenCalledWith(403);
+  });
+
+  it('returns the eligibility for the actor', async () => {
+    const handlers = getRouteHandlers(branchesRouter, 'get', ROUTE);
+    const branchId = randomUUID();
+    const res = mockRes();
+    const eligibility = {
+      branch_id: branchId,
+      can_delete: true,
+      blocked_reason: null,
+      blockers: [],
+      history_retained: {},
+      removed: {},
+      confirmation: { name: 'B', code: 'C', version: '2026-11-01T00:00:00.000Z', confirmation_token: 'a'.repeat(64) },
+    };
+    vi.mocked(branchesService.getDeletionEligibility).mockResolvedValue(eligibility);
+    await runHandlers(handlers, mockReq({ ...authHeader(generateSuperAdminToken()), params: { branchId } }), res);
+    expect(branchesService.getDeletionEligibility).toHaveBeenCalledWith(branchId, expect.objectContaining({ role: 'super_admin' }));
+    expect(res.status).toHaveBeenCalledWith(200);
   });
 });
 

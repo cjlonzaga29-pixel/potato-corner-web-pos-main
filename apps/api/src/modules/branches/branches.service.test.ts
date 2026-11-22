@@ -11,7 +11,13 @@ vi.mock('./branches.repository.js', () => ({
     findByCode: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
-    delete: vi.fn(),
+    findRecordById: vi.fn(),
+    findRecordByCode: vi.fn(),
+    findDeletionBlockers: vi.fn(),
+    countRetainedHistory: vi.fn(),
+    countRemovedWithBranch: vi.fn(),
+    deletePermanently: vi.fn(),
+    findExistingBranchIds: vi.fn(),
     getActiveAssignments: vi.fn(),
     findActiveAssignment: vi.fn(),
     assignUser: vi.fn(),
@@ -812,67 +818,118 @@ describe('branchesService.changeBranchStatus', () => {
   });
 });
 
-describe('branchesService.deleteBranch', () => {
-  it('with active shifts throws BRANCH_HAS_ACTIVE_SHIFTS and never deletes', async () => {
-    vi.mocked(branchesRepository.findById).mockResolvedValue(buildBranch() as never);
-    vi.mocked(branchesRepository.countActiveShifts).mockResolvedValue(1);
+describe('branchesService.deleteBranch (POS-PERF-P67)', () => {
+  const VERSION = new Date('2026-11-01T00:00:00.000Z');
 
-    await expect(
-      branchesService.deleteBranch('branch-1', ACTOR, null),
-    ).rejects.toMatchObject({
-      code: 'BRANCH_HAS_ACTIVE_SHIFTS',
-      statusCode: 409,
-    });
-
-    expect(branchesRepository.delete).not.toHaveBeenCalled();
-  });
-
-  it('with no branch found throws BRANCH_NOT_FOUND', async () => {
-    vi.mocked(branchesRepository.findById).mockResolvedValue(null);
-
-    await expect(
-      branchesService.deleteBranch('branch-missing', ACTOR, null),
-    ).rejects.toMatchObject({
-      code: 'BRANCH_NOT_FOUND',
-      statusCode: 404,
-    });
-  });
-
-  it('with no active shifts deletes and records a BRANCH_DELETED audit entry', async () => {
+  async function confirmationFor(actor = ACTOR) {
     vi.mocked(branchesRepository.findById).mockResolvedValue(
-      buildBranch({ id: 'branch-9', name: 'Old Branch', code: 'PC-MNL-009' }) as never,
+      buildBranch({ id: 'branch-9', name: 'Old Branch', code: 'PC-MNL-009', updatedAt: VERSION }) as never,
     );
-    vi.mocked(branchesRepository.countActiveShifts).mockResolvedValue(0);
-    vi.mocked(branchesRepository.delete).mockResolvedValue(undefined as never);
+    vi.mocked(branchesRepository.findDeletionBlockers).mockResolvedValue([]);
+    vi.mocked(branchesRepository.countRetainedHistory).mockResolvedValue({ sales: 3 });
+    vi.mocked(branchesRepository.countRemovedWithBranch).mockResolvedValue({ branch_accounts: 1 });
+    const eligibility = await branchesService.getDeletionEligibility('branch-9', actor);
+    if (!eligibility.confirmation) throw new Error('expected a confirmation');
+    return {
+      confirm_name: ' old  branch ',
+      confirm_code: 'PC-MNL-009',
+      version: eligibility.confirmation.version,
+      confirmation_token: eligibility.confirmation.confirmation_token,
+    };
+  }
 
-    await branchesService.deleteBranch('branch-9', ACTOR, '127.0.0.1');
+  it('eligibility issues a version and a confirmation token', async () => {
+    const body = await confirmationFor();
+    expect(body.version).toBe(VERSION.toISOString());
+    expect(body.confirmation_token).toMatch(/^[0-9a-f]{64}$/);
+  });
 
-    expect(branchesRepository.delete).toHaveBeenCalledWith('branch-9');
-    // The audit entry is written AFTER the delete (not before): a failed
-    // delete must never leave a phantom BRANCH_DELETED entry for a branch
-    // that still exists. branchId is intentionally absent — by the time this
-    // fires, the branch row is already gone, and AuditLog.branchId is a real
-    // FK, so referencing the now-deleted id would violate the constraint.
-    // entityId (not FK-checked) still identifies which branch was deleted.
+  it('a mismatched name or code is refused before anything is deleted', async () => {
+    const body = await confirmationFor();
+    await expect(branchesService.deleteBranch('branch-9', ACTOR, null, { ...body, confirm_name: 'Old Branc' })).rejects.toMatchObject({
+      code: 'DELETE_CONFIRMATION_MISMATCH',
+    });
+    await expect(branchesService.deleteBranch('branch-9', ACTOR, null, { ...body, confirm_code: 'pc-mnl-009' })).rejects.toMatchObject({
+      code: 'DELETE_CONFIRMATION_MISMATCH',
+    });
+    expect(branchesRepository.deletePermanently).not.toHaveBeenCalled();
+  });
+
+  it('a token issued to another actor is refused', async () => {
+    const body = await confirmationFor({ id: 'admin-2', role: ROLES.SUPER_ADMIN });
+    await expect(branchesService.deleteBranch('branch-9', ACTOR, null, body)).rejects.toMatchObject({
+      code: 'DELETE_CONFIRMATION_INVALID',
+      statusCode: 403,
+    });
+    expect(branchesRepository.deletePermanently).not.toHaveBeenCalled();
+  });
+
+  it('a confirmation from before an edit is refused as BRANCH_CHANGED', async () => {
+    const body = await confirmationFor();
+    vi.mocked(branchesRepository.findById).mockResolvedValue(
+      buildBranch({ id: 'branch-9', name: 'Old Branch', code: 'PC-MNL-009', updatedAt: new Date('2026-11-02T00:00:00.000Z') }) as never,
+    );
+    await expect(branchesService.deleteBranch('branch-9', ACTOR, null, body)).rejects.toMatchObject({ code: 'BRANCH_CHANGED', statusCode: 409 });
+    expect(branchesRepository.deletePermanently).not.toHaveBeenCalled();
+  });
+
+  it('open work blocks, with the blockers in details', async () => {
+    const body = await confirmationFor();
+    const blockers = [{ code: 'open_shifts' as const, count: 1, message: 'Close every open shift and count its cash.' }];
+    vi.mocked(branchesRepository.deletePermanently).mockResolvedValue({ outcome: 'blocked', blockers });
+    await expect(branchesService.deleteBranch('branch-9', ACTOR, null, body)).rejects.toMatchObject({
+      code: 'BRANCH_HAS_OPEN_OPERATIONS',
+      statusCode: 409,
+      details: { blockers },
+    });
+    expect(recordAuditLog).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'BRANCH_DELETED' }));
+  });
+
+  it('work committed during the delete is reported and nothing is audited as deleted', async () => {
+    const body = await confirmationFor();
+    vi.mocked(branchesRepository.deletePermanently).mockResolvedValue({ outcome: 'activity' });
+    await expect(branchesService.deleteBranch('branch-9', ACTOR, null, body)).rejects.toMatchObject({ code: 'BRANCH_ACTIVITY_DURING_DELETE' });
+    expect(recordAuditLog).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'BRANCH_DELETED' }));
+  });
+
+  it('deletes, then audits BRANCH_DELETED naming the branch record', async () => {
+    const body = await confirmationFor();
+    vi.mocked(branchesRepository.deletePermanently).mockResolvedValue({
+      outcome: 'deleted',
+      branchAccountIds: ['acct-1'],
+      removed: { branch_accounts: 1 },
+    });
+    const result = await branchesService.deleteBranch('branch-9', ACTOR, '127.0.0.1', body);
+    expect(result).toEqual({ deleted: true, outcome: 'deleted' });
+    expect(branchesRepository.deletePermanently).toHaveBeenCalledWith('branch-9', ACTOR.id, VERSION);
     expect(recordAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
         action: 'BRANCH_DELETED',
-        entityType: 'branch',
         entityId: 'branch-9',
+        branchId: 'branch-9',
         actorId: ACTOR.id,
         beforeState: expect.objectContaining({ name: 'Old Branch', code: 'PC-MNL-009' }),
-        ipAddress: '127.0.0.1',
+        afterState: expect.objectContaining({ deleted: true, history_retained: { sales: 3 }, branch_accounts_deleted: ['acct-1'] }),
       }),
     );
-    expect(recordAuditLog).not.toHaveBeenCalledWith(
-      expect.objectContaining({ branchId: expect.anything() }),
-    );
-
-    const [deleteOrder] = vi.mocked(branchesRepository.delete).mock.invocationCallOrder;
-    const [auditOrder] = vi.mocked(recordAuditLog).mock.invocationCallOrder;
-    expect(deleteOrder).toBeDefined();
-    expect(auditOrder).toBeDefined();
+    const [deleteOrder] = vi.mocked(branchesRepository.deletePermanently).mock.invocationCallOrder;
+    const auditOrder = vi.mocked(recordAuditLog).mock.invocationCallOrder.at(-1);
     expect(deleteOrder as number).toBeLessThan(auditOrder as number);
+  });
+
+  it('a repeat after a lost response reports already_deleted to a Super Admin', async () => {
+    const body = await confirmationFor();
+    vi.mocked(branchesRepository.findById).mockResolvedValue(null);
+    vi.mocked(branchesRepository.findRecordById).mockResolvedValue({ id: 'branch-9', deletedAt: new Date() } as never);
+    await expect(branchesService.deleteBranch('branch-9', ACTOR, null, body)).resolves.toEqual({ deleted: true, outcome: 'already_deleted' });
+    expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'BRANCH_DELETION_REPEATED' }));
+  });
+
+  it('an id that never existed is 404', async () => {
+    const body = await confirmationFor();
+    vi.mocked(branchesRepository.findById).mockResolvedValue(null);
+    vi.mocked(branchesRepository.findRecordById).mockResolvedValue(null);
+    await expect(branchesService.deleteBranch('branch-9', ACTOR, null, body)).rejects.toMatchObject({ code: 'BRANCH_NOT_FOUND', statusCode: 404 });
   });
 });
 

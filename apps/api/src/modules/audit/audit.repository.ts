@@ -4,7 +4,8 @@ import { resolveDateRangeBoundary } from '../../lib/manila-time.js';
 import type { AuditLogFilters } from './audit.types.js';
 
 const auditLogInclude = {
-  actor: { select: { id: true, firstName: true, lastName: true, email: true } },
+  // POS-PERF-P66 — the actor is a Person (outlives a deleted account); email only while the account exists.
+  actor: { select: { id: true, firstName: true, lastName: true, accountDeletedAt: true, account: { select: { email: true } } } },
   branch: { select: { id: true, name: true } },
 } satisfies Prisma.AuditLogInclude;
 

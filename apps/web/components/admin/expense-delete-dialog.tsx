@@ -46,7 +46,10 @@ export function ExpenseDeleteDialog({ open, onOpenChange, expense }: ExpenseDele
             </div>
             <DialogTitle>Delete Expense</DialogTitle>
           </div>
-          <DialogDescription>This cannot be undone.</DialogDescription>
+          <DialogDescription>
+            Hides this expense from the expense ledger. The record itself is kept for the audit history and can’t be
+            restored here.
+          </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-1 rounded-md border p-3 text-sm">

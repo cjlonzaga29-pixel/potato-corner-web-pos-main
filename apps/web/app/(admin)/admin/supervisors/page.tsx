@@ -109,7 +109,7 @@ export default function SupervisorListPage() {
               size="sm"
               className="text-destructive hover:bg-destructive/10 hover:text-destructive"
               onClick={stop(() => setRemoveTarget(supervisor))}
-              aria-label={`Delete or deactivate ${fullName}`}
+              aria-label={`Delete ${fullName} permanently`}
               data-row-action={`remove:${supervisor.id}`}
             >
               <Trash2 className="h-3.5 w-3.5 sm:mr-1.5" aria-hidden="true" />

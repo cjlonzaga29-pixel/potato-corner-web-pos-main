@@ -20,7 +20,7 @@ const { prisma } = await import('../../lib/prisma.js');
 const { auditRepository } = await import('./audit.repository.js');
 
 const AUDIT_LOG_INCLUDE = {
-  actor: { select: { id: true, firstName: true, lastName: true, email: true } },
+  actor: { select: { id: true, firstName: true, lastName: true, accountDeletedAt: true, account: { select: { email: true } } } },
   branch: { select: { id: true, name: true } },
 };
 

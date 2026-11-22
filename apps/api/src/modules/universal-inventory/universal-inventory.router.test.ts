@@ -55,6 +55,8 @@ vi.mock('../../lib/prisma.js', () => ({
 vi.mock('../branches/branches.repository.js', () => ({
   branchesRepository: {
     findAllActiveBranchIds: vi.fn(),
+    // POS-PERF-P67 — staff/branch tokens keep only branches that still exist; here, all do.
+    findExistingBranchIds: vi.fn(async (ids: string[]) => ids),
   },
 }));
 

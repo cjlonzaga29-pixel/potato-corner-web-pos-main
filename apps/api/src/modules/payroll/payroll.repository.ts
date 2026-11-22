@@ -32,7 +32,7 @@ export const payrollRepository = {
   },
 
   findUserName(userId: string, client: Client = prisma) {
-    return client.user.findUnique({ where: { id: userId }, select: { firstName: true, lastName: true } });
+    return client.person.findUnique({ where: { id: userId }, select: { firstName: true, lastName: true } });
   },
 
   // ---------- policy ----------

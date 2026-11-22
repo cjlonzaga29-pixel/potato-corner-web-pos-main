@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useVoidPayRate } from '@/hooks/queries/use-payroll';
-import { formatPeso } from '@/lib/payroll-format';
+import { formatPayrollDate, formatPeso } from '@/lib/payroll-format';
 import { cn } from '@/lib/utils';
 import { PayrollRateDialog } from './payroll-rate-dialog';
 import { PayrollReasonDialog } from './payroll-reason-dialog';
@@ -39,7 +39,7 @@ export function PayrollRatesTable({ branchId, data }: Props) {
         <CardTitle className="text-base">Hourly rates</CardTitle>
         <CardDescription>
           Effective-dated. A new rate never changes earlier earnings. Staff without a rate block finalization — there is no zero-rate default.
-          {data.today ? ` Rates shown are in effect on ${data.today}.` : ' Save the payroll policy to see which rate is in effect today.'}
+          {data.today ? ` Rates shown are in effect today (${formatPayrollDate(data.today)}). Payroll for a past period uses the rate in effect on each worked day.` : ' Save the payroll policy to see which rate is in effect today.'}
         </CardDescription>
       </CardHeader>
       <CardContent className="px-0 sm:px-6">
@@ -110,7 +110,7 @@ export function PayrollRatesTable({ branchId, data }: Props) {
                                   <li key={rate.id} className={cn('flex flex-wrap items-center justify-between gap-2 rounded-md border bg-background p-2 text-sm', rate.voided_at && 'opacity-60')}>
                                     <div className="min-w-0">
                                       <span className={cn('font-medium', rate.voided_at && 'line-through')}>{formatPeso(rate.hourly_rate)}/h</span>{' '}
-                                      from {rate.effective_from}
+                                      from {formatPayrollDate(rate.effective_from)}
                                       <div className="break-words text-xs text-muted-foreground">
                                         {rate.reason} — {rate.created_by_name}
                                         {rate.voided_at && ` · Voided: ${rate.void_reason ?? ''}`}
@@ -141,7 +141,7 @@ export function PayrollRatesTable({ branchId, data }: Props) {
         open={voiding !== null}
         onOpenChange={(open) => !open && setVoiding(null)}
         title="Void this rate?"
-        description={voiding ? `${formatPeso(voiding.rate.hourly_rate)}/h from ${voiding.rate.effective_from} for ${voiding.employee.name}. It stays in the history, marked void. Finalized payroll is not affected.` : ''}
+        description={voiding ? `${formatPeso(voiding.rate.hourly_rate)}/h from ${formatPayrollDate(voiding.rate.effective_from)} for ${voiding.employee.name}. It stays in the history, marked void. Finalized payroll is not affected.` : ''}
         confirmLabel="Void rate"
         destructive
         isPending={voidRate.isPending}
@@ -162,7 +162,7 @@ function RateCell({ employee }: { employee: PayRateEmployeeView }) {
     <div>
       <span className="font-medium">{formatPeso(employee.current_rate.hourly_rate)}/h</span>
       <span className="block text-xs text-muted-foreground">
-        since {employee.current_rate.effective_from} · ≈ ₱{employee.current_rate.per_minute_display}/min
+        since {formatPayrollDate(employee.current_rate.effective_from)} · ≈ ₱{employee.current_rate.per_minute_display}/min
       </span>
     </div>
   );

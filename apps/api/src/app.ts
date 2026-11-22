@@ -1,4 +1,5 @@
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
+import { isDeletedBranchWrite } from './lib/foreign-key-restriction.js';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
@@ -136,6 +137,17 @@ app.use((error: unknown, req: Request, res: Response, _next: NextFunction) => {
     if (res.writableEnded || res.destroyed) return;
     if (error.retryAfterSeconds !== undefined) res.setHeader('Retry-After', String(error.retryAfterSeconds));
     res.status(error.statusCode).json({ data: null, error: { code: error.code, message: error.message }, meta: null });
+    return;
+  }
+
+  // POS-PERF-P67 — a write for a branch that was deleted meanwhile is refused by the database; say so.
+  if (isDeletedBranchWrite(error)) {
+    if (res.headersSent) return;
+    res.status(409).json({
+      data: null,
+      error: { code: 'BRANCH_DELETED', message: 'This branch has been deleted. Nothing was saved.' },
+      meta: null,
+    });
     return;
   }
 

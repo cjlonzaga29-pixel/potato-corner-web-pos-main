@@ -1,12 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import type { ReactElement } from 'react';
 import type { EmployeeResponse } from '@potato-corner/shared';
 
-const { mockEligibility, mockDelete, mockSetStatus } = vi.hoisted(() => ({
+const { mockEligibility, mockDelete, mockForget, mockToast } = vi.hoisted(() => ({
   mockEligibility: vi.fn(),
   mockDelete: vi.fn(),
-  mockSetStatus: vi.fn(),
+  mockForget: vi.fn(),
+  mockToast: { success: vi.fn(), message: vi.fn(), error: vi.fn() },
 }));
+
+vi.mock('sonner', () => ({ toast: mockToast }));
 
 vi.mock('@/hooks/queries/use-employees', () => {
   class EmployeeApiError extends Error {
@@ -19,16 +24,27 @@ vi.mock('@/hooks/queries/use-employees', () => {
   }
   return {
     EmployeeApiError,
+    forgetDeletedEmployee: mockForget,
     useEmployeeDeletionEligibility: mockEligibility,
     useDeleteEmployee: () => ({ mutateAsync: mockDelete, isPending: false }),
-    useSetEmployeeStatus: () => ({ mutateAsync: mockSetStatus, isPending: false }),
   };
 });
 
 import { RemoveEmployeeDialog } from './remove-employee-dialog';
 import { EmployeeApiError } from '@/hooks/queries/use-employees';
 
-const NO_HISTORY = { sales: 0, shifts: 0, attendance: 0, audit: 0, inventory: 0, expenses: 0, catalog: 0, settings: 0, pin_use: 0 };
+const NO_HISTORY = { sales: 0, shifts: 0, attendance: 0, audit: 0, inventory: 0, expenses: 0, catalog: 0, settings: 0, pin_use: 0, payroll: 0 };
+const NO_PREREQUISITES = {
+  open_shifts: [],
+  open_attendance: [],
+  held_orders: 0,
+  pending_inventory_approvals: 0,
+  branches: [{ id: 'b1', name: 'SM North' }],
+  branches_left_without_supervisor: [],
+  unpaid_payroll: [],
+};
+const VERSION = '2026-11-20T03:04:05.678Z';
+const CONFIRMATION = { name: 'Ana Reyes', version: VERSION };
 
 const EMPLOYEE = {
   id: '00000000-0000-4000-8000-0000000000e1',
@@ -38,9 +54,36 @@ const EMPLOYEE = {
   status: 'active',
 } as unknown as EmployeeResponse;
 
+function deletable(overrides: Record<string, unknown> = {}) {
+  return {
+    can_delete: true,
+    blocked_reason: null,
+    mode: 'permanent',
+    references: { ...NO_HISTORY, sales: 12, attendance: 3 },
+    prerequisites: NO_PREREQUISITES,
+    confirmation: CONFIRMATION,
+    ...overrides,
+  };
+}
+
+const refetch = vi.fn();
+function eligibilityReturns(data: unknown) {
+  mockEligibility.mockReturnValue({ isLoading: false, isError: false, data, refetch });
+}
+
+function renderDialog(ui: ReactElement) {
+  const client = new QueryClient();
+  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
+
+function confirm(name = 'Ana Reyes') {
+  fireEvent.change(screen.getByLabelText(/to confirm/i), { target: { value: name } });
+  fireEvent.click(screen.getByRole('checkbox'));
+}
+
 beforeEach(() => {
-  mockDelete.mockResolvedValue({ deleted: true });
-  mockSetStatus.mockResolvedValue({});
+  mockDelete.mockResolvedValue({ deleted: true, outcome: 'deleted' });
+  refetch.mockResolvedValue({ data: undefined });
 });
 
 afterEach(() => {
@@ -48,162 +91,123 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('RemoveEmployeeDialog (POS-PERF-P47)', () => {
-  it('offers permanent delete only after explicit confirmation when there is no history', async () => {
-    mockEligibility.mockReturnValue({ isLoading: false, isError: false, data: { can_delete: true, blocked_reason: null, references: NO_HISTORY } });
+describe('RemoveEmployeeDialog (POS-PERF-P66 permanent delete)', () => {
+  it('states plainly what is removed and what stays, including history counts', () => {
+    eligibilityReturns(deletable());
+    renderDialog(<RemoveEmployeeDialog open onOpenChange={vi.fn()} employee={EMPLOYEE} />);
+    expect(screen.getByText(/Permanently delete Ana Reyes\? This cannot be undone in the application\./)).toBeInTheDocument();
+    expect(screen.getByText(/Past business records will remain, but this account cannot be restored\./)).toBeInTheDocument();
+    expect(screen.getByText(/Branch access \(SM North\)/)).toBeInTheDocument();
+    expect(screen.getByText(/12 sales or checkouts, 3 attendance records/)).toBeInTheDocument();
+    expect(screen.queryByText(/backup/i)).toBeNull();
+  });
+
+  it('enables Delete only after the exact name is typed and the acknowledgment is ticked, then sends both', async () => {
+    eligibilityReturns(deletable());
     const onDeleted = vi.fn();
     const onOpenChange = vi.fn();
-    render(<RemoveEmployeeDialog open onOpenChange={onOpenChange} employee={EMPLOYEE} onDeleted={onDeleted} />);
+    renderDialog(<RemoveEmployeeDialog open onOpenChange={onOpenChange} employee={EMPLOYEE} onDeleted={onDeleted} />);
+    const button = screen.getByRole('button', { name: 'Delete permanently' });
+    expect(button).toBeDisabled();
 
-    const deleteButton = screen.getByRole('button', { name: 'Delete permanently' });
-    expect(deleteButton).toBeDisabled();
+    fireEvent.change(screen.getByLabelText(/to confirm/i), { target: { value: 'Ana Reye' } });
     fireEvent.click(screen.getByRole('checkbox'));
-    fireEvent.click(deleteButton);
-    await waitFor(() => expect(mockDelete).toHaveBeenCalled());
-    expect(onDeleted).toHaveBeenCalled();
+    expect(button).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText(/to confirm/i), { target: { value: '  ana   REYES ' } });
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+    await waitFor(() => expect(onDeleted).toHaveBeenCalled());
+    expect(mockDelete).toHaveBeenCalledWith({ confirm_name: '  ana   REYES ', version: VERSION });
     expect(onOpenChange).toHaveBeenCalledWith(false);
-    expect(screen.queryByRole('button', { name: /Deactivate/ })).not.toBeInTheDocument();
   });
 
-  it('never offers delete for someone with history; offers Deactivate (keep history) with a required reason', async () => {
-    mockEligibility.mockReturnValue({
-      isLoading: false,
-      isError: false,
-      data: { can_delete: false, blocked_reason: 'has_history', references: { ...NO_HISTORY, sales: 12, attendance: 1 } },
-    });
-    render(<RemoveEmployeeDialog open onOpenChange={vi.fn()} employee={EMPLOYEE} />);
-
-    expect(screen.queryByRole('button', { name: 'Delete permanently' })).not.toBeInTheDocument();
-    expect(screen.getByText(/12 sales or checkouts, 1 attendance record/)).toBeInTheDocument();
-    const deactivate = screen.getByRole('button', { name: 'Deactivate (keep history)' });
-    expect(deactivate).toBeDisabled();
-    fireEvent.change(screen.getByLabelText(/Reason/), { target: { value: 'Resigned end of October' } });
-    fireEvent.click(deactivate);
-    await waitFor(() =>
-      expect(mockSetStatus).toHaveBeenCalledWith({ status: 'inactive', reason: 'Resigned end of October', acknowledge_active_shift: false }),
-    );
+  it('Cancel sends nothing', () => {
+    eligibilityReturns(deletable());
+    const onOpenChange = vi.fn();
+    renderDialog(<RemoveEmployeeDialog open onOpenChange={onOpenChange} employee={EMPLOYEE} />);
+    confirm();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(mockDelete).not.toHaveBeenCalled();
   });
 
-  it('asks for an active-shift acknowledgement inline instead of failing', async () => {
-    mockEligibility.mockReturnValue({
-      isLoading: false,
-      isError: false,
-      data: { can_delete: false, blocked_reason: 'has_history', references: { ...NO_HISTORY, shifts: 1 } },
-    });
-    mockSetStatus.mockRejectedValueOnce(new EmployeeApiError('active shift', 'ACTIVE_SHIFT_ACKNOWLEDGMENT_REQUIRED'));
-    render(<RemoveEmployeeDialog open onOpenChange={vi.fn()} employee={EMPLOYEE} />);
-    fireEvent.change(screen.getByLabelText(/Reason/), { target: { value: 'Resigned end of October' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Deactivate (keep history)' }));
-    expect(await screen.findByText(/has an active shift/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Deactivate (keep history)' })).toBeDisabled();
+  it('a double click sends one request', async () => {
+    eligibilityReturns(deletable());
+    let resolve: (value: unknown) => void = () => undefined;
+    mockDelete.mockReturnValue(new Promise((r) => (resolve = r)));
+    renderDialog(<RemoveEmployeeDialog open onOpenChange={vi.fn()} employee={EMPLOYEE} />);
+    confirm();
+    const button = screen.getByRole('button', { name: 'Delete permanently' });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    resolve({ deleted: true, outcome: 'deleted' });
+    await waitFor(() => expect(mockDelete).toHaveBeenCalledTimes(1));
   });
 
-  it('shows the server error inline when delete is refused', async () => {
-    mockEligibility.mockReturnValue({
-      isLoading: false,
-      isError: false,
-      data: { can_delete: true, blocked_reason: null, references: NO_HISTORY },
-      refetch: vi.fn(),
-    });
-    mockDelete.mockRejectedValueOnce(new EmployeeApiError('This person has recorded history', 'EMPLOYEE_HAS_HISTORY'));
-    render(<RemoveEmployeeDialog open onOpenChange={vi.fn()} employee={EMPLOYEE} />);
-    fireEvent.click(screen.getByRole('checkbox'));
+  it('a lost response is checked with the server and reported as deleted when it went through', async () => {
+    eligibilityReturns(deletable());
+    mockDelete.mockRejectedValue(new TypeError('Failed to fetch'));
+    refetch.mockResolvedValue({ data: { ...deletable(), can_delete: false, blocked_reason: 'already_deleted', confirmation: null } });
+    const onDeleted = vi.fn();
+    renderDialog(<RemoveEmployeeDialog open onOpenChange={vi.fn()} employee={EMPLOYEE} onDeleted={onDeleted} />);
+    confirm();
     fireEvent.click(screen.getByRole('button', { name: 'Delete permanently' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('This person has recorded history');
+    await waitFor(() => expect(onDeleted).toHaveBeenCalled());
+    expect(mockForget).toHaveBeenCalled();
+    expect(mockToast.success).toHaveBeenCalledWith('Account permanently deleted');
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  it('explains that an already-inactive person with history needs nothing more', () => {
-    mockEligibility.mockReturnValue({
-      isLoading: false,
-      isError: false,
-      data: { can_delete: false, blocked_reason: 'has_history', references: { ...NO_HISTORY, audit: 2 } },
-    });
-    render(<RemoveEmployeeDialog open onOpenChange={vi.fn()} employee={{ ...EMPLOYEE, status: 'inactive' } as EmployeeResponse} />);
-    expect(screen.getByText(/Already inactive/)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Deactivate/ })).not.toBeInTheDocument();
+  it('shows a server refusal inline and keeps the dialog open; a changed account clears the typed name', async () => {
+    eligibilityReturns(deletable());
+    mockDelete.mockRejectedValue(new EmployeeApiError('This account changed after the dialog opened.', 'EMPLOYEE_CHANGED'));
+    refetch.mockResolvedValue({ data: deletable() });
+    const onOpenChange = vi.fn();
+    renderDialog(<RemoveEmployeeDialog open onOpenChange={onOpenChange} employee={EMPLOYEE} />);
+    confirm();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete permanently' }));
+    expect(await screen.findByText('This account changed after the dialog opened.')).toBeInTheDocument();
+    expect(screen.getByLabelText(/to confirm/i)).toHaveValue('');
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
   });
 
-  describe('POS-PERF-P64 — supervisor with history (Super Admin)', () => {
-    const SUPERVISOR = { ...EMPLOYEE, role: 'supervisor', first_name: 'Sam', last_name: 'Cruz' } as unknown as EmployeeResponse;
-    const PREREQS = {
-      open_shifts: [],
-      open_attendance: [],
-      held_orders: 1,
-      pending_inventory_approvals: 0,
-      branches: [{ id: 'b1', name: 'SM North' }],
-      branches_left_without_supervisor: [{ id: 'b1', name: 'SM North' }],
-    };
-
-    it('explains access removal with history kept, warns about coverage, and deletes only after confirmation', async () => {
-      mockEligibility.mockReturnValue({
-        isLoading: false,
-        isError: false,
-        data: { can_delete: true, blocked_reason: null, mode: 'remove_keep_history', references: { ...NO_HISTORY, sales: 12 }, prerequisites: PREREQS },
-      });
-      mockDelete.mockResolvedValue({ deleted: true, outcome: 'removed' });
-      const onOpenChange = vi.fn();
-      render(<RemoveEmployeeDialog open onOpenChange={onOpenChange} employee={SUPERVISOR} />);
-
-      expect(screen.getByText(/12 sales or checkouts/)).toBeInTheDocument();
-      expect(screen.getByText(/history is kept/i)).toBeInTheDocument();
-      expect(screen.getByText(/not erased/i)).toBeInTheDocument();
-      expect(screen.getByText(/SM North will have no assigned supervisor/)).toBeInTheDocument();
-      expect(screen.getByText(/1 held order\(s\)/)).toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: 'Delete permanently' })).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: /deactivate/i })).not.toBeInTheDocument();
-
-      const button = screen.getByRole('button', { name: 'Delete account' });
-      expect(button).toBeDisabled();
-      fireEvent.click(screen.getByRole('checkbox'));
-      fireEvent.click(button);
-      await waitFor(() => expect(mockDelete).toHaveBeenCalledTimes(1));
-      await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
-    });
-
-    it('shows actionable open-work instructions and offers no delete while a shift or clock-in is open', () => {
-      mockEligibility.mockReturnValue({
-        isLoading: false,
-        isError: false,
-        data: {
-          can_delete: false,
-          blocked_reason: 'open_operations',
-          mode: 'remove_keep_history',
-          references: { ...NO_HISTORY, shifts: 3 },
-          prerequisites: { ...PREREQS, open_shifts: [{ id: 's1', branch_name: 'SM North' }], open_attendance: [{ id: 'a1', branch_name: 'SM North' }] },
+  it('explains open work and unpaid payroll with what to do, and offers no Delete', () => {
+    eligibilityReturns(
+      deletable({
+        can_delete: false,
+        blocked_reason: 'open_operations',
+        prerequisites: {
+          ...NO_PREREQUISITES,
+          open_shifts: [{ id: 's1', branch_name: 'SM North' }],
+          unpaid_payroll: [{ branch_id: 'b1', branch_name: 'SM North', first_date: '2026-11-16', last_date: '2026-11-19', records: 4 }],
         },
-      });
-      render(<RemoveEmployeeDialog open onOpenChange={vi.fn()} employee={SUPERVISOR} />);
-      expect(screen.getByText(/Open shift at SM North: close it/)).toBeInTheDocument();
-      expect(screen.getByText(/Still clocked in at SM North/)).toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: /delete/i })).not.toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument();
-    });
+      }),
+    );
+    renderDialog(<RemoveEmployeeDialog open onOpenChange={vi.fn()} employee={EMPLOYEE} />);
+    expect(screen.getByText(/Close the open shift at SM North/)).toBeInTheDocument();
+    expect(screen.getByText(/Finalize payroll at SM North for the hours recorded from Nov 16, 2026 to Nov 19, 2026/)).toBeInTheDocument();
+    expect(screen.getByText(/Nothing has been changed/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete permanently' })).toBeNull();
+  });
 
-    it('re-checks eligibility when the server reports open work at delete time', async () => {
-      const refetch = vi.fn();
-      mockEligibility.mockReturnValue({
-        isLoading: false,
-        isError: false,
-        refetch,
-        data: { can_delete: true, blocked_reason: null, mode: 'remove_keep_history', references: { ...NO_HISTORY, sales: 1 }, prerequisites: PREREQS },
-      });
-      mockDelete.mockRejectedValue(new EmployeeApiError('This supervisor still has open work.', 'EMPLOYEE_HAS_OPEN_OPERATIONS'));
-      render(<RemoveEmployeeDialog open onOpenChange={vi.fn()} employee={SUPERVISOR} />);
-      fireEvent.click(screen.getByRole('checkbox'));
-      fireEvent.click(screen.getByRole('button', { name: 'Delete account' }));
-      await waitFor(() => expect(refetch).toHaveBeenCalled());
-      expect(screen.getByText('This supervisor still has open work.')).toBeInTheDocument();
-    });
+  it('never offers Delete for a branch account or through a server that cannot confirm it', () => {
+    eligibilityReturns(deletable({ can_delete: false, blocked_reason: 'branch_account', confirmation: null }));
+    renderDialog(<RemoveEmployeeDialog open onOpenChange={vi.fn()} employee={EMPLOYEE} />);
+    expect(screen.getByText(/Branch accounts follow their branch/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete permanently' })).toBeNull();
+    cleanup();
 
-    it('says an already-removed account is removed and offers nothing else', () => {
-      mockEligibility.mockReturnValue({
-        isLoading: false,
-        isError: false,
-        data: { can_delete: false, blocked_reason: 'already_removed', mode: null, references: NO_HISTORY, prerequisites: null },
-      });
-      render(<RemoveEmployeeDialog open onOpenChange={vi.fn()} employee={SUPERVISOR} />);
-      expect(screen.getByText(/already been removed/)).toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: /delete|deactivate/i })).not.toBeInTheDocument();
-    });
+    // A pre-P66 API: offers the old keep-the-row removal and no confirmation.
+    eligibilityReturns({ can_delete: true, blocked_reason: null, mode: 'remove_keep_history', references: NO_HISTORY, prerequisites: NO_PREREQUISITES });
+    renderDialog(<RemoveEmployeeDialog open onOpenChange={vi.fn()} employee={EMPLOYEE} />);
+    expect(screen.getByText(/can’t confirm a permanent delete right now/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete permanently' })).toBeNull();
+  });
+
+  it('reports an account that is already deleted', () => {
+    eligibilityReturns({ can_delete: false, blocked_reason: 'already_deleted', references: null, mode: null, prerequisites: null, confirmation: null });
+    renderDialog(<RemoveEmployeeDialog open onOpenChange={vi.fn()} employee={EMPLOYEE} />);
+    expect(screen.getByText(/already been permanently deleted/)).toBeInTheDocument();
   });
 });

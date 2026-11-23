@@ -67,6 +67,16 @@ accessed; no production product deleted. Details, results, release order and rol
     name had left stock unchecked); two-process old/new harness 46/46; real service-worker offline queue 10/10; API typecheck clean,
     lint 0 errors; affected API suites 1,514 passed, 6 skipped, 1 failed (P69R hint-burst timing test: also fails 1/3 with a dummy
     migration of the same shape and no product triggers; passes alone at times; not a delete defect).
+  - **P69R hint-burst test fixed (test only).** The hint window is fixed from the first hint (300 ms, bounded delay, not a trailing
+    debounce), and a product write queues its hint only after a post-response lookup. Under database load the five concurrent writes'
+    hints spread past 300 ms (traced: 157–194 ms when it passed) and two windows legitimately sent two hints. The notifier is
+    unchanged. The test now records every queued hint through the real notifier and waits for them instead of sleeping. It holds the
+    hints to place them in one window, then in two, and checks: one hint per branch per window, sent by the window's own timer, branch
+    A only, reads queue nothing, none lost. Both window tests fail against a no-coalescing notifier and a never-delivering one.
+    Results: old test failed in the affected run (2 hints); new test 5/5 ×3 alone and ×3 beside P59; affected API suites 1,510 passed,
+    6 skipped, 6 failed, all in P59 report coverage. That file's first PDF export got a 503 from the PDF pool under load (about
+    790 MB RAM free), and its later tests build on the earlier ones, so they failed in turn. It passes 11/11 alone. Logs: `C:\p73`
+    (task-owned, safe to delete).
   - The first migration's description is corrected: it is not additive (it removes five foreign keys).
   - Local leftovers (task-owned, safe to delete): `C:\p72` (logs, harness output, Postgres data dirs) and the worktrees `C:\p72\old`
     (`58c335eb`) and `C:\p72\head` (`51f40be6`, with a throwaway dummy migration); remove with `git worktree remove --force`.

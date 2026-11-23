@@ -9,7 +9,7 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
 ## Observed state
 
 - **Observed:** 2026-11-23
-- **Branch:** `feat/pos-perf-p69-pos-product-type-filter`, created from `origin/main` `a5ffefbb` (the PR #49 merge, the last **reported** deployment, not verified here).
+- **Current branch:** `feat/product-permanent-delete` (see Latest below). **Previous branch noted here:** `feat/pos-perf-p69-pos-product-type-filter`, created from `origin/main` `a5ffefbb` (the PR #49 merge, the last **reported** deployment, not verified here).
   - P69 code `3e21fc8f` (tested), docs `c2db620c`.
   - P69R code `c147ec4f` (tested), docs commit after it.
   - **Pushed (feature branch only) with one PR to `main`. Not merged or deployed. Production not accessed.**
@@ -22,7 +22,43 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
   - The older `C:\p68`, `C:\p68r`, `C:\p68s`, `C:\p67`, `C:\p66*` folders noted before.
 - **Left running, not proven to be this task's:** the idle `io_worker` orphans and the `dist/server.js` (PID 17220) noted before.
 
-## Latest: account deletion and email reuse (branch `feat/account-deletion-email-reuse`)
+## Latest: product permanent delete, consistent actions, wider dialogs (branch `feat/product-permanent-delete`)
+
+Created 2026-11-23 from `origin/main` `58c335eb` (PR #51 merge). **Committed locally only: not pushed, merged or deployed.** Production not
+accessed; no production product deleted. Details, results, release order and rollback: [`runbooks/product-permanent-delete.md`](runbooks/product-permanent-delete.md).
+
+- **Permanently Delete** physically removes a product, its sizes and its own setup. History (sales, receipts, refunds, reports, held
+  lines, change logs, stock, movements, audit) is untouched and keeps the product's id and name.
+- **Migration `20261124120000_product_permanent_delete`:**
+  - drops the five history foreign keys to products/variants;
+  - adds live-product insert triggers (`FOR KEY SHARE`, `PRODUCT_PERMANENTLY_DELETED`) and a `hold_order_items(product_id)` index;
+  - no data changed.
+  - **Rollback floor after the first permanent delete is this migration.**
+- **Server.** Supervisor only. Authority is required over every configured, exclusive and sold-at live branch. Explicit
+  `{ confirm: "PERMANENTLY_DELETE" }`. Product lock plus row lock; atomic; outbox-audited.
+  - Blockers: held order, promotion, discount type, Mix & Max snack use, older sales without deduction snapshots.
+  - Retry gives 410.
+  - A checkout or offline sale of a deleted product gets `PRODUCT_DELETED`; offline sales stay queued for reconciliation.
+  - Sold sizes still can't be deleted alone.
+- **UI:**
+  - Row actions: View · Edit/Continue Setup · Activate/Deactivate · Permanently Delete · ⋯ Archive. A shared product stays view only and
+    explained.
+  - New confirmation dialog.
+  - Dialog `size` (`form` 1088px, `standard`/`confirm` 720px, sticky header and footer) applied to product, branch, employee, promotion
+    and delete dialogs. POS prompts are unchanged.
+- **Tests:** API integration 9/9 (run 2); affected API suites 1,479 passed / 6 skipped; populated migration rehearsal PASS (20,000
+  sales); full web 1,850/1,850; shared 83/83; typecheck clean; lint 0 errors; builds pass; browser 39/39 (run 7; earlier runs and the two
+  real UI defects they found are in the runbook).
+- **Local leftovers (task-owned, safe to delete):**
+  - `C:\p71`: integration logs and Postgres data dirs.
+  - `C:\p71s`: P62 browser stack with random-key env, DB `p62_p71`, results `out1`–`out7`, logs.
+  - All of their processes are stopped.
+  - Older orphan `postgres.exe` workers from earlier sessions were left alone (not proven to be this task's).
+- **Build note:** two web builds started from Git Bash produced a broken bundle (layout-router invariant). A clean `.next` build from
+  PowerShell in the repo's `apps\web` (uppercase `C:\` path) worked. If a local build shows "Application error" on /login, rebuild clean that way.
+- **Next (owner):** review the branch. Push, PR, merge, the migration and deploy are separate decisions (order: migration → API → web).
+
+## Earlier: account deletion and email reuse (branch `feat/account-deletion-email-reuse`)
 
 Details: [`runbooks/account-deletion-email-reuse.md`](runbooks/account-deletion-email-reuse.md).
 

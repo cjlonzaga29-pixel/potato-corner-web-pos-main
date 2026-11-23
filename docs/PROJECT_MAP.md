@@ -67,10 +67,13 @@ Playwright config at `tests/e2e/playwright.config.ts`.
 
 **Product permanent delete (branch `feat/product-permanent-delete`, not merged):** API `API/products/product-deletion.service.ts`,
 `API/products/product-deletion.repository.ts` (preview + `DELETE /api/products/:id` with `{ confirm }`); migration
-`20261124120000_product_permanent_delete` (history FKs dropped, live-product triggers); UI
+`20261124120000_product_permanent_delete` (history FKs dropped, live-product triggers) and `20261124130000_product_delete_history_guard`
+(refuses any other delete of a product or size with history; bypassed only inside the permanent delete); rollout switch
+`PRODUCT_PERMANENT_DELETE_ENABLED` (`apps/api/src/config/index.ts`, default off); UI
 `WEB/components/supervisor/products/permanent-delete-product-dialog.tsx`, `archive-product-dialog.tsx`, `product-list-row.tsx`; dialog `size`
 prop in `WEB/components/ui/dialog.tsx`; tests `API/products/product-deletion.integration.test.ts`,
-`apps/api/scripts/test-product-delete-migration-on-populated-data.ts`, `tests/e2e/manual/product-delete/delete.mjs`. Runbook
+`apps/api/scripts/test-product-delete-migration-on-populated-data.ts`, two-process old/new API harness
+`apps/api/scripts/product-delete-mixed-version.ts`, `tests/e2e/manual/product-delete/delete.mjs` and `offline-queue.mjs`. Runbook
 `RUN/product-permanent-delete.md`.
 
 **Custom product types (P58, P58R): in `origin/main`. POS type filter and badges: P69, `RUN/pos-perf-p69-pos-product-type-filter.md` (catalog `product_type`/`product_types` in `API/products/products.service.ts` `getPosCatalog`). P69R `catalog:changed` hints: `apps/api/src/lib/catalog-change-notifier.ts`, `API/products/products.catalog-events.ts`, `notifyTypeScope` in `API/product-types/product-types.service.ts`.**

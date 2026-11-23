@@ -32,7 +32,7 @@ History already had independent snapshots:
 
 Only the foreign keys and one report depended on the live row.
 
-**Migration `20261124120000_product_permanent_delete`** (additive for readers, no data changed):
+**Migration `20261124120000_product_permanent_delete`** (**not additive**: it removes five foreign keys; no data changed):
 
 - Drops those five foreign keys. The columns stay, so every existing row keeps its original ids as historical identity, next to its
   snapshots.
@@ -44,6 +44,24 @@ Only the foreign keys and one report depended on the live row.
 - Adds `hold_order_items(product_id)` index.
 
 Same pattern as P67 (branch deletion): history outlives the live row, and a trigger stands in for the insert half of the foreign key.
+
+**Migration `20261124130000_product_delete_history_guard`** (release-readiness review; triggers only, no data changed). Dropping the
+foreign keys also dropped their *delete* half. So the API deployed before this release could have removed a sold or held product during
+a rollout or after a code rollback, with none of the checks, locks or audit. Its plain `DELETE /api/products/:id` cascade and its size
+delete have no history check. This migration restores that refusal in the database:
+
+- `BEFORE DELETE` on `products` and `product_variants`: if a sale line, held-order line or (for a size) change log still names the row,
+  the delete fails with SQLSTATE 23503 and the original constraint name. Prisma reports it as P2003, exactly as before, so the old API
+  keeps answering 409 `PRODUCT_HAS_DEPENDENCIES` / `VARIANT_HAS_DEPENDENCIES`.
+- It runs after the DELETE has locked the row, so a concurrent sale line (holding `FOR KEY SHARE`) is committed and seen first.
+- Only the permanent-delete transaction bypasses it. After its authority and blocker checks, it sets the transaction-local
+  `pc.product_permanent_delete` (`set_config(..., true)`). The setting ends with the transaction, so it is safe through the transaction
+  pooler.
+- New sale and held-order lines must name a size of their own product. Checkout and hold already enforced this; the check applies to
+  new rows only.
+
+**Rollout switch `PRODUCT_PERMANENT_DELETE_ENABLED`** (API env, default off). While it is off, the preview says "not switched on yet" and
+the DELETE answers 409 `PRODUCT_PERMANENT_DELETE_DISABLED`. See §6 for why and when to turn it on.
 
 ## 3. What the delete does
 
@@ -218,37 +236,109 @@ All on disposable local data:
 | 5–6 | Application error | Two web builds started from Git Bash produced a broken bundle ("invariant expected layout router to be mounted"; one logged C:/c: casing duplicates). Not a code issue: a clean build from PowerShell at `C:\…` worked |
 | 7 | **39/39** | — |
 
+**Release-readiness review (second pass, same branch).** All on disposable local data (`C:\p72`, embedded Postgres):
+
+| Check | Result |
+| --- | --- |
+| Integration `product-deletion.integration.test.ts`. New: the history guard refuses the old cascade and a change-logged size (P2003); size/product ownership on new lines; switch off | **12/12** |
+| Populated rehearsal, both migrations: 20,000 sales **and 20,000 stock movements** | **PASS**. 96 tables byte-identical. The old cascade is refused (P2003) and changes nothing. After a permanent delete, sales, lines, held lines, change logs, stock movements, stock and items are byte-identical. Migration wall time 16.2 s including Prisma CLI start-up |
+| Two-process rollout harness `apps/api/scripts/product-delete-mixed-version.ts`. The API deployed before this release (`58c335eb`, built in a separate worktree) and this branch run as real processes on one database; races are ordered by lock waits | **46/46** checks (run 8; runs 1–7 were harness fixes, below) |
+| Browser `tests/e2e/manual/product-delete/offline-queue.mjs`: real service worker and IndexedDB queue; the product is deleted while the terminal is offline | **10/10** (run 4) |
+
+The earlier rehearsal had two gaps, both fixed. Its stock-movement seed was invalid, so that table was empty. Its history fingerprint
+named a table that doesn't exist (`inventory_stock`), so stock wasn't compared. It now asserts that every compared table exists.
+
+**Rollout harness results:**
+
+- **Old API on the migrated database, before any delete.**
+  - Checkout, completed-sale replay, hold and release, product edit, size add / edit / delete, refund, the deduction worker and offline
+    sync all work.
+  - Its plain DELETE refuses a sold product and a held product (409 `PRODUCT_HAS_DEPENDENCIES`) and a sold size (409). Nothing changes.
+  - A product with no history still deletes (204, as before).
+- **Old and new together, switch off.**
+  - Preview gives `can_delete: false`; DELETE gives 409 `PRODUCT_PERMANENT_DELETE_DISABLED`.
+  - Size delete vs checkout, both orders across versions: the sale commits, then the size delete refuses.
+  - "Size delete first" can't happen for a sellable size. A size sells only with a recipe, and a size with recipe components can't be
+    deleted alone (pre-existing RESTRICT).
+- **Switch on while an old instance still serves** (what the switch prevents):
+  - Old checkout first, delete second: the sale commits, the delete waits and then succeeds, and the sale's deduction completes from
+    its snapshot. Safe.
+  - Delete first, old checkout second: no sale is recorded. But the **old API answers 500 and leaves its checkout attempt stuck
+    `in_progress`**, so the POS retry gets `CHECKOUT_ATTEMPT_IN_PROGRESS`. The new API answers 409 `PRODUCT_DELETED`.
+  - For a deleted product, the old API's checkout and offline sync answer `PRODUCT_UNAVAILABLE`. The web treats that as retryable, so
+    a queued offline sale is resent instead of being settled as refused for reconciliation.
+- **After the first permanent delete:**
+  - Both versions return the receipt (sale-time name), the sales list and the product performance report (200), and refund the sale
+    (200).
+  - Both replay a completed sale's key to the original sale.
+  - Neither records a new sale of the deleted product.
+
+Harness runs 1–7 failed on the harness, not the product:
+
+- a wrong lock-wait pattern (`pg_stat_activity` shows the client's `INSERT`, not the trigger's query);
+- a fixture size without a recipe (unsellable), then one with a recipe (not deletable alone);
+- an unhandled rejection that hid the scenario error;
+- a stock barrier that caught an earlier sale's deduction worker instead of the checkout.
+
+**Browser offline queue:**
+
+1. The terminal loads the catalog online.
+2. Offline, a sale is queued in IndexedDB.
+3. The product is permanently deleted through the API.
+4. On reconnect, the row stays on the device with `rejection.code = PRODUCT_DELETED` and is never marked synced. Nothing is recorded
+   on the server.
+5. The Pending tab lists it as "Not accepted" with the reason. After a reload, no sync call resends it, and the catalog no longer
+   shows the product.
+
 **Not covered:**
 
-- Real devices and staging.
-- Several API instances.
-- An offline terminal ringing the deleted product through the real service worker. Covered at the API and queue-rule level only.
-- In the rehearsal, the stock-movement seed statement failed (column mismatch in my raw SQL), so that table was empty there. The
-  integration test covers movements.
+- Real devices and staging, and Render's own deploy overlap (simulated here with two processes).
+- An old *web* build (cached PWA) against the new API. By code reading, `PRODUCT_DELETED` is an unknown code there, so the row stays
+  queued and retried until the terminal loads the new web. It is kept, never lost and never recorded.
 
 ## 6. Release order and rollback
 
 **Order:**
 
-1. Apply the migration.
-2. Deploy the API.
-3. Deploy the web.
+1. Apply **both** migrations together (`prisma migrate deploy`). The API already deployed keeps working and still can't remove
+   anything with history (rehearsed: checkout, replay, holds, edits, refunds, worker, offline).
+2. Deploy the API with `PRODUCT_PERMANENT_DELETE_ENABLED` unset (off). Old and new instances may overlap during the deploy.
+3. Deploy the web. Terminals pick it up on their next load. Until then, an old build keeps a refused offline sale queued and retried.
+4. Confirm that **only** the new API version is serving: the deploy is live, the previous instance is gone, and no other service runs
+   an older API against this database. Then set `PRODUCT_PERMANENT_DELETE_ENABLED=true`. The env change restarts the service, so every
+   instance that sees `true` already runs the new version.
 
-**Why this order:**
+**Why the switch.** With an old instance serving, two things go wrong (§5). A delete that wins a race against its checkout gives the
+cashier a 500 and leaves the checkout attempt stuck. Its answer for a deleted product (`PRODUCT_UNAVAILABLE`) makes queued offline sales
+retry instead of being kept for reconciliation. Nothing is recorded or lost either way, but it isn't the designed behaviour, so deletion
+waits.
 
-- The migration alone changes nothing visible. The old API's delete still refuses sold products. Its old cascade would now succeed for
-  a sold product only if nothing else restricted it, so deploy the API promptly after the migration.
-- Single API instance, as today.
+**Rolling back:**
 
-**Rolling back code:** fine at any time. The triggers keep refusing new lines for missing products.
+- **First, switch off** (`PRODUCT_PERMANENT_DELETE_ENABLED` unset or `false`). This stops new permanent deletes and changes no data.
+- **Code, before any permanent delete:** roll back freely. The previous API works on the migrated database (rehearsed), and its plain
+  delete is still refused for anything with history.
+- **Code, after the first permanent delete:**
+  - The previous API still reads receipts, lists and the product performance report, refunds and replays (rehearsed). It can't delete
+    anything with history.
+  - It has no permanent-delete route, so no new deletion races arise.
+  - What degrades: it answers an offline sale of an already-deleted product with `PRODUCT_UNAVAILABLE`, so the sale is retried rather
+    than settled as refused.
+  - Prefer fixing forward. Roll back only for an unrelated emergency.
+- **Migrations, before any permanent delete:** in one transaction:
+  1. Drop the two `product_delete_guard_history` triggers and the `product_delete_guard_history()` function.
+  2. Drop the three `product_delete_live_product` triggers; the `product_delete_require_live_line()`,
+     `product_delete_require_live_variant()` and `product_delete_assert_live_product()` functions; and the
+     `hold_order_items_product_id_idx` index.
+  3. Re-add the five foreign keys `NOT VALID`, then `VALIDATE` each.
 
-**Rolling back the migration:**
-
-- Before any product is permanently deleted: re-add the five constraints (`NOT VALID`, then `VALIDATE`), drop the three triggers, the two
-  functions and the index.
-- **After the first permanent delete, the foreign keys can't be re-added** (history names ids that no longer exist). The rollback floor
-  is then this migration.
-- Detection query: `SELECT count(*) FROM audit_logs WHERE action = 'PRODUCT_PERMANENTLY_DELETED'` (plus `audit_outbox`).
+  Then mark both migrations rolled back. Never drop only the guard migration while the first one stays: that reopens the unguarded
+  delete for the old API.
+- **Migrations, after the first permanent delete:** the five foreign keys **can't** be restored. History names product and size ids
+  that no longer exist, so `VALIDATE` fails. The rollback floor is then both migrations; keep their triggers. History is never deleted
+  or rewritten to make a constraint fit.
+- **Detecting whether a permanent delete happened:**
+  `SELECT count(*) FROM audit_logs WHERE action = 'PRODUCT_PERMANENTLY_DELETED'`, plus the same on `audit_outbox`.
 
 ## 7. Limitations
 

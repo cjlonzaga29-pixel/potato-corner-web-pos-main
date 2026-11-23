@@ -56,7 +56,23 @@ accessed; no production product deleted. Details, results, release order and rol
   - Older orphan `postgres.exe` workers from earlier sessions were left alone (not proven to be this task's).
 - **Build note:** two web builds started from Git Bash produced a broken bundle (layout-router invariant). A clean `.next` build from
   PowerShell in the repo's `apps\web` (uppercase `C:\` path) worked. If a local build shows "Application error" on /login, rebuild clean that way.
-- **Next (owner):** review the branch. Push, PR, merge, the migration and deploy are separate decisions (order: migration → API → web).
+- **Release-readiness review (same branch, local only):**
+  - **Defect fixed:** dropping the foreign keys also let the API deployed before this release permanently remove a sold or held product
+    (plain DELETE cascade) or a sold size, with no checks or audit, during a rollout or after a rollback. New migration
+    `20261124130000_product_delete_history_guard` restores the refusal (23503 → the old 409s); only the permanent delete bypasses it.
+    New lines must also name a size of their own product.
+  - **Rollout switch** `PRODUCT_PERMANENT_DELETE_ENABLED` (default off). Turn it on only once no old API instance serves: with one
+    serving, a delete racing its checkout gave a 500 and a stuck checkout attempt (rehearsed).
+  - **Results:** integration 12/12; populated rehearsal PASS (now with 20,000 stock movements; the earlier seed and a mistyped table
+    name had left stock unchecked); two-process old/new harness 46/46; real service-worker offline queue 10/10; API typecheck clean,
+    lint 0 errors; affected API suites 1,514 passed, 6 skipped, 1 failed (P69R hint-burst timing test: also fails 1/3 with a dummy
+    migration of the same shape and no product triggers; passes alone at times; not a delete defect).
+  - The first migration's description is corrected: it is not additive (it removes five foreign keys).
+  - Local leftovers (task-owned, safe to delete): `C:\p72` (logs, harness output, Postgres data dirs) and the worktrees `C:\p72\old`
+    (`58c335eb`) and `C:\p72\head` (`51f40be6`, with a throwaway dummy migration); remove with `git worktree remove --force`.
+    `C:\p71s` database now has both migrations and one more deleted fixture product.
+- **Next (owner):** review the branch. Push, PR, merge, the migrations and deploy are separate decisions. Order and rollback: runbook §6
+  (both migrations → API with the switch off → web → confirm only the new API serves → switch on).
 
 ## Earlier: account deletion and email reuse (branch `feat/account-deletion-email-reuse`)
 

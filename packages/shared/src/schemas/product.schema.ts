@@ -813,3 +813,54 @@ export const replaceSourceWithCopySchema = z.object({
 export const productImageResponseSchema = z.object({
   image_url: z.string().nullable(),
 });
+
+// ---------------------------------------------------------------------------
+// Product permanent delete. The product, its sizes and its own setup are
+// removed; sales, receipts, refunds, reports, stock movements and audit
+// entries keep their own copy of the product's identity and are never changed.
+// The body must carry the explicit confirmation so no older client's plain
+// DELETE can permanently remove a product without the new confirmation.
+// ---------------------------------------------------------------------------
+
+export const PRODUCT_PERMANENT_DELETE_CONFIRMATION = 'PERMANENTLY_DELETE' as const;
+
+export const permanentDeleteProductSchema = z.object({
+  confirm: z.literal(PRODUCT_PERMANENT_DELETE_CONFIRMATION),
+});
+export type PermanentDeleteProductInput = z.infer<typeof permanentDeleteProductSchema>;
+
+export const PRODUCT_DELETE_BLOCKER_CODES = [
+  'PRODUCT_DELETE_HELD_ORDERS',
+  'PRODUCT_DELETE_IN_PROMOTION',
+  'PRODUCT_DELETE_IN_DISCOUNT_TYPE',
+  'PRODUCT_DELETE_USED_AS_SNACK_OPTION',
+  'PRODUCT_DELETE_LEGACY_SALES',
+] as const;
+export type ProductDeleteBlockerCode = (typeof PRODUCT_DELETE_BLOCKER_CODES)[number];
+
+export interface ProductDeleteBlocker {
+  code: ProductDeleteBlockerCode;
+  /** What stops the delete, in plain words. */
+  message: string;
+  /** What to do first. */
+  next_action: string;
+  /** Human-readable names (branches, promotions, products); never ids. */
+  names: string[];
+}
+
+export interface ProductDeletionPreview {
+  product: { id: string; name: string };
+  /** Branches the product is set up for or exclusive to, by name. */
+  branches: { id: string; name: string; on_pos: boolean }[];
+  size_count: number;
+  /** Completed, voided or refunded sales that contain this product. They stay. */
+  sale_count: number;
+  /** Branch copies made from this product. They are separate products and stay. */
+  branch_copy_count: number;
+  is_branch_copy: boolean;
+  has_image: boolean;
+  /** False when the actor lacks authority over every branch involved; reason says why. */
+  can_delete: boolean;
+  forbidden_reason: string | null;
+  blockers: ProductDeleteBlocker[];
+}

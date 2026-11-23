@@ -23,6 +23,7 @@ import {
   updateFlavorSlotSchema,
   reorderFlavorSlotsSchema,
   addSnackOptionSchema,
+  permanentDeleteProductSchema,
   PRODUCT_STATUS,
   PRODUCT_BRANCH_VIEWS,
   PRODUCT_CLASSIFICATIONS,
@@ -31,6 +32,7 @@ import {
   type ProductStatus,
 } from '@potato-corner/shared';
 import { productsService, toFlavorSlotResponse } from './products.service.js';
+import { productDeletionService } from './product-deletion.service.js';
 import { ProductError } from './products.types.js';
 import { FlavorError } from '../flavors/flavors.types.js';
 import { flavorsService } from '../flavors/flavors.service.js';
@@ -223,15 +225,39 @@ router.patch('/:productId', authenticate, supervisorOnly, requireActiveSuperviso
   }
 });
 
-router.delete('/:productId', authenticate, supervisorOnly, requireActiveSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
+// Product permanent delete. The preview says what would be removed, what is
+// kept and what must happen first; the DELETE requires the explicit
+// confirmation body, re-checks everything under the product's locks and
+// removes the product, its sizes and its own setup atomically. History stays.
+// Supervisor only (super_admin has no product write path, POS-PERF-P34/P35);
+// branch scope is enforced in productDeletionService.
+router.get('/:productId/deletion-preview', authenticate, supervisorOnly, requireActiveSupervisor, requirePasswordChange, async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!requireUser(req, res)) return;
-    await productsService.deleteProduct(req.params.productId as string, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
-    res.status(204).send();
+    const preview = await productDeletionService.getPreview(req.params.productId as string, { id: req.user.user_id, role: req.user.role });
+    res.status(200).json({ data: preview, error: null, meta: null });
   } catch (error) {
     handleModuleError(error, res, next);
   }
 });
+
+router.delete(
+  '/:productId',
+  authenticate,
+  supervisorOnly,
+  requireActiveSupervisor,
+  requirePasswordChange,
+  validate(permanentDeleteProductSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!requireUser(req, res)) return;
+      const deleted = await productDeletionService.permanentlyDelete(req.params.productId as string, { id: req.user.user_id, role: req.user.role }, req.ip ?? null);
+      res.status(200).json({ data: { ...deleted, deleted: true }, error: null, meta: null });
+    } catch (error) {
+      handleModuleError(error, res, next);
+    }
+  },
+);
 
 // Task 209.6 / POS-PERF-P35 — Product Image Management. Read mirrors GET
 // /:productId (adminOrSupervisor). Upload/delete are Supervisor-only,

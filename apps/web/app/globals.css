@@ -486,6 +486,40 @@
     padding: var(--app-dialog-padding);
   }
 
+  /*
+   * Management dialogs (DialogContent size="form" | "confirm"): the title and
+   * the actions stay in view while a long body scrolls inside the viewport.
+   * A sized dialog has no vertical padding of its own (pt-0/pb-0 on the
+   * content), so the bars sit flush at the top and bottom edges and carry that
+   * padding themselves; negative top/bottom margins would shrink the content
+   * box and make a dialog that fits scroll anyway. Horizontally each bar pulls
+   * itself out to the dialog's edges and pads itself back.
+   */
+  .app-dialog-sized {
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+
+  .app-dialog-sticky-header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    margin: 0 calc(var(--app-dialog-padding) * -1);
+    padding: var(--app-dialog-padding) calc(var(--app-dialog-padding) + 2rem) 0.75rem var(--app-dialog-padding);
+    background-color: hsl(var(--card));
+    border-bottom: 1px solid hsl(var(--border));
+  }
+
+  .app-dialog-sticky-footer {
+    position: sticky;
+    bottom: 0;
+    z-index: 10;
+    margin: 0 calc(var(--app-dialog-padding) * -1);
+    padding: 0.75rem var(--app-dialog-padding) var(--app-dialog-padding);
+    background-color: hsl(var(--card));
+    border-top: 1px solid hsl(var(--border));
+  }
+
   /* POS terminal product tile and the desktop cart/checkout panel width — density-aware equivalents of the old hardcoded `min-h-[104px]` / `lg:w-[30%]`. */
   .app-pos-card {
     min-height: var(--app-pos-card-min-height);

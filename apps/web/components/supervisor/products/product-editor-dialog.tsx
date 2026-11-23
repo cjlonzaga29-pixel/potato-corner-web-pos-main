@@ -110,7 +110,7 @@ export function ProductEditorDialog({ productId, initialTab = 'details', onClose
   return (
     <Dialog open onOpenChange={(open) => !open && requestClose()}>
       <DialogContent
-        className="flex h-[calc(100dvh-2rem)] max-h-[calc(100dvh-2rem)] w-[calc(100vw-1rem)] max-w-4xl flex-col gap-0 overflow-hidden p-0 sm:h-[min(52rem,calc(100dvh-2rem))] sm:w-[calc(100vw-2rem)]"
+        className="flex h-[calc(100dvh-2rem)] max-h-[calc(100dvh-2rem)] w-[calc(100vw-1rem)] max-w-[68rem] flex-col gap-0 overflow-hidden p-0 sm:h-[min(52rem,calc(100dvh-2rem))] sm:w-[calc(100vw-2rem)]"
         // Escape while a section form is open is handled by that form (it closes first); with none open it is a close request.
         onEscapeKeyDown={(event) => {
           if (panelOpen) event.preventDefault();

@@ -11,12 +11,11 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { ProductImageThumbnail } from '@/components/admin/products/product-image-thumbnail';
 
-export type ProductRowAction = 'edit' | 'publish' | 'continue' | 'deactivate' | 'remove';
+export type ProductRowAction = 'edit' | 'publish' | 'continue' | 'deactivate' | 'archive' | 'delete';
 
 interface ProductListRowProps {
   product: ProductResponse;
@@ -43,15 +42,23 @@ function statusFor(product: ProductResponse, view: ProductBranchView, branchName
 /**
  * POS-PERF-P39 — one compact row of the supervisor Products list. Only the
  * product name is a link (to its product page) and every action is its own
- * button, so nothing interactive is nested inside another. Actions the
- * supervisor can't take are left out, with the reason shown on the row.
+ * button, so nothing interactive is nested inside another.
+ *
+ * Product permanent delete — every row has the same actions in the same
+ * order and wording: View (always), Edit (Continue Setup for a draft),
+ * Activate or Deactivate at the selected branch, Permanently Delete, then
+ * More (Archive). Actions the supervisor can't take are left out, and the
+ * row says why: a product set up for a branch outside their assignment is
+ * view only (the server enforces the same scope), and Create Branch Copy on
+ * its product page is the way to change it for their own branch.
  */
 export function ProductListRow({ product, view, branchName, canEdit, canDeactivate, onAction }: ProductListRowProps) {
   const status = statusFor(product, view, branchName);
   const typeLabel = `${productTypeLabel(product)}${product.product_type?.is_active === false ? ' (inactive)' : ''}`;
   const branches = product.branches ?? [];
   const lifecycleClosed = product.status === 'archived' || product.status === 'discontinued';
-  const readOnlyReason = !canEdit && !lifecycleClosed ? 'Set up for a branch outside your assignment — view only.' : null;
+  const readOnlyReason = !canEdit ? 'Set up for a branch outside your assignment — view only.' : null;
+  const canActivate = view === 'inactive' && canEdit && !lifecycleClosed;
 
   return (
     <li
@@ -98,7 +105,10 @@ export function ProductListRow({ product, view, branchName, canEdit, canDeactiva
         </Badge>
       </div>
 
-      <div className="col-start-2 flex flex-wrap items-center gap-2 md:col-start-auto md:justify-end">
+      <div className="col-start-2 flex flex-wrap items-center gap-2 md:col-start-auto md:justify-end" aria-label={`Actions for ${product.name}`} role="group">
+        <Button size="sm" variant="outline" asChild>
+          <Link href={`/supervisor/products/${product.id}`}>View</Link>
+        </Button>
         {view === 'drafts' && canEdit && (
           <Button size="sm" onClick={() => onAction('continue', product)}>
             Continue Setup
@@ -114,9 +124,14 @@ export function ProductListRow({ product, view, branchName, canEdit, canDeactiva
             Deactivate
           </Button>
         )}
-        {(!canEdit || lifecycleClosed) && (
-          <Button size="sm" variant="outline" asChild>
-            <Link href={`/supervisor/products/${product.id}`}>View</Link>
+        {canActivate && (
+          <Button size="sm" variant="outline" onClick={() => onAction('publish', product)} title={`Publish at ${branchName}`}>
+            Activate
+          </Button>
+        )}
+        {canEdit && (
+          <Button size="sm" variant="outline" className="border-destructive/50 text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => onAction('delete', product)}>
+            Permanently Delete
           </Button>
         )}
         <DropdownMenu>
@@ -125,23 +140,17 @@ export function ProductListRow({ product, view, branchName, canEdit, canDeactiva
               <MoreHorizontal className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-60">
-            <DropdownMenuItem asChild>
-              <Link href={`/supervisor/products/${product.id}`}>Open product page</Link>
-            </DropdownMenuItem>
-            {view === 'inactive' && canEdit && !lifecycleClosed && (
-              <DropdownMenuItem onSelect={() => onAction('publish', product)}>Publish at {branchName}…</DropdownMenuItem>
-            )}
+          <DropdownMenuContent align="end" className="w-64">
             {view === 'drafts' && canEdit && <DropdownMenuItem onSelect={() => onAction('edit', product)}>Edit in popup</DropdownMenuItem>}
-            <DropdownMenuSeparator />
-            {canEdit ? (
-              <DropdownMenuItem onSelect={() => onAction('remove', product)} className="text-destructive focus:text-destructive">
-                {product.status === 'archived' ? 'Delete…' : 'Archive or delete…'}
-              </DropdownMenuItem>
-            ) : (
-              <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
-                Archive and delete need an assignment to every branch this product is set up for.
+            {!canEdit ? (
+              <DropdownMenuLabel className="text-xs font-normal text-muted-foreground" data-testid="product-row-unavailable">
+                Edit, Archive and Permanently Delete need an assignment to every branch this product is set up for. Open View to create a branch copy
+                for your own branch.
               </DropdownMenuLabel>
+            ) : product.status !== 'archived' ? (
+              <DropdownMenuItem onSelect={() => onAction('archive', product)}>Archive (off POS everywhere, restorable)…</DropdownMenuItem>
+            ) : (
+              <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">Already archived. Restore it from its product page.</DropdownMenuLabel>
             )}
           </DropdownMenuContent>
         </DropdownMenu>

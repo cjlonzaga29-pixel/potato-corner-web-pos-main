@@ -89,6 +89,11 @@ const DEFINITIVE_QUEUE_REJECTION_CODES = new Set([
   // same name (rows are keyed by the original branch id). A fenced branch
   // (BRANCH_DELETION_IN_PROGRESS) stays retryable: that may still be stopped.
   'BRANCH_DELETED',
+  // Product permanent delete — PRODUCT_DELETED: a product in this queued sale
+  // was permanently deleted. It is never substituted with another product or
+  // resent; it stays on this device, visibly refused, for a supervisor to
+  // reconcile the cash by hand.
+  'PRODUCT_DELETED',
 ]);
 
 export function isDefinitiveQueueRejection(code: string | null | undefined): boolean {

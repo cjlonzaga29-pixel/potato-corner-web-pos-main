@@ -5,6 +5,8 @@ import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tansta
 import { toast } from 'sonner';
 import {
   SOCKET_EVENTS,
+  PRODUCT_PERMANENT_DELETE_CONFIRMATION,
+  type ProductDeletionPreview,
   type BranchProductAvailabilityRow,
   type BulkBranchProductAvailabilityResponse,
   type CartAvailabilityCheckInput,
@@ -53,7 +55,7 @@ export interface ProductFilters {
 }
 
 interface ApiErrorShape {
-  error: { code: string; message?: string } | string | null;
+  error: { code: string; message?: string; details?: unknown } | string | null;
 }
 
 function errorMessage(response: ApiErrorShape, fallback: string): string {
@@ -71,6 +73,8 @@ export class ProductApiError extends Error {
   constructor(
     message: string,
     public readonly code: string | undefined,
+    /** The API's structured error details when it sent any (e.g. product delete blockers). */
+    public readonly details?: unknown,
   ) {
     super(message);
     this.name = 'ProductApiError';
@@ -83,7 +87,8 @@ function errorCode(response: ApiErrorShape): string | undefined {
 }
 
 export function productApiError(response: ApiErrorShape, fallback: string): ProductApiError {
-  return new ProductApiError(errorMessage(response, fallback), errorCode(response));
+  const details = response.error && typeof response.error !== 'string' ? response.error.details : undefined;
+  return new ProductApiError(errorMessage(response, fallback), errorCode(response), details);
 }
 
 /**
@@ -846,19 +851,50 @@ export function useLinkVariantFlavor(productId: string, variantId: string) {
   });
 }
 
+/**
+ * Product permanent delete — what deleting would remove, keep and need first,
+ * read fresh each time the confirmation opens (never from cache), so the
+ * dialog shows the branches, sales and blockers as they are right now.
+ */
+export function useProductDeletionPreview(productId: string) {
+  return useQuery({
+    queryKey: ['product-deletion-preview', productId],
+    queryFn: async () => {
+      const response = await apiClient<ProductDeletionPreview>(`/api/products/${productId}/deletion-preview`);
+      if (response.error || !response.data) throw productApiError(response, "Couldn't check what deleting this product would change");
+      return response.data;
+    },
+    staleTime: 0,
+    gcTime: 0,
+    retry: false,
+  });
+}
+
+/**
+ * Product permanent delete. Sends the explicit confirmation the API requires;
+ * keeps the API's code and details (blockers, scope) for the dialog to show.
+ * On success, the product drops out of every list, count and detail query.
+ * Open POS terminals refresh through the API's catalog:changed hint.
+ */
 export function useDeleteProduct() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (productId: string) => {
-      const response = await apiClient<null>(`/api/products/${productId}`, { method: 'DELETE' });
-      // POS-PERF-P39 — keeps the code: PRODUCT_HAS_DEPENDENCIES means offer Archive instead.
-      if (response.error) throw productApiError(response, 'Failed to delete product');
+      const response = await apiClient<{ id: string; name: string; deleted: true }>(`/api/products/${productId}`, {
+        method: 'DELETE',
+        body: JSON.stringify({ confirm: PRODUCT_PERMANENT_DELETE_CONFIRMATION }),
+      });
+      if (response.error) throw productApiError(response, "Couldn't delete this product");
+      return response.data;
     },
-    onSuccess: () => {
+    onSettled: (_data, _error, productId) => {
       void queryClient.invalidateQueries({ queryKey: ['products'] });
-      toast.success('Product deleted');
+      void queryClient.invalidateQueries({ queryKey: ['product-deletion-preview', productId] });
     },
-    onError: (error: Error) => toast.error(error.message),
+    onSuccess: (data, productId) => {
+      queryClient.removeQueries({ queryKey: ['product', productId] });
+      toast.success(data?.name ? `${data.name} was permanently deleted` : 'Product permanently deleted');
+    },
   });
 }
 

@@ -124,88 +124,96 @@ export function EditProductDialog({ open, onOpenChange, product }: EditProductDi
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent size="form">
         <DialogHeader>
           <DialogTitle>Edit Product</DialogTitle>
           <DialogDescription>Status changes go through the Change Status action, not this form.</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-2">
-          <p className="text-sm font-medium">Product Image</p>
-          {product.has_image && (
-            <div className="flex items-center gap-3">
-              {imageLoading || !imageData?.image_url ? (
-                <div data-testid="edit-product-image-skeleton" className="h-16 w-16 shrink-0 animate-pulse rounded-md bg-muted" />
-              ) : (
-                // eslint-disable-next-line @next/next/no-img-element -- short-lived signed Supabase Storage URL
-                <img src={imageData.image_url} alt={product.name} className="h-16 w-16 shrink-0 rounded-md border object-cover" />
-              )}
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => void handleImageDelete()}
-                disabled={deleteImage.isPending || imageLoading}
-              >
-                {deleteImage.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
-                Remove
-              </Button>
-            </div>
-          )}
-          {!product.has_image && !imageLoading && (
-            <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <ImageIcon className="h-4 w-4" aria-hidden="true" />
-              No image yet.
-            </p>
-          )}
-          <ImageUpload
-            label={product.has_image ? 'Replace Image' : 'Upload Image'}
-            description="JPEG, PNG, or WebP, up to 5MB."
-            onImageSelected={handleImageSelected}
-          />
-        </div>
-
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-            <FormFieldWrapper<FormValues> name="name" label="Product Name" required>
-              <Input placeholder="Cheese Fries" />
-            </FormFieldWrapper>
-
-            <FormFieldWrapper<FormValues> name="description" label="Description">
-              <Textarea placeholder="Optional description" rows={3} />
-            </FormFieldWrapper>
-
-            <div className="grid grid-cols-2 gap-3">
-              <FormFieldWrapper<FormValues> name="category" label="Category">
-                <Input placeholder="Fries" />
-              </FormFieldWrapper>
-              <FormFieldWrapper<FormValues> name="display_order" label="Display Order">
-                <Input inputMode="numeric" placeholder="0" />
-              </FormFieldWrapper>
-            </div>
-
-            <ProductTypeSelect
-              id="edit-product-type"
-              value={productType}
-              options={productTypeOptionsFor(product, types ?? BUILT_IN_PRODUCT_TYPES)}
-              savedClassification={product.classification}
-              savedKey={product.product_type?.key ?? product.classification}
-              onChange={(value) => form.setValue('product_type', value, { shouldDirty: true })}
-            />
-
-            {isSeasonal && (
-              <div className="grid grid-cols-2 gap-3">
-                <FormFieldWrapper<FormValues> name="seasonal_start_date" label="Season Start (optional)">
-                  <Input type="date" />
-                </FormFieldWrapper>
-                <FormFieldWrapper<FormValues> name="seasonal_end_date" label="Season End (optional)">
-                  <Input type="date" />
-                </FormFieldWrapper>
-                <p className="col-span-2 text-xs text-muted-foreground">
-                  For your reference only — the product is not hidden outside these dates.
-                </p>
+            <div className="grid gap-6 md:grid-cols-[15rem_minmax(0,1fr)]">
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Product Image</p>
+                {product.has_image && (
+                  <div className="flex items-center gap-3">
+                    {imageLoading || !imageData?.image_url ? (
+                      <div data-testid="edit-product-image-skeleton" className="h-16 w-16 shrink-0 animate-pulse rounded-md bg-muted" />
+                    ) : (
+                      // eslint-disable-next-line @next/next/no-img-element -- short-lived signed Supabase Storage URL
+                      <img src={imageData.image_url} alt={product.name} className="h-16 w-16 shrink-0 rounded-md border object-cover" />
+                    )}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void handleImageDelete()}
+                      disabled={deleteImage.isPending || imageLoading}
+                    >
+                      {deleteImage.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
+                      Remove
+                    </Button>
+                  </div>
+                )}
+                {!product.has_image && !imageLoading && (
+                  <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <ImageIcon className="h-4 w-4" aria-hidden="true" />
+                    No image yet.
+                  </p>
+                )}
+                <ImageUpload
+                  label={product.has_image ? 'Replace Image' : 'Upload Image'}
+                  description="JPEG, PNG, or WebP, up to 5MB."
+                  onImageSelected={handleImageSelected}
+                />
               </div>
-            )}
+
+              <div className="grid content-start gap-4 sm:grid-cols-2">
+                <div className="sm:col-span-2">
+                  <FormFieldWrapper<FormValues> name="name" label="Product Name" required>
+                    <Input placeholder="Cheese Fries" />
+                  </FormFieldWrapper>
+                </div>
+
+                <div className="sm:col-span-2">
+                  <FormFieldWrapper<FormValues> name="description" label="Description">
+                    <Textarea placeholder="Optional description" rows={3} />
+                  </FormFieldWrapper>
+                </div>
+
+                <FormFieldWrapper<FormValues> name="category" label="Category">
+                  <Input placeholder="Fries" />
+                </FormFieldWrapper>
+                <FormFieldWrapper<FormValues> name="display_order" label="Display Order">
+                  <Input inputMode="numeric" placeholder="0" />
+                </FormFieldWrapper>
+
+                <div className="sm:col-span-2">
+                  <ProductTypeSelect
+                    id="edit-product-type"
+                    value={productType}
+                    options={productTypeOptionsFor(product, types ?? BUILT_IN_PRODUCT_TYPES)}
+                    savedClassification={product.classification}
+                    savedKey={product.product_type?.key ?? product.classification}
+                    onChange={(value) => form.setValue('product_type', value, { shouldDirty: true })}
+                  />
+                </div>
+
+                {isSeasonal && (
+                  <div className="grid gap-3 sm:col-span-2 sm:grid-cols-2">
+                    <FormFieldWrapper<FormValues> name="seasonal_start_date" label="Season Start (optional)">
+                      <Input type="date" />
+                    </FormFieldWrapper>
+                    <FormFieldWrapper<FormValues> name="seasonal_end_date" label="Season End (optional)">
+                      <Input type="date" />
+                    </FormFieldWrapper>
+                    <p className="text-xs sm:col-span-2 text-muted-foreground">
+                      For your reference only — the product is not hidden outside these dates.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
 
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>

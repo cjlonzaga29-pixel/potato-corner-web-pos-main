@@ -38,7 +38,7 @@ export function ExpenseDeleteDialog({ open, onOpenChange, expense }: ExpenseDele
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-sm">
+      <DialogContent size="confirm">
         <DialogHeader>
           <div className="flex items-center gap-2">
             <div className="flex h-9 w-9 items-center justify-center rounded-full bg-destructive/10 text-destructive">

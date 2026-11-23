@@ -13,8 +13,10 @@ import {
   type ProductTypeKey,
 } from '@potato-corner/shared';
 import { productsRepository } from './products.repository.js';
+import { isForeignKeyRestriction } from '../../lib/foreign-key-restriction.js';
 import {
   ProductError,
+  VariantHasHistoryError,
   type AddFlavorSlotInput,
   type ProductListFilters,
   type ReorderFlavorSlotsInput,
@@ -2699,41 +2701,6 @@ export const productsService = {
     return stockAvailabilityService.evaluateCartAvailability(branchId, lines);
   },
 
-  async deleteProduct(productId: string, actor: ActorContext, ipAddress: string | null) {
-    const existing = await productsRepository.findById(productId);
-    if (!existing) throw new ProductError('PRODUCT_NOT_FOUND', 'Product not found', 404);
-    // POS-PERF-P35 — see updateProduct's ownership check above.
-    if (actor.role === ROLES.SUPERVISOR && !(await hasActiveCatalogAuthorityForProduct(existing, actor.id))) {
-      throw new ProductError('PRODUCT_DELETE_FORBIDDEN', 'You may only delete a product an active branch assignment gives you authority over', 403);
-    }
-
-    try {
-      await productsRepository.deleteProductCascade(
-        productId,
-        existing.variants.map((v) => v.id),
-      );
-    } catch (error) {
-      if (isForeignKeyViolation(error)) {
-        throw new ProductError(
-          'PRODUCT_HAS_DEPENDENCIES',
-          'Cannot delete: product has associated transactions. Change status to Archived instead.',
-          409,
-        );
-      }
-      throw error;
-    }
-
-    await recordAuditLog({
-      action: 'PRODUCT_DELETED',
-      entityType: 'product',
-      entityId: productId,
-      actorId: actor.id,
-      actorRole: actor.role,
-      beforeState: toProductDetailResponse(existing as DetailRow),
-      ipAddress,
-    });
-  },
-
   /**
    * POS-PERF-P36R4 — scoped copy path for a supervisor who controls only
    * some of a shared product's branches: hasActiveCatalogAuthorityForProduct
@@ -2918,7 +2885,7 @@ export const productsService = {
     try {
       await productsRepository.deleteVariantCascade(variantId);
     } catch (error) {
-      if (isForeignKeyViolation(error)) {
+      if (error instanceof VariantHasHistoryError || isForeignKeyViolation(error) || isForeignKeyRestriction(error)) {
         throw new ProductError(
           'VARIANT_HAS_DEPENDENCIES',
           'Cannot delete: variant has associated transactions. Change status to Archived instead.',

@@ -15,6 +15,34 @@ import type { AddressInfo } from 'node:net';
 const canRunIntegrationTests = Boolean(process.env.TEST_DATABASE_URL);
 
 const emitted: Array<{ room: string; event: string; payload: unknown }> = [];
+
+/**
+ * Every queueCatalogChanged call, in order, still forwarded to the real
+ * notifier (its real Set and real 300 ms window). Product writes queue only
+ * after their own post-`finish` lookup, so a test waits for the count it
+ * expects instead of sleeping. While `held` is set, calls are recorded but
+ * forwarded only when the test releases them: the window is fixed from the
+ * first hint (bounded delay, not a trailing debounce), so writes whose
+ * lookups finish more than 300 ms apart under database load legitimately
+ * land in two windows. Holding lets the test choose which window each write
+ * lands in instead of depending on database latency.
+ */
+const queued: string[][] = [];
+let held: Array<() => void> | null = null;
+vi.mock('../../lib/catalog-change-notifier.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../../lib/catalog-change-notifier.js')>();
+  return {
+    ...original,
+    queueCatalogChanged: (branchIds: Iterable<string | null | undefined>) => {
+      const list = [...branchIds];
+      queued.push(list.filter((id): id is string => typeof id === 'string'));
+      const send = () => original.queueCatalogChanged(list);
+      if (held) held.push(send);
+      else send();
+    },
+  };
+});
+
 vi.mock('../../socket/socket.server.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('../../socket/socket.server.js')>();
   return {
@@ -68,11 +96,17 @@ describe.skipIf(!canRunIntegrationTests)('P69R catalog-change hints', () => {
     return { status: response.status, data: json?.data ?? null };
   }
 
-  /** Lets the `finish` lookups settle, then sends whatever was coalesced. */
-  async function hints() {
-    await new Promise((resolve) => setTimeout(resolve, 100));
+  /** Waits until `count` hints have been queued in this test (product lookups run after the response). */
+  async function queuedCount(count: number) {
+    await vi.waitFor(() => expect(queued).toHaveLength(count), { timeout: 5000 });
+  }
+
+  const catalogEvents = () => emitted.filter((e) => e.event === CATALOG_CHANGED);
+
+  /** Sends whatever was coalesced now. */
+  function hints() {
     flushCatalogChangedForTests();
-    return emitted.filter((e) => e.event === CATALOG_CHANGED);
+    return catalogEvents();
   }
 
   const supAB = () => generateSupervisorToken([ids.branchA, ids.branchB], { userId: ids.supAB });
@@ -101,9 +135,11 @@ describe.skipIf(!canRunIntegrationTests)('P69R catalog-change hints', () => {
     await new Promise((resolve) => server.close(resolve));
   });
 
-  beforeEach(async () => {
-    await hints();
+  beforeEach(() => {
+    held = null;
+    hints();
     emitted.length = 0;
+    queued.length = 0;
   });
 
   it('type create, rename, deactivate and reactivate each hint only the branches in the type scope, with only a branch id', async () => {
@@ -147,22 +183,54 @@ describe.skipIf(!canRunIntegrationTests)('P69R catalog-change hints', () => {
   it('reassigning a product to a type hints the branches that list the product, not other branches', async () => {
     const type = await call('POST', '/api/product-types', supAB(), { name: `Assign ${tag}`, branch_ids: [ids.branchA] });
     const productId = await sellableAtA('Reassigned');
-    await hints();
+    hints();
     emitted.length = 0;
+    queued.length = 0;
 
     const patched = await call('PATCH', `/api/products/${productId}`, supAB(), { product_type: type.data?.id });
     expect(patched.status).toBe(200);
-    expect(await hints()).toEqual([{ room: `branch:${ids.branchA}`, event: CATALOG_CHANGED, payload: { branch_id: ids.branchA } }]);
+    await queuedCount(1);
+    expect(hints()).toEqual([{ room: `branch:${ids.branchA}`, event: CATALOG_CHANGED, payload: { branch_id: ids.branchA } }]);
   });
 
-  it('a burst of product writes is one hint per branch, and reads hint nothing', async () => {
+  it('a burst of product writes queued in one window is one hint per branch, delivered by the window itself; reads hint nothing', async () => {
     const productId = await sellableAtA('Burst');
-    await hints();
-    emitted.length = 0;
+    held = [];
 
     const responses = await Promise.all(Array.from({ length: 5 }, (_, i) => call('PATCH', `/api/products/${productId}`, supAB(), { description: `burst ${i}` })));
     expect(responses.map((r) => r.status)).toEqual([200, 200, 200, 200, 200]);
-    await call('GET', `/api/products/catalog?branch_id=${ids.branchA}`, generateStaffToken(ids.branchA, { userId: ids.staffA }));
-    expect((await hints()).map((e) => e.room)).toEqual([`branch:${ids.branchA}`]);
+    // Every write queued its own hint, for the branch that lists the product only.
+    await queuedCount(5);
+    expect(queued).toEqual(Array.from({ length: 5 }, () => [ids.branchA]));
+
+    const read = await call('GET', `/api/products/catalog?branch_id=${ids.branchA}`, generateStaffToken(ids.branchA, { userId: ids.staffA }));
+    expect(read.status).toBe(200);
+    expect(queued).toHaveLength(5);
+
+    // All five reach the real notifier inside one window; its own timer sends them, no manual flush.
+    const release = held;
+    held = null;
+    for (const send of release) send();
+    expect(catalogEvents()).toEqual([]);
+    await vi.waitFor(() => expect(catalogEvents()).toHaveLength(1));
+    expect(hints()).toEqual([{ room: `branch:${ids.branchA}`, event: CATALOG_CHANGED, payload: { branch_id: ids.branchA } }]);
+  });
+
+  it('writes whose hints arrive in two windows send one hint per window, and none is lost', async () => {
+    const productId = await sellableAtA('Split');
+    held = [];
+
+    const responses = await Promise.all(Array.from({ length: 5 }, (_, i) => call('PATCH', `/api/products/${productId}`, supAB(), { description: `split ${i}` })));
+    expect(responses.map((r) => r.status)).toEqual([200, 200, 200, 200, 200]);
+    await queuedCount(5);
+    const release = held;
+    held = null;
+
+    // The first two land in one window, as when database latency spreads a burst past 300 ms.
+    for (const send of release.slice(0, 2)) send();
+    await vi.waitFor(() => expect(catalogEvents()).toHaveLength(1));
+    for (const send of release.slice(2)) send();
+    await vi.waitFor(() => expect(catalogEvents()).toHaveLength(2));
+    expect(hints().map((e) => e.room)).toEqual([`branch:${ids.branchA}`, `branch:${ids.branchA}`]);
   });
 });

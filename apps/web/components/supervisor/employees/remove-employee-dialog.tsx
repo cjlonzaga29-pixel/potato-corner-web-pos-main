@@ -292,7 +292,7 @@ export function RemoveEmployeeDialog({ open, onOpenChange, employee, onDeleted }
 
   return (
     <Dialog open={open} onOpenChange={(next) => (!next && deleteEmployee.isPending ? undefined : onOpenChange(next))}>
-      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-md">
+      <DialogContent size="confirm">
         <DialogHeader>
           <DialogTitle>Delete {name}</DialogTitle>
           <DialogDescription>Deletes the account permanently. Past records keep their name.</DialogDescription>

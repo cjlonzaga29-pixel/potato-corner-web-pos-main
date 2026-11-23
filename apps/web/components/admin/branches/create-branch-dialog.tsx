@@ -119,7 +119,7 @@ export function CreateBranchDialog({ open, onOpenChange }: CreateBranchDialogPro
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent size="standard">
         <DialogHeader>
           <DialogTitle>Create Branch</DialogTitle>
           <DialogDescription>The branch code is generated automatically from the city.</DialogDescription>
@@ -139,7 +139,7 @@ export function CreateBranchDialog({ open, onOpenChange }: CreateBranchDialogPro
               <Input placeholder="123 Rizal Street" />
             </FormFieldWrapper>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <FormFieldWrapper<FormValues> name="gpsLatitude" label="GPS Latitude" description="Optional">
                 <Input placeholder="14.5995" inputMode="decimal" />
               </FormFieldWrapper>
@@ -156,7 +156,7 @@ export function CreateBranchDialog({ open, onOpenChange }: CreateBranchDialogPro
               <Input type="email" placeholder="branch.manila@potatocorner.com" />
             </FormFieldWrapper>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <FormFieldWrapper<FormValues> name="password" label="Password" required>
                 <Input type="password" />
               </FormFieldWrapper>

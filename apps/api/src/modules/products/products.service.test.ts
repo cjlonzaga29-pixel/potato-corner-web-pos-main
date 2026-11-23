@@ -30,7 +30,6 @@ vi.mock('./products.repository.js', () => ({
     getProductsByGlobalStatus: vi.fn(),
     allActiveBranches: vi.fn(),
     findActiveBranch: vi.fn(),
-    deleteProductCascade: vi.fn(),
     deleteVariantCascade: vi.fn(),
     // CR-005 Sub-phase 3c
     updateVariantLifecycle: vi.fn(),
@@ -1150,31 +1149,8 @@ describe('productsService.createVariant', () => {
   });
 });
 
-describe('productsService.deleteProduct', () => {
-  it('deletes the product cascade and records an audit log entry', async () => {
-    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ variants: [buildVariant()] }) as never);
-    vi.mocked(productsRepository.deleteProductCascade).mockResolvedValue(buildProduct() as never);
-
-    await productsService.deleteProduct('prod-1', SUPER_ADMIN, null);
-
-    expect(productsRepository.deleteProductCascade).toHaveBeenCalledWith('prod-1', ['variant-1']);
-    expect(recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ action: 'PRODUCT_DELETED', entityId: 'prod-1' }));
-  });
-
-  it('maps a P2003 foreign key violation to a 409 with a friendly message', async () => {
-    vi.mocked(productsRepository.findById).mockResolvedValue(buildProduct({ variants: [] }) as never);
-    vi.mocked(productsRepository.deleteProductCascade).mockRejectedValue(
-      new Prisma.PrismaClientKnownRequestError('Foreign key constraint failed', { code: 'P2003', clientVersion: '5.0.0' }),
-    );
-
-    await expect(productsService.deleteProduct('prod-1', SUPER_ADMIN, null)).rejects.toMatchObject({
-      code: 'PRODUCT_HAS_DEPENDENCIES',
-      statusCode: 409,
-    });
-
-    expect(recordAuditLog).not.toHaveBeenCalled();
-  });
-});
+// productsService.deleteProduct was replaced by productDeletionService.permanentlyDelete
+// (see product-deletion.integration.test.ts, which runs it against a real Postgres).
 
 describe('productsService.deleteVariant', () => {
   it('deletes the variant cascade and records an audit log entry', async () => {

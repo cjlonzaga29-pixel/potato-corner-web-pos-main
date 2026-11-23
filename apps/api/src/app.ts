@@ -1,5 +1,5 @@
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
-import { isDeletedBranchWrite, isFencedBranchWrite } from './lib/foreign-key-restriction.js';
+import { isDeletedBranchWrite, isDeletedProductWrite, isFencedBranchWrite } from './lib/foreign-key-restriction.js';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
@@ -160,6 +160,17 @@ app.use((error: unknown, req: Request, res: Response, _next: NextFunction) => {
     res.status(409).json({
       data: null,
       error: { code: 'BRANCH_DELETED', message: 'This branch has been deleted. Nothing was saved.' },
+      meta: null,
+    });
+    return;
+  }
+
+  // Product permanent delete — a write naming a product deleted meanwhile is refused by the database; say so.
+  if (isDeletedProductWrite(error)) {
+    if (res.headersSent) return;
+    res.status(409).json({
+      data: null,
+      error: { code: 'PRODUCT_DELETED', message: 'This product was permanently deleted. Nothing was saved.' },
       meta: null,
     });
     return;

@@ -9,7 +9,7 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
 ## Observed state
 
 - **Observed:** 2026-11-23
-- **Branch:** `feat/pos-perf-p69-pos-product-type-filter`, created from `origin/main` `a5ffefbb` (the PR #49 merge, the last **reported** deployment, not verified here).
+- **Current branch:** `feat/product-permanent-delete` (see Latest below). **Previous branch noted here:** `feat/pos-perf-p69-pos-product-type-filter`, created from `origin/main` `a5ffefbb` (the PR #49 merge, the last **reported** deployment, not verified here).
   - P69 code `3e21fc8f` (tested), docs `c2db620c`.
   - P69R code `c147ec4f` (tested), docs commit after it.
   - **Pushed (feature branch only) with one PR to `main`. Not merged or deployed. Production not accessed.**
@@ -22,7 +22,69 @@ on different branches, keep one `docs/handoffs/<branch>.md` per branch and link 
   - The older `C:\p68`, `C:\p68r`, `C:\p68s`, `C:\p67`, `C:\p66*` folders noted before.
 - **Left running, not proven to be this task's:** the idle `io_worker` orphans and the `dist/server.js` (PID 17220) noted before.
 
-## Latest: account deletion and email reuse (branch `feat/account-deletion-email-reuse`)
+## Latest: product permanent delete, consistent actions, wider dialogs (branch `feat/product-permanent-delete`)
+
+Created 2026-11-23 from `origin/main` `58c335eb` (PR #51 merge). **Committed locally only: not pushed, merged or deployed.** Production not
+accessed; no production product deleted. Details, results, release order and rollback: [`runbooks/product-permanent-delete.md`](runbooks/product-permanent-delete.md).
+
+- **Permanently Delete** physically removes a product, its sizes and its own setup. History (sales, receipts, refunds, reports, held
+  lines, change logs, stock, movements, audit) is untouched and keeps the product's id and name.
+- **Migration `20261124120000_product_permanent_delete`:**
+  - drops the five history foreign keys to products/variants;
+  - adds live-product insert triggers (`FOR KEY SHARE`, `PRODUCT_PERMANENTLY_DELETED`) and a `hold_order_items(product_id)` index;
+  - no data changed.
+  - **Rollback floor after the first permanent delete is this migration.**
+- **Server.** Supervisor only. Authority is required over every configured, exclusive and sold-at live branch. Explicit
+  `{ confirm: "PERMANENTLY_DELETE" }`. Product lock plus row lock; atomic; outbox-audited.
+  - Blockers: held order, promotion, discount type, Mix & Max snack use, older sales without deduction snapshots.
+  - Retry gives 410.
+  - A checkout or offline sale of a deleted product gets `PRODUCT_DELETED`; offline sales stay queued for reconciliation.
+  - Sold sizes still can't be deleted alone.
+- **UI:**
+  - Row actions: View · Edit/Continue Setup · Activate/Deactivate · Permanently Delete · ⋯ Archive. A shared product stays view only and
+    explained.
+  - New confirmation dialog.
+  - Dialog `size` (`form` 1088px, `standard`/`confirm` 720px, sticky header and footer) applied to product, branch, employee, promotion
+    and delete dialogs. POS prompts are unchanged.
+- **Tests:** API integration 9/9 (run 2); affected API suites 1,479 passed / 6 skipped; populated migration rehearsal PASS (20,000
+  sales); full web 1,850/1,850; shared 83/83; typecheck clean; lint 0 errors; builds pass; browser 39/39 (run 7; earlier runs and the two
+  real UI defects they found are in the runbook).
+- **Local leftovers (task-owned, safe to delete):**
+  - `C:\p71`: integration logs and Postgres data dirs.
+  - `C:\p71s`: P62 browser stack with random-key env, DB `p62_p71`, results `out1`–`out7`, logs.
+  - All of their processes are stopped.
+  - Older orphan `postgres.exe` workers from earlier sessions were left alone (not proven to be this task's).
+- **Build note:** two web builds started from Git Bash produced a broken bundle (layout-router invariant). A clean `.next` build from
+  PowerShell in the repo's `apps\web` (uppercase `C:\` path) worked. If a local build shows "Application error" on /login, rebuild clean that way.
+- **Release-readiness review (same branch, local only):**
+  - **Defect fixed:** dropping the foreign keys also let the API deployed before this release permanently remove a sold or held product
+    (plain DELETE cascade) or a sold size, with no checks or audit, during a rollout or after a rollback. New migration
+    `20261124130000_product_delete_history_guard` restores the refusal (23503 → the old 409s); only the permanent delete bypasses it.
+    New lines must also name a size of their own product.
+  - **Rollout switch** `PRODUCT_PERMANENT_DELETE_ENABLED` (default off). Turn it on only once no old API instance serves: with one
+    serving, a delete racing its checkout gave a 500 and a stuck checkout attempt (rehearsed).
+  - **Results:** integration 12/12; populated rehearsal PASS (now with 20,000 stock movements; the earlier seed and a mistyped table
+    name had left stock unchecked); two-process old/new harness 46/46; real service-worker offline queue 10/10; API typecheck clean,
+    lint 0 errors; affected API suites 1,514 passed, 6 skipped, 1 failed (P69R hint-burst timing test: also fails 1/3 with a dummy
+    migration of the same shape and no product triggers; passes alone at times; not a delete defect).
+  - **P69R hint-burst test fixed (test only).** The hint window is fixed from the first hint (300 ms, bounded delay, not a trailing
+    debounce), and a product write queues its hint only after a post-response lookup. Under database load the five concurrent writes'
+    hints spread past 300 ms (traced: 157–194 ms when it passed) and two windows legitimately sent two hints. The notifier is
+    unchanged. The test now records every queued hint through the real notifier and waits for them instead of sleeping. It holds the
+    hints to place them in one window, then in two, and checks: one hint per branch per window, sent by the window's own timer, branch
+    A only, reads queue nothing, none lost. Both window tests fail against a no-coalescing notifier and a never-delivering one.
+    Results: old test failed in the affected run (2 hints); new test 5/5 ×3 alone and ×3 beside P59; affected API suites 1,510 passed,
+    6 skipped, 6 failed, all in P59 report coverage. That file's first PDF export got a 503 from the PDF pool under load (about
+    790 MB RAM free), and its later tests build on the earlier ones, so they failed in turn. It passes 11/11 alone. Logs: `C:\p73`
+    (task-owned, safe to delete).
+  - The first migration's description is corrected: it is not additive (it removes five foreign keys).
+  - Local leftovers (task-owned, safe to delete): `C:\p72` (logs, harness output, Postgres data dirs) and the worktrees `C:\p72\old`
+    (`58c335eb`) and `C:\p72\head` (`51f40be6`, with a throwaway dummy migration); remove with `git worktree remove --force`.
+    `C:\p71s` database now has both migrations and one more deleted fixture product.
+- **Next (owner):** review the branch. Push, PR, merge, the migrations and deploy are separate decisions. Order and rollback: runbook §6
+  (both migrations → API with the switch off → web → confirm only the new API serves → switch on).
+
+## Earlier: account deletion and email reuse (branch `feat/account-deletion-email-reuse`)
 
 Details: [`runbooks/account-deletion-email-reuse.md`](runbooks/account-deletion-email-reuse.md).
 

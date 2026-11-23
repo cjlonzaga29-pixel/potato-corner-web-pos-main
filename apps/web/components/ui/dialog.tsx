@@ -95,7 +95,30 @@ interface DialogContentProps extends React.ComponentPropsWithoutRef<typeof Dialo
    * is the one rendering this dialog, outside anything this content provides.
    */
   hasUnsavedInput?: boolean;
+  /**
+   * Management dialog sizing (Admin / Supervisor / Branch View, Create, Edit and
+   * Delete). `form` is up to 68rem (1088px) wide for product and other long
+   * forms; `standard` is up to 45rem (720px) for shorter Create/Edit forms;
+   * `confirm` is up to 45rem (720px) for delete and other consequential
+   * confirmations. Both are full width minus a 1rem gutter on smaller screens,
+   * and keep the header (with the close button) and the footer actions
+   * visible while the body scrolls inside the viewport. Omitted: the original
+   * compact dialog (POS PIN, payment and other quick prompts stay as they are).
+   * A caller's own max-w-* class should not be combined with a size.
+   */
+  size?: DialogSize;
 }
+
+type DialogSize = 'form' | 'standard' | 'confirm';
+
+const DIALOG_SIZE_CLASSES: Record<DialogSize, string> = {
+  form: 'max-w-[68rem]',
+  standard: 'max-w-[45rem]',
+  confirm: 'max-w-[45rem]',
+};
+
+/** Set by a sized standalone DialogContent: its header and footer become sticky bars, and the header carries the close button. */
+const DialogChromeContext = React.createContext<{ sticky: boolean; showCloseButton: boolean }>({ sticky: false, showCloseButton: false });
 
 function DialogCloseButton({ label = 'Close' }: { label?: string }) {
   return (
@@ -197,8 +220,9 @@ const HostedDialogContent = React.forwardRef<React.ElementRef<typeof DialogPrimi
 HostedDialogContent.displayName = 'HostedDialogContent';
 
 const DialogContent = React.forwardRef<React.ElementRef<typeof DialogPrimitive.Content>, DialogContentProps>(
-  ({ className, children, showCloseButton = true, hasUnsavedInput, ...props }, ref) => {
+  ({ className, children, showCloseButton = true, hasUnsavedInput, size, ...props }, ref) => {
     const host = React.useContext(DialogHostContext);
+    const chrome = React.useMemo(() => ({ sticky: size !== undefined, showCloseButton }), [size, showCloseButton]);
     if (host) {
       return (
         <HostedDialogContent ref={ref} host={host} className={className} showCloseButton={showCloseButton} hasUnsavedInput={hasUnsavedInput} {...props}>
@@ -217,12 +241,15 @@ const DialogContent = React.forwardRef<React.ElementRef<typeof DialogPrimitive.C
             // box being neutralized for print, otherwise the printable content collapses to
             // a blank/near-zero box even though it's marked visible.
             'app-dialog-padding fixed left-[50%] top-[50%] z-50 grid max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 overflow-y-auto rounded-xl border border-border/60 bg-card shadow-2xl shadow-black/10 duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 dark:shadow-black/50 print:static print:left-0 print:top-0 print:z-auto print:h-auto print:max-h-none print:w-auto print:max-w-none print:translate-x-0 print:translate-y-0 print:overflow-visible print:rounded-none print:border-none print:bg-transparent print:p-0 print:shadow-none',
+            size && DIALOG_SIZE_CLASSES[size],
+            // The sticky header and footer carry the vertical padding (globals.css .app-dialog-sticky-*).
+            size && 'app-dialog-sized',
             className,
           )}
           {...props}
         >
-          {children}
-          {showCloseButton && <DialogCloseButton />}
+          <DialogChromeContext.Provider value={chrome}>{children}</DialogChromeContext.Provider>
+          {showCloseButton && !chrome.sticky && <DialogCloseButton />}
         </DialogPrimitive.Content>
       </DialogPortal>
     );
@@ -230,18 +257,39 @@ const DialogContent = React.forwardRef<React.ElementRef<typeof DialogPrimitive.C
 );
 DialogContent.displayName = DialogPrimitive.Content.displayName;
 
-const DialogHeader = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => {
+const DialogHeader = ({ className, children, ...props }: React.HTMLAttributes<HTMLDivElement>) => {
   const hosted = React.useContext(HostedSectionContext);
-  return <div className={cn(hosted ? 'flex flex-col space-y-1 text-left' : 'flex flex-col space-y-1.5 text-center sm:text-left', !hosted && className)} {...props} />;
+  const chrome = React.useContext(DialogChromeContext);
+  if (!hosted && chrome.sticky) {
+    return (
+      <div className={cn('app-dialog-sticky-header flex flex-col space-y-1.5 text-left', className)} {...props}>
+        {children}
+        {chrome.showCloseButton && <DialogCloseButton />}
+      </div>
+    );
+  }
+  return (
+    <div className={cn(hosted ? 'flex flex-col space-y-1 text-left' : 'flex flex-col space-y-1.5 text-center sm:text-left', !hosted && className)} {...props}>
+      {children}
+    </div>
+  );
 };
 DialogHeader.displayName = 'DialogHeader';
 
 const DialogFooter = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => {
   // POS-PERF-P41 — hosted, the actions sit where every editor section keeps them: right-aligned under a divider.
   const hosted = React.useContext(HostedSectionContext);
+  const chrome = React.useContext(DialogChromeContext);
   return (
     <div
-      className={cn(hosted ? 'flex flex-wrap items-center justify-end gap-2 border-t pt-4' : 'flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2', !hosted && className)}
+      className={cn(
+        hosted
+          ? 'flex flex-wrap items-center justify-end gap-2 border-t pt-4'
+          : chrome.sticky
+            ? 'app-dialog-sticky-footer flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap sm:justify-end'
+            : 'flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2',
+        !hosted && className,
+      )}
       {...props}
     />
   );

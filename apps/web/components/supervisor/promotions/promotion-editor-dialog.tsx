@@ -200,7 +200,7 @@ export function PromotionEditorDialog({ open, onOpenChange, promotion, allPromot
 
   return (
     <Dialog open={open} onOpenChange={(next) => !isPending && onOpenChange(next)}>
-      <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-2xl">
+      <DialogContent size="standard">
         <DialogHeader>
           <DialogTitle>{promotion ? `Edit ${noun}` : `New ${noun}`}</DialogTitle>
           <DialogDescription>

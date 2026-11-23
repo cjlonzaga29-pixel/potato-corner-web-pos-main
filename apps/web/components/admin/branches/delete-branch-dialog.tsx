@@ -281,7 +281,7 @@ export function DeleteBranchDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent size="confirm">
         <DialogHeader>
           <DialogTitle>Permanently delete {name}?</DialogTitle>
           <DialogDescription>

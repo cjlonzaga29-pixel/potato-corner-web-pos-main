@@ -21,7 +21,8 @@ import { canEditProductInPlace } from '@/lib/product-authority';
 import { ProductListRow, type ProductRowAction } from '@/components/supervisor/products/product-list-row';
 import { ProductEditorDialog, type ProductEditorTab } from '@/components/supervisor/products/product-editor-dialog';
 import { DeactivateProductDialog } from '@/components/supervisor/products/deactivate-product-dialog';
-import { RemoveProductDialog } from '@/components/supervisor/products/remove-product-dialog';
+import { ArchiveProductDialog } from '@/components/supervisor/products/archive-product-dialog';
+import { PermanentDeleteProductDialog } from '@/components/supervisor/products/permanent-delete-product-dialog';
 import { ProductTypeChooserDialog } from '@/components/supervisor/products/product-type-chooser-dialog';
 import { ProductTypeNav, ALL_PRODUCT_TYPES } from '@/components/supervisor/products/product-type-nav';
 import { ProductTypeFormDialog } from '@/components/supervisor/products/product-type-form-dialog';
@@ -66,7 +67,8 @@ function SupervisorProductsContent() {
   const [page, setPage] = useState(1);
   const [editing, setEditing] = useState<{ productId: string; tab: ProductEditorTab } | null>(null);
   const [deactivating, setDeactivating] = useState<ProductResponse | null>(null);
-  const [removing, setRemoving] = useState<ProductResponse | null>(null);
+  const [archiving, setArchiving] = useState<ProductResponse | null>(null);
+  const [deleting, setDeleting] = useState<ProductResponse | null>(null);
 
   // A different branch, tab or search starts again from page 1.
   useEffect(() => setPage(1), [activeBranchId, view, debouncedSearch, typeFilter]);
@@ -131,8 +133,10 @@ function SupervisorProductsContent() {
       setEditing({ productId: product.id, tab: 'branches' });
     } else if (action === 'deactivate') {
       setDeactivating(product);
+    } else if (action === 'archive') {
+      setArchiving(product);
     } else {
-      setRemoving(product);
+      setDeleting(product);
     }
   }
 
@@ -317,7 +321,8 @@ function SupervisorProductsContent() {
       {deactivating && activeBranchId && (
         <DeactivateProductDialog product={deactivating} branch={{ id: activeBranchId, name: branchName }} onOpenChange={(open) => !open && setDeactivating(null)} />
       )}
-      {removing && <RemoveProductDialog product={removing} onOpenChange={(open) => !open && setRemoving(null)} />}
+      {archiving && <ArchiveProductDialog product={archiving} onOpenChange={(open) => !open && setArchiving(null)} />}
+      {deleting && <PermanentDeleteProductDialog product={deleting} onOpenChange={(open) => !open && setDeleting(null)} />}
     </div>
   );
 }

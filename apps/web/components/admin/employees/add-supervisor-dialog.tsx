@@ -99,7 +99,7 @@ export function AddSupervisorDialog({ open, onOpenChange }: AddSupervisorDialogP
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+      <DialogContent size="standard">
         <DialogHeader>
           <DialogTitle>Add Supervisor</DialogTitle>
           <DialogDescription>Create a supervisor login and choose the branches they manage.</DialogDescription>

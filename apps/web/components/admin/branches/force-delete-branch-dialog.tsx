@@ -361,7 +361,7 @@ export function ForceDeleteBranchDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent size="confirm">
         <DialogHeader>
           <DialogTitle>Force delete {name}?</DialogTitle>
           <DialogDescription>

@@ -109,7 +109,7 @@ export function SupervisorEditEmployeeDialog({ open, onOpenChange, employee }: E
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-md">
+      <DialogContent size="standard">
         <DialogHeader>
           <DialogTitle>Edit {isStaff ? 'Employee' : ROLE_LABELS[employee.role]}</DialogTitle>
           <DialogDescription>Employee ID and role cannot be changed after creation.</DialogDescription>
@@ -122,7 +122,7 @@ export function SupervisorEditEmployeeDialog({ open, onOpenChange, employee }: E
 
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <FormFieldWrapper<FormValues> name="first_name" label="First Name" required>
                 <Input />
               </FormFieldWrapper>
@@ -175,7 +175,7 @@ export function SupervisorEditEmployeeDialog({ open, onOpenChange, employee }: E
                 Government ID fields are shown blank for security. Fill in a field only to replace its encrypted value —
                 leave it blank to keep the existing one unchanged.
               </p>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <FormFieldWrapper<FormValues> name="sss_number" label="SSS Number">
                   <Input placeholder="Leave blank to keep unchanged" />
                 </FormFieldWrapper>

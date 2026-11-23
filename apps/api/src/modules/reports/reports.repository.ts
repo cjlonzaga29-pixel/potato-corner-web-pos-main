@@ -1170,14 +1170,29 @@ export const reportsRepository = {
       include: { product: { select: { name: true } } },
     });
     const variantById = new Map(variants.map((v) => [v.id, v]));
+    // Product permanent delete — a deleted product's sales stay in the report
+    // under the name and size they were sold with (the line snapshots), never
+    // "Unknown Product". Live products keep showing their current name.
+    const missingIds = grouped.map((g) => g.productVariantId).filter((id) => !variantById.has(id));
+    const snapshotNames = new Map<string, { product: string; variant: string }>();
+    if (missingIds.length > 0) {
+      const latest = await prisma.transactionItem.findMany({
+        where: { productVariantId: { in: missingIds }, transactionId: { in: completedTransactionIds } },
+        orderBy: { transaction: { createdAt: 'desc' } },
+        distinct: ['productVariantId'],
+        select: { productVariantId: true, productNameSnapshot: true, variantNameSnapshot: true },
+      });
+      for (const row of latest) snapshotNames.set(row.productVariantId, { product: row.productNameSnapshot, variant: row.variantNameSnapshot });
+    }
 
     return grouped
       .map((g) => {
         const variant = variantById.get(g.productVariantId);
+        const snapshot = snapshotNames.get(g.productVariantId);
         return {
           product_variant_id: g.productVariantId,
-          product_name: variant?.product.name ?? 'Unknown Product',
-          variant_name: variant?.name ?? 'Unknown Variant',
+          product_name: variant?.product.name ?? snapshot?.product ?? 'Unknown Product',
+          variant_name: variant?.name ?? snapshot?.variant ?? 'Unknown Variant',
           units_sold: g._sum.quantity ?? 0,
           gross_revenue: g._sum.lineTotal?.toNumber() ?? 0,
           transaction_count: g._count.id,

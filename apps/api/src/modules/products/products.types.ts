@@ -135,3 +135,11 @@ export class ProductError extends Error {
     this.name = 'ProductError';
   }
 }
+
+/** A variant with sales, held-order lines or change history: deleting it is refused (VARIANT_HAS_DEPENDENCIES). */
+export class VariantHasHistoryError extends Error {
+  constructor() {
+    super('Variant has sales, held orders or change history');
+    this.name = 'VariantHasHistoryError';
+  }
+}

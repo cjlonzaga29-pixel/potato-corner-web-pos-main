@@ -988,8 +988,11 @@ model Product {
   forkedCopies               Product[]                   @relation("ProductForkedFrom")
   variants                   ProductVariant[]
   branchAvailability         BranchProductAvailability[]
-  transactionItems           TransactionItem[]
-  holdOrderItems             HoldOrderItem[]
+  // Product permanent delete — sale lines, held-order lines and variant change
+  // logs keep product_id/product_variant_id as historical identity without a
+  // foreign key, so a product can be deleted while its history stays intact.
+  // New rows still need a live product: database triggers lock the product and
+  // variant FOR KEY SHARE on insert, exactly like a foreign-key check.
   promotionProducts          PromotionProduct[]
   manualDiscountTypeProducts ManualDiscountTypeProduct[]
 
@@ -1082,10 +1085,7 @@ model ProductVariant {
   createdBy        Person?                @relation("ProductVariantCreatedBy", fields: [createdById], references: [id])
   approvedBy       Person?                @relation("ProductVariantApprovedBy", fields: [approvedById], references: [id])
   variantFlavors   ProductVariantFlavor[]
-  transactionItems TransactionItem[]
-  holdOrderItems   HoldOrderItem[]
   flavorSlots      ProductFlavorSlot[]
-  changeLogs       ProductChangeLog[]
   productInventory ProductInventory[]
 
   // Mix & Max — slots this variant is a sellable snack option for.
@@ -1462,7 +1462,7 @@ model ProductChangeLog {
   snapshotJson     Json     @map("snapshot_json")
   createdAt        DateTime @default(now()) @map("created_at")
 
-  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
+  // Historical identity, no foreign key (product permanent delete): the log outlives its variant.
   changedBy      Person         @relation("ProductChangeLogChangedBy", fields: [changedById], references: [id])
 
   @@index([productVariantId, version])
@@ -2581,9 +2581,10 @@ model TransactionItem {
   promotionId         String? @map("promotion_id")
   promotionSnapshot   Json?   @map("promotion_snapshot")
 
+  // productId/productVariantId are historical identity with no foreign key
+  // (product permanent delete): a sale outlives a deleted product. New lines
+  // still require a live product (insert trigger, see the migration).
   transaction    Transaction    @relation(fields: [transactionId], references: [id], onDelete: Cascade)
-  product        Product        @relation(fields: [productId], references: [id], onDelete: Restrict)
-  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
   flavor         Flavor?        @relation(fields: [flavorId], references: [id])
   promotion      Promotion?     @relation(fields: [promotionId], references: [id], onDelete: Restrict)
 
@@ -2822,12 +2823,12 @@ model HoldOrderItem {
   unitPriceSnapshot   Decimal @map("unit_price_snapshot") @db.Decimal(10, 2)
   quantity            Int
 
+  // Historical identity, no foreign key (product permanent delete); new lines need a live product (insert trigger).
   holdOrder      HoldOrder      @relation(fields: [holdOrderId], references: [id], onDelete: Cascade)
-  product        Product        @relation(fields: [productId], references: [id], onDelete: Restrict)
-  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
   flavor         Flavor?        @relation(fields: [flavorId], references: [id])
 
   @@index([holdOrderId])
+  @@index([productId])
   @@map("hold_order_items")
 }
 

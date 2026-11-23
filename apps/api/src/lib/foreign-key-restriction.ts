@@ -32,3 +32,12 @@ export function isFencedBranchWrite(error: unknown): boolean {
     error instanceof Error && error.message.includes('POS_PERF_P68_BRANCH_DELETION_IN_PROGRESS')
   );
 }
+
+/**
+ * Product permanent delete — true when a sale line, held-order line or change
+ * log named a product (or size) that was permanently deleted meanwhile (the
+ * live-product trigger refused it). Nothing was written.
+ */
+export function isDeletedProductWrite(error: unknown): boolean {
+  return error instanceof Error && error.message.includes('PRODUCT_PERMANENTLY_DELETED');
+}

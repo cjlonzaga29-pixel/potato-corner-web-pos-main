@@ -173,7 +173,7 @@ describe.skipIf(!canRunIntegrationTests)('products integration — CR-005 Sub-ph
   });
 
   afterAll(async () => {
-    await prisma.productChangeLog.deleteMany({ where: { productVariant: { productId: { in: createdProductIds } } } });
+    await prisma.productChangeLog.deleteMany({ where: { productVariantId: { in: (await prisma.productVariant.findMany({ where: { productId: { in: createdProductIds } }, select: { id: true } })).map((v) => v.id) } } });
     await prisma.productComponent.deleteMany({ where: { productVariant: { productId: { in: createdProductIds } } } });
     await prisma.branchProductAvailability.deleteMany({ where: { productId: { in: createdProductIds } } });
     await prisma.productVariant.deleteMany({ where: { productId: { in: createdProductIds } } });
@@ -414,7 +414,7 @@ describe.skipIf(!canRunIntegrationTests)('products integration — CR-005 Sub-ph
 
   afterAll(async () => {
     await prisma.productFlavorSlot.deleteMany({ where: { productVariant: { productId: { in: createdProductIds } } } });
-    await prisma.productChangeLog.deleteMany({ where: { productVariant: { productId: { in: createdProductIds } } } });
+    await prisma.productChangeLog.deleteMany({ where: { productVariantId: { in: (await prisma.productVariant.findMany({ where: { productId: { in: createdProductIds } }, select: { id: true } })).map((v) => v.id) } } });
     await prisma.productComponent.deleteMany({ where: { productVariant: { productId: { in: createdProductIds } } } });
     await prisma.productVariant.deleteMany({ where: { productId: { in: createdProductIds } } });
     await prisma.product.deleteMany({ where: { id: { in: createdProductIds } } });

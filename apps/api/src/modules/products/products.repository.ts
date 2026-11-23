@@ -1,6 +1,7 @@
 import type { Prisma, ProductStatus as PrismaProductStatus } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { isBuiltInProductTypeKey, type ProductBranchView, type ProductClassification, type ProductTypeKey } from '@potato-corner/shared';
+import { VariantHasHistoryError } from './products.types.js';
 import type {
   CreateProductData,
   CreateVariantData,
@@ -554,22 +555,25 @@ export const productsRepository = {
   },
 
   /** Deletes the variant's own flavor links first (config, not history), then the variant — one transaction so a P2003 on the variant leaves the links intact. */
+  /**
+   * Product permanent delete — sale lines, held-order lines and change logs no
+   * longer hold a foreign key to the variant, so the refusal they used to give
+   * is explicit here: the variant row is locked first (a concurrent sale's
+   * insert trigger takes FOR KEY SHARE on it, so the two serialize), then any
+   * history refuses the delete with the same VARIANT_HAS_DEPENDENCIES as before.
+   * Deleting a whole product is the separate, audited permanent-delete path.
+   */
   deleteVariantCascade(variantId: string) {
     return prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "product_variants" WHERE "id" = ${variantId} FOR UPDATE`;
+      const [sold, held, logged] = await Promise.all([
+        tx.transactionItem.findFirst({ where: { productVariantId: variantId }, select: { id: true } }),
+        tx.holdOrderItem.findFirst({ where: { productVariantId: variantId }, select: { id: true } }),
+        tx.productChangeLog.findFirst({ where: { productVariantId: variantId }, select: { id: true } }),
+      ]);
+      if (sold || held || logged) throw new VariantHasHistoryError();
       await tx.productVariantFlavor.deleteMany({ where: { productVariantId: variantId } });
       return tx.productVariant.delete({ where: { id: variantId } });
-    });
-  },
-
-  /** Deletes the product's own config rows (branch availability, each variant's flavor links) then its variants then the product — one transaction so a P2003 anywhere rolls the whole thing back. */
-  deleteProductCascade(productId: string, variantIds: string[]) {
-    return prisma.$transaction(async (tx) => {
-      await tx.branchProductAvailability.deleteMany({ where: { productId } });
-      for (const variantId of variantIds) {
-        await tx.productVariantFlavor.deleteMany({ where: { productVariantId: variantId } });
-        await tx.productVariant.delete({ where: { id: variantId } });
-      }
-      return tx.product.delete({ where: { id: productId } });
     });
   },
 

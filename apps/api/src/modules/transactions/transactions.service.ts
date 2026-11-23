@@ -65,6 +65,7 @@ import { enqueueHoldOrderExpiry } from '../../queues/hold-order.queue.js';
 import { triggerFraudScanForBranch } from '../../queues/fraud.queue.js';
 import { notifyBranch, notifySuperAdmin } from '../../lib/notify.js';
 import { prisma } from '../../lib/prisma.js';
+import { isDeletedProductWrite } from '../../lib/foreign-key-restriction.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { attachCostToDeductionLines } from '../../lib/cogs.js';
 import { config, isShadowBomDeductionEnabledForBranch } from '../../config/index.js';
@@ -764,10 +765,32 @@ function mergeDeductionLines(base: BomDeductionLine[], extra: BomDeductionLine[]
  * readiness gate validates the customer's actual selection (which flavor,
  * which slot), which the readiness engine deliberately does not evaluate.
  */
+/**
+ * Product permanent delete — a cart line naming a product (or size) that no
+ * longer exists is told apart from an ordinary unavailable one, so a queued
+ * offline sale is kept on the device for reconciliation (PRODUCT_DELETED is a
+ * definitive queue rejection) instead of being resent forever, and nothing is
+ * substituted. Only runs when a variant is missing, so a normal cart pays nothing.
+ */
+async function assertNoPermanentlyDeletedProducts(items: CartItemInput[], variantMap: Map<string, unknown>): Promise<void> {
+  const missing = items.filter((item) => !variantMap.has(item.productVariantId));
+  if (missing.length === 0) return;
+  const productIds = [...new Set(missing.map((item) => item.productId))];
+  const live = await prisma.product.findMany({ where: { id: { in: productIds } }, select: { id: true } });
+  if (live.length < productIds.length) {
+    throw new TransactionError(
+      'PRODUCT_DELETED',
+      'A product in this sale was permanently deleted, so the sale was not recorded and nothing was charged. Remove it from the cart and try again.',
+      409,
+    );
+  }
+}
+
 async function resolveCartItems(branchId: string, items: CartItemInput[]): Promise<ResolvedItem[]> {
   const variantIds = [...new Set(items.map((i) => i.productVariantId))];
   const variants = await transactionsRepository.findVariantsForSale(variantIds);
   const variantMap = new Map(variants.map((v) => [v.id, v]));
+  await assertNoPermanentlyDeletedProducts(items, variantMap);
 
   // POS-PERF-P5 — productAvailabilityMap/flavorAvailabilityMap below used to
   // be fetched a second time here via a direct findBranchProductAvailabilityMap/
@@ -2718,6 +2741,16 @@ export const transactionsService = {
           'CHECKOUT_TIMEOUT',
           'The sale could not be completed in time and was not charged. Please try again.',
           503,
+        );
+      }
+      // Product permanent delete — the product was deleted between validation
+      // and this insert; the live-product trigger refused the line and the whole
+      // sale rolled back. Same answer as the validation path above.
+      if (isDeletedProductWrite(error)) {
+        throw new TransactionError(
+          'PRODUCT_DELETED',
+          'A product in this sale was permanently deleted, so the sale was not recorded and nothing was charged. Remove it from the cart and try again.',
+          409,
         );
       }
       throw error;

@@ -2,6 +2,7 @@
 
 import { use, useRef, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { ArrowLeft, ImageIcon, Loader2, Plus } from 'lucide-react';
 import type { ProductDetailResponse, ProductVariantResponse } from '@potato-corner/shared';
 import { Button } from '@/components/ui/button';
@@ -40,6 +41,7 @@ import { LinkFlavorDialog } from '@/components/admin/products/link-flavor-dialog
 import { EditVariantFlavorDialog } from '@/components/admin/products/edit-variant-flavor-dialog';
 import { ReadinessChecklist } from '@/components/admin/products/readiness-checklist';
 import { BranchCopyDialog } from '@/components/admin/products/branch-copy-dialog';
+import { PermanentDeleteProductDialog } from '@/components/supervisor/products/permanent-delete-product-dialog';
 import { ReplaceSourceDialog } from '@/components/admin/products/replace-source-dialog';
 import { ProductWriteError } from '@/components/products/product-write-error';
 
@@ -56,6 +58,8 @@ export default function SupervisorProductDetailPage({ params }: SupervisorProduc
   const [editOpen, setEditOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const router = useRouter();
   const [branchCopyOpen, setBranchCopyOpen] = useState(false);
 
   if (isLoading) {
@@ -130,7 +134,9 @@ export default function SupervisorProductDetailPage({ params }: SupervisorProduc
           <p className="text-sm text-muted-foreground">{product.category_name ?? 'Uncategorized'}</p>
         </div>
         {isOwner && (
-          <div className="flex gap-2">
+          // Product permanent delete — same order and wording as the Products list:
+          // Edit, status changes, then Permanently Delete; Archive stays its own action.
+          <div className="flex flex-wrap gap-2" role="group" aria-label={`Actions for ${product.name}`}>
             {product.status === 'archived' ? (
               <Button onClick={() => changeStatus.mutate({ status: 'active' })} disabled={changeStatus.isPending}>
                 Restore
@@ -138,14 +144,19 @@ export default function SupervisorProductDetailPage({ params }: SupervisorProduc
             ) : (
               <>
                 <Button variant="outline" onClick={() => setEditOpen(true)}>
-                  Edit Product
+                  Edit
                 </Button>
-                <Button onClick={() => setStatusOpen(true)}>Change Status</Button>
-                <Button variant="danger" onClick={() => setArchiveOpen(true)}>
+                <Button variant="outline" onClick={() => setStatusOpen(true)}>
+                  Change Status
+                </Button>
+                <Button variant="outline" onClick={() => setArchiveOpen(true)}>
                   Archive
                 </Button>
               </>
             )}
+            <Button variant="danger" onClick={() => setDeleteOpen(true)}>
+              Permanently Delete
+            </Button>
           </div>
         )}
       </div>
@@ -154,8 +165,8 @@ export default function SupervisorProductDetailPage({ params }: SupervisorProduc
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
           <span>
             {canOfferBranchCopy
-              ? "This product is shared with branches outside your assignment, so you can't edit it directly. Create a copy scoped to your own branch instead."
-              : "You don't currently have an active branch assignment that gives you authority over this product. You can view its configuration, but only a supervisor actively assigned to its branch may edit it."}
+              ? "This product is shared with branches outside your assignment, so you can view it but can't edit or permanently delete it. Create a copy scoped to your own branch instead."
+              : "You don't currently have an active branch assignment that gives you authority over this product. You can view its configuration, but only a supervisor actively assigned to its branch may edit or delete it."}
           </span>
           {canOfferBranchCopy && (
             <Button size="sm" variant="outline" onClick={() => setBranchCopyOpen(true)}>
@@ -196,6 +207,10 @@ export default function SupervisorProductDetailPage({ params }: SupervisorProduc
             }}
           />
         </>
+      )}
+
+      {isOwner && deleteOpen && (
+        <PermanentDeleteProductDialog product={product} onOpenChange={setDeleteOpen} onDeleted={() => router.push('/supervisor/products')} />
       )}
 
       {canOfferBranchCopy && (

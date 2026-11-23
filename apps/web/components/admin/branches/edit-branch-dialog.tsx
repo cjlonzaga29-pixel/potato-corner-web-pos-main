@@ -67,7 +67,7 @@ export function EditBranchDialog({ open, onOpenChange, branch }: EditBranchDialo
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent size="standard">
         <DialogHeader>
           <DialogTitle>Edit Branch</DialogTitle>
           <DialogDescription>The branch code cannot be changed after creation.</DialogDescription>
@@ -92,7 +92,7 @@ export function EditBranchDialog({ open, onOpenChange, branch }: EditBranchDialo
               <Input placeholder="123 Rizal Street" />
             </FormFieldWrapper>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <FormFieldWrapper<FormValues> name="gpsLatitude" label="GPS Latitude" description="Optional">
                 <Input placeholder="14.5995" inputMode="decimal" />
               </FormFieldWrapper>

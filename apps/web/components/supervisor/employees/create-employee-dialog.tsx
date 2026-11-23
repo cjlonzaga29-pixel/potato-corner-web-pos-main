@@ -113,7 +113,7 @@ export function SupervisorCreateEmployeeDialog({ open, onOpenChange }: Superviso
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent size="standard">
         <DialogHeader>
           <DialogTitle>Create Employee</DialogTitle>
           <DialogDescription>Employees have no login of their own — they operate inside this branch&apos;s session.</DialogDescription>
@@ -121,7 +121,7 @@ export function SupervisorCreateEmployeeDialog({ open, onOpenChange }: Superviso
 
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <FormFieldWrapper<FormValues> name="first_name" label="First Name" required>
                 <Input placeholder="Juan" />
               </FormFieldWrapper>
@@ -130,7 +130,7 @@ export function SupervisorCreateEmployeeDialog({ open, onOpenChange }: Superviso
               </FormFieldWrapper>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>Role</Label>
                 <Input value="Staff" disabled readOnly />
@@ -141,7 +141,7 @@ export function SupervisorCreateEmployeeDialog({ open, onOpenChange }: Superviso
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <FormFieldWrapper<FormValues> name="position" label="Position" required>
                 <Input placeholder="Cashier" />
               </FormFieldWrapper>

@@ -161,6 +161,20 @@ const envSchema = z.object({
     .default('false')
     .transform((value) => value === 'true'),
   /**
+   * Product permanent delete — rollout switch, off by default. An API version
+   * from before this release still reads such history, but a checkout of it
+   * racing a permanent delete gets a 500 and leaves its checkout attempt stuck
+   * in progress, and it answers a deleted product with the retryable
+   * PRODUCT_UNAVAILABLE, so a queued offline sale is resent instead of kept for
+   * reconciliation. Turn this on only after every API instance runs this
+   * version; the env change restarts the service, so every instance that
+   * sees `true` is already compatible. See docs/runbooks/product-permanent-delete.md §6.
+   */
+  PRODUCT_PERMANENT_DELETE_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /**
    * CR-012.1A -- optional branch allowlist for the shadow comparison, parsed
    * from a comma-separated string purely by string/regex validation (no DB
    * lookup at config-load time: a typo'd or since-deleted branch id must
@@ -320,6 +334,7 @@ export const config = {
   manualInventoryApprovalRequired: env.MANUAL_INVENTORY_APPROVAL_REQUIRED,
   shadowBomDeductionEnabled: env.SHADOW_BOM_DEDUCTION_ENABLED,
   shadowBomDeductionBranchIds: env.SHADOW_BOM_DEDUCTION_BRANCH_IDS,
+  productPermanentDeleteEnabled: env.PRODUCT_PERMANENT_DELETE_ENABLED,
   /** POS checkout's createTransaction $transaction options — see posTransactionMaxWaitMsSchema above. */
   posTransaction: {
     maxWaitMs: env.PRISMA_TRANSACTION_MAX_WAIT_MS,

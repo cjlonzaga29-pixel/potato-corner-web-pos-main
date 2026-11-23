@@ -19,7 +19,9 @@
 --   (same reasoning as POS-PERF-P67's live-branch guard).
 -- * hold_order_items gets an index on product_id for the delete's held-order check.
 --
--- Additive for readers; no data is rewritten and no product is deleted here.
+-- NOT additive: it removes five foreign keys and replaces their insert half with
+-- triggers (the delete half is restored by 20261124130000_product_delete_history_guard).
+-- No data is rewritten and no product is deleted here.
 -- Rollback constraint: once any product has been permanently deleted, these
 -- foreign keys cannot be re-added (history rows name ids that no longer exist).
 

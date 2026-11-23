@@ -46,7 +46,12 @@ vi.mock('../../lib/supabase.js', () => ({
   },
 }));
 
+// The rollout switch is off by default; this suite exercises the enabled path
+// (and switches it off once, below, to prove the refusal).
+process.env.PRODUCT_PERMANENT_DELETE_ENABLED = 'true';
 const { app } = await import('../../app.js');
+const { config } = await import('../../config/index.js');
+const { Prisma } = await import('@prisma/client');
 const { prisma } = await import('../../lib/prisma.js');
 const { generateStaffToken, generateSupervisorToken, generateSuperAdminToken } = await import('../../test-utils/auth-tokens.js');
 const { inventoryDeductionService } = await import('../inventory-deduction/inventory-deduction.service.js');
@@ -376,6 +381,79 @@ describe.skipIf(!isLocalDatabase)('product permanent delete (real Express + Post
     const res = await call('DELETE', `/api/products/${products.Other?.id}/variants/${products.Other?.variants.Regular}`, tokens.supA);
     expect(res.status).toBe(409);
     expect(res.body.error?.code).toBe('VARIANT_HAS_DEPENDENCIES');
+  });
+
+  it('history guard: any other delete of a product or size with history is refused like the old foreign key', async () => {
+    const sold = products.Other as { id: string; variants: Record<string, string> };
+    expect(await prisma.transactionItem.count({ where: { productId: sold.id } })).toBeGreaterThan(0);
+    // The pre-release API's plain delete cascade, run against the migrated database.
+    const oldCascade = prisma.$transaction(async (tx) => {
+      await tx.branchProductAvailability.deleteMany({ where: { productId: sold.id } });
+      for (const variantId of Object.values(sold.variants)) {
+        await tx.productVariantFlavor.deleteMany({ where: { productVariantId: variantId } });
+        await tx.productComponent.deleteMany({ where: { productVariantId: variantId } });
+        await tx.productVariant.delete({ where: { id: variantId } });
+      }
+      await tx.product.delete({ where: { id: sold.id } });
+    });
+    const error = await oldCascade.then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(Prisma.PrismaClientKnownRequestError);
+    expect((error as { code: string }).code).toBe('P2003');
+    expect(await prisma.productVariant.count({ where: { productId: sold.id } })).toBe(1);
+    expect(await prisma.branchProductAvailability.count({ where: { productId: sold.id } })).toBe(1);
+
+    // The product row itself is guarded too (a line naming it, even with no size left to guard).
+    const productOnly = await prisma.$executeRaw`DELETE FROM "products" WHERE "id" = ${sold.id}`.then(() => null, (e: unknown) => e);
+    expect(String(productOnly)).toContain('transaction_items_product_id_fkey');
+
+    // A size with only a change log is still protected, as before.
+    const logged = await prisma.productVariant.create({ data: { productId: sold.id, name: 'Logged', sizeLabel: 'Logged', basePrice: 50, isActive: false } });
+    await prisma.productChangeLog.create({ data: { productVariantId: logged.id, version: 1, changedById: users.SupAB as string, reason: 'pdel guard test', snapshotJson: {} } });
+    const sizeDelete = await call('DELETE', `/api/products/${sold.id}/variants/${logged.id}`, tokens.supA);
+    expect(sizeDelete.status).toBe(409);
+    expect(sizeDelete.body.error?.code).toBe('VARIANT_HAS_DEPENDENCIES');
+    const rawSizeDelete = await prisma.productVariant.delete({ where: { id: logged.id } }).then(() => null, (e: unknown) => e);
+    expect((rawSizeDelete as { code?: string }).code).toBe('P2003');
+
+    // Nothing with history: the guard does not get in the way.
+    const fresh = await prisma.product.create({ data: { name: `PDEL Fresh ${tag}`, status: 'draft' } });
+    await prisma.productVariant.create({ data: { productId: fresh.id, name: 'R', sizeLabel: 'R', basePrice: 1 } });
+    await prisma.$transaction([prisma.productVariant.deleteMany({ where: { productId: fresh.id } }), prisma.product.delete({ where: { id: fresh.id } })]);
+    expect(await prisma.product.findUnique({ where: { id: fresh.id } })).toBeNull();
+  });
+
+  it('a new line must name a size of its own product', async () => {
+    const shift = await prisma.shift.findFirstOrThrow({ where: { branchId: branch.a, status: 'active' } });
+    const mismatch = await prisma.holdOrder
+      .create({
+        data: {
+          branchId: branch.a,
+          shiftId: shift.id,
+          cashierId: users.Ana as string,
+          expiresAt: new Date(Date.now() + 900_000),
+          items: { create: [{ productId: products.Other?.id as string, productVariantId: products.Promo?.variants.Regular as string, productNameSnapshot: 'x', variantNameSnapshot: 'Regular', unitPriceSnapshot: 50, quantity: 1 }] },
+        },
+      })
+      .then(() => null, (e: unknown) => e);
+    expect(String(mismatch)).toContain('PRODUCT_VARIANT_MISMATCH');
+  });
+
+  it('rollout switch off: preview says so and the delete is refused, nothing changes', async () => {
+    const mutable = config as { productPermanentDeleteEnabled: boolean };
+    mutable.productPermanentDeleteEnabled = false;
+    try {
+      const id = products.Other?.id as string;
+      const preview = await call('GET', `/api/products/${id}/deletion-preview`, tokens.supA);
+      expect(preview.status).toBe(200);
+      expect(preview.body.data).toMatchObject({ can_delete: false, blockers: [] });
+      expect(String(preview.body.data?.forbidden_reason)).toContain('not switched on');
+      const res = await call('DELETE', `/api/products/${id}`, tokens.supA, CONFIRM);
+      expect(res.status).toBe(409);
+      expect(res.body.error?.code).toBe('PRODUCT_PERMANENT_DELETE_DISABLED');
+      expect(await prisma.product.findUnique({ where: { id } })).not.toBeNull();
+    } finally {
+      mutable.productPermanentDeleteEnabled = true;
+    }
   });
 
   it('race: a checkout waiting on an in-progress delete is refused, charges nothing, and its retry is refused the same way', async () => {

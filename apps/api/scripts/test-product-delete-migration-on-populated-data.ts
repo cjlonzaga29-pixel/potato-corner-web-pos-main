@@ -1,5 +1,5 @@
 // Product permanent delete — populated upgrade rehearsal for
-//   20261124120000_product_permanent_delete
+//   20261124120000_product_permanent_delete + 20261124130000_product_delete_history_guard
 // Same technique as test-p55-migration-on-populated-data.ts: the pre-release
 // state is built from a temporary COPY of the migrations folder (the repo's
 // own folder is never moved), representative history is seeded under that
@@ -27,7 +27,8 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const prismaDir = path.join(__dirname, '..', 'prisma');
-const PENDING = '20261124120000_product_permanent_delete';
+// Both migrations of this release; they are deployed together.
+const PENDING = ['20261124120000_product_permanent_delete', '20261124130000_product_delete_history_guard'];
 const SALES = Number(process.env.PDEL_REHEARSAL_SALES || 20000);
 const workDir = path.join(os.tmpdir(), `pos-pdel-migration-${randomUUID().slice(0, 8)}`);
 const DB_DIR = path.join(workDir, 'pg');
@@ -51,13 +52,13 @@ function assert(condition: unknown, message: string) {
 
 async function main() {
   const migrations = fs.readdirSync(path.join(prismaDir, 'migrations')).filter((e) => /^\d{14}_/.test(e)).sort();
-  assert(migrations.at(-1) === PENDING, `pending migration is the last one: ${PENDING}`);
+  assert(migrations.slice(-PENDING.length).join(',') === PENDING.join(','), `pending migrations are the last ones: ${PENDING.join(', ')}`);
 
   const oldPrisma = path.join(workDir, 'prisma-pre');
   fs.mkdirSync(path.join(oldPrisma, 'migrations'), { recursive: true });
   fs.copyFileSync(path.join(prismaDir, 'schema.prisma'), path.join(oldPrisma, 'schema.prisma'));
   for (const entry of fs.readdirSync(path.join(prismaDir, 'migrations'))) {
-    if (entry === PENDING) continue;
+    if (PENDING.includes(entry)) continue;
     fs.cpSync(path.join(prismaDir, 'migrations', entry), path.join(oldPrisma, 'migrations', entry), { recursive: true });
   }
 
@@ -115,10 +116,14 @@ async function main() {
       retired.product.id, retired.variant.id, kept.product.id, kept.variant.id, item.id, unit.id, branch.id,
     );
     await db.$executeRawUnsafe(
-      `INSERT INTO inventory_stock_movements (id, branch_id, inventory_item_id, movement_type, quantity_change, reference_id, created_at)
-       SELECT gen_random_uuid(), $1, $2, 'SALE_DEDUCTION', -3, t.id, now() FROM transactions t WHERE t.branch_id = $1 LIMIT 2000`,
-      branch.id, item.id,
-    ).catch((error: unknown) => console.log(`  (stock movement seed skipped: ${(error as Error).message.split('\n')[0]})`));
+      `INSERT INTO inventory_stock_movements (id, branch_id, inventory_item_id, movement_type, quantity_change, quantity_before, quantity_after, unit_id, reference_type, reference_id, created_at)
+       SELECT gen_random_uuid(), $1, $2, (CASE WHEN t.status = 'completed' THEN 'SALE' ELSE 'SALE_REVERSAL' END)::"InventoryStockMovementType",
+              CASE WHEN t.status = 'completed' THEN -3 ELSE 3 END, 5000, 5000, $3, 'transaction', t.id, now()
+       FROM transactions t WHERE t.branch_id = $1`,
+      branch.id, item.id, unit.id,
+    );
+    const movementRows = await db.inventoryStockMovement.count({ where: { branchId: branch.id } });
+    assert(movementRows === SALES, `stock movements seeded for every sale (${movementRows})`);
     // A released held order for the product being retired (history), and change logs for its size.
     await db.holdOrder.create({
       data: {
@@ -165,6 +170,8 @@ async function main() {
     assert(fks.length === 0, 'the five history foreign keys are dropped');
     const triggers = await after.$queryRawUnsafe<{ tgrelid: string }[]>(`SELECT tgrelid::regclass::text AS tgrelid FROM pg_trigger WHERE tgname = 'product_delete_live_product' ORDER BY 1`);
     assert(triggers.map((t) => t.tgrelid).join(',') === 'hold_order_items,product_change_logs,transaction_items', 'live-product triggers on the three history tables');
+    const guards = await after.$queryRawUnsafe<{ tgrelid: string }[]>(`SELECT tgrelid::regclass::text AS tgrelid FROM pg_trigger WHERE tgname = 'product_delete_guard_history' ORDER BY 1`);
+    assert(guards.map((t) => t.tgrelid).join(',') === 'product_variants,products', 'history delete guards on products and product_variants');
     const [index] = await after.$queryRawUnsafe<{ n: bigint }[]>(`SELECT count(*) AS n FROM pg_indexes WHERE indexname = 'hold_order_items_product_id_idx'`);
     assert(index?.n === 1n, 'hold_order_items(product_id) index exists');
     console.log(`  migration wall time: ${migrationMs} ms (includes prisma CLI start-up)`);
@@ -174,8 +181,26 @@ async function main() {
     console.log('  OK: no drift');
 
     console.log('[pdel-migration-test] permanent delete on the migrated data');
-    const history = ['transactions', 'transaction_items', 'hold_orders', 'hold_order_items', 'product_change_logs', 'inventory_stock_movements', 'inventory_stock', 'inventory_items'];
+    const history = ['transactions', 'transaction_items', 'hold_orders', 'hold_order_items', 'product_change_logs', 'inventory_stock_movements', 'inventory_stocks', 'inventory_items'];
+    const tableNames = new Set(tables.map((t) => t.table_name));
+    assert(history.every((t) => tableNames.has(t)), 'every history table compared exists');
     const historyBefore = await fingerprint(after, history);
+    // The pre-release API's plain delete cascade (no permanent-delete checks) is still refused for a sold product.
+    let oldCascadeCode = '';
+    try {
+      await after.$transaction(async (tx) => {
+        await tx.branchProductAvailability.deleteMany({ where: { productId: retired.product.id } });
+        await tx.productVariantFlavor.deleteMany({ where: { productVariantId: retired.variant.id } });
+        await tx.productVariant.delete({ where: { id: retired.variant.id } });
+        await tx.product.delete({ where: { id: retired.product.id } });
+      });
+    } catch (error) {
+      oldCascadeCode = (error as { code?: string }).code ?? String(error);
+    }
+    assert(oldCascadeCode === 'P2003', `the pre-release delete cascade is refused as before (P2003, got ${oldCascadeCode})`);
+    const afterRefusal = await fingerprint(after);
+    assert(Object.keys(before).every((t) => before[t] === afterRefusal[t]), 'nothing changed by the refused cascade');
+    process.env.PRODUCT_PERMANENT_DELETE_ENABLED = 'true';
     const { productDeletionService } = await import('../src/modules/products/product-deletion.service.js');
     const result = await productDeletionService.permanentlyDelete(retired.product.id, { id: sup.id, role: 'supervisor' }, null);
     assert(result.name === 'Retired Fries', 'sold product permanently deleted through the service');

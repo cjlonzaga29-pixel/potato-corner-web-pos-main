@@ -1,5 +1,6 @@
 import { ROLES, type ProductDeleteBlocker, type ProductDeletionPreview } from '@potato-corner/shared';
 import { prisma } from '../../lib/prisma.js';
+import { config } from '../../config/index.js';
 import { supabaseAdmin } from '../../lib/supabase.js';
 import { hasActiveCatalogAuthorityForProduct } from '../../lib/catalog-authority.js';
 import { branchesRepository } from '../branches/branches.repository.js';
@@ -138,6 +139,20 @@ function auditSnapshot(target: ProductDeletionTarget, saleCount: number) {
   };
 }
 
+/**
+ * Rollout switch (PRODUCT_PERMANENT_DELETE_ENABLED, off by default). An API
+ * version from before this release mishandles a sale of a permanently deleted
+ * product (500 and a stuck checkout attempt in a race; a retryable code for
+ * offline sales), so nothing is deleted until every instance runs this one.
+ */
+const DISABLED_REASON =
+  'Permanent delete is not switched on yet for this system. Deactivate or archive the product for now.';
+function assertEnabled(): void {
+  if (!config.productPermanentDeleteEnabled) {
+    throw new ProductError('PRODUCT_PERMANENT_DELETE_DISABLED', DISABLED_REASON, 409);
+  }
+}
+
 async function notFound(productId: string): Promise<never> {
   if (await productDeletionRepository.wasPermanentlyDeleted(productId)) {
     throw new ProductError('PRODUCT_ALREADY_DELETED', 'This product was already permanently deleted. Its sales history is kept.', 410);
@@ -151,7 +166,9 @@ export const productDeletionService = {
     const target = await productDeletionRepository.findTarget(productId);
     if (!target) return notFound(productId);
     const { saleCount, branchIds } = await productDeletionRepository.saleSummary(target.variants.map((v) => v.id));
-    const authority = await authorityCheck(target, branchIds, actor, prisma);
+    const authority = config.productPermanentDeleteEnabled
+      ? await authorityCheck(target, branchIds, actor, prisma)
+      : { allowed: false, reason: DISABLED_REASON };
     return {
       product: { id: target.id, name: target.name },
       branches: involvedBranches(target),
@@ -176,6 +193,7 @@ export const productDeletionService = {
    * success gets 410 PRODUCT_ALREADY_DELETED (nothing changes).
    */
   async permanentlyDelete(productId: string, actor: ActorContext, ipAddress: string | null): Promise<{ id: string; name: string }> {
+    assertEnabled();
     const result = await prisma.$transaction(
       async (tx) => {
         await productDeletionRepository.lockForDelete(tx, productId);

@@ -123,6 +123,11 @@ export const productDeletionRepository = {
    * cleared by the existing ON DELETE SET NULL.
    */
   async deleteProductAndOwnSetup(tx: Prisma.TransactionClient, productId: string, variantIds: string[]): Promise<void> {
+    // The history guard (migration 20261124130000) refuses deleting a product or
+    // size that history still names, for every path but this one. Called only
+    // after the authority and blocker checks, under the product's locks; the
+    // setting is transaction-local and ends with this transaction.
+    await tx.$queryRaw`SELECT set_config('pc.product_permanent_delete', 'on', true)`;
     await tx.branchProductAvailability.deleteMany({ where: { productId } });
     if (variantIds.length > 0) {
       const inVariants = { in: variantIds };

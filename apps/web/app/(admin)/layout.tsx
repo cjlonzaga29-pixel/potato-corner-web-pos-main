@@ -13,7 +13,10 @@ import { SocketInitializer } from '@/components/shared/socket-initializer';
  */
 export default function AdminLayout({ children }: { children: ReactNode }) {
   return (
-    <div className="flex h-screen overflow-hidden bg-background print:hidden">
+    // Same shell sizing as (branch)/layout.tsx; see (supervisor)/layout.tsx for
+    // why <main> must be `relative` (absolutely positioned descendants would
+    // otherwise stretch the document and add a second page scrollbar).
+    <div className="flex h-screen overflow-hidden bg-background print:hidden supports-[height:100dvh]:h-[100dvh]">
       <SocketInitializer />
       <AdminSidebar />
       <div className="flex min-w-0 flex-1 flex-col">
@@ -24,7 +27,7 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
           profileHref="/admin/profile"
           fallbackInitials="AD"
         />
-        <main className="app-page flex-1 overflow-y-auto overflow-x-hidden">{children}</main>
+        <main className="app-page relative flex-1 overflow-y-auto overflow-x-hidden">{children}</main>
       </div>
     </div>
   );

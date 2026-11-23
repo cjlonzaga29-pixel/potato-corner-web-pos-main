@@ -114,6 +114,19 @@ describe.skipIf(!isLocalDatabase)('product permanent delete (real Express + Post
   const sale = (items: unknown[], key: string = randomUUID()) => call('POST', '/api/transactions', tokens.ana, saleBody(items, key));
   const stockA = async () => Number((await prisma.inventoryStock.findFirstOrThrow({ where: { branchId: branch.a, inventoryItemId: plenty } })).quantityOnHand);
   const movementCount = () => prisma.inventoryStockMovement.count({ where: { branchId: branch.a, inventoryItemId: plenty } });
+  /**
+   * Runs deduction cycles until these sales' own jobs are completed. The queue is shared by every test file running in parallel
+   * against this database, so one runCycle(10) can claim only other files' older jobs (or another file's worker can hold ours).
+   */
+  const deductSales = async (transactionIds: string[]) => {
+    for (let cycle = 0; cycle < 100; cycle += 1) {
+      const done = await prisma.inventoryDeductionJob.count({ where: { transactionId: { in: transactionIds }, status: 'completed' } });
+      if (done === transactionIds.length) return;
+      const { claimed } = await inventoryDeductionService.runCycle(10);
+      if (claimed === 0) await new Promise((resolve) => setTimeout(resolve, 25)); // held by another file's worker
+    }
+    throw new Error(`deduction jobs not completed for ${transactionIds.join(', ')}`);
+  };
 
   /** Resolves once some backend is waiting on a row lock in this database (the delete/insert race barrier). */
   async function waitForLockWait(): Promise<void> {
@@ -239,9 +252,9 @@ describe.skipIf(!isLocalDatabase)('product permanent delete (real Express + Post
     expect(first.status).toBe(201);
     const second = await sale([line('Sold')]);
     expect(second.status).toBe(201);
-    await inventoryDeductionService.runCycle(10);
     const firstId = first.body.data?.id as string;
     const secondId = second.body.data?.id as string;
+    await deductSales([firstId, secondId]);
 
     const receiptBefore = (await call('GET', `/api/transactions/${firstId}`, tokens.supA)).body.data;
     const stockBefore = await stockA();

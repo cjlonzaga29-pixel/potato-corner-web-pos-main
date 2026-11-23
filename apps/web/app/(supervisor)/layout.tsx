@@ -12,7 +12,13 @@ import { SocketInitializer } from '@/components/shared/socket-initializer';
  */
 export default function SupervisorLayout({ children }: { children: ReactNode }) {
   return (
-    <div className="flex h-screen overflow-hidden bg-background print:hidden">
+    // Same shell sizing as (branch)/layout.tsx: <main> is the page's only vertical
+    // scroller, and `relative` makes it the containing block for absolutely
+    // positioned descendants (e.g. every row's `sr-only` badge text). Without it
+    // they resolve against the viewport and stretch the document, adding a
+    // second scrollbar that slides the header and sidebar away. dvh keeps the
+    // shell to the visible viewport on mobile browsers.
+    <div className="flex h-screen overflow-hidden bg-background print:hidden supports-[height:100dvh]:h-[100dvh]">
       <SocketInitializer />
       <SupervisorSidebar />
       <div className="flex min-w-0 flex-1 flex-col">
@@ -23,7 +29,7 @@ export default function SupervisorLayout({ children }: { children: ReactNode }) 
           profileHref="/supervisor/profile"
           fallbackInitials="SV"
         />
-        <main className="app-page flex-1 overflow-y-auto overflow-x-hidden">{children}</main>
+        <main className="app-page relative flex-1 overflow-y-auto overflow-x-hidden">{children}</main>
       </div>
     </div>
   );
